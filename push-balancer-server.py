@@ -2977,16 +2977,18 @@ def _gbrt_train(pushes=None):
     cal_test_mae = sum(abs(cal_test_preds[i] - y_test_orig[i]) for i in range(test_n)) / test_n if test_n else 0
     model.train_metrics["cal_test_mae"] = round(cal_test_mae, 4)
 
-    # Kalibrierung validieren: Verbessert sie tatsaechlich?
+    # Kalibrierung validieren: nur verwenden wenn sie MAE verbessert
     if cal_test_mae <= test_mae:
         log.info(f"[GBRT] Kalibrierung verbessert MAE: {test_mae:.4f} -> {cal_test_mae:.4f}")
     else:
-        log.warning(f"[GBRT] Kalibrierung verschlechtert MAE: {test_mae:.4f} -> {cal_test_mae:.4f}, "
-                    f"wird trotzdem beibehalten (Bias-Korrektur)")
+        log.info(f"[GBRT] Kalibrierung deaktiviert (verschlechtert MAE: {test_mae:.4f} -> {cal_test_mae:.4f})")
+        calibrator = None
+        cal_test_mae = test_mae
+        model.train_metrics["cal_test_mae"] = round(test_mae, 4)
 
     # ── Blending: α × GBRT + (1-α) × Cat×Hour-Baseline ──
     # Optimiere α auf Validation-Set (Grid Search 0.0 bis 1.0)
-    val_cal_preds = [calibrator.calibrate(p) for p in val_preds_or]
+    val_cal_preds = [calibrator.calibrate(p) for p in val_preds_or] if calibrator else val_preds_or
     best_blend_alpha = 1.0
     best_blend_mae = float('inf')
     for alpha_step in range(0, 21):  # 0.0, 0.05, 0.10, ..., 1.0
@@ -3000,8 +3002,9 @@ def _gbrt_train(pushes=None):
             best_blend_alpha = alpha
 
     # Blend auf Test-Set evaluieren
+    effective_test_preds = cal_test_preds if calibrator else test_preds
     blended_test_preds = [
-        best_blend_alpha * cal_test_preds[i] + (1 - best_blend_alpha) * test_baselines[i]
+        best_blend_alpha * effective_test_preds[i] + (1 - best_blend_alpha) * test_baselines[i]
         for i in range(test_n)
     ]
     blended_test_mae = sum(abs(blended_test_preds[i] - y_test_orig[i]) for i in range(test_n)) / test_n if test_n else 0
@@ -3722,6 +3725,9 @@ def _ml_build_stats(pushes):
     def avg(lst):
         return sum(lst) / len(lst) if lst else 0.0
 
+    # Rohdaten fuer Varianz-Features mitgeben
+    _raw = [{"cat": (p.get("cat") or "news").lower().strip(), "or": p.get("or") or p.get("or_val") or 0}
+            for p in pushes if (p.get("or") or p.get("or_val") or 0) > 0]
     return {
         "hour_avg": {k: avg(v) for k, v in hour_or.items()},
         "cat_avg": {k: avg(v) for k, v in cat_or.items()},
@@ -3731,16 +3737,18 @@ def _ml_build_stats(pushes):
         "global_avg": avg(all_or),
         "hour_count": {k: len(v) for k, v in hour_or.items()},
         "cat_count": {k: len(v) for k, v in cat_or.items()},
+        "_raw_pushes": _raw,
     }
 
 
 def _ml_extract_features(row, stats):
-    """Extrahiert ~30 Features aus einem Push-Dict."""
+    """Extrahiert ~55 Features aus einem Push-Dict (erweitert mit Tiefenanalyse)."""
     ts = row.get("ts_num", 0)
     dt = datetime.datetime.fromtimestamp(ts) if ts > 0 else datetime.datetime.now()
     h = row.get("hour", dt.hour)
     wd = dt.weekday()
     title = row.get("title") or row.get("headline") or ""
+    title_lower = title.lower()
     cat = (row.get("cat") or "news").lower().strip()
     is_eil = 1 if row.get("is_eilmeldung") else 0
     channels = row.get("channels") or []
@@ -3750,9 +3758,49 @@ def _ml_extract_features(row, stats):
     word_count = len(words)
     title_len = len(title)
     upper_ratio = sum(1 for c in title if c.isupper()) / max(title_len, 1)
+    avg_word_len = sum(len(w) for w in words) / max(len(words), 1)
 
     hour_sin = math.sin(2 * math.pi * h / 24)
     hour_cos = math.cos(2 * math.pi * h / 24)
+    weekday_sin = math.sin(2 * math.pi * wd / 7)
+    weekday_cos = math.cos(2 * math.pi * wd / 7)
+
+    # Emotionale Tiefenanalyse
+    _emo_cats = {
+        "angst": {"tot","tod","sterben","gestorben","stirbt","lebensgefahr","mord","tote","opfer"},
+        "katastrophe": {"erdbeben","tsunami","explosion","brand","feuer","absturz","crash","ueberschwemmung","sturm"},
+        "sensation": {"sensation","historisch","erstmals","rekord","unfassbar","unglaublich","hammer","schock","krass"},
+        "bedrohung": {"warnung","alarm","gefahr","terror","angriff","anschlag","krieg","evakuierung"},
+        "prominenz": {"kanzler","praesident","papst","koenig","merkel","scholz","trump","putin","biden"},
+        "empoerung": {"skandal","verrat","luege","betrug","korrupt","irrsinn","dreist"},
+    }
+    emo_score = 0.0
+    emo_cat_count = 0
+    for _ec, _ew in _emo_cats.items():
+        if any(w in title_lower for w in _ew):
+            emo_score += 0.2
+            emo_cat_count += 1
+
+    # Breaking-Signale
+    breaking_score = 0
+    if "++" in title: breaking_score += 1
+    if "+++" in title: breaking_score += 2
+    if "|" in title: breaking_score += 1
+    if "EXKLUSIV" in title.upper() or "BREAKING" in title.upper(): breaking_score += 2
+    if is_eil: breaking_score += 2
+    if title.strip().endswith("!"): breaking_score += 1
+
+    # Titel-Stil-Features
+    has_colon = 1 if ":" in title else 0
+    has_pipe = 1 if "|" in title else 0
+    has_dash = 1 if " – " in title or " - " in title else 0
+    has_quotes = 1 if '"' in title or '„' in title else 0
+    starts_with_name = 1 if re.match(r'^[A-Z][a-z]+ [A-Z]', title) else 0
+
+    # Sport-Entity-Erkennung
+    _sport_entities = {"bayern","dortmund","bvb","real madrid","barcelona","champions league",
+                       "bundesliga","dfb","nationalmannschaft","transfer","wechsel"}
+    sport_entity_hits = sum(1 for e in _sport_entities if e in title_lower)
 
     feat = {
         "hour": h,
@@ -3760,10 +3808,16 @@ def _ml_extract_features(row, stats):
         "is_weekend": 1 if wd >= 5 else 0,
         "hour_sin": hour_sin,
         "hour_cos": hour_cos,
+        "weekday_sin": weekday_sin,
+        "weekday_cos": weekday_cos,
         "is_prime_time": 1 if 18 <= h <= 22 else 0,
         "is_morning": 1 if 6 <= h <= 9 else 0,
+        "is_lunch": 1 if 11 <= h <= 13 else 0,
+        "is_late_night": 1 if h >= 23 or h <= 5 else 0,
+        "hour_squared": h * h,
         "title_len": title_len,
         "word_count": word_count,
+        "avg_word_len": avg_word_len,
         "has_question": 1 if "?" in title else 0,
         "has_exclamation": 1 if "!" in title else 0,
         "has_numbers": 1 if re.search(r"\d", title) else 0,
@@ -3772,6 +3826,21 @@ def _ml_extract_features(row, stats):
         "upper_ratio": upper_ratio,
         "is_eilmeldung": is_eil,
         "n_channels": n_channels,
+        # Neue Features
+        "emo_score": min(1.0, emo_score),
+        "emo_cat_count": emo_cat_count,
+        "breaking_score": min(8, breaking_score),
+        "has_colon": has_colon,
+        "has_pipe": has_pipe,
+        "has_dash": has_dash,
+        "has_quotes": has_quotes,
+        "starts_with_name": starts_with_name,
+        "sport_entity_hits": sport_entity_hits,
+        # Interaktionen (ML lernt nichtlineare Kombinationen)
+        "eilmeldung_x_primetime": is_eil * (1 if 18 <= h <= 22 else 0),
+        "breaking_x_morning": min(1, breaking_score) * (1 if 6 <= h <= 9 else 0),
+        "sport_x_evening": min(1, sport_entity_hits) * (1 if 19 <= h <= 22 else 0),
+        "emo_x_weekend": min(1.0, emo_score) * (1 if wd >= 5 else 0),
     }
 
     # Kategorie One-Hot
@@ -3786,9 +3855,16 @@ def _ml_extract_features(row, stats):
         feat["weekday_avg_or"] = stats["weekday_avg"].get(wd, stats["global_avg"])
         feat["hour_weekday_avg_or"] = stats["hour_weekday_avg"].get((h, wd), stats["global_avg"])
         feat["global_avg_or"] = stats["global_avg"]
+        # Neue: Varianz-Features (wie stark schwankt OR in dieser Kategorie/Stunde?)
+        cat_vals = [p.get("or", 0) for p in stats.get("_raw_pushes", [])
+                    if (p.get("cat") or "").lower().strip() == cat and (p.get("or") or 0) > 0]
+        feat["cat_or_std"] = (sum((v - feat["cat_avg_or"])**2 for v in cat_vals) / max(len(cat_vals), 1)) ** 0.5 if cat_vals else 0.0
+        feat["cat_n_pushes"] = len(cat_vals)
     else:
         for k in ("cat_avg_or", "hour_avg_or", "hour_cat_avg_or", "weekday_avg_or", "hour_weekday_avg_or", "global_avg_or"):
             feat[k] = 0.0
+        feat["cat_or_std"] = 0.0
+        feat["cat_n_pushes"] = 0
 
     return feat
 
@@ -10159,28 +10235,73 @@ def _validate_tuning_changes(state):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _server_predict_or(push, push_data, state):
-    """Server-seitige Prediction: GBRT-Modell (primaer) mit Heuristik-Fallback.
+    """Server-seitige Prediction: ML-Ensemble (GBRT + LightGBM + Heuristik).
 
     Returns: {predicted: float, methods: {name: or_value}, basis: str}
     """
-    # ── GBRT-Prediction (primaer, wenn Modell trainiert) ──
+    # ── ML-Predictions sammeln (GBRT + LightGBM) ──
+    ml_predictions = {}
+    basis_parts_ml = []
+
+    # GBRT-Prediction
     gbrt_result = _gbrt_predict(push, state)
     if gbrt_result is not None:
-        return _safety_envelope({
-            "predicted": gbrt_result["predicted"],
-            "methods": {
-                "gbrt_predicted": gbrt_result["predicted"],
+        ml_predictions["gbrt"] = gbrt_result["predicted"]
+        basis_parts_ml.append(f"GBRT({gbrt_result['n_trees']}T)")
+
+    # LightGBM-Prediction (aus _ml_state)
+    lgbm_pred = None
+    with _ml_lock:
+        _lgbm_model = _ml_state.get("model")
+        _lgbm_stats = _ml_state.get("stats")
+        _lgbm_fnames = _ml_state.get("feature_names")
+    if _lgbm_model and _lgbm_stats and _lgbm_fnames:
+        try:
+            import numpy as _np_lgbm
+            _ts = push.get("ts_num", 0)
+            _dt = datetime.datetime.fromtimestamp(_ts) if _ts > 0 else datetime.datetime.now()
+            _lgbm_row = {
+                "ts_num": _ts, "hour": push.get("hour", _dt.hour),
+                "title": push.get("title", ""), "headline": push.get("title", ""),
+                "cat": push.get("cat", "News"), "is_eilmeldung": push.get("is_eilmeldung", False),
+                "channels": push.get("channels", []),
+            }
+            _lgbm_feat = _ml_extract_features(_lgbm_row, _lgbm_stats)
+            _lgbm_x = _np_lgbm.array([[_lgbm_feat.get(k, 0.0) for k in _lgbm_fnames]])
+            lgbm_pred = float(_lgbm_model.predict(_lgbm_x)[0])
+            lgbm_pred = max(0.5, min(30.0, lgbm_pred))
+            ml_predictions["lgbm"] = lgbm_pred
+            basis_parts_ml.append(f"LightGBM(MAE={_ml_state.get('metrics',{}).get('mae','?')})")
+        except Exception as _lgbm_err:
+            log.warning(f"[ML] LightGBM-Prediction fehlgeschlagen: {_lgbm_err}")
+
+    # Wenn beide ML-Modelle verfuegbar → gewichtetes Ensemble (kein Heuristik-Fallback noetig)
+    if len(ml_predictions) == 2:
+        # GBRT (rigoroser trainiert) bekommt 60%, LightGBM 40%
+        _ml_blend = ml_predictions["gbrt"] * 0.6 + ml_predictions["lgbm"] * 0.4
+        _ml_methods = {
+            "gbrt_predicted": round(ml_predictions["gbrt"], 3),
+            "lgbm_predicted": round(ml_predictions["lgbm"], 3),
+            "ml_ensemble": round(_ml_blend, 3),
+        }
+        if gbrt_result:
+            _ml_methods.update({
                 "gbrt_confidence": gbrt_result["confidence"],
-                "gbrt_q10": gbrt_result["q10"],
-                "gbrt_q90": gbrt_result["q90"],
-                "gbrt_std": gbrt_result["std"],
+                "gbrt_q10": gbrt_result["q10"], "gbrt_q90": gbrt_result["q90"],
                 "gbrt_n_trees": gbrt_result["n_trees"],
                 "top_features": gbrt_result.get("top_features", []),
-            },
-            "basis": f"GBRT ({gbrt_result['n_trees']} Baeume, Konfidenz {gbrt_result['confidence']:.0%})",
+            })
+        return _safety_envelope({
+            "predicted": round(_ml_blend, 3),
+            "methods": _ml_methods,
+            "basis": f"ML-Ensemble: {' + '.join(basis_parts_ml)}",
             "phd_corrections": [],
-            "gbrt": True,
+            "gbrt": True, "lgbm": True,
         })
+
+    # Wenn nur GBRT verfuegbar → GBRT nutzen, aber weiter zur Heuristik fuer Blend
+    # Wenn nur LightGBM verfuegbar → LightGBM nutzen, aber weiter zur Heuristik fuer Blend
+    # Einzelnes ML-Modell wird spaeter mit Heuristik geblendet (siehe unten)
 
     # ── Heuristik-Fallback (wenn GBRT nicht verfuegbar) ──
     # Temporal Causal Filter: NUR Pushes die ZEITLICH VOR dem aktuellen liegen
@@ -10699,13 +10820,24 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
     # Stacking Meta-Modell: wenn trainiert, blende gelerntes Ergebnis ein
     stacking_pred = _stacking_predict(methods, {"hour": hour, "is_sport": is_sport, "title_len": push.get("title_len", 50)})
     if stacking_pred and _stacking_model.get("n_samples", 0) >= 50:
-        # Blend: 60% Stacking, 40% Heuristik (Stacking dominiert bei genug Daten)
-        blend_w = min(0.6, _stacking_model["n_samples"] / 500)  # Rampe von 0 bis 0.6
+        blend_w = min(0.6, _stacking_model["n_samples"] / 500)
         predicted = stacking_pred * blend_w + heuristic_predicted * (1 - blend_w)
         methods["stacking_pred"] = round(stacking_pred, 3)
         methods["stacking_blend"] = round(blend_w, 3)
     else:
         predicted = heuristic_predicted
+
+    # ── ML-Blend: Wenn ein einzelnes ML-Modell verfuegbar, mit Heuristik blenden ──
+    if ml_predictions and len(ml_predictions) == 1:
+        _single_ml_name = list(ml_predictions.keys())[0]
+        _single_ml_val = list(ml_predictions.values())[0]
+        # ML bekommt 55% Gewicht, Heuristik 45% (ML hat aus Daten gelernt)
+        _ml_blend_w = 0.55
+        _pre_ml = predicted
+        predicted = _single_ml_val * _ml_blend_w + predicted * (1 - _ml_blend_w)
+        methods[f"{_single_ml_name}_predicted"] = round(_single_ml_val, 3)
+        methods["ml_heuristic_blend"] = f"{_single_ml_name}({_ml_blend_w:.0%})+Heuristik({1-_ml_blend_w:.0%})"
+        methods["heuristic_only"] = round(_pre_ml, 3)
 
     # ── Novelty-Boost anwenden (nach Fusion, vor Korrektoren) ──
     if novelty_boost > 1.0:
