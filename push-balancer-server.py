@@ -863,24 +863,13 @@ def _gbrt_extract_features(push, history_stats, state=None):
         feat["push_rate_3h"] = 0.0
         feat["saturation_score"] = 0.0
 
-    # ── Days since similar push (Jaccard > 0.3) ─────────────────────────
-    days_since_similar = 365.0  # Default: kein ähnlicher Push
-    push_timeline = history_stats.get("push_timeline", [])
-    if push_timeline and ts > 0 and words:
-        title_words_set = set(w.lower() for w in words if len(w) > 2)
-        for pts, por, pcat in reversed(push_timeline):
-            if pts >= ts:
-                continue
-            ptitle = ""
-            # Timeline enthält (ts, or, cat) — Titel nicht verfügbar
-            # Verwende Cat-Match + zeitliche Nähe als Proxy
-            if pcat == cat_lower:
-                age_days = (ts - pts) / 86400.0
-                if age_days < days_since_similar:
-                    days_since_similar = age_days
-                if days_since_similar < 1.0:
-                    break  # Genug — sehr kürzlich
-    feat["days_since_similar"] = min(365.0, days_since_similar)
+    # ── Days since similar push (gleiche Kategorie als Proxy) ───────────
+    # Nutze last_push_ts_by_cat aus history_stats (O(1) statt O(n) Timeline-Scan)
+    last_cat_ts = history_stats.get("last_push_ts_by_cat", {}).get(cat_lower, 0)
+    if last_cat_ts > 0 and ts > last_cat_ts:
+        feat["days_since_similar"] = min(365.0, (ts - last_cat_ts) / 86400.0)
+    else:
+        feat["days_since_similar"] = 365.0
 
     # ── OR-Volatilität der letzten 7 Tage (Marktvolatilität) ──────────
     or_volatility_7d = 0.0
@@ -3783,8 +3772,8 @@ def _ml_extract_features(row, stats):
 
     # Breaking-Signale
     breaking_score = 0
-    if "++" in title: breaking_score += 1
     if "+++" in title: breaking_score += 2
+    elif "++" in title: breaking_score += 1
     if "|" in title: breaking_score += 1
     if "EXKLUSIV" in title.upper() or "BREAKING" in title.upper(): breaking_score += 2
     if is_eil: breaking_score += 2
@@ -7884,9 +7873,11 @@ def _stacking_predict(methods_detail, features):
     method_names = _stacking_model.get("method_names", [])
     mvec = []
     for mname in method_names:
-        mdata = methods_detail.get(mname, {})
-        if isinstance(mdata, dict):
-            mvec.append(mdata.get("or", 0) or 0)
+        mdata = methods_detail.get(mname, 0)
+        if isinstance(mdata, (int, float)):
+            mvec.append(float(mdata))
+        elif isinstance(mdata, dict):
+            mvec.append(float(mdata.get("or", 0) or 0))
         else:
             mvec.append(0)
     mvec.append(features.get("hour", 12))
@@ -10323,7 +10314,7 @@ def _server_predict_or(push, push_data, state):
     push_cat = push.get("cat", "News")
     push_hour = push.get("hour", 12)
     push_ts = push.get("ts_num", 0)
-    push_weekday = datetime.datetime.fromtimestamp(push_ts).weekday() if push_ts > 0 else 0
+    push_weekday = datetime.datetime.fromtimestamp(push_ts).weekday() if push_ts > 0 else datetime.datetime.now().weekday()
 
     methods = {}
 
@@ -10332,8 +10323,8 @@ def _server_predict_or(push, push_data, state):
     breaking_signals = 0
     # 🔴/🚨 Emojis: Daten zeigen OR nur 4.4% bei 🔴 (unter Durchschnitt!) → kein Boost
     if "🔴" in push_title_raw or "🚨" in push_title_raw: breaking_signals += 0  # Bewusst kein Boost
-    if "++" in push_title_raw: breaking_signals += 1
     if "+++" in push_title_raw: breaking_signals += 2
+    elif "++" in push_title_raw: breaking_signals += 1
     if "|" in push_title_raw: breaking_signals += 1  # Pipe = Multi-Story = wichtig
     if "EXKLUSIV" in push_title_raw.upper() or "BREAKING" in push_title_raw.upper(): breaking_signals += 2
     if push.get("is_eilmeldung"): breaking_signals += 2
@@ -10382,7 +10373,7 @@ def _server_predict_or(push, push_data, state):
                 if jaccard > max_jaccard:
                     max_jaccard = jaccard
                 if jaccard > 0.1:
-                    sim_scores.append((jaccard, p["or"]))
+                    sim_scores.append((jaccard, p["or"], p.get("title", "")))
         if sim_scores:
             sim_scores.sort(key=lambda x: -x[0])
             top_n = sim_scores[:min(10, len(sim_scores))]
@@ -10668,8 +10659,8 @@ def _server_predict_or(push, push_data, state):
             # Top-5 aehnliche Pushes als Kontext
             _m8_examples = []
             if sim_scores:
-                _m8_sorted = sorted(sim_scores, key=lambda x: x[1], reverse=True)[:5]
-                for _or, _sim, _title in _m8_sorted:
+                _m8_sorted = sorted(sim_scores, key=lambda x: x[0], reverse=True)[:5]
+                for _sim, _or, _title in _m8_sorted:
                     _m8_examples.append(f"  - \"{_title}\" → OR {_or:.1f}% (Aehnlichkeit {_sim:.0%})")
 
             # Competitor-Kontext (aktuelle Top-Themen der Konkurrenz)
@@ -10719,7 +10710,7 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
             _m8_text = _m8_resp.choices[0].message.content.strip()
             # JSON aus Antwort extrahieren
             import json as _json_m8
-            _m8_json_match = re.search(r'\{[^}]+\}', _m8_text)
+            _m8_json_match = re.search(r'\{.*\}', _m8_text, re.DOTALL)
             if _m8_json_match:
                 _m8_data = _json_m8.loads(_m8_json_match.group())
                 _m8_or = float(_m8_data.get("or_prognose", 0))
@@ -10778,10 +10769,10 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
     _m2_data_conf = min(params.get("m2_conf_cap", 1.10), len(kw_scores) / 4 if kw_scores else 0.1) if m2 != global_avg else 0.1
     _m3_data_conf = min(params.get("m3_conf_cap", 1.10), len(entity_ors) / 6 if entity_ors else 0.1) if m3 != global_avg else 0.1
     _m4_data_conf = min(params.get("m4_conf_cap", 0.90), cat_counts / 10 if cat_counts > 0 else 0.1)
-    _m5_data_conf = params.get("m8_conf_cap", 0.90) if m5 != global_avg else 0.1
+    _m5_data_conf = params.get("m5_conf_cap", 0.85) if m5 != global_avg else 0.1
     _m6_data_conf = min(params.get("m6_phd_cap", 0.80), len(phd_details) / 3 if phd_details else 0.1)
-    _m7_data_conf = params.get("m7_context_cap", 0.60) if len(ctx_adjustments) > 0 else 0.15
-    _m8_data_conf = 1.30 if m8 != global_avg else 0.0  # GPT-Scoring: hoechstes Gewicht wenn verfuegbar
+    _m7_data_conf = params.get("m7_conf_cap", 1.00) if len(ctx_adjustments) > 0 else 0.15
+    _m8_data_conf = 1.00 if m8 != global_avg else 0.0  # GPT-Scoring: hohes Gewicht, aber nicht ueber 1.0
     _m9_data_conf = 0.50 if m9 != global_avg else 0.0   # Competitor-Overlap
     method_list = [
         ("similarity", m1, _m1_data_conf),
@@ -10818,7 +10809,8 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
     heuristic_predicted = weighted_sum / weight_sum if weight_sum > 0 else global_avg
 
     # Stacking Meta-Modell: wenn trainiert, blende gelerntes Ergebnis ein
-    stacking_pred = _stacking_predict(methods, {"hour": hour, "is_sport": is_sport, "title_len": push.get("title_len", 50)})
+    is_sport = push_cat.lower() in ("sport", "fussball", "bundesliga")
+    stacking_pred = _stacking_predict(methods, {"hour": push_hour, "is_sport": is_sport, "title_len": push.get("title_len", len(push.get("title", "")))})
     if stacking_pred and _stacking_model.get("n_samples", 0) >= 50:
         blend_w = min(0.6, _stacking_model["n_samples"] / 500)
         predicted = stacking_pred * blend_w + heuristic_predicted * (1 - blend_w)
@@ -10845,7 +10837,8 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
         methods["pre_novelty"] = round(predicted / novelty_boost, 3)
 
     # ── Intensity-Boost: Emotionale Intensitaet hebt den Score ──
-    if intensity_score > 0.2:
+    # Nur anwenden wenn novelty_boost nicht schon intensity_score eingerechnet hat
+    if intensity_score > 0.2 and novelty_boost <= 1.0:
         intensity_factor = 1.0 + intensity_score * 0.45  # bis +45% bei maximaler Intensitaet (war 25%)
         predicted *= intensity_factor
         methods["intensity_factor"] = round(intensity_factor, 3)
@@ -10869,10 +10862,10 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
             # Fallback: aus _today_push_count den Tagesstand nehmen
             push_day = datetime.datetime.fromtimestamp(push_ts).strftime("%Y-%m-%d") if push_ts > 0 else ""
             today_count = state.get("_today_push_count", {}).get(push_day, 0)
-        if today_count > 3:
+        if today_count > 2:
             alpha = fatigue["alpha"]
-            penalty = max(0.8, 1.0 - alpha * math.log(max(1, today_count)))
-            damp = params.get("phd_fatigue_damp", 0.15)
+            penalty = max(0.75, 1.0 - alpha * 1.5 * math.log(max(1, today_count)))
+            damp = params.get("phd_fatigue_damp", 0.25)
             fatigue_adj = (1.0 - damp) + damp * penalty
             predicted *= fatigue_adj
             corrections_applied.append(f"fatigue({today_count}th)={fatigue_adj:.3f}")
@@ -10958,12 +10951,12 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
     if corrections_applied:
         basis_parts.append(f"Korr({len(corrections_applied)})")
 
-    return {
+    return _safety_envelope({
         "predicted": round(predicted, 3),
         "methods": methods,
         "basis": ", ".join(basis_parts),
         "phd_corrections": corrections_applied,
-    }
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
