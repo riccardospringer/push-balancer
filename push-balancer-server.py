@@ -470,6 +470,9 @@ _GBRT_SHAP_LABELS = {
     "cat_or_std_7d": "Ressort OR-Volatilität (7d)", "cat_or_std_30d": "Ressort OR-Volatilität (30d)",
     "hour_or_std_7d": "Stunden OR-Volatilität (7d)", "hour_or_std_30d": "Stunden OR-Volatilität (30d)",
     "weekday_hour_avg_or": "Wochentag×Stunde Ø OR",
+    # Neue Features
+    "hour_squared": "Stunde² (quadrat. Effekt)", "title_sentiment": "Titel-Sentiment",
+    "days_since_similar": "Tage seit ähnl. Push", "or_volatility_7d": "OR-Volatilität (7d)",
 }
 
 
@@ -535,6 +538,16 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["emotional_categories"] = float(emo_cats_hit)
     feat["intensity_score"] = min(1.0, total_emo * 0.15 * (1.0 + max(0, emo_cats_hit - 1) * 0.3))
 
+    # Title Sentiment: Ratio negativer vs positiver Signalwörter
+    _neg_words = {"tot", "tod", "sterben", "mord", "crash", "absturz", "krieg", "terror",
+                  "unfall", "opfer", "skandal", "gefahr", "alarm", "notfall", "warnung"}
+    _pos_words = {"rekord", "sensation", "historisch", "erstmals", "gewonnen", "sieg",
+                  "gerettet", "durchbruch", "freude", "feier", "gold", "triumph", "held"}
+    neg_count = sum(1 for w in _neg_words if w in title_lower)
+    pos_count = sum(1 for w in _pos_words if w in title_lower)
+    total_sent = neg_count + pos_count
+    feat["title_sentiment"] = (pos_count - neg_count) / max(1, total_sent)  # -1.0 bis +1.0
+
     # Breaking Signals
     breaking = 0
     if "++" in title: breaking += 1
@@ -572,6 +585,7 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["is_morning_commute"] = 1.0 if 6 <= hour <= 9 else 0.0
     feat["is_late_night"] = 1.0 if hour < 6 or hour >= 23 else 0.0
     feat["is_lunch"] = 1.0 if 11 <= hour <= 13 else 0.0
+    feat["hour_squared"] = float(hour * hour)  # Quadratischer Tageszeit-Effekt
 
     # Minutes since last push same category (Fatigue-Signal)
     last_same_cat_ts = history_stats.get("last_push_ts_by_cat", {}).get(cat_lower, 0)
@@ -631,7 +645,7 @@ def _gbrt_extract_features(push, history_stats, state=None):
 
     # ── Historical-Features (~20, Bayesian-smoothed) ─────────────────────
     global_n = history_stats.get("global_n", 100)
-    bayesian_prior_n = 30  # Shrinkage-Staerke
+    bayesian_prior_n = 10  # Shrinkage-Staerke (reduziert von 30: weniger Regression zum Mittelwert)
 
     def _bayesian_avg(group_avg, group_n, prior=global_avg, prior_n=bayesian_prior_n):
         """Bayesian Shrinkage: gewichteter Mix aus Gruppen-Durchschnitt und Prior."""
@@ -848,6 +862,38 @@ def _gbrt_extract_features(push, history_stats, state=None):
         feat["mins_since_last_push"] = 1440.0
         feat["push_rate_3h"] = 0.0
         feat["saturation_score"] = 0.0
+
+    # ── Days since similar push (Jaccard > 0.3) ─────────────────────────
+    days_since_similar = 365.0  # Default: kein ähnlicher Push
+    push_timeline = history_stats.get("push_timeline", [])
+    if push_timeline and ts > 0 and words:
+        title_words_set = set(w.lower() for w in words if len(w) > 2)
+        for pts, por, pcat in reversed(push_timeline):
+            if pts >= ts:
+                continue
+            ptitle = ""
+            # Timeline enthält (ts, or, cat) — Titel nicht verfügbar
+            # Verwende Cat-Match + zeitliche Nähe als Proxy
+            if pcat == cat_lower:
+                age_days = (ts - pts) / 86400.0
+                if age_days < days_since_similar:
+                    days_since_similar = age_days
+                if days_since_similar < 1.0:
+                    break  # Genug — sehr kürzlich
+    feat["days_since_similar"] = min(365.0, days_since_similar)
+
+    # ── OR-Volatilität der letzten 7 Tage (Marktvolatilität) ──────────
+    or_volatility_7d = 0.0
+    push_timeline_ts = history_stats.get("push_timeline_ts", [])
+    if push_timeline and push_timeline_ts and ts > 0:
+        cutoff_7d_ts = ts - 7 * 86400
+        start_idx = bisect_left(push_timeline_ts, cutoff_7d_ts)
+        end_idx = bisect_left(push_timeline_ts, ts)
+        recent_ors = [push_timeline[i][1] for i in range(start_idx, min(end_idx, len(push_timeline)))]
+        if len(recent_ors) > 2:
+            or_mean = sum(recent_ors) / len(recent_ors)
+            or_volatility_7d = math.sqrt(sum((o - or_mean) ** 2 for o in recent_ors) / len(recent_ors))
+    feat["or_volatility_7d"] = or_volatility_7d
 
     # ── Interaction-Features (~5) ────────────────────────────────────────
     feat["eilmeldung_x_primetime"] = feat["is_eilmeldung"] * feat["is_prime_time"]
@@ -1337,7 +1383,9 @@ class GBRTModel:
         feat_gain = defaultdict(float)
 
         best_val_mae = float('inf')
+        best_n_trees = 0
         rounds_no_improve = 0
+        early_stopped = False
         rng = random.Random(42)
         delta = self.huber_delta
 
@@ -1387,12 +1435,22 @@ class GBRTModel:
                                   for i in range(len(val_y))) / len(val_y)
                 if val_mae < best_val_mae - 0.001:
                     best_val_mae = val_mae
+                    best_n_trees = t + 1
                     rounds_no_improve = 0
                 else:
                     rounds_no_improve += 1
                 if rounds_no_improve >= 20:
-                    log.info(f"[GBRT] Early stopping nach {t+1} Baeumen (val_mae={val_mae:.4f})")
+                    early_stopped = True
+                    log.info(f"[GBRT] Early stopping bei Baum {t+1}, "
+                             f"beste Stelle: Baum {best_n_trees} (val_mae={best_val_mae:.4f})")
+                    # Bäume nach dem besten Punkt entfernen
+                    if best_n_trees > 0 and best_n_trees < len(self.trees):
+                        self.trees = self.trees[:best_n_trees]
                     break
+
+        # Early Stopping Attribute speichern
+        self.best_n_trees = best_n_trees if best_n_trees > 0 else len(self.trees)
+        self.early_stopped = early_stopped
 
         # Train-Metriken im Original-Raum
         if self.log_target:
@@ -1417,6 +1475,9 @@ class GBRTModel:
             "r2": round(r2, 4),
             "r2_residual": round(r2, 4),
             "n_trees_used": len(self.trees),
+            "n_trees_requested": self.n_trees,
+            "early_stopped": early_stopped,
+            "early_stopped_at": self.best_n_trees if early_stopped else None,
             "n_samples": n,
             "loss": self.loss,
             "log_target": self.log_target,
@@ -1587,6 +1648,10 @@ class GBRTModel:
             d["conformal_radius"] = round(self.conformal_radius, 6)
         if hasattr(self, "blend_alpha"):
             d["blend_alpha"] = round(self.blend_alpha, 4)
+        if hasattr(self, "best_n_trees"):
+            d["best_n_trees"] = self.best_n_trees
+        if hasattr(self, "early_stopped"):
+            d["early_stopped"] = self.early_stopped
         return d
 
     @staticmethod
@@ -1603,6 +1668,10 @@ class GBRTModel:
             model.conformal_radius = data["conformal_radius"]
         if "blend_alpha" in data:
             model.blend_alpha = data["blend_alpha"]
+        if "best_n_trees" in data:
+            model.best_n_trees = data["best_n_trees"]
+        if "early_stopped" in data:
+            model.early_stopped = data["early_stopped"]
         model.trees = [_GBRTTree.from_dict(td) for td in data["trees"]]
         model.train_metrics = data.get("metrics", {})
         # Feature Importance aus gespeichertem JSON wiederherstellen
@@ -1729,7 +1798,8 @@ class IsotonicCalibrator:
 
 # ── GBRT Global State ───────────────────────────────────────────────────
 
-_gbrt_model = None        # Haupt-Modell (Median/Mean)
+_gbrt_model = None        # Haupt-Modell (Residual: OR - Baseline)
+_gbrt_model_direct = None # Direct-Modell (lernt OR direkt, ohne Baseline-Subtraktion)
 _gbrt_model_q10 = None    # Quantile-Modell p10
 _gbrt_model_q90 = None    # Quantile-Modell p90
 _gbrt_calibrator = None   # Isotonische Kalibrierung
@@ -1739,6 +1809,8 @@ _gbrt_train_ts = 0        # Letzter Training-Zeitpunkt
 _gbrt_history_stats = {}  # Cached History Stats
 _gbrt_cat_hour_baselines = {}  # Cat×Hour Baselines fuer Residual-Modeling
 _gbrt_global_train_avg = 4.77  # Fallback Global Average
+_gbrt_ensemble_weights = {"residual": 0.5, "direct": 0.5}  # Gewichte Dual-Modell
+_gbrt_model_type = "residual"  # "residual", "direct", oder "ensemble"
 
 GBRT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gbrt_model.json")
 
@@ -2012,8 +2084,9 @@ def _gbrt_maybe_promote_or_challenge(model, model_q10, model_q90, calibrator,
                                        experiment_id, test_mae, bootstrap_ci,
                                        baselines, quantile_coverage):
     """Prueft Promotion Gates und startet ggf. A/B Test."""
-    global _gbrt_model, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
+    global _gbrt_model, _gbrt_model_direct, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
     global _gbrt_feature_names, _gbrt_train_ts, _gbrt_history_stats
+    global _gbrt_ensemble_weights, _gbrt_model_type
 
     passed, gates, reason = _validate_promotion_gates(
         model, test_mae, bootstrap_ci, baselines, quantile_coverage, experiment_id)
@@ -2040,6 +2113,7 @@ def _gbrt_maybe_promote_or_challenge(model, model_q10, model_q90, calibrator,
                 # Kein Champion vorhanden — neues Modell direkt promoten
                 log.info(f"[A/B] Kein Champion vorhanden, {experiment_id} wird direkt promoted")
                 _gbrt_model = model
+                _gbrt_model_direct = model_direct if 'model_direct' in dir() else None
                 _gbrt_model_q10 = model_q10
                 _gbrt_model_q90 = model_q90
                 _gbrt_calibrator = calibrator
@@ -2498,8 +2572,9 @@ def _gbrt_train(pushes=None):
     - Feature Importance-basiertes Pruning
     - Optionale Hyperparameter-Optimierung via Optuna
     """
-    global _gbrt_model, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
+    global _gbrt_model, _gbrt_model_direct, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
     global _gbrt_feature_names, _gbrt_train_ts, _gbrt_history_stats
+    global _gbrt_ensemble_weights, _gbrt_model_type
 
     t0 = time.time()
 
@@ -2563,8 +2638,8 @@ def _gbrt_train(pushes=None):
         y_fold_test = [p.get("or", 0) for p in fold_test]
 
         # Trainiere Fold-Modell
-        fold_model = GBRTModel(n_trees=300, max_depth=6, learning_rate=0.08,
-                               min_samples_leaf=8, subsample=0.85, n_bins=255,
+        fold_model = GBRTModel(n_trees=150, max_depth=5, learning_rate=0.08,
+                               min_samples_leaf=10, subsample=0.85, n_bins=255,
                                loss="huber", huber_delta=1.5, log_target=True)
         fold_model.fit(X_fold_train, y_fold_train, feature_names=f_names)
 
@@ -2694,8 +2769,8 @@ def _gbrt_train(pushes=None):
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 3: Optuna Hyperparameter-Optimierung (wenn verfuegbar)
     # ══════════════════════════════════════════════════════════════════════
-    best_params = {"n_trees": 300, "max_depth": 6, "learning_rate": 0.08,
-                   "min_samples_leaf": 8, "subsample": 0.85, "n_bins": 255}
+    best_params = {"n_trees": 150, "max_depth": 4, "learning_rate": 0.03,
+                   "min_samples_leaf": 20, "subsample": 0.7, "n_bins": 255}
     tuning_info = {"method": "default", "n_trials": 0}
 
     try:
@@ -2703,24 +2778,27 @@ def _gbrt_train(pushes=None):
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
         def _optuna_objective(trial):
-            p_n_trees = trial.suggest_int("n_trees", 100, 400, step=50)
-            p_max_depth = trial.suggest_int("max_depth", 3, 7)
-            p_lr = trial.suggest_float("learning_rate", 0.01, 0.15, log=True)
-            p_min_leaf = trial.suggest_int("min_samples_leaf", 5, 30)
-            p_subsample = trial.suggest_float("subsample", 0.6, 1.0)
+            p_n_trees = trial.suggest_int("n_trees", 80, 300, step=20)
+            p_max_depth = trial.suggest_int("max_depth", 3, 5)
+            p_lr = trial.suggest_float("learning_rate", 0.01, 0.08, log=True)
+            p_min_leaf = trial.suggest_int("min_samples_leaf", 15, 50)
+            p_subsample = trial.suggest_float("subsample", 0.5, 0.8)
+            p_huber_delta = trial.suggest_float("huber_delta", 0.5, 3.0)
 
             m = GBRTModel(n_trees=p_n_trees, max_depth=p_max_depth,
                           learning_rate=p_lr, min_samples_leaf=p_min_leaf,
                           subsample=p_subsample, n_bins=255,
-                          loss="huber", huber_delta=1.5, log_target=True)
+                          loss="huber", huber_delta=p_huber_delta, log_target=False)
             m.fit(X_train, y_train, feature_names=feature_names,
                   val_X=X_val, val_y=y_val, sample_weights=train_weights)
+            # Val-MAE im OR-Raum (Residuum + Baseline)
             preds = m.predict(X_val)
-            mae = sum(abs(preds[j] - y_val[j]) for j in range(len(y_val))) / len(y_val)
+            mae = sum(abs((preds[j] + val_baselines[j]) - y_val_orig[j])
+                       for j in range(len(y_val_orig))) / len(y_val_orig)
             return mae
 
         study = optuna.create_study(direction="minimize")
-        study.optimize(_optuna_objective, n_trials=30, timeout=120)
+        study.optimize(_optuna_objective, n_trials=60, timeout=300)
         best_params.update(study.best_params)
         best_params["n_bins"] = 255
         tuning_info = {
@@ -2742,7 +2820,8 @@ def _gbrt_train(pushes=None):
                       learning_rate=best_params["learning_rate"],
                       min_samples_leaf=best_params["min_samples_leaf"],
                       subsample=best_params["subsample"], n_bins=best_params["n_bins"],
-                      loss="huber", huber_delta=1.5, log_target=True)
+                      loss="huber", huber_delta=best_params.get("huber_delta", 1.5),
+                      log_target=False)
     model.fit(X_train, y_train, feature_names=feature_names,
               val_X=X_val, val_y=y_val, sample_weights=train_weights)
 
@@ -2777,7 +2856,9 @@ def _gbrt_train(pushes=None):
                                      min_samples_leaf=best_params["min_samples_leaf"],
                                      subsample=best_params["subsample"],
                                      n_bins=best_params["n_bins"],
-                                     loss="huber", huber_delta=1.5, log_target=True)
+                                     loss="huber",
+                                     huber_delta=best_params.get("huber_delta", 1.5),
+                                     log_target=False)
             model_pruned.fit(X_train_pruned, y_train, feature_names=pruned_feature_names,
                              val_X=X_val_pruned, val_y=y_val, sample_weights=train_weights)
 
@@ -2930,6 +3011,103 @@ def _gbrt_train(pushes=None):
     log.info(f"[GBRT] Blending: α={best_blend_alpha:.2f}, "
              f"MAE rein={cal_test_mae:.4f} → blended={blended_test_mae:.4f}")
 
+    # ══════════════════════════════════════════════════════════════════════
+    # PHASE 6: Direct-Modell (lernt OR direkt, ohne Baseline-Subtraktion)
+    # ══════════════════════════════════════════════════════════════════════
+    model_direct = None
+    ensemble_weights = {"residual": 1.0, "direct": 0.0}
+    chosen_model_type = "residual"
+
+    try:
+        log.info("[GBRT] Trainiere Direct-Modell (OR ohne Baseline-Subtraktion)...")
+        direct_model = GBRTModel(
+            n_trees=best_params["n_trees"], max_depth=best_params["max_depth"],
+            learning_rate=best_params["learning_rate"],
+            min_samples_leaf=best_params["min_samples_leaf"],
+            subsample=best_params["subsample"], n_bins=best_params["n_bins"],
+            loss="huber", huber_delta=best_params.get("huber_delta", 1.5),
+            log_target=False)
+        # Direct-Modell lernt y_train_orig (echte OR-Werte), nicht Residuen
+        direct_model.fit(X_train, y_train_orig, feature_names=feature_names,
+                         val_X=X_val, val_y=y_val_orig, sample_weights=train_weights)
+
+        # Direct-Modell auf Test-Set evaluieren
+        direct_test_preds = direct_model.predict(X_test)
+        direct_test_mae = sum(abs(direct_test_preds[i] - y_test_orig[i])
+                              for i in range(test_n)) / test_n if test_n else 999
+        direct_test_rmse = math.sqrt(sum((direct_test_preds[i] - y_test_orig[i]) ** 2
+                                          for i in range(test_n)) / test_n) if test_n else 999
+        direct_ss_res = sum((y_test_orig[i] - direct_test_preds[i]) ** 2 for i in range(test_n))
+        direct_test_r2 = 1.0 - direct_ss_res / ss_tot if ss_tot > 0 else 0.0
+
+        log.info(f"[GBRT] Direct-Modell: Test-MAE={direct_test_mae:.4f}, "
+                 f"R²={direct_test_r2:.3f}, Bäume={len(direct_model.trees)}")
+
+        # Vergleich: Residual vs Direct vs Ensemble
+        # Optimiere Ensemble-Gewicht auf Validation-Set
+        direct_val_preds = direct_model.predict(X_val)
+        residual_val_preds = [calibrator.calibrate(val_preds_or[i]) for i in range(len(val_preds_or))]
+
+        best_ens_w = 1.0  # w=1.0 → nur Residual, w=0.0 → nur Direct
+        best_ens_mae = float('inf')
+        for w_step in range(0, 21):
+            w = w_step / 20.0
+            ens_mae = sum(
+                abs((w * residual_val_preds[i] + (1 - w) * direct_val_preds[i]) - y_val_orig[i])
+                for i in range(len(y_val_orig))
+            ) / len(y_val_orig)
+            if ens_mae < best_ens_mae:
+                best_ens_mae = ens_mae
+                best_ens_w = w
+
+        # Ensemble auf Test-Set evaluieren
+        ens_test_preds = [
+            best_ens_w * cal_test_preds[i] + (1 - best_ens_w) * direct_test_preds[i]
+            for i in range(test_n)
+        ]
+        ens_test_mae = sum(abs(ens_test_preds[i] - y_test_orig[i])
+                           for i in range(test_n)) / test_n if test_n else 999
+
+        log.info(f"[GBRT] Dual-Modell-Vergleich: "
+                 f"Residual-MAE={test_mae:.4f}, Direct-MAE={direct_test_mae:.4f}, "
+                 f"Ensemble-MAE={ens_test_mae:.4f} (w_residual={best_ens_w:.2f})")
+
+        # Entscheidung: welches Modell?
+        best_mae = min(test_mae, direct_test_mae, ens_test_mae)
+        if best_mae == ens_test_mae and ens_test_mae < test_mae * 0.99:
+            # Ensemble ist mindestens 1% besser als Residual allein
+            model_direct = direct_model
+            ensemble_weights = {"residual": round(best_ens_w, 3),
+                                "direct": round(1 - best_ens_w, 3)}
+            chosen_model_type = "ensemble"
+            log.info(f"[GBRT] Ensemble gewählt: "
+                     f"w_residual={best_ens_w:.2f}, w_direct={1-best_ens_w:.2f}")
+        elif direct_test_mae < test_mae * 0.98:
+            # Direct ist mindestens 2% besser als Residual
+            model_direct = direct_model
+            ensemble_weights = {"residual": 0.0, "direct": 1.0}
+            chosen_model_type = "direct"
+            log.info(f"[GBRT] Direct-Modell gewählt (MAE {direct_test_mae:.4f} < {test_mae:.4f})")
+        else:
+            # Residual bleibt Champion
+            chosen_model_type = "residual"
+            log.info(f"[GBRT] Residual-Modell bleibt Champion")
+
+        model.train_metrics["direct_model"] = {
+            "test_mae": round(direct_test_mae, 4),
+            "test_rmse": round(direct_test_rmse, 4),
+            "test_r2": round(direct_test_r2, 4),
+            "n_trees": len(direct_model.trees),
+            "ensemble_weight": round(1 - best_ens_w, 3),
+            "ensemble_test_mae": round(ens_test_mae, 4),
+        }
+        model.train_metrics["model_type"] = chosen_model_type
+        model.train_metrics["ensemble_weights"] = ensemble_weights
+    except Exception as direct_err:
+        log.warning(f"[GBRT] Direct-Modell-Training fehlgeschlagen: {direct_err}")
+        chosen_model_type = "residual"
+        model.train_metrics["model_type"] = "residual"
+
     elapsed = time.time() - t0
 
     # ── Experiment Tracking ──
@@ -2960,21 +3138,25 @@ def _gbrt_train(pushes=None):
         with _gbrt_lock:
             if _gbrt_model is None:
                 _gbrt_model = model
+                _gbrt_model_direct = model_direct
                 _gbrt_model_q10 = model_q10
                 _gbrt_model_q90 = model_q90
                 _gbrt_calibrator = calibrator
                 _gbrt_feature_names = feature_names
                 _gbrt_train_ts = int(time.time())
                 _gbrt_history_stats = new_history_stats
+                _gbrt_ensemble_weights = ensemble_weights
+                _gbrt_model_type = chosen_model_type
                 _update_cat_hour_baselines(train_data)
                 _mark_experiment_promoted(experiment_id)
                 promoted = True
-                log.info(f"[GBRT] Erster Lauf — Modell direkt promoted")
+                log.info(f"[GBRT] Erster Lauf — Modell direkt promoted (Typ: {chosen_model_type})")
 
     # Modell als JSON speichern (immer, auch wenn nicht promoted)
     try:
         model_json = {
             "model": model.to_json(),
+            "model_direct": model_direct.to_json() if model_direct else None,
             "model_q10": model_q10.to_json() if model_q10 else None,
             "model_q90": model_q90.to_json() if model_q90 else None,
             "calibrator": calibrator.to_dict(),
@@ -2985,6 +3167,8 @@ def _gbrt_train(pushes=None):
             "n_pushes": len(valid),
             "metrics": model.train_metrics,
             "experiment_id": experiment_id,
+            "model_type": chosen_model_type,
+            "ensemble_weights": ensemble_weights,
         }
         with open(GBRT_MODEL_PATH, "w") as f:
             json.dump(model_json, f)
@@ -3010,11 +3194,14 @@ def _gbrt_predict(push, state=None):
     """
     with _gbrt_lock:
         model = _gbrt_model
+        model_direct = _gbrt_model_direct
         model_q10 = _gbrt_model_q10
         model_q90 = _gbrt_model_q90
         calibrator = _gbrt_calibrator
         feature_names = _gbrt_feature_names
         history_stats = _gbrt_history_stats
+        ens_weights = dict(_gbrt_ensemble_weights)
+        model_type = _gbrt_model_type
 
     if model is None:
         return None
@@ -3029,19 +3216,28 @@ def _gbrt_predict(push, state=None):
     baseline_key = f"{cat_lower}_{push_hour}"
     cat_hour_baseline = _gbrt_cat_hour_baselines.get(baseline_key, _gbrt_global_train_avg)
 
-    # Hauptprediction (Modell predicted Residuum) + Baseline
+    # Residual-Prediction (Modell predicted Residuum) + Baseline
     result = model.predict_with_uncertainty(x)
-    predicted = result["predicted"] + cat_hour_baseline
+    residual_predicted = result["predicted"] + cat_hour_baseline
 
     # Kalibrierung anwenden (arbeitet im OR-Raum)
     if calibrator:
-        predicted = calibrator.calibrate(predicted)
-        predicted = max(0.01, predicted)
+        residual_predicted = calibrator.calibrate(residual_predicted)
+        residual_predicted = max(0.01, residual_predicted)
 
     # Blending: α × GBRT + (1-α) × Cat×Hour-Baseline
     blend_alpha = getattr(model, "blend_alpha", 1.0)
     if blend_alpha < 1.0:
-        predicted = blend_alpha * predicted + (1.0 - blend_alpha) * cat_hour_baseline
+        residual_predicted = blend_alpha * residual_predicted + (1.0 - blend_alpha) * cat_hour_baseline
+
+    # Dual-Modell: Ensemble aus Residual + Direct
+    if model_direct and model_type in ("ensemble", "direct"):
+        direct_predicted = model_direct.predict_one(x)
+        w_res = ens_weights.get("residual", 0.5)
+        w_dir = ens_weights.get("direct", 0.5)
+        predicted = w_res * residual_predicted + w_dir * direct_predicted
+    else:
+        predicted = residual_predicted
 
     # Quantile via Konforme Prediction
     c_radius = getattr(model, "conformal_radius", None)
@@ -3054,8 +3250,8 @@ def _gbrt_predict(push, state=None):
         q10 = max(0.01, min(q10, predicted))
         q90 = max(predicted, q90)
     else:
-        q10 = max(0.01, predicted * 0.6)
-        q90 = predicted * 1.5
+        q10 = max(0.01, predicted * 0.45)  # Breiteres Band (war 0.6)
+        q90 = predicted * 1.8              # Breiteres Band (war 1.5)
 
     # A/B Shadow Prediction (nur Challenger, Ergebnis nicht angezeigt)
     challenger_pred = _ab_shadow_predict(push, state)
@@ -3101,8 +3297,9 @@ def _gbrt_predict(push, state=None):
         "std": result["std"],
         "q10": round(q10, 3),
         "q90": round(q90, 3),
-        "model_type": "GBRT",
-        "n_trees": len(model.trees),
+        "model_type": f"GBRT-{model_type}" if model_type != "residual" else "GBRT",
+        "model_subtype": model_type,
+        "n_trees": len(model.trees) + (len(model_direct.trees) if model_direct else 0),
         "features": {k: round(v, 4) for k, v in feat.items()},
         "top_features": top_features,
         "shap_explanation": shap_explanation,
@@ -3124,8 +3321,8 @@ def _gbrt_predict(push, state=None):
 
 def _gbrt_load_model():
     """Laedt ein gespeichertes GBRT-Modell von Disk."""
-    global _gbrt_model, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
-    global _gbrt_feature_names, _gbrt_train_ts
+    global _gbrt_model, _gbrt_model_direct, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
+    global _gbrt_feature_names, _gbrt_train_ts, _gbrt_ensemble_weights, _gbrt_model_type
 
     if not os.path.exists(GBRT_MODEL_PATH):
         return False
@@ -3134,6 +3331,10 @@ def _gbrt_load_model():
             data = json.load(f)
         with _gbrt_lock:
             _gbrt_model = GBRTModel.from_json(data["model"])
+            if data.get("model_direct"):
+                _gbrt_model_direct = GBRTModel.from_json(data["model_direct"])
+            else:
+                _gbrt_model_direct = None
             if data.get("model_q10"):
                 _gbrt_model_q10 = GBRTModel.from_json(data["model_q10"])
             if data.get("model_q90"):
@@ -3142,13 +3343,16 @@ def _gbrt_load_model():
                 _gbrt_calibrator = IsotonicCalibrator.from_dict(data["calibrator"])
             _gbrt_feature_names = data.get("feature_names", [])
             _gbrt_train_ts = data.get("trained_at", 0)
+            _gbrt_model_type = data.get("model_type", "residual")
+            _gbrt_ensemble_weights = data.get("ensemble_weights",
+                                               {"residual": 1.0, "direct": 0.0})
             # Cat×Hour-Baselines fuer Residual-Modeling restaurieren
             if data.get("cat_hour_baselines"):
                 _gbrt_cat_hour_baselines.clear()
                 _gbrt_cat_hour_baselines.update(data["cat_hour_baselines"])
                 globals()["_gbrt_global_train_avg"] = data.get("global_train_avg", 4.77)
         log.info(f"[GBRT] Modell geladen: {len(_gbrt_model.trees)} Baeume, "
-                 f"Features: {len(_gbrt_feature_names)}")
+                 f"Features: {len(_gbrt_feature_names)}, Typ: {_gbrt_model_type}")
         # History-Stats aufbauen mit temporaler Grenze (trained_at als Cutoff)
         try:
             global _gbrt_history_stats
@@ -4198,22 +4402,22 @@ _load_tuning_state()
 # ── Default Tuning Parameters (aktuell hardcoded im Frontend predictOR()) ──
 # Diese Werte werden vom autonomen Tuning-Loop angepasst und vom Frontend geladen.
 DEFAULT_TUNING_PARAMS = {
-    # Methoden-Konfidenz-Caps
-    "m1_conf_cap": 0.95,       # Methode 1: Similarity
-    "m2_conf_cap": 0.85,       # Methode 2: Keywords
-    "m3_conf_cap": 0.85,       # Methode 3: Entities
-    "m4_conf_cap": 0.60,       # Methode 4: Psychologie
-    "m5_conf_cap": 0.60,       # Methode 5: Regression
-    "m6_conf_cap": 0.50,       # Methode 6: Agenten-Konsens
-    "m7_conf_cap": 0.85,       # Methode 7: Timing
-    "m8_conf_cap": 0.70,       # Methode 8: Forschung
+    # Methoden-Konfidenz-Caps (erhoeht: Signale sollen staerker durchkommen)
+    "m1_conf_cap": 1.20,       # Methode 1: Similarity (war 0.95)
+    "m2_conf_cap": 1.10,       # Methode 2: Keywords (war 0.85)
+    "m3_conf_cap": 1.10,       # Methode 3: Entities (war 0.85)
+    "m4_conf_cap": 0.90,       # Methode 4: Psychologie (war 0.60)
+    "m5_conf_cap": 0.85,       # Methode 5: Regression (war 0.60)
+    "m6_conf_cap": 0.75,       # Methode 6: Agenten-Konsens (war 0.50)
+    "m7_conf_cap": 1.00,       # Methode 7: Timing (war 0.85)
+    "m8_conf_cap": 0.90,       # Methode 8: Forschung (war 0.70)
     # Fusion
-    "fusion_prior_weight": 0.3, # Prior-Staerke in Log-Odds-Fusion
+    "fusion_prior_weight": 0.08, # Prior-Staerke (war 0.3 — viel weniger Regression zum Mittelwert)
     # Korrektoren
-    "weekday_adj": 0.15,        # Wochentag-Korrekturfaktor
+    "weekday_adj": 0.25,        # Wochentag-Korrekturfaktor (war 0.15)
     "saturation_threshold": 1.3, # Tages-Saettigungs-Schwelle
-    "fresh_bonus": 1.08,        # Frische-Bonus fuer neue Themen
-    "entity_boost_cap": 0.25,   # Max Entity-Boost
+    "fresh_bonus": 1.15,        # Frische-Bonus fuer neue Themen (war 1.08)
+    "entity_boost_cap": 0.40,   # Max Entity-Boost (war 0.25)
     # EWMA Trend
     "ewma_lambda": 0.3,         # EWMA Glaettungsfaktor
     # Von-Mises Timing
@@ -4221,21 +4425,21 @@ DEFAULT_TUNING_PARAMS = {
     # Push-Fatigue
     "fatigue_tau": 15,           # Halbwertszeit in Minuten
     "fatigue_alpha": 0.25,      # Max Daempfung
-    # Methode 8 Dampening-Faktoren
-    "cat_damp": 0.3,            # Kategorie-Daempfung (0.7 + 0.3 * x)
-    "timing_damp": 0.3,         # Timing-Daempfung
-    "framing_damp": 0.2,        # Framing-Daempfung (0.8 + 0.2 * x)
-    "length_damp": 0.15,        # Laenge-Daempfung (0.85 + 0.15 * x)
-    "ling_damp": 0.15,          # Linguistik-Daempfung
+    # Methode 8 Dampening-Faktoren (erhoeht: mehr Differenzierung)
+    "cat_damp": 0.55,           # Kategorie-Daempfung (war 0.3 → jetzt 0.45 + 0.55*x)
+    "timing_damp": 0.50,        # Timing-Daempfung (war 0.3)
+    "framing_damp": 0.40,       # Framing-Daempfung (war 0.2)
+    "length_damp": 0.30,        # Laenge-Daempfung (war 0.15)
+    "ling_damp": 0.30,          # Linguistik-Daempfung (war 0.15)
     # PhD-Modelle: Neue Methode M6 + Post-Fusion-Korrektoren
-    "m6_phd_cap": 0.55,         # Methode 6 (PhD-Ensemble): Konfidenz-Cap
-    "phd_interaction_damp": 0.25, # Interaktionseffekt-Daempfung
-    "phd_bayes_damp": 0.20,     # Bayes-Shrinkage-Daempfung
-    "phd_fatigue_damp": 0.15,   # Fatigue-Daempfung
-    "phd_breaking_boost": 1.15, # Breaking-Regime-Boost (max)
-    "phd_recency_damp": 0.20,   # Recency-Trend-Daempfung
-    "phd_entity_ctx_damp": 0.15, # Entity-Context-Daempfung
-    "phd_bias_correction_damp": 0.55, # Bias-Korrektor-Daempfung (erhoeht von 0.30: Wochentag+Kategorie-Bias werden staerker korrigiert)
+    "m6_phd_cap": 0.80,         # Methode 6 (PhD-Ensemble): Konfidenz-Cap (war 0.55)
+    "phd_interaction_damp": 0.45, # Interaktionseffekt-Daempfung (war 0.25)
+    "phd_bayes_damp": 0.35,     # Bayes-Shrinkage-Daempfung (war 0.20)
+    "phd_fatigue_damp": 0.25,   # Fatigue-Daempfung (war 0.15)
+    "phd_breaking_boost": 1.30, # Breaking-Regime-Boost max (war 1.15)
+    "phd_recency_damp": 0.35,   # Recency-Trend-Daempfung (war 0.20)
+    "phd_entity_ctx_damp": 0.30, # Entity-Context-Daempfung (war 0.15)
+    "phd_bias_correction_damp": 0.70, # Bias-Korrektor-Daempfung (war 0.55)
 }
 
 # Real academic literature on push notifications and news engagement
@@ -10332,15 +10536,132 @@ def _server_predict_or(push, push_data, state):
     if ctx_adjustments:
         methods["context_details"] = ", ".join(ctx_adjustments)
 
+    # ── M8: GPT-Content-Scoring (KI-basierte Inhaltsanalyse) ──
+    m8 = global_avg
+    m8_reasoning = ""
+    if OPENAI_API_KEY and push.get("title", ""):
+        try:
+            import openai as _oai_m8
+            _m8_client = _oai_m8.OpenAI(api_key=OPENAI_API_KEY)
+
+            # Top-5 aehnliche Pushes als Kontext
+            _m8_examples = []
+            if sim_scores:
+                _m8_sorted = sorted(sim_scores, key=lambda x: x[1], reverse=True)[:5]
+                for _or, _sim, _title in _m8_sorted:
+                    _m8_examples.append(f"  - \"{_title}\" → OR {_or:.1f}% (Aehnlichkeit {_sim:.0%})")
+
+            # Competitor-Kontext (aktuelle Top-Themen der Konkurrenz)
+            _m8_competitor_ctx = ""
+            _comp_data = state.get("_competitor_cache", {})
+            if _comp_data:
+                _comp_titles = []
+                for _src, _items in _comp_data.items():
+                    if isinstance(_items, list):
+                        for _it in _items[:2]:
+                            _t = _it.get("title", "") if isinstance(_it, dict) else str(_it)
+                            if _t:
+                                _comp_titles.append(f"  - [{_src}] {_t}")
+                if _comp_titles:
+                    _m8_competitor_ctx = "\nAktuelle Konkurrenz-Schlagzeilen:\n" + "\n".join(_comp_titles[:8])
+
+            _m8_prompt = f"""Du bist ein Experte fuer Push-Benachrichtigungen der BILD-Zeitung (~8 Mio Abonnenten).
+Analysiere diesen Push-Titel und prognostiziere die Opening-Rate (OR) in Prozent.
+
+Push-Titel: "{push.get('title', '')}"
+Kategorie: {push_cat}
+Uhrzeit: {push_hour}:00 Uhr
+Wochentag: {['Mo','Di','Mi','Do','Fr','Sa','So'][push_weekday]}
+
+Historischer Durchschnitt dieser Kategorie: {round(m4, 1) if m4 != global_avg else round(global_avg, 1)}%
+Globaler Durchschnitt aller Pushes: {round(global_avg, 1)}%
+{"Aehnliche historische Pushes:" if _m8_examples else ""}
+{chr(10).join(_m8_examples) if _m8_examples else ""}
+{_m8_competitor_ctx}
+
+Bewerte auf einer Skala:
+1. CLICKABILITY (0-10): Wie stark reizt der Titel zum Oeffnen?
+2. RELEVANZ (0-10): Wie breit ist das Interesse? (Politik/Katastrophe=hoch, Nische=niedrig)
+3. DRINGLICHKEIT (0-10): Muss man das JETZT lesen? (Breaking=10, Zeitlos=2)
+4. EMOTIONALITAET (0-10): Wie stark loest der Titel Gefuehle aus?
+5. EXKLUSIVITAET (0-10): Ist das exklusiv oder berichten alle darueber?
+
+Antworte NUR in diesem JSON-Format (kein anderer Text):
+{{"or_prognose": <float>, "clickability": <int>, "relevanz": <int>, "dringlichkeit": <int>, "emotionalitaet": <int>, "exklusivitaet": <int>, "reasoning": "<1 Satz Begruendung>"}}"""
+
+            _m8_resp = _m8_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": _m8_prompt}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+            _m8_text = _m8_resp.choices[0].message.content.strip()
+            # JSON aus Antwort extrahieren
+            import json as _json_m8
+            _m8_json_match = re.search(r'\{[^}]+\}', _m8_text)
+            if _m8_json_match:
+                _m8_data = _json_m8.loads(_m8_json_match.group())
+                _m8_or = float(_m8_data.get("or_prognose", 0))
+                if 0.5 <= _m8_or <= 50:  # Plausibilitaetscheck
+                    m8 = _m8_or
+                    m8_reasoning = _m8_data.get("reasoning", "")
+                    methods["gpt_content_scoring"] = round(m8, 3)
+                    methods["gpt_clickability"] = _m8_data.get("clickability", 0)
+                    methods["gpt_relevanz"] = _m8_data.get("relevanz", 0)
+                    methods["gpt_dringlichkeit"] = _m8_data.get("dringlichkeit", 0)
+                    methods["gpt_emotionalitaet"] = _m8_data.get("emotionalitaet", 0)
+                    methods["gpt_exklusivitaet"] = _m8_data.get("exklusivitaet", 0)
+                    methods["gpt_reasoning"] = m8_reasoning
+                    log.info(f"GPT-Content-Scoring: {m8:.1f}% — {m8_reasoning}")
+        except Exception as _m8_err:
+            log.warning(f"GPT-Content-Scoring fehlgeschlagen: {_m8_err}")
+
+    # ── M9: Competitor-Overlap (Exklusivitaet vs. Saettigung) ──
+    m9 = global_avg
+    _comp_data = state.get("_competitor_cache", {})
+    if _comp_data and push_title:
+        _comp_overlap = 0
+        _comp_total = 0
+        for _src, _items in _comp_data.items():
+            if isinstance(_items, list):
+                for _it in _items:
+                    _comp_t = (_it.get("title", "") if isinstance(_it, dict) else str(_it)).lower()
+                    if not _comp_t:
+                        continue
+                    _comp_total += 1
+                    _comp_words = set(re.findall(r'[a-zaeoeueess]{4,}', _comp_t)) - stops
+                    if push_words and _comp_words:
+                        _overlap = len(push_words & _comp_words) / max(1, len(push_words | _comp_words))
+                        if _overlap > 0.25:
+                            _comp_overlap += 1
+        if _comp_total > 0:
+            overlap_ratio = _comp_overlap / _comp_total
+            if overlap_ratio > 0.3:
+                # Viele Konkurrenten berichten → Thema saturiert, OR sinkt
+                m9 = global_avg * (1.0 - overlap_ratio * 0.3)
+                methods["competitor_overlap"] = round(overlap_ratio, 3)
+                methods["competitor_signal"] = "saturiert"
+            elif overlap_ratio < 0.05 and intensity_score > 0.2:
+                # Exklusiv + emotional → OR steigt deutlich
+                m9 = global_avg * 1.25
+                methods["competitor_overlap"] = round(overlap_ratio, 3)
+                methods["competitor_signal"] = "exklusiv"
+            else:
+                m9 = global_avg * (1.05 - overlap_ratio * 0.15)
+                methods["competitor_overlap"] = round(overlap_ratio, 3)
+                methods["competitor_signal"] = "normal"
+
     # ── Fusion: Gewichteter Durchschnitt mit dynamischen Konfidenzen ──
     # Konfidenzen: min(cap, datenbasierte_konfidenz) — Methoden ohne Daten werden runtergewichtet
-    _m1_data_conf = min(params.get("m1_conf_cap", 0.95), len(sim_scores) / 10 if sim_scores else 0.1) if m1 != global_avg else 0.1
-    _m2_data_conf = min(params.get("m2_conf_cap", 0.85), len(kw_scores) / 5 if kw_scores else 0.1) if m2 != global_avg else 0.1
-    _m3_data_conf = min(params.get("m3_conf_cap", 0.85), len(entity_ors) / 8 if entity_ors else 0.1) if m3 != global_avg else 0.1
-    _m4_data_conf = min(params.get("m4_conf_cap", 0.60), cat_counts / 15 if cat_counts > 0 else 0.1)
-    _m5_data_conf = params.get("m8_conf_cap", 0.70) if m5 != global_avg else 0.1
-    _m6_data_conf = min(params.get("m6_phd_cap", 0.55), len(phd_details) / 4 if phd_details else 0.1)
-    _m7_data_conf = params.get("m7_context_cap", 0.40) if len(ctx_adjustments) > 0 else 0.15
+    _m1_data_conf = min(params.get("m1_conf_cap", 1.20), len(sim_scores) / 8 if sim_scores else 0.1) if m1 != global_avg else 0.1
+    _m2_data_conf = min(params.get("m2_conf_cap", 1.10), len(kw_scores) / 4 if kw_scores else 0.1) if m2 != global_avg else 0.1
+    _m3_data_conf = min(params.get("m3_conf_cap", 1.10), len(entity_ors) / 6 if entity_ors else 0.1) if m3 != global_avg else 0.1
+    _m4_data_conf = min(params.get("m4_conf_cap", 0.90), cat_counts / 10 if cat_counts > 0 else 0.1)
+    _m5_data_conf = params.get("m8_conf_cap", 0.90) if m5 != global_avg else 0.1
+    _m6_data_conf = min(params.get("m6_phd_cap", 0.80), len(phd_details) / 3 if phd_details else 0.1)
+    _m7_data_conf = params.get("m7_context_cap", 0.60) if len(ctx_adjustments) > 0 else 0.15
+    _m8_data_conf = 1.30 if m8 != global_avg else 0.0  # GPT-Scoring: hoechstes Gewicht wenn verfuegbar
+    _m9_data_conf = 0.50 if m9 != global_avg else 0.0   # Competitor-Overlap
     method_list = [
         ("similarity", m1, _m1_data_conf),
         ("keyword_or", m2, _m2_data_conf),
@@ -10349,6 +10670,8 @@ def _server_predict_or(push, push_data, state):
         ("research_modifier", m5, _m5_data_conf),
         ("phd_ensemble", m6, _m6_data_conf),
         ("context_signal", m7, _m7_data_conf),
+        ("gpt_content", m8, _m8_data_conf),
+        ("competitor_overlap", m9, _m9_data_conf),
     ]
 
     prior_weight = params.get("fusion_prior_weight", 0.3)
@@ -10390,8 +10713,8 @@ def _server_predict_or(push, push_data, state):
         methods["pre_novelty"] = round(predicted / novelty_boost, 3)
 
     # ── Intensity-Boost: Emotionale Intensitaet hebt den Score ──
-    if intensity_score > 0.3:
-        intensity_factor = 1.0 + intensity_score * 0.25  # bis +25% bei maximaler Intensitaet
+    if intensity_score > 0.2:
+        intensity_factor = 1.0 + intensity_score * 0.45  # bis +45% bei maximaler Intensitaet (war 25%)
         predicted *= intensity_factor
         methods["intensity_factor"] = round(intensity_factor, 3)
         methods["intensity_cats"] = ",".join(matched_categories)
@@ -12951,14 +13274,22 @@ STIL:
             except Exception:
                 pass
 
+            # Early-Stopping-Info
+            early_stopped_at = metrics.get("early_stopped_at")
+            model_type_info = metrics.get("model_type", _gbrt_model_type)
+
             result = {
                 "loaded": True, "trained": True,
                 "model": {
                     "type": "GBRT", "n_trees": n_trees,
                     "n_features": len(_gbrt_feature_names), "n_pushes": n_pushes,
                     "mae": metrics.get("test_mae", metrics.get("val_mae")),
-                    "r2": metrics.get("test_r2", metrics.get("val_r2")),
+                    "r2": metrics.get("r2_final", metrics.get("test_r2", metrics.get("val_r2"))),
+                    "r2_residual": metrics.get("r2_residual"),
                     "trained_at": _gbrt_train_ts,
+                    "early_stopped_at": early_stopped_at,
+                    "model_type": model_type_info,
+                    "ensemble_weights": metrics.get("ensemble_weights"),
                 },
                 "n_trees": n_trees, "n_features": len(_gbrt_feature_names),
                 "n_pushes": n_pushes, "metrics": metrics,
