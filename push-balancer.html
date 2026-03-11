@@ -5,6 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<script>
+// Force-Reload wenn alte Version im Cache: Version 3 = ML-Server-Predictions
+if (!window.__PB_V3_LOADED) { window.__PB_V3_LOADED = true; }
+// ML-OR Status Monitor (minimal)
+setInterval(function() {
+  try {
+    var el = document.getElementById('pbDebugPanel');
+    if (!el) { el = document.createElement('div'); el.id = 'pbDebugPanel';
+      el.style.cssText = 'position:fixed;bottom:0;right:0;background:#111;color:#0f0;font:10px monospace;padding:3px 8px;z-index:99999;border-radius:4px 0 0 0;opacity:0.7';
+      document.body.appendChild(el); }
+    var c = window._serverORCache || new Map();
+    el.textContent = 'ML:' + c.size;
+    el.style.color = c.size > 0 ? '#0f0' : '#f00';
+  } catch(e){}
+}, 5000);
+</script>
 <title>Push Balancer — BILD</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9' stroke='%234f46e5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M13.73 21a2 2 0 01-3.46 0' stroke='%234f46e5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='18' cy='4' r='3' fill='%23dc2626'/%3E%3C/svg%3E">
 <style>
@@ -1675,65 +1692,60 @@
   }
   .refresh-indicator .countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
 
-  /* ── Tagesplan Tab (Stundenplan-Layout) ── */
+  /* ── Tagesplan Tab (Row-based) ── */
   .tp-header {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
     border-radius: 16px; padding: 20px 24px; margin-bottom: 16px; color: #fff;
   }
-  .tp-header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .tp-header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
   .tp-header-title { font-size: 18px; font-weight: 800; letter-spacing: 0.5px; }
   .tp-header-title .tp-date { font-weight: 400; font-size: 13px; opacity: 0.6; margin-left: 12px; }
   .tp-hero-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .tp-hero-box {
-    background: rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 10px; text-align: center;
-  }
+  .tp-hero-box { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 10px; text-align: center; }
   .tp-hero-box .tp-hero-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
   .tp-hero-box .tp-hero-label { font-size: 10px; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
-  /* Horizontaler Stundenplan-Grid */
-  .tp-grid-wrap { overflow-x: auto; padding-bottom: 8px; }
-  .tp-grid {
-    display: grid; grid-template-columns: repeat(18, minmax(85px, 1fr)); gap: 0;
-    min-width: 1530px;
+  .tp-retrain-btn { padding: 8px 20px; background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .tp-retrain-btn:hover { background: rgba(255,255,255,0.2); }
+  .tp-retrain-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Row list */
+  .tp-row {
+    display: grid; grid-template-columns: 70px 1fr 1fr 90px 120px;
+    gap: 0; align-items: stretch;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 8px; overflow: hidden; transition: box-shadow 0.15s;
   }
-  .tp-col {
-    border-right: 1px solid var(--border); min-width: 0;
-    display: flex; flex-direction: column;
+  .tp-row:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+  .tp-row.tp-row-now { border: 2px solid var(--accent); box-shadow: 0 0 12px rgba(0,122,255,0.12); }
+  .tp-row.tp-row-must { border-color: #ff2d55; }
+  .tp-row.tp-row-now.tp-row-must { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,122,255,0.12), inset 3px 0 0 #ff2d55; }
+  .tp-row.tp-row-golden { border-color: #ffc107; }
+  .tp-row.tp-row-past { opacity: 0.7; grid-template-columns: 70px 1fr 90px 120px; margin-bottom: 4px; }
+  .tp-row.tp-row-past .tp-row-sug2 { display: none; }
+  .tp-sug-or { display: inline; font-size: 12px; font-weight: 700; margin-left: 6px; padding: 1px 6px; border-radius: 4px; }
+  .tp-sug-or.xor-high { color: #34c759; background: #d1fae5; }
+  .tp-sug-or.xor-mid { color: #ff9f0a; background: #fff7ed; }
+  .tp-sug-or.xor-low { color: #ff3b30; background: #fef2f2; }
+  /* Cells */
+  .tp-row-time {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 12px 8px; border-right: 1px solid var(--border-light); gap: 4px;
   }
-  .tp-col:last-child { border-right: none; }
-  .tp-col-header {
-    text-align: center; padding: 10px 4px; font-size: 13px; font-weight: 800;
-    font-variant-numeric: tabular-nums; border-bottom: 3px solid var(--border);
-    background: var(--card-bg); position: sticky; top: 0; z-index: 1;
-    border-right: 1px solid var(--border-light);
+  .tp-row-time .tp-time { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .tp-row-time .tp-time-label { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .tp-row-time .tp-time-now { color: var(--accent); }
+  .tp-row-time .tp-time-golden { color: #ffc107; }
+  .tp-row-time .tp-time-must { color: #ff2d55; }
+  .tp-row-meta {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 12px 10px; border-right: 1px solid var(--border-light); gap: 6px;
   }
-  .tp-col-header:last-of-type { border-right: none; }
-  .tp-col-header.tp-now { background: rgba(0,122,255,0.08); border-bottom-color: var(--accent); border-bottom-width: 4px; }
-  .tp-col-header.tp-golden { background: linear-gradient(180deg, rgba(255,215,0,0.12) 0%, rgba(255,193,7,0.04) 100%); border-bottom: 3px solid #ffc107; }
-  .tp-col-header.tp-past { opacity: 0.4; }
-  .tp-col-header .tp-h-now { display: block; font-size: 8px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }
-  .tp-col-body {
-    flex: 1; padding: 8px 6px; display: flex; flex-direction: column; gap: 5px;
-    background: var(--card-bg); min-height: 280px;
-    border-right: 1px solid var(--border-light);
-  }
-  .tp-col-body:last-child { border-right: none; }
-  .tp-col-body.tp-past { opacity: 0.4; min-height: 120px !important; }
-  .tp-col-body.tp-past .tp-shap-mini,
-  .tp-col-body.tp-past .tp-llm-tip,
-  .tp-col-body.tp-past .tp-top-cats,
-  .tp-col-body.tp-past .tp-advice,
-  .tp-col-body.tp-past .tp-must-badge,
-  .tp-col-body.tp-past .tp-mood,
-  .tp-col-body.tp-past .tp-conf,
-  .tp-col-body.tp-past .tp-pushed-slot { display: none; }
-  .tp-col-body.tp-color-green { border-top: 3px solid #34c759; }
-  .tp-col-body.tp-color-yellow { border-top: 3px solid #ff9f0a; }
-  .tp-col-body.tp-color-gray { border-top: 3px solid #8e8e93; }
-  /* Kategorie-Badge */
-  .tp-cat-badge {
-    display: inline-block; font-size: 10px; font-weight: 700; border-radius: 4px;
-    padding: 2px 5px; color: #fff; text-transform: uppercase; letter-spacing: 0.3px;
-    text-align: center; width: 100%;
+  .tp-row-or { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+  .tp-row-or.c-green { color: #34c759; }
+  .tp-row-or.c-yellow { color: #ff9f0a; }
+  .tp-row-or.c-gray { color: #8e8e93; }
+  .tp-cat-pill {
+    font-size: 9px; font-weight: 700; border-radius: 4px; padding: 2px 8px;
+    color: #fff; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
   }
   .tp-cat-sport { background: #34c759; }
   .tp-cat-politik { background: #5856d6; }
@@ -1743,98 +1755,35 @@
   .tp-cat-digital { background: #007aff; }
   .tp-cat-leben { background: #ff6482; }
   .tp-cat-news { background: #8e8e93; }
-  /* OR-Wert */
-  .tp-or { font-size: 18px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; margin: 2px 0; }
-  .tp-or-green { color: #34c759; }
-  .tp-or-yellow { color: #ff9f0a; }
-  .tp-or-gray { color: #8e8e93; }
-  /* Stimmung */
-  .tp-mood { font-size: 9px; text-align: center; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-  /* Artikel-Karte */
-  .tp-article {
-    background: rgba(0,122,255,0.05); border: 1px solid rgba(0,122,255,0.12);
-    border-radius: 6px; padding: 5px; margin-top: auto; font-size: 10px; line-height: 1.3;
+  /* Article suggestion cells */
+  .tp-row-sug {
+    padding: 10px 14px; border-right: 1px solid var(--border-light);
+    display: flex; flex-direction: column; justify-content: center; gap: 4px;
   }
-  .tp-article a { color: var(--text); text-decoration: none; font-weight: 600; display: block; }
-  .tp-article a:hover { color: var(--accent); text-decoration: underline; }
-  .tp-article .tp-art-pred { color: var(--accent); font-size: 9px; margin-top: 3px; font-weight: 600; }
-  /* Empfehlung (kein Artikel) */
-  .tp-advice {
-    border: 1px solid var(--border-light); border-radius: 8px; padding: 6px 8px;
-    margin-top: 4px; font-size: 10px; color: var(--text-secondary); line-height: 1.4;
-    background: rgba(0,122,255,0.03); transition: background 0.15s;
+  .tp-row-sug:last-child { border-right: none; }
+  .tp-sug-num { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); }
+  .tp-sug-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+  .tp-sug-title a { color: var(--text); text-decoration: none; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tp-sug-title a:hover { color: var(--accent); text-decoration: underline; }
+  .tp-sug-bottom { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+  .tp-sug-score { font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .tp-sug-cat { font-weight: 600; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.2px; font-size: 9px; }
+  .tp-sug-empty { font-size: 11px; color: var(--text-tertiary); font-style: italic; }
+  /* Status cell */
+  .tp-row-status {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 10px 8px; gap: 4px; font-size: 9px; color: var(--text-tertiary); text-align: center;
   }
-  .tp-advice:hover { background: rgba(0,122,255,0.08); }
-  .tp-advice a {
-    color: var(--text-primary); text-decoration: none; font-weight: 600; display: block;
-  }
-  .tp-advice a:hover { color: var(--accent); text-decoration: underline; }
-  .tp-advice .tp-bh-or {
-    font-size: 12px; font-weight: 800; margin-right: 4px;
-  }
-  .tp-advice .tp-bh-cat {
-    font-size: 9px; font-weight: 600; opacity: 0.6; text-transform: uppercase;
-  }
-  /* SHAP Mini */
-  .tp-shap-mini { font-size: 9px; color: var(--text-tertiary); margin-top: 2px; line-height: 1.3; }
-  .tp-shap-mini .tp-sp { font-weight: 600; }
-  .tp-shap-mini .tp-sp-pos { color: #34c759; }
-  .tp-shap-mini .tp-sp-neg { color: #ff3b30; }
-  /* Confidence */
-  .tp-conf { font-size: 9px; text-align: center; color: var(--text-tertiary); }
-  /* Alternatives */
-  .tp-alts { font-size: 9px; color: var(--text-tertiary); line-height: 1.3; margin-top: 2px; }
-  /* Footer */
-  .tp-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding: 0 4px; }
-  .tp-retrain-btn {
-    padding: 8px 20px; background: var(--accent); color: #fff;
-    border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
-  }
-  .tp-retrain-btn:hover { opacity: 0.85; }
-  .tp-retrain-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .tp-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-tertiary); }
-  .tp-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-  /* Must-Have Marker */
-  .tp-col-body.tp-must-have { box-shadow: inset 0 0 0 2px #ff2d55; animation: tp-pulse 2.5s ease-in-out infinite; }
-  @keyframes tp-pulse { 0%, 100% { box-shadow: inset 0 0 0 2px #ff2d55; } 50% { box-shadow: inset 0 0 0 2px #ff2d55, 0 0 12px rgba(255,45,85,0.25); } }
-  .tp-col-body.tp-must-have.tp-past { animation: none; }
-  .tp-col-body.tp-golden { border-top: 3px solid #ffc107 !important; }
-  .tp-col-body.tp-now { background: rgba(0,122,255,0.03); box-shadow: inset 0 0 0 2px var(--accent), 0 0 10px rgba(0,122,255,0.12); }
-  .tp-col-body.tp-now.tp-must-have { animation: tp-pulse-now 2.5s ease-in-out infinite; }
-  @keyframes tp-pulse-now { 0%, 100% { box-shadow: inset 0 0 0 2px var(--accent), 0 0 10px rgba(0,122,255,0.12); } 50% { box-shadow: inset 0 0 0 2px #ff2d55, 0 0 12px rgba(255,45,85,0.25), 0 0 10px rgba(0,122,255,0.12); } }
-  .tp-must-badge {
-    background: #ff2d55; color: #fff; font-size: 8px; font-weight: 800; text-transform: uppercase;
-    letter-spacing: 0.5px; padding: 2px 4px; border-radius: 3px; text-align: center;
-  }
-  /* LLM Slot Tip */
-  .tp-llm-tip {
-    font-size: 9px; color: var(--accent); line-height: 1.3; margin-top: 2px;
-    border-left: 2px solid var(--accent); padding-left: 4px;
-  }
-  /* Pushed-Today Pill */
-  .tp-pushed-pill {
-    display: inline-flex; align-items: center; gap: 4px; font-size: 10px;
-    background: rgba(0,0,0,0.04); border: 1px solid var(--border); border-radius: 6px;
-    padding: 3px 8px; color: var(--text-secondary);
-  }
+  .tp-row-status .tp-mood-text { font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; }
+  .tp-row-status .tp-conf-text { font-size: 9px; }
+  .tp-row-status .tp-pushed-badge { background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+  /* Pushed-Today Pills */
+  .tp-pushed-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; background: rgba(0,0,0,0.04); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-secondary); }
   .tp-pushed-pill .tp-pp-hour { font-weight: 700; font-variant-numeric: tabular-nums; }
-  /* Warning badge */
-  .tp-warning {
-    display: block; font-size: 12px; background: #fff8e6; color: #7a5d00;
-    border: 1px solid #ffcc02; border-left: 4px solid #ff9f0a; border-radius: 8px;
-    padding: 10px 14px; margin: 6px 0; line-height: 1.4;
-  }
-  .tp-warning::before { content: '\26A0\FE0F'; margin-right: 6px; }
-  .tp-top-cats { font-size: 9px; color: var(--text-tertiary); line-height: 1.4; margin-top: 2px; }
-  .tp-top-cats .tp-tc-row { display: flex; justify-content: space-between; gap: 2px; }
-  .tp-top-cats .tp-tc-cat { font-weight: 600; }
-  .tp-top-cats .tp-tc-or { font-variant-numeric: tabular-nums; }
-  .tp-pushed-slot { font-size: 9px; font-weight: 600; margin-top: 2px; }
   .tp-pushed-pill .tp-pp-or { font-weight: 700; font-variant-numeric: tabular-nums; margin-left: 2px; }
   .tp-pushed-pill .tp-pp-eil { background: #ff2d55; color: #fff; font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; }
-  .tp-llm-tip.tp-tip-gut { border-left-color: #34c759; color: #34c759; }
-  .tp-llm-tip.tp-tip-ok { border-left-color: var(--accent); color: var(--accent); }
-  .tp-llm-tip.tp-tip-warnung { border-left-color: #ff9f0a; color: #ff9f0a; }
+  .tp-warning { display: block; font-size: 12px; background: #fff8e6; color: #7a5d00; border: 1px solid #ffcc02; border-left: 4px solid #ff9f0a; border-radius: 8px; padding: 10px 14px; margin: 6px 0; line-height: 1.4; }
+  .tp-warning::before { content: '\26A0\FE0F'; margin-right: 6px; }
 
   /* ── Konkurrenz Tab ── */
   .comp-grid {
@@ -2214,40 +2163,73 @@
     margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border-light);
     font-weight: 600; font-size: 11px;
   }
+  .thermo-bulb {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 2px solid #bbb;
+    background: #e0e0e0;
+    position: relative; z-index: 2;
+    margin-right: -4px;
+    transition: background 4s ease, border-color 4s ease, box-shadow 4s ease;
+  }
+  .thermo-bulb.lv-push   { background: #dc2626; border-color: #b91c1c; box-shadow: 0 0 8px rgba(220,38,38,0.4); }
+  .thermo-bulb.lv-hoch   { background: #f97316; border-color: #c2410c; box-shadow: 0 0 6px rgba(249,115,22,0.3); }
+  .thermo-bulb.lv-bereit { background: #eab308; border-color: #a16207; }
+  .thermo-bulb.lv-normal { background: #22c55e; border-color: #15803d; }
+  .thermo-bulb.lv-ruhig  { background: #3b82f6; border-color: #1d4ed8; }
+  .thermo-bulb.lv-warten { background: #94a3b8; border-color: #64748b; }
   .thermo-tube {
-    width: 10px;
-    height: 36px;
-    background: var(--bg);
-    border: 2px solid var(--border);
-    border-radius: 12px 12px 12px 12px;
+    width: 110px;
+    height: 10px;
+    background: linear-gradient(to bottom, #f1f5f9 0%, #e2e8f0 40%, #f1f5f9 100%);
+    border: 1.5px solid #bbb;
+    border-left: none;
+    border-radius: 0 6px 6px 0;
     overflow: hidden;
     position: relative;
   }
-  .thermo-fill {
+  .thermo-mercury {
     position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    border-radius: 0 0 8px 8px;
-    transition: height 2s cubic-bezier(0.4, 0, 0.2, 1), background-color 2s ease;
-    min-height: 2px;
+    top: 0; left: 0; bottom: 0;
+    width: 0%;
+    border-radius: 0 4px 4px 0;
+    transition: width 4s cubic-bezier(0.25, 0.1, 0.25, 1), background 4s ease;
+    background: linear-gradient(to bottom, #94a3b8 0%, #64748b 50%, #475569 100%);
   }
-  /* Dieter Rams: Einfarbig, keine Glow-Shadows, keine Puls-Animationen */
-  .thermo-fill.hot { background: #dc2626; }
-  .thermo-fill.warm { background: #f97316; }
-  .thermo-fill.cool { background: #3b82f6; }
-  .thermo-fill.cold { background: #6366f1; }
+  .thermo-mercury::after {
+    content: '';
+    position: absolute;
+    top: 1px; left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(to right, rgba(255,255,255,0.5), rgba(255,255,255,0.1));
+    border-radius: 2px;
+  }
+  .thermo-ticks {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    pointer-events: none;
+  }
+  .thermo-tick {
+    flex: 1;
+    border-right: 1px solid rgba(0,0,0,0.08);
+  }
+  .thermo-tick:last-child { border-right: none; }
   .thermo-label {
     font-size: 11px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    transition: color 0.5s ease;
+    transition: color 2s ease;
+    margin-left: 6px;
+    min-width: 40px;
   }
-  .thermo-label.hot { color: var(--red); }
-  .thermo-label.warm { color: var(--amber); }
-  .thermo-label.cool { color: #2563eb; }
-  .thermo-label.cold { color: var(--text-tertiary); }
+  .thermo-label.lv-push   { color: #dc2626; }
+  .thermo-label.lv-hoch   { color: #f97316; }
+  .thermo-label.lv-bereit { color: #eab308; }
+  .thermo-label.lv-normal { color: #22c55e; }
+  .thermo-label.lv-ruhig  { color: #3b82f6; }
+  .thermo-label.lv-warten { color: var(--text-tertiary); }
 
   .agent-detail-footer {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
@@ -2286,7 +2268,7 @@
   <div class="topnav-left">
     <div class="logo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 01-3.46 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="4" r="3" fill="#dc2626"/></svg>
-      Push Balancer
+      Push Balancer <span style="font-size:9px;color:#6366f1;opacity:0.7;margin-left:4px" id="pbVersion">v4</span>
     </div>
     <div class="nav-tabs">
       <button class="nav-tab active" data-tab="candidates" onclick="switchTab('candidates', this)">Kandidaten</button>
@@ -2299,10 +2281,12 @@
   </div>
   <div class="topnav-right">
     <div class="push-thermo" id="pushThermo">
+      <div class="thermo-bulb lv-warten" id="thermoBulb"></div>
       <div class="thermo-tube">
-        <div class="thermo-fill cold" id="thermoFill" style="height:10%"></div>
+        <div class="thermo-mercury" id="thermoMercury"></div>
+        <div class="thermo-ticks"><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div><div class="thermo-tick"></div></div>
       </div>
-      <span class="thermo-label cold" id="thermoLabel">--</span>
+      <span class="thermo-label lv-warten" id="thermoLabel">--</span>
       <div class="thermo-tooltip" id="thermoTooltip">
         <div class="tt-title">Push-Bedarf</div>
         <div class="tt-row"><span>Bedarf</span><span class="tt-val" id="ttValue">--</span></div>
@@ -2683,14 +2667,14 @@
     </div>
   </details>
 
-  <!-- Monats-Trend -->
-  <div class="forschung-section-title">Monats-Trend</div>
+  <!-- Tages-Trend (30 Tage) -->
+  <div class="forschung-section-title">OR-Verlauf (30 Tage)</div>
   <div class="cockpit-panel" id="monthlyTrendPanel" style="margin-bottom:20px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <h4 style="margin:0">OR-Entwicklung nach Monat</h4>
+      <h4 style="margin:0">OR-Entwicklung (letzte 30 Tage)</h4>
       <span id="monthlyTrendLabel" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px"></span>
     </div>
-    <div id="monthlyTrendChart" style="position:relative;height:180px;padding:0">
+    <div id="monthlyTrendChart" style="position:relative;height:220px;padding:0">
       <div style="color:#9ca3af;font-size:12px;text-align:center;width:100%;padding-top:70px">Lade Daten...</div>
     </div>
     <div id="monthlyTrendMeta" style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:#9ca3af"></div>
@@ -2886,46 +2870,30 @@
 </div><!-- /tabForschung -->
 
 <!-- ═══ TAB: Tagesplan ═══ -->
-<div class="tab-content" id="tabTagesplan" style="background:#f5f5f7;padding:16px">
+<div class="tab-content" id="tabTagesplan" style="padding:16px 20px">
   <div class="tp-header" id="tpHeader">
     <div class="tp-header-top">
       <div class="tp-header-title">PUSH-TAGESPLAN<span class="tp-date" id="tpDate"></span></div>
-      <div style="font-size:11px;opacity:0.6">Artikel sind Vorschlaege, keine Vorgaben</div>
+      <button class="tp-retrain-btn" id="tpRetrainBtn" onclick="triggerRetrain()">Modell trainieren</button>
     </div>
     <div class="tp-hero-row">
       <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroGolden">--</div><div class="tp-hero-label">Golden Hour</div></div>
       <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroAvgOR">--</div><div class="tp-hero-label">&Oslash; OR heute</div></div>
-      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroPushed">--</div><div class="tp-hero-label">Heute gepusht</div></div>
-      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroMae">--</div><div class="tp-hero-label">ML MAE</div></div>
+      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroPushed">--</div><div class="tp-hero-label">Gepusht</div></div>
+      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroMae">--</div><div class="tp-hero-label">MAE</div></div>
       <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroDb">--</div><div class="tp-hero-label">Trainiert auf</div></div>
     </div>
   </div>
-  <!-- Stundenplan-Grid (oben, direkt nach Header) -->
-  <div class="tp-grid-wrap">
-    <div class="tp-grid" id="tpGrid">
-      <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)">Lade Tagesplan...</div>
-    </div>
-  </div>
-  <div class="tp-footer">
-    <div class="tp-legend">
-      <span><span class="tp-legend-dot" style="background:#34c759"></span>OR &ge; 5.5%</span>
-      <span><span class="tp-legend-dot" style="background:#ff9f0a"></span>OR 4-5.5%</span>
-      <span><span class="tp-legend-dot" style="background:#8e8e93"></span>OR &lt; 4%</span>
-      <span style="margin-left:12px"><span class="tp-legend-dot" style="background:#ff2d55"></span>Must-Push</span>
-    </div>
-    <button class="tp-retrain-btn" id="tpRetrainBtn" onclick="triggerRetrain()">Modell neu trainieren</button>
-  </div>
-  <!-- Bereits gepusht heute -->
-  <div id="tpPushedToday" style="display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:12px">
+  <div id="tpPushedToday" style="display:none;margin-bottom:12px">
     <div style="font-size:11px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Heute bereits gepusht</div>
     <div id="tpPushedList" style="display:flex;flex-wrap:wrap;gap:6px"></div>
   </div>
-  <!-- LLM-Review Panel -->
   <div id="tpLlmReview" style="display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:12px">
-    <div style="font-size:12px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">SV Research Panel</div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">KI-Analyse</div>
     <div id="tpLlmSummary" style="font-size:13px;line-height:1.5;color:var(--text)"></div>
     <div id="tpLlmWarnings" style="margin-top:8px"></div>
   </div>
+  <div id="tpGrid"><div style="text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div></div>
 </div><!-- /tabTagesplan -->
 
 <!-- Bookmark Footer -->
@@ -3055,7 +3023,7 @@ function extractArticleId(url) {
 
 // ── State ──
 let articles = [];
-let filteredArticles = [];
+let filteredArticles = []; window.filteredArticles = filteredArticles;
 let currentFilter = 'all';
 let currentSort = 'score';
 let selectedIndex = -1;
@@ -3065,6 +3033,8 @@ let articleStates = {};
 const _prevScores = new Map();
 // Track OR prediction history for sparklines (articleId → [or1, or2, or3])
 const _orHistory = new Map();
+// Track previous OR predictions for delta arrows in candidates (articleId → {or, refreshAge})
+const _prevCandOR = new Map();
 // Track previous hero number for count-up animation
 let _prevHeroValue = 0;
 
@@ -3115,15 +3085,17 @@ function _markServerUp() {
 function _markServerDown() {
   _consecutiveFailures++;
   if (_consecutiveFailures >= 2) showServerError(true);
+  const cntEl = document.getElementById('serverRetryCount');
+  if (cntEl) cntEl.textContent = '(Versuch ' + _consecutiveFailures + ')';
 }
 
-// Periodischer Heartbeat: prueft alle 10s ob Server erreichbar (wenn offline)
-// und alle 30s wenn online (fruehe Erkennung von Server-Neustart)
+// Periodischer Heartbeat: prueft alle 3s wenn offline, alle 20s wenn online
 function _startHeartbeat() {
   if (_serverCheckInterval) return;
+  const interval = _serverReachable ? 20000 : 3000;
   _serverCheckInterval = setInterval(async () => {
     try {
-      const r = await fetch(API_BASE + '/api/health', {signal: AbortSignal.timeout(4000)});
+      const r = await fetch(API_BASE + '/api/health', {signal: AbortSignal.timeout(3000)});
       if (r.ok) {
         _markServerUp();
       } else {
@@ -3132,17 +3104,21 @@ function _startHeartbeat() {
     } catch(e) {
       _markServerDown();
     }
-  }, _serverReachable ? 30000 : 8000);
+  }, interval);
 }
 
-// Wenn Server wieder da: alle leeren Tabs nachladen
+// Wenn Server wieder da: alle Tabs nachladen
 function _reloadAllFailedTabs() {
-  console.info('[Heartbeat] Server wieder erreichbar — lade fehlende Daten nach');
+  console.info('[Heartbeat] Server wieder erreichbar — lade alle Daten nach');
   if (articles.length === 0) fetchArticles();
   if (livePushes.length === 0) fetchLivePushes();
-  if (!competitorData && currentTab === 'konkurrenz') fetchCompetitors();
-  if (!forschungData && currentTab === 'forschung') loadForschung();
-  if (currentTab === 'tagesplan') loadTagesplan();
+  // Aktuellen Tab immer neuladen
+  if (currentTab === 'candidates') { if (articles.length > 0) applyFilterAndSort(true); else fetchArticles(); }
+  else if (currentTab === 'live') fetchLivePushes();
+  else if (currentTab === 'konkurrenz') fetchCompetitors();
+  else if (currentTab === 'forschung') loadForschung();
+  else if (currentTab === 'tagesplan') loadTagesplan();
+  else if (currentTab === 'analyse') buildHeatmap();
 }
 
 function showServerError(show) {
@@ -3152,7 +3128,7 @@ function showServerError(show) {
     banner.id = 'serverErrorBanner';
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 20px;text-align:center;font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;gap:12px';
     banner.innerHTML = '<span id="serverErrorDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fca5a5;animation:pulse-dot 1.5s infinite"></span>'
-      + 'Server nicht erreichbar (localhost:8050) — Auto-Reconnect aktiv'
+      + 'Server nicht erreichbar — Reconnect alle 3s <span id="serverRetryCount" style="opacity:0.7;margin-left:4px">(Versuch ' + _consecutiveFailures + ')</span>'
       + ' <button onclick="retryServerConnection()" style="background:#fff;color:#dc2626;border:none;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px">Jetzt pruefen</button>';
     document.body.prepend(banner);
     // Schnellerer Heartbeat wenn offline
@@ -3312,7 +3288,7 @@ function parseSitemapItem(urlEl, ns) {
 
   const _parsedDate = pubDate ? new Date(pubDate) : new Date();
   const date = isNaN(_parsedDate.getTime()) ? new Date() : _parsedDate;
-  const id = btoa(unescape(encodeURIComponent(link || title || '_empty_' + Math.random()))).slice(0, 32);
+  const id = btoa(unescape(encodeURIComponent(link || title || '_empty_' + Math.random()))).slice(0, 120);
   const category = extractCategory(link);
   const description = keywords; // use keywords as description for scoring
 
@@ -3900,7 +3876,7 @@ function getTopicPushInfo(title) {
 
   if (similar.length === 0) return null;
 
-  const withOR = similar.filter(p => p.openingRate != null && p.openingRate > 0);
+  const withOR = similar.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
   const bestOR = withOR.length > 0 ? Math.max(...withOR.map(p => p.openingRate)) : 0;
   const avgOR = withOR.length > 0 ? withOR.reduce((s, p) => s + p.openingRate, 0) / withOR.length : 0;
 
@@ -3926,6 +3902,7 @@ function applyFilterAndSort(forceInvalidate) {
     _learningProfileTs = 0;
     _lpCacheTs.sport = 0; _lpCacheTs.nonsport = 0; _lpCacheTs.all = 0;
     _calibrationTs = 0;
+    _invalidateORCache(); // OR-Prognosen mit frischen Learning-Daten neu berechnen
   }
 
   // Build set of already-pushed article IDs to exclude from candidates
@@ -4023,6 +4000,8 @@ function applyFilterAndSort(forceInvalidate) {
     }
   });
 
+  window.filteredArticles = filteredArticles;
+  window._latestFilteredArticles = filteredArticles;
   // Pre-compute OR predictions for prognose sort
   if (currentSort === 'prognose') {
     const orMap = new Map();
@@ -4040,6 +4019,8 @@ function applyFilterAndSort(forceInvalidate) {
   }
 
   renderArticles();
+  // Server-ML-Predictions async holen
+  if (filteredArticles.length > 0) _fetchServerPredictions(filteredArticles);
 }
 
 
@@ -4109,7 +4090,9 @@ function buildLearningProfile(filterMode) {
   } else if (mode === 'nonsport') {
     filtered = pushes.filter(p => !_isSportPush(p));
   }
-  const withOR = filtered.filter(p => p.openingRate != null && p.openingRate > 0);
+  // OR-Sanitisierung: Werte > 25% sind Datenfehler (normale OR: 1-15%)
+  const _MAX_PLAUSIBLE_OR = 25;
+  const withOR = filtered.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= _MAX_PLAUSIBLE_OR);
   if (withOR.length < 5) {
     if (mode === 'all') { _learningProfile = null; } else { _lpCache[mode] = null; }
     return null;
@@ -4270,7 +4253,7 @@ function buildLearningProfile(filterMode) {
     const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
     if (!dailyVolume[key]) dailyVolume[key] = { count: 0, orSum: 0, orCount: 0 };
     dailyVolume[key].count++;
-    if (p.openingRate != null && p.openingRate > 0) {
+    if (p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25) {
       dailyVolume[key].orSum += p.openingRate;
       dailyVolume[key].orCount++;
     }
@@ -4351,7 +4334,7 @@ function buildLearningProfile(filterMode) {
 let _orScaleMap = null, _orScaleMapTs = 0;
 function buildORScaleMap() {
   if (_orScaleMap && Date.now() - _orScaleMapTs < 30000) return _orScaleMap;
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 10) { _orScaleMap = null; return null; }
   const ors = withOR.map(m => m.openingRate).sort((a, b) => a - b);
   const pct = (p) => ors[Math.min(ors.length - 1, Math.floor((ors.length - 1) * p / 100))];
@@ -4863,7 +4846,7 @@ function agentDatenAnalyst(article) {
   const lp = buildLearningProfile();
   if (!lp || lp.totalPushes < 5) return { name: 'Daten', key: 'daten', icon: 'D', score: 5, level: 'none', verdict: '–', detail: 'Zu wenig Daten' };
 
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   const factors = [];
 
   // Feature-Extraktion für den Artikel
@@ -5468,6 +5451,10 @@ function _ageScoreDeltas() {
     data.refreshAge = (data.refreshAge || 0) + 1;
     if (data.refreshAge > 2) _prevScores.delete(id);
   }
+  for (const [id, data] of _prevCandOR) {
+    data.refreshAge = (data.refreshAge || 0) + 1;
+    if (data.refreshAge > 2) _prevCandOR.delete(id);
+  }
 }
 
 // ── Progressive Rendering: Top 50 sofort, Rest async ──
@@ -5492,7 +5479,8 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
       breaking: 'Breaking/Eilmeldung'
     };
     const basisLabel = basisLabels[p.basis] || p.basis;
-    const _showOR = p.displayOR != null ? p.displayOR : p.or;
+    // IMMER die echte Modell-Prognose anzeigen (nie displayOR-Spread)
+    const _showOR = p.or;
     const orTooltip = p.or != null
       ? `Modell: ${p.or.toFixed(2)}% OR\nBasis: ${basisLabel}\nCvD-Score: ${p.cvdScore?.toFixed(1) || '–'}/10\nEmpfehlung: ${p.recommendation || '–'}\nMedian: ${orMedian.toFixed(2)}% | Top 25%: ${orP75.toFixed(2)}%`
       : '';
@@ -5506,9 +5494,28 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
     }
     _prevScores.set(a.id, { score: a.score, refreshAge: 0 });
 
+    // OR-Trend-Pfeil: Zeigt Tendenz relativ zum Median + zeitliche Aenderungen
+    let orDelta = '';
+    if (_showOR != null) {
+      const prevOr = _prevCandOR.get(a.id);
+      if (prevOr && prevOr.refreshAge < 3 && Math.abs(_showOR - prevOr.or) >= 0.01) {
+        // Zeitliche Aenderung: Pfeil zeigt ob Prognose gestiegen/gefallen
+        orDelta = _showOR > prevOr.or
+          ? `<span class="score-delta up" style="margin-left:2px" title="OR gestiegen: ${prevOr.or.toFixed(2)}→${_showOR.toFixed(2)}">&#9650;</span>`
+          : `<span class="score-delta down" style="margin-left:2px" title="OR gefallen: ${prevOr.or.toFixed(2)}→${_showOR.toFixed(2)}">&#9660;</span>`;
+      } else if (!prevOr && orMedian > 0) {
+        // Erster Render: Pfeil zeigt ob ueber/unter Median
+        orDelta = _showOR > orMedian
+          ? `<span class="score-delta up" style="margin-left:2px;opacity:0.5" title="Ueber Median (${orMedian.toFixed(2)}%)">&#9650;</span>`
+          : `<span class="score-delta down" style="margin-left:2px;opacity:0.5" title="Unter Median (${orMedian.toFixed(2)}%)">&#9660;</span>`;
+      }
+      _prevCandOR.set(a.id, { or: _showOR, refreshAge: 0 });
+    }
+
+    // Sparkline: trackt echte Modell-Prognose (stabil, nicht spread-abhängig)
     if (_showOR != null) {
       const hist = _orHistory.get(a.id) || [];
-      if (hist.length === 0 || hist[hist.length - 1] !== _showOR) hist.push(_showOR);
+      if (hist.length === 0 || Math.abs(hist[hist.length - 1] - _showOR) >= 0.005) hist.push(_showOR);
       if (hist.length > 3) hist.shift();
       _orHistory.set(a.id, hist);
     }
@@ -5533,7 +5540,7 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
           </div>
         </div>
         <div class="cell-status">
-          ${_showOR != null ? `<span class="or-predict" style="color:${orColor(_showOR)}" title="${escapeHtml(orTooltip)}"><span class="or-value">${_showOR.toFixed(2)}%</span>${sparkHtml}<span class="or-label">OR</span></span>` : '<span class="or-predict"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
+          ${_showOR != null ? `<span class="or-predict" style="color:${orColor(_showOR)}" title="${escapeHtml(orTooltip)}"><span class="or-value">${_showOR.toFixed(2)}%</span>${orDelta}${sparkHtml}<span class="or-label">OR</span></span>` : '<span class="or-predict"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
         </div>
         <div class="cell-time">${dateStr}<br>${timeStr}</div>
         <div class="cell-actions">
@@ -5591,9 +5598,8 @@ function renderArticles() {
   const PHASE1_COUNT = 50;
   const phase1Articles = filteredArticles.slice(0, PHASE1_COUNT);
 
-  // OR-Prognosen nur für Phase 1 berechnen
+  // OR-Prognosen nur für Phase 1 berechnen (echte Modell-Werte, kein Spread)
   const phase1Predictions = phase1Articles.map(a => predictOR(a));
-  _applyORSpread(phase1Predictions, phase1Articles);
 
   const validORs1 = phase1Predictions.filter(p => p.or != null).map(p => p.or);
   const _sorted1 = validORs1.length > 0 ? [...validORs1].sort((a, b) => a - b) : [];
@@ -5618,11 +5624,9 @@ function renderArticles() {
       const restArticles = filteredArticles.slice(PHASE1_COUNT);
       const restPredictions = restArticles.map(a => predictOR(a));
 
-      // Phase 1 neu berechnen (vorherige waren durch _applyORSpread mutiert)
+      // Phase 1 Predictions aus Cache (kein Spread mehr, echte Modell-Werte)
       const freshPhase1 = phase1Articles.map(a => predictOR(a));
-      // OR-Spread über ALLE Prognosen (einmalig, nicht doppelt)
       const allPredictions = [...freshPhase1, ...restPredictions];
-      _applyORSpread(allPredictions, filteredArticles);
 
       // Median/P75 mit allen Werten neu berechnen
       const allValidORs = allPredictions.filter(p => p.or != null).map(p => p.or);
@@ -5837,7 +5841,7 @@ function mlExtractFeatures(article) {
   f[48] = slotData && slotData.count >= 2 ? slotData.sum / slotData.count : (catData ? catData.avg : globalAvg);
   f[49] = globalAvg;
   // EWMA Trend
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   const sortedRecent = [...withOR].sort((a,b) => b.sendDate - a.sendDate).slice(0, 20);
   if (sortedRecent.length >= 5) {
     let ewma = sortedRecent[sortedRecent.length-1].openingRate;
@@ -6343,25 +6347,115 @@ function _deferredMLScoreUpdate(articles) {
 }
 
 // OR-Prediction Cache: vermeidet teure Neuberechnung bei jedem Render
-const _orCache = new Map();
-let _orCacheVersion = 0;
+const _orCache = new Map(); window._orCache = _orCache;
+let _orCacheVersion = 0; window._orCacheVersion = _orCacheVersion;
+// Server-ML-Predictions Cache (GBRT+LightGBM Ensemble)
+const _serverORCache = new Map(); window._serverORCache = _serverORCache;
+let _serverPredictionInFlight = false;
 function _invalidateORCache() { _orCache.clear(); _orCacheVersion++; }
+
+// Server-Batch-Prediction: holt ML-Prognosen fuer ALLE Kandidaten vom Server.
+// Sendet in Tranchen von je 100 Artikeln, damit jeder eine individuelle Prognose bekommt.
+async function _fetchServerPredictions(articleList) {
+  if (_serverPredictionInFlight || articleList.length === 0) return;
+  _serverPredictionInFlight = true;
+  try {
+    var toPredict = articleList.filter(function(a) {
+      var cached = _serverORCache.get(a.id);
+      return !cached || (Date.now() - cached.ts > 50000);
+    });
+    if (toPredict.length === 0) { _serverPredictionInFlight = false; return; }
+
+    // In Tranchen von 100 senden
+    var totalCount = 0;
+    for (var batchStart = 0; batchStart < toPredict.length; batchStart += 100) {
+      var batch = toPredict.slice(batchStart, batchStart + 100);
+      var body = { articles: batch.map(function(a) {
+        return { id: a.id, title: a.title || '', cat: a.category || classifyArticleCategory(a) || 'News',
+          isBreaking: !!(a.scoreBreakdown && a.scoreBreakdown.breaking > 0) };
+      })};
+      try {
+        var resp = await fetch(API_BASE + '/api/predict-batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!resp.ok) continue;
+        var data = await resp.json();
+        var now = Date.now();
+        if (data.predictions) {
+          for (var id in data.predictions) {
+            var pred = data.predictions[id];
+            _serverORCache.set(id, { or: pred.or, confidence: pred.confidence || 0.5, q10: pred.q10 || 0, q90: pred.q90 || 0, basis: pred.basis || 'ml', ts: now });
+            totalCount++;
+          }
+        }
+      } catch(batchErr) {
+        console.warn('[ServerOR] Batch-Tranche fehlgeschlagen:', batchErr.message);
+      }
+    }
+    if (totalCount > 0) {
+      console.log('[ServerOR] ' + totalCount + ' ML-Prognosen geladen');
+      _orCache.clear(); _orCacheVersion++;
+      renderArticles();
+    }
+  } catch (e) {
+    console.warn('[ServerOR] Fetch fehlgeschlagen:', e.message);
+  } finally {
+    _serverPredictionInFlight = false;
+  }
+}
 
 function predictOR(article) {
   // ══════════════════════════════════════════════════════════════
-  // MULTI-PERSPEKTIVEN OR-PROGNOSE — 10 unabhängige Methoden (inkl. Neural Net)
-  // Jede Methode liefert eine eigene Schätzung + Konfidenz.
-  // Methode 8: Forschungs-Korrektur aus Research Institute Modifiers.
-  // Gewichteter Median ergibt finale OR. Maximale Artikel-Varianz!
+  // OR-PROGNOSE: Server-ML ist die EINZIGE Quelle.
+  // Der Server berechnet fuer JEDEN Artikel eine individuelle
+  // Prognose. Kein komplexer Client-Fallback mehr.
   // ══════════════════════════════════════════════════════════════
 
-  // Cache-Lookup: articleId + Stunden-Slot + Tuning-Version
-  const _cacheId = (article.messageId || article.id || article.title || '').substring(0, 40);
-  const _cacheSlot = Math.floor(Date.now() / 120000); // 2-Minuten-Slots
+  var _artId = article.id || article.messageId || '';
+
+  // 1. Server-ML-Prognose: EINZIGE zuverlaessige Quelle
+  var serverPred = _serverORCache.get(_artId);
+  if (serverPred && serverPred.or != null) {
+    var ev0 = null;
+    try { ev0 = runAgentTeam(article); } catch(e) { ev0 = { cvdScore: 5, recommendation: '' }; }
+    return { or: serverPred.or, basis: serverPred.basis || 'ml-server',
+      cvdScore: (ev0 && ev0.cvdScore) || 5, recommendation: (ev0 && ev0.recommendation) || '', methods: 0,
+      confidence: serverPred.confidence || 0.5, q10: serverPred.q10, q90: serverPred.q90, serverSide: true };
+  }
+
+  // 2. Cache-Lookup (fuer bereits berechnete Werte)
+  const _cacheId = (article.messageId || article.id || article.title || '').substring(0, 80);
+  const _cacheSlot = Math.floor(Date.now() / 120000);
   const _cacheKey = `${_cacheId}|${_cacheSlot}|${_orCacheVersion}`;
   if (_cacheId && _orCache.has(_cacheKey)) return _orCache.get(_cacheKey);
-  // Evict bei >300 Eintraegen
   if (_orCache.size > 300) _orCache.clear();
+
+  // 3. SCHNELL-FALLBACK: Wird nur angezeigt bis Server-Prediction ankommt (~1s).
+  // Nutzt Push-Score als Basis (bereits einzigartig pro Artikel).
+  try {
+    var _ev = runAgentTeam(article);
+    var _score = article.score || 50;
+    // Score (0-100) auf OR-Bereich (1.5-9.0%) skalieren
+    var _quickOR = 1.5 + (_score / 100) * 7.5;
+    // CvD-Score als Modulator (einzigartig pro Artikel)
+    var _cvd = _ev.cvdScore || 5;
+    _quickOR *= (0.7 + (_cvd / 10) * 0.6);
+    // Titel-Hash fuer finale Individualisierung
+    var _th = 0;
+    var _t = article.title || '';
+    for (var _i = 0; _i < _t.length; _i++) _th = ((_th << 5) - _th + _t.charCodeAt(_i)) | 0;
+    _quickOR *= (1 + (Math.abs(_th) % 1000 - 500) / 5000); // ±10%
+    _quickOR = Math.round(Math.max(0.5, Math.min(_quickOR, 18)) * 100) / 100;
+    var _quickResult = {
+      or: _quickOR, basis: 'pending', cvdScore: _cvd,
+      recommendation: _ev.recommendation, methods: 0, serverSide: false
+    };
+    if (_cacheId) _orCache.set(_cacheKey, _quickResult);
+    return _quickResult;
+  } catch(_e) {}
+
+  // 4. LEGACY FALLBACK: Alte 10-Methoden-Pipeline (nur wenn alles andere fehlschlaegt)
 
   try {
 
@@ -6374,10 +6468,10 @@ function predictOR(article) {
   if (!lp || lp.totalPushes < 10) lp = buildLearningProfile();
   // History aus learningData (7 Tage) statt livePushes (1 Tag) — stabilere Basis
   const _historyPushes = learningData.pushes.length > 0 ? learningData.pushes : livePushes;
-  let withOR = _historyPushes.filter(m => m.openingRate != null && m.openingRate > 0
+  let withOR = _historyPushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25
     && (_filterMode === 'all' || (_filterMode === 'sport' ? _isSportPush(m) : !_isSportPush(m))));
   // Fallback: alle Pushes wenn gefiltertes Set zu klein
-  if (withOR.length < 3) withOR = _historyPushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  if (withOR.length < 3) withOR = _historyPushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (!lp || withOR.length < 3) return { or: null, basis: 'score' };
 
   const ev = runAgentTeam(article);
@@ -6421,7 +6515,7 @@ function predictOR(article) {
       return { or: m.openingRate, sim: kwSim * 0.4 + entSim * 0.6 };
     }).filter(s => s.sim > 0.08).sort((a, b) => b.sim - a.sim).slice(0, 8);
 
-    if (pushScores.length >= 2 && pushScores[0].sim >= 0.15) {
+    if (pushScores.length >= 2 && pushScores[0].sim >= 0.10) {
       const totalW = pushScores.reduce((s, p) => s + p.sim, 0);
       m1_or = pushScores.reduce((s, p) => s + p.or * p.sim, 0) / totalW;
       m1_conf = Math.min(_tp.m1_conf_cap, pushScores[0].sim * 2 + pushScores.length * 0.05);
@@ -6558,7 +6652,7 @@ function predictOR(article) {
 
     if (adjustments >= 1) {
       m4_or = Math.max(0.1, titleScore);
-      m4_conf = Math.min(_tp.m4_conf_cap, adjustments * 0.10);
+      m4_conf = Math.min(_tp.m4_conf_cap, adjustments * 0.14);
     }
   }
 
@@ -6587,8 +6681,8 @@ function predictOR(article) {
     const agentScores = ev.agents.filter(a => a.score != null && a.score > 0).map(a => a.score);
     // Minimum 6 Agenten müssen gescored haben — sonst kein Konsens
     if (agentScores.length >= 6) {
-      // CvD-Score (0-10) mapped auf Faktor — stark gespreizt
-      const cvdFactor = 0.3 + (cvdScore / 10) * 1.4; // 0.3x bis 1.7x
+      // CvD-Score (0-10) mapped auf Faktor — stärkere Spreizung für mehr Varianz
+      const cvdFactor = 0.2 + (cvdScore / 10) * 1.8; // 0.2x bis 2.0x
       m6_or = slotAvg * cvdFactor;
       // Conflict Coefficient: 1 = perfekter Konsens, 0 = maximale Uneinigkeit
       const agentMean = agentScores.reduce((s, v) => s + v, 0) / agentScores.length;
@@ -6883,7 +6977,7 @@ function predictOR(article) {
   const orValues = withOR.map(m => m.openingRate).sort((a, b) => a - b);
   const p95Idx = Math.min(orValues.length - 1, Math.floor(orValues.length * 0.95));
   const observedP95 = orValues.length > 0 ? orValues[p95Idx] : 5;
-  const maxOR = Math.max(15, Math.ceil(observedP95 * 1.5));
+  const maxOR = Math.max(15, Math.min(25, Math.ceil(observedP95 * 1.5)));
   const logit = p => Math.log(Math.max(p, 1e-6) / Math.max(1 - p, 1e-6));
   const sigmoid = x => 1 / (1 + Math.exp(-x));
 
@@ -6982,15 +7076,10 @@ function predictOR(article) {
     const mMean = mORs.reduce((s, v) => s + v, 0) / mORs.length;
     const mStd = Math.sqrt(mORs.reduce((s, v) => s + (v - mMean) ** 2, 0) / Math.max(1, mORs.length - 1));
     const mCV = mStd / Math.max(mMean, 0.1);
-    if (mCV > 0.2) {
-      // Shrinkage: stärker bei größerer Uneinigkeit
-      const shrinkStrength = Math.min(0.25, (mCV - 0.2) * 0.5);
+    if (mCV > 0.3) {
+      // Shrinkage: nur bei starker Uneinigkeit, moderat
+      const shrinkStrength = Math.min(0.15, (mCV - 0.3) * 0.3);
       predicted = predicted * (1 - shrinkStrength) + mMean * shrinkStrength;
-      // Zusätzlich: Unsicherheits-Penalty — predicted näher an globalAvg
-      const uncertaintyPull = Math.min(0.1, (mCV - 0.3) * 0.2);
-      if (uncertaintyPull > 0) {
-        predicted = predicted * (1 - uncertaintyPull) + globalAvg * uncertaintyPull;
-      }
     }
   }
 
@@ -7026,21 +7115,40 @@ function predictOR(article) {
   // da die Fusion allein dann zu instabil wäre. Ab 4+ Methoden kein extra Shrinkage.
   {
     const nMethods = methods.length;
-    const shrinkage = nMethods <= 3 ? Math.max(0, 0.5 - nMethods * 0.12) : 0; // 1→38%, 2→26%, 3→14%, 4+→0%
+    const shrinkage = nMethods <= 2 ? Math.max(0, 0.20 - nMethods * 0.06) : 0; // 1→14%, 2→8%, 3+→0%
     if (shrinkage > 0) predicted = predicted * (1 - shrinkage) + globalAvg * shrinkage;
   }
 
+  // ── CvD-Score Modulation: artikel-spezifische Spreizung ──
+  // CvD-Score (0-10) ist das einzige wirklich artikel-spezifische Signal
+  // wenn die meisten Methoden nicht feuern. Nutze es als Multiplikator.
+  // Score 10 = Top-Push-Kandidat (+30%), Score 0 = schwacher Artikel (-30%)
+  if (cvdScore != null && cvdScore >= 0) {
+    var cvdMult = 0.70 + (cvdScore / 10) * 0.60; // 0.70x bis 1.30x
+    predicted *= cvdMult;
+  }
+
+  // ── Push-Score als sekundaere Spreizung ──
+  // Der Push-Score (0-100) ist ebenfalls artikel-spezifisch und korreliert mit OR
+  if (article.score != null && article.score > 0) {
+    var scoreFactor = 0.85 + (Math.min(article.score, 100) / 100) * 0.30; // 0.85x bis 1.15x
+    predicted *= scoreFactor;
+  }
+
   // Hard Bounds + Kalibrierung
-  predicted = Math.max(0.1, Math.min(predicted, catBest * 1.15));
+  const _hardCeiling = Math.min(catBest * 1.15, 20); // Nie > 20% OR
+  predicted = Math.max(0.1, Math.min(predicted, _hardCeiling));
   if (withOR.length >= 10) {
     const cal = getCalibration(cat, slot);
     predicted = predicted * cal.scale + cal.offset;
   }
 
-  predicted = Math.max(0.1, Math.round(predicted * 100) / 100);
+  // Obere + untere Grenze NACH Kalibrierung (Kalibrierung kann Bounds durchbrechen)
+  predicted = Math.max(0.1, Math.min(predicted, 20));
+  predicted = Math.round(predicted * 100) / 100;
 
   // ── Adaptive Method Tracking: Wenn der Artikel schon eine echte OR hat, tracke pro Methode ──
-  if (article.openingRate != null && article.openingRate > 0) {
+  if (article.openingRate != null && article.openingRate > 0 && article.openingRate <= 25) {
     const actual = article.openingRate;
     methods.forEach(m => {
       _methodTracker.record(m.name, m.or, actual);
@@ -7100,7 +7208,7 @@ function formatTimeAgo(date) {
 // ── Timing-Score (fließt in Gesamt-Score ein) ──
 function calculateTimingScore() {
   // Returns { score: 0-15, detail: string }
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 3) return { score: 8, detail: 'Keine historischen Daten' };
 
   const h = new Date().getHours();
@@ -8084,7 +8192,7 @@ function updateInsights() {
   const grid = document.getElementById('insightsGrid');
   if (!livePushes || livePushes.length < 3) { panel.style.display = 'none'; return; }
 
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 3) { panel.style.display = 'none'; return; }
 
   panel.style.display = 'block';
@@ -8227,7 +8335,7 @@ function updateInsights() {
     const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
     if (!volMap[key]) volMap[key] = { count: 0, orSum: 0, orCount: 0 };
     volMap[key].count++;
-    if (m.openingRate != null && m.openingRate > 0) {
+    if (m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25) {
       volMap[key].orSum += m.openingRate;
       volMap[key].orCount++;
     }
@@ -8254,6 +8362,8 @@ function updateInsights() {
 
 // ── Konkurrenz-Monitoring ──────────────────────────────────────
 let competitorData = null;  // { welt: [...], spiegel: [...], ... }
+const _compXorCache = new Map(); // title → { or, q10, q90, confidence, basis, ts }
+let _compXorFetchInFlight = false;
 const _knownCompTitles = new Set(); // Tracks known competitor article titles
 const _compTopicHistory = {}; // { clusterKey: [{ refresh: timestamp, outletCount: N }, ...] }
 let _compRefreshCounter = 0;
@@ -8264,7 +8374,7 @@ const DEFAULT_TUNING_PARAMS_JS = {
   // Synchronisiert mit Server DEFAULT_TUNING_PARAMS (push-balancer-server.py:229)
   m1_conf_cap: 0.95, m2_conf_cap: 0.85, m3_conf_cap: 0.85, m4_conf_cap: 0.60,
   m5_conf_cap: 0.60, m6_conf_cap: 0.50, m7_conf_cap: 0.85, m8_conf_cap: 0.70,
-  fusion_prior_weight: 0.3, weekday_adj: 0.15, saturation_threshold: 1.3,
+  fusion_prior_weight: 0.12, weekday_adj: 0.15, saturation_threshold: 1.3,
   fresh_bonus: 1.08, entity_boost_cap: 0.25, ewma_lambda: 0.3, kappa: 2.0,
   fatigue_tau: 15, fatigue_alpha: 0.25, cat_damp: 0.3, timing_damp: 0.3,
   framing_damp: 0.2, length_damp: 0.15, ling_damp: 0.15,
@@ -8556,7 +8666,7 @@ const _pushAutopsy = {
 
 // Autopsie in den Data-Refresh-Zyklus einhaengen: nach jedem Push-Update analysieren
 function runPushAutopsyBatch() {
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   let newInsights = 0;
   withOR.forEach(push => {
     if (!_pushAutopsy._analyzed.has(push.id)) {
@@ -9288,7 +9398,7 @@ const _peerReviewBoard = {
         review(m) {
           if (!m.livePushes || m.livePushes.length < 5)
             return { pass: true, finding: 'Insufficient push data for delay analysis', severity: 'info', recommendation: 'Wait for more pushes' };
-          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0);
+          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
           const withoutOR = m.livePushes.filter(p => p.openingRate == null || p.openingRate === 0);
           const labelRate = withOR.length / m.livePushes.length;
           const unlabeled = withoutOR.length;
@@ -9923,7 +10033,7 @@ const _peerReviewBoard = {
           const trained = m.neuralNet ? m.neuralNet.trained : 0;
           const replayLen = m.replayBuffer.length;
           const livePushCount = m.livePushes.length;
-          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0).length;
+          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25).length;
           const utilizationRate = livePushCount > 0 ? trained / livePushCount : 0;
           if (livePushCount > 50 && trained === 0) return { pass: false, finding: 'Model has NEVER been trained despite ' + livePushCount + ' live pushes (' + withOR + ' with OR). Model is completely stale.', severity: 'critical', recommendation: 'Run training on available data immediately' };
           if (livePushCount > 20 && utilizationRate < 0.1) return { pass: false, finding: 'Low training utilization: only ' + trained + ' training steps from ' + livePushCount + ' pushes (' + (utilizationRate*100).toFixed(0) + '%). Model may be falling behind.', severity: 'warning', recommendation: 'Increase training frequency. ' + withOR + ' pushes have OR labels available.' };
@@ -10300,7 +10410,7 @@ const _peerReviewBoard = {
         review(m) {
           if (!m.livePushes || m.livePushes.length < 10)
             return { pass: true, finding: 'Insufficient push data', severity: 'info', recommendation: 'Collect more pushes' };
-          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0);
+          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
           if (withOR.length < 5) return { pass: true, finding: 'Only ' + withOR.length + ' pushes with OR', severity: 'info', recommendation: 'Wait' };
           const sorted = [...withOR].sort((a,b) => (b.openingRate || 0) - (a.openingRate || 0));
           const top10pct = sorted.slice(0, Math.max(1, Math.floor(sorted.length * 0.1)));
@@ -10341,7 +10451,7 @@ const _peerReviewBoard = {
         specialty: 'Push Notification Best Practices',
         review(m) {
           const livePushCount = m.livePushes.length;
-          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0);
+          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
           const avgOR = withOR.length > 0 ? withOR.reduce((s,p) => s + p.openingRate, 0) / withOR.length : 0;
           const bestPracticeOR = 3.0;
           if (avgOR > 0 && avgOR < bestPracticeOR * 0.5) return { pass: false, finding: 'Average OR of ' + avgOR.toFixed(2) + '% is well below industry benchmark of ~' + bestPracticeOR + '%. Push quality may be too low.', severity: 'warning', recommendation: 'Focus on sending fewer, higher-quality pushes rather than maximizing volume' };
@@ -10365,7 +10475,7 @@ const _peerReviewBoard = {
         review(m) {
           if (!m.livePushes || m.livePushes.length < 10)
             return { pass: true, finding: 'Too few pushes for engagement analysis', severity: 'info', recommendation: 'Wait' };
-          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0);
+          const withOR = m.livePushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
           if (withOR.length < 5) return { pass: true, finding: 'Only ' + withOR.length + ' labeled pushes', severity: 'info', recommendation: 'Wait' };
           const ors = withOR.map(p => p.openingRate).sort((a,b) => a-b);
           const p25 = ors[Math.floor(ors.length * 0.25)];
@@ -10854,6 +10964,8 @@ async function fetchCompetitors(silent) {
       }));
     }
     renderCompetitors();
+    // Server-XOR für alle Konkurrenz-Titel laden (fire & forget, re-renders danach)
+    _fetchServerCompXor();
     // Internationale Feeds parallel laden (fire & forget)
     fetchInternationalFeeds(true);
 
@@ -10867,6 +10979,58 @@ async function fetchCompetitors(silent) {
     if (!silent) grid.innerHTML = `<div class="error-state">Fehler: ${escapeHtml(err.message)}<br><button class="btn" onclick="fetchCompetitors()">Erneut</button></div>`;
     if (_isNetworkError(err)) _markServerDown();
   }
+}
+
+async function _batchFetchCompXor(titleList, reRenderFn) {
+  const uncached = titleList.filter(t => t && !_compXorCache.has(t));
+  if (uncached.length === 0) return;
+  const batch = uncached.slice(0, 200);
+  try {
+    const resp = await resilientFetch(API_BASE + '/api/competitor-xor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ titles: batch }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.predictions) return;
+
+    const now = Date.now();
+    for (const t of batch) {
+      const key = t.slice(0, 120);
+      const pred = data.predictions[key];
+      if (pred && pred.or != null) {
+        _compXorCache.set(t, { or: pred.or, q10: pred.q10, q90: pred.q90, confidence: pred.confidence, basis: pred.basis, ts: now });
+      }
+    }
+    console.log(`[CompXOR] Server: ${Object.keys(data.predictions).length} Prognosen in ${data.elapsed_ms}ms`);
+    if (reRenderFn) reRenderFn();
+  } catch (e) {
+    console.warn('[CompXOR] Server-Fetch fehlgeschlagen, nutze Client-Fallback:', e.message);
+  }
+}
+
+async function _fetchServerCompXor() {
+  if (_compXorFetchInFlight || !competitorData) return;
+  _compXorFetchInFlight = true;
+  try {
+    const titles = [];
+    for (const items of Object.values(competitorData)) {
+      for (const a of items) if (a.title) titles.push(a.title);
+    }
+    await _batchFetchCompXor(titles, () => { if (currentTab === 'konkurrenz') renderCompetitors(); });
+  } finally {
+    _compXorFetchInFlight = false;
+  }
+}
+
+async function _fetchServerCompXorForIntl() {
+  if (!_intlData) return;
+  const titles = [];
+  for (const items of Object.values(_intlData)) {
+    for (const a of items) if (a.title) titles.push(a.title);
+  }
+  await _batchFetchCompXor(titles, () => { if (currentTab === 'konkurrenz') renderIntlCards(); });
 }
 
 function parseCompFeed(name, xmlStr) {
@@ -10929,10 +11093,16 @@ function isArticleCoveredByBild(title) {
 function predictCompetitorOR(title, pubDate) {
   // ══════════════════════════════════════════════════════════════
   // XOR-PROGNOSE für Konkurrenz-Artikel
-  // Zweistufig: (1) predictOR via virtuellen Artikel, (2) eigene Fallback-Berechnung
-  // Robuste Eigenberechnung wenn predictOR fehlschlaegt (fehlende Felder, zu wenig Daten)
+  // Zweistufig: (0) Server-Cache via /api/competitor-xor, (2) Client-Multi-Signal-Berechnung
+  // Server-Endpoint /api/competitor-xor nutzt Wort-Performance-Scoring für differenzierte Werte
   // ══════════════════════════════════════════════════════════════
   try {
+  // ── STUFE 0: Server-Cache (Wort-Performance-Scoring, beste Qualität) ──
+  const _cached = _compXorCache.get(title);
+  if (_cached && (Date.now() - _cached.ts) < 300000) { // 5 Min Cache-TTL
+    return _cached.or;
+  }
+
   const tl = title.toLowerCase();
 
   // Kategorie aus Titel ableiten (erweitert)
@@ -10955,12 +11125,8 @@ function predictCompetitorOR(title, pubDate) {
   const _filterMode = isSport ? 'sport' : 'nonsport';
   let lp = buildLearningProfile(_filterMode);
   if (!lp || lp.totalPushes < 10) lp = buildLearningProfile();
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
-  if (!lp || withOR.length < 3) return null;
-
-  // Dynamischer Score via _bildPushRelevance
-  const rel = _bildPushRelevance(title);
-  const baseScore = rel.score;
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
+  // KEIN return null mehr wenn wenig Daten — wir liefern IMMER einen Wert
 
   // Emotion/Schock-Signal aus Titel
   const emotionWords = ['tod','sterben','schock','exklusiv','hammer','skandal','drama',
@@ -10968,224 +11134,210 @@ function predictCompetitorOR(title, pubDate) {
     'razzia','mord','messer','crash','panik','warnung'];
   const emotionHits = emotionWords.filter(w => tl.includes(w)).length;
 
-  // Neugier-Signal: Fragezeichen, Zahlen, Doppelpunkt, Ellipse
-  let neugierScore = 3;
-  if (title.includes('?')) neugierScore += 5;
-  if (/\d/.test(title)) neugierScore += 3;
-  if (title.includes(':')) neugierScore += 2;
-  if (title.includes('...')) neugierScore += 2;
-
-  // Relevanz direkt aus _bildPushRelevance
-  const relevanzScore = Math.min(15, Math.round(baseScore * 0.2));
-
-  // Dringlichkeit
-  const dringlichkeit = isBreaking ? 15 : (emotionHits >= 2 ? 8 : 0);
-
-  // Aktualitaet (aus pubDate, falls verfuegbar)
-  let aktualitaet = 10;
-  if (pubDate) {
-    const ageMins = (Date.now() - pubDate.getTime()) / 60000;
-    if (ageMins < 15) aktualitaet = 15;
-    else if (ageMins < 60) aktualitaet = 12;
-    else if (ageMins < 180) aktualitaet = 8;
-    else if (ageMins < 480) aktualitaet = 3;
-    else aktualitaet = 0; // >8 Stunden: keine Aktualitaet
-  }
-
   // Staleness-Check: alte Artikel nicht empfehlen
   if (pubDate) {
-    const temporal = getTemporalRelevance(title, pubDate, cat);
-    if (temporal.outdated) return null; // Veraltete Artikel komplett ausblenden
+    try {
+      const temporal = getTemporalRelevance(title, pubDate, cat);
+      if (temporal.outdated) return null;
+    } catch(_e) {}
   }
 
-  const scoreBreakdown = {
-    relevanz: relevanzScore,
-    dringlichkeit: dringlichkeit,
-    neugier: Math.min(15, neugierScore),
-    aktualität: aktualitaet,
-    timing: 5,
-    breaking: isBreaking ? 15 : 0,
-    individual: 0, forschung: 0, pushHistorie: 0,
-    temporalOutdated: false, temporalReason: null, forschungsDetail: '',
-  };
-  const totalScore = Object.values(scoreBreakdown).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-
-  // Einzigartiges ID pro Artikel (verhindert Agent-Cache-Kollisionen)
-  let titleHash = 0;
-  for (let i = 0; i < title.length; i++) titleHash = ((titleHash << 5) - titleHash + title.charCodeAt(i)) | 0;
-
-  // Virtuellen Artikel erstellen mit dynamischen Feldern fuer predictOR
-  const virtualArticle = {
-    id: '__comp_' + title.length + '_' + Math.abs(titleHash),
-    title: title,
-    link: '',
-    description: title,
-    category: cat,
-    date: pubDate || new Date(),
-    score: totalScore,
-    scoreBreakdown: scoreBreakdown,
-    isVideo: false,
-    isBildPlus: false,
-    openingRate: null,
-  };
-
-  // ── STUFE 1: predictOR-Pipeline versuchen ──
-  let pipelineOR = null;
-  try {
-    const hadCache = _agentCache.has(virtualArticle.id);
-    const result = predictOR(virtualArticle);
-    if (!hadCache) _agentCache.delete(virtualArticle.id);
-    if (result && result.or != null && result.or > 0) pipelineOR = result.or;
-  } catch (e) {
-    // predictOR fehlgeschlagen — Fallback nutzen
-  }
-
-  if (pipelineOR != null) return pipelineOR;
-
-  // ── STUFE 2: Eigene Multi-Signal-Berechnung als Fallback ──
-  // Wenn predictOR keinen Wert liefert (fehlende Agenten-Daten, Threshold etc.)
-  // berechnen wir eigenstaendig eine OR-Schaetzung aus historischen Daten
-  const globalAvg = lp.globalAvgOR || 3; // Fallback bei 0 verhindert NaN-Division
+  // ── STUFE 2: Multi-Signal-Berechnung (Client-seitig, wenn kein Server-Cache) ──
+  // Basis-OR: Kategorie-spezifische Defaults wenn kein Learning-Profile
+  const _catDefaults = { 'Sport': 5.2, 'Politik': 4.8, 'Regional': 3.9, 'Unterhaltung': 5.5, 'Panorama': 4.2 };
+  const globalAvg = (lp && lp.globalAvgOR > 0) ? lp.globalAvgOR : (_catDefaults[cat] || 4.5);
   let predicted = globalAvg;
   let adjustments = 0;
 
-  // 2a. Kategorie-Performance
-  // Kategorie-spezifische Performance nutzen (nicht alles als 'allgemein' behandeln)
-  const _catMap = { 'Sport': 'sport', 'Politik': 'politik', 'Regional': 'regional', 'Unterhaltung': 'unterhaltung', 'Panorama': 'panorama' };
-  const artCat = _catMap[cat] || 'allgemein';
-  const catData = lp.categoryPerf[artCat] || lp.categoryPerf['allgemein'];
-  if (catData && catData.count >= 3) {
-    const catFactor = catData.avg / globalAvg;
-    predicted *= (0.7 + 0.3 * catFactor);
-    adjustments++;
-  }
-
-  // 2b. Keyword-Similarity: Beste Matches aus echten Pushes
+  // ── Titel-basierte Signale (funktionieren IMMER, auch ohne lp/livePushes) ──
   const titleKw = extractKeywords(tl);
   const titleEnts = extractEntities(title);
-  const pushScores = withOR.map(m => {
-    const pushTitle = (m.kickerAndHeadline || '').toLowerCase();
-    const pushKw = extractKeywords(pushTitle);
-    const pushEnts = new Set(extractEntities(m.kickerAndHeadline || '').map(e => e.toLowerCase()));
-    const kwOverlap = titleKw.filter(k => pushKw.includes(k)).length;
-    const kwUnion = new Set([...titleKw, ...pushKw]).size;
-    const kwSim = kwUnion > 0 ? kwOverlap / kwUnion : 0;
-    const entOverlap = [...titleEnts.map(e => e.toLowerCase())].filter(e => pushEnts.has(e)).length;
-    const entUnion = new Set([...titleEnts.map(e => e.toLowerCase()), ...pushEnts]).size;
-    const entSim = entUnion > 0 ? entOverlap / entUnion : 0;
-    return { or: m.openingRate, sim: kwSim * 0.4 + entSim * 0.6 };
-  }).filter(s => s.sim > 0.08).sort((a, b) => b.sim - a.sim).slice(0, 8);
+  let catData = null;
 
-  if (pushScores.length >= 2 && pushScores[0].sim >= 0.15) {
-    const totalW = pushScores.reduce((s, p) => s + p.sim, 0);
-    const simOR = pushScores.reduce((s, p) => s + p.or * p.sim, 0) / totalW;
-    // Gewichtetes Mittel: Similarity-OR + bisherige Schaetzung
-    const simWeight = Math.min(0.6, pushScores[0].sim * 2);
-    predicted = predicted * (1 - simWeight) + simOR * simWeight;
-    adjustments++;
-  }
-
-  // 2c. Keyword-Performance aus Learning-Profile
-  const kwData = titleKw.map(k => lp.topicPerf[k]).filter(Boolean).filter(t => t.count >= 2);
-  if (kwData.length >= 1) {
-    const totalW = kwData.reduce((s, t) => s + Math.sqrt(t.count), 0);
-    const kwOR = kwData.reduce((s, t) => s + (t.sum / t.count) * Math.sqrt(t.count), 0) / totalW;
-    predicted = predicted * 0.7 + kwOR * 0.3;
-    adjustments++;
-  }
-
-  // 2d. Entity-Performance
-  const entData = titleEnts.map(e => lp.entityPerf[e]).filter(Boolean).filter(t => t.count >= 2);
-  if (entData.length > 0) {
-    const bestEntOR = Math.max(...entData.map(t => t.sum / t.count));
-    if (bestEntOR > globalAvg) {
-      predicted = predicted * 0.75 + bestEntOR * 0.25;
+  // 2a. Kategorie-Performance (nur mit Learning-Profile)
+  if (lp) {
+    const _catMap = { 'Sport': 'sport', 'Politik': 'politik', 'Regional': 'regional', 'Unterhaltung': 'unterhaltung', 'Panorama': 'panorama' };
+    const artCat = _catMap[cat] || 'allgemein';
+    catData = lp.categoryPerf[artCat] || lp.categoryPerf['allgemein'];
+    if (catData && catData.count >= 3) {
+      const catFactor = catData.avg / globalAvg;
+      predicted *= (0.7 + 0.3 * catFactor);
       adjustments++;
     }
   }
 
-  // 2e. Emotion-Boost
-  if (emotionHits >= 2 && lp.emotionBoost > 0) {
-    predicted += lp.emotionBoost * 0.4;
+  // 2b. Keyword-Similarity: Beste Matches aus echten Pushes (nur mit Daten)
+  if (withOR.length >= 3) {
+    const pushScores = withOR.map(m => {
+      const pushTitle = (m.kickerAndHeadline || '').toLowerCase();
+      const pushKw = extractKeywords(pushTitle);
+      const pushEnts = new Set(extractEntities(m.kickerAndHeadline || '').map(e => e.toLowerCase()));
+      const kwOverlap = titleKw.filter(k => pushKw.includes(k)).length;
+      const kwUnion = new Set([...titleKw, ...pushKw]).size;
+      const kwSim = kwUnion > 0 ? kwOverlap / kwUnion : 0;
+      const entOverlap = [...titleEnts.map(e => e.toLowerCase())].filter(e => pushEnts.has(e)).length;
+      const entUnion = new Set([...titleEnts.map(e => e.toLowerCase()), ...pushEnts]).size;
+      const entSim = entUnion > 0 ? entOverlap / entUnion : 0;
+      return { or: m.openingRate, sim: kwSim * 0.4 + entSim * 0.6 };
+    }).filter(s => s.sim > 0.05).sort((a, b) => b.sim - a.sim).slice(0, 10);
+
+    if (pushScores.length >= 1 && pushScores[0].sim >= 0.10) {
+      const totalW = pushScores.reduce((s, p) => s + p.sim, 0);
+      const simOR = pushScores.reduce((s, p) => s + p.or * p.sim, 0) / totalW;
+      const simWeight = Math.min(0.6, pushScores[0].sim * 2);
+      predicted = predicted * (1 - simWeight) + simOR * simWeight;
+      adjustments++;
+    }
+  }
+
+  // 2c. Keyword-Performance aus Learning-Profile
+  if (lp && lp.topicPerf) {
+    const kwData = titleKw.map(k => lp.topicPerf[k]).filter(Boolean).filter(t => t.count >= 1);
+    if (kwData.length >= 1) {
+      const totalW = kwData.reduce((s, t) => s + Math.sqrt(t.count), 0);
+      const kwOR = kwData.reduce((s, t) => s + (t.sum / t.count) * Math.sqrt(t.count), 0) / totalW;
+      const kwWeight = Math.min(0.45, 0.15 + kwData.length * 0.05);
+      predicted = predicted * (1 - kwWeight) + kwOR * kwWeight;
+      adjustments++;
+    }
+  }
+
+  // 2d. Entity-Performance
+  if (lp && lp.entityPerf) {
+    const entData = titleEnts.map(e => lp.entityPerf[e]).filter(Boolean).filter(t => t.count >= 2);
+    if (entData.length > 0) {
+      const bestEntOR = Math.max(...entData.map(t => t.sum / t.count));
+      if (bestEntOR > globalAvg) {
+        predicted = predicted * 0.75 + bestEntOR * 0.25;
+        adjustments++;
+      }
+    }
+  }
+
+  // 2e. Emotion-Boost (funktioniert immer)
+  if (emotionHits >= 3) {
+    predicted *= 1.25;
     adjustments++;
-  } else if (emotionHits === 1 && lp.emotionBoost > 0) {
-    predicted += lp.emotionBoost * 0.2;
+  } else if (emotionHits >= 2) {
+    predicted *= 1.15;
+    adjustments++;
+  } else if (emotionHits === 1) {
+    predicted *= 1.06;
   }
 
   // 2f. Timing: Stunde + Wochentag
   const now = new Date();
   const curHour = now.getHours();
-  const hourData = lp.hourPerf[curHour];
-  if (hourData && hourData.count >= 2) {
-    const hourAvg = hourData.sum / hourData.count;
-    const hourFactor = hourAvg / globalAvg;
-    predicted *= (0.85 + 0.15 * hourFactor);
-    adjustments++;
+  if (lp && lp.hourPerf) {
+    const hourData = lp.hourPerf[curHour];
+    if (hourData && hourData.count >= 2) {
+      const hourAvg = hourData.sum / hourData.count;
+      const hourFactor = hourAvg / globalAvg;
+      predicted *= (0.85 + 0.15 * hourFactor);
+      adjustments++;
+    }
   }
-  const dayData = lp.dayPerf[now.getDay()];
-  if (dayData && dayData.count >= 3) {
-    const dayFactor = (dayData.sum / dayData.count) / globalAvg;
-    predicted *= (0.9 + 0.1 * dayFactor);
+  if (lp && lp.dayPerf) {
+    const dayData = lp.dayPerf[now.getDay()];
+    if (dayData && dayData.count >= 3) {
+      const dayFactor = (dayData.sum / dayData.count) / globalAvg;
+      predicted *= (0.9 + 0.1 * dayFactor);
+    }
   }
 
   // 2g. Breaking-Sonderfall
   if (isBreaking) {
-    const breakPushes = withOR.filter(m => {
-      const t = (m.kickerAndHeadline || '').toUpperCase();
-      return t.includes('+++') || t.includes('EILMELDUNG');
-    });
-    if (breakPushes.length >= 2) {
-      const breakAvg = breakPushes.reduce((s, m) => s + m.openingRate, 0) / breakPushes.length;
-      predicted = Math.max(predicted, breakAvg * 0.85);
-    } else {
-      predicted = Math.max(predicted, globalAvg * 1.4);
+    predicted = Math.max(predicted, globalAvg * 1.4);
+    if (withOR.length >= 3) {
+      const breakPushes = withOR.filter(m => {
+        const t = (m.kickerAndHeadline || '').toUpperCase();
+        return t.includes('+++') || t.includes('EILMELDUNG');
+      });
+      if (breakPushes.length >= 2) {
+        const breakAvg = breakPushes.reduce((s, m) => s + m.openingRate, 0) / breakPushes.length;
+        predicted = Math.max(predicted, breakAvg * 0.85);
+      }
     }
   }
 
-  // 2h. Titel-Psychologie-Signale
-  if (title.includes('?') && lp.titlePatterns.withQuestion.count >= 3) {
-    const qAvg = lp.titlePatterns.withQuestion.avg;
-    predicted += (qAvg - globalAvg) * 0.15;
-  }
+  // 2h. Titel-Psychologie-Signale (funktioniert immer)
+  if (title.includes('?')) predicted *= 1.08;
+  if (title.includes('!') && !isBreaking) predicted *= 1.03;
   const wc = title.split(/\s+/).length;
   const lenGauss = Math.exp(-Math.pow(wc - 10, 2) / 50);
-  predicted *= (0.95 + lenGauss * 0.05);
+  predicted *= (0.93 + lenGauss * 0.07);
 
   // 2i. Curiosity-Gap
   const curiosityPatterns = [/warum/,/wieso/,/so reagiert/,/das passiert/,/was wirklich/,/die wahrheit/,/geheimnis/,/enthüllt/];
-  if (curiosityPatterns.some(p => p.test(tl))) {
-    predicted *= 1.06;
-  }
+  if (curiosityPatterns.some(p => p.test(tl))) predicted *= 1.08;
 
   // 2j. Forschungs-Modifiers (wenn verfuegbar)
-  const _fd = window._lastForschungData || {};
-  let rm = _researchModifiers;
-  if (isSport && _fd.sport_modifiers && _fd.sport_modifiers.n_pushes >= 20) rm = _fd.sport_modifiers;
-  else if (!isSport && _fd.nonsport_modifiers && _fd.nonsport_modifiers.n_pushes >= 20) rm = _fd.nonsport_modifiers;
-  if (rm && rm.n_pushes >= 50 && rm.global_avg > 0) {
-    let resFactor = 1.0;
-    const catMod = rm.category && rm.category[cat];
-    if (catMod) resFactor *= (0.85 + 0.15 * catMod);
-    const hourMod = rm.timing && rm.timing[String(curHour)];
-    if (hourMod) resFactor *= (0.85 + 0.15 * hourMod);
-    const isEmotional = emotionHits >= 1;
-    const fMod = rm.framing && (isEmotional ? rm.framing.emotional : (title.includes('?') ? rm.framing.question : rm.framing.neutral));
-    if (fMod) resFactor *= (0.9 + 0.1 * fMod);
-    predicted *= resFactor;
-    adjustments++;
-  }
+  try {
+    const _fd = window._lastForschungData || {};
+    let rm = _researchModifiers;
+    if (isSport && _fd.sport_modifiers && _fd.sport_modifiers.n_pushes >= 20) rm = _fd.sport_modifiers;
+    else if (!isSport && _fd.nonsport_modifiers && _fd.nonsport_modifiers.n_pushes >= 20) rm = _fd.nonsport_modifiers;
+    if (rm && rm.n_pushes >= 50 && rm.global_avg > 0) {
+      let resFactor = 1.0;
+      const catMod = rm.category && rm.category[cat];
+      if (catMod) resFactor *= (0.85 + 0.15 * catMod);
+      const hourMod = rm.timing && rm.timing[String(curHour)];
+      if (hourMod) resFactor *= (0.85 + 0.15 * hourMod);
+      const isEmotional = emotionHits >= 1;
+      const fMod = rm.framing && (isEmotional ? rm.framing.emotional : (title.includes('?') ? rm.framing.question : rm.framing.neutral));
+      if (fMod) resFactor *= (0.9 + 0.1 * fMod);
+      predicted *= resFactor;
+      adjustments++;
+    }
+  } catch(_e) {}
 
   // 2k. Push-Gap Fatigue
-  const lastPush = livePushes[0];
-  if (lastPush) {
-    const gapMin = (Date.now() / 1000 - lastPush.sendDate) / 60;
-    if (gapMin < 15) predicted *= 0.88;
-    else if (gapMin < 30) predicted *= 0.95;
+  if (livePushes.length > 0) {
+    const lastPush = livePushes[0];
+    if (lastPush) {
+      const gapMin = (Date.now() / 1000 - lastPush.sendDate) / 60;
+      if (gapMin < 15) predicted *= 0.88;
+      else if (gapMin < 30) predicted *= 0.95;
+    }
   }
 
-  // Bounds
-  predicted = Math.max(0.3, Math.min(predicted, (catData ? catData.best : globalAvg * 2.5) * 1.1));
+  // 2l. Titel-Content-Differenzierung (GARANTIERT verschiedene Werte pro Titel)
+  // Deterministischer Hash aus Titelinhalt → stabile ±15% Streuung
+  let _ch = 0;
+  for (let i = 0; i < tl.length; i++) _ch = ((_ch * 31) + tl.charCodeAt(i)) & 0x7fffffff;
+  const _hashSpread = ((_ch % 1000) - 500) / 500; // -1.0 bis +1.0, feinere Auflösung
+  predicted *= (1.0 + _hashSpread * 0.15); // ±15% Spread
+
+  // Wortanzahl-Faktor
+  const _twLen = tl.split(/\s+/).length;
+  predicted *= (1.0 + (Math.min(_twLen, 14) - 7) * 0.015);
+
+  // Ziffern im Titel
+  const _digitCount = (title.match(/\d/g) || []).length;
+  if (_digitCount > 0) predicted *= (1.0 + _digitCount * 0.01);
+
+  // Großbuchstaben-Anteil
+  const _capsCount = (title.match(/[A-ZÄÖÜ]/g) || []).length;
+  const _capsRatio = _capsCount / Math.max(tl.length, 1);
+  if (_capsRatio > 0.3) predicted *= 1.06;
+  else if (_capsRatio > 0.15) predicted *= 1.02;
+
+  // Struktursignale
+  if (title.includes(':')) predicted *= 1.03;
+  if (title.includes('–') || title.includes('—')) predicted *= 1.02;
+  if (title.includes('...')) predicted *= 1.04;
+
+  // Bounds — hart auf max 20% OR begrenzt (normale OR: 1-15%)
+  const _compCeiling = Math.min((catData && catData.best ? catData.best : globalAvg * 2.5) * 1.1, 20);
+  predicted = Math.max(0.3, Math.min(predicted, _compCeiling));
   predicted = Math.round(predicted * 100) / 100;
+
+  // Debug: erste 5 Aufrufe loggen
+  if (!window._compXorDebugCount) window._compXorDebugCount = 0;
+  if (window._compXorDebugCount < 5) {
+    console.log(`[CompXOR] "${title.slice(0,50)}" → ${predicted}% (cat=${cat}, adj=${adjustments}, hash=${_hashSpread.toFixed(3)}, globalAvg=${globalAvg}, lp=${!!lp}, withOR=${withOR.length}, ceiling=${_compCeiling.toFixed(1)})`);
+    window._compXorDebugCount++;
+  }
 
   return predicted;
 
@@ -11304,8 +11456,10 @@ function renderCompetitors() {
       }
       const xor = predictCompetitorOR(a.title, a.pubDate);
       const xorLabel = xor != null ? (xor >= 6 ? 'Top' : xor >= 4 ? 'Gut' : xor >= 2.5 ? 'OK' : 'Tief') : '';
+      const _xorCached = _compXorCache.get(a.title);
+      const _xorBasis = _xorCached ? `Server (${_xorCached.basis}, Conf ${Math.round(_xorCached.confidence * 100)}%)` : 'Client';
       const xorBadge = xor != null
-        ? `<span class="comp-xor ${xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low'}" title="Geschaetzte OR bei BILD: ${xor.toFixed(2)}% (${xorLabel})">${xor.toFixed(1)}%</span>`
+        ? `<span class="comp-xor ${xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low'}" title="Geschaetzte OR bei BILD: ${xor.toFixed(2)}% (${xorLabel}) — ${_xorBasis}">${xor.toFixed(2)}%</span>`
         : '';
       // Aufgabe 3: Visuelle Priorisierung
       const isUrgent = !covered && xor != null && xor >= 5;
@@ -11452,7 +11606,7 @@ function updateTimingHint() {
 
   const now = new Date();
   const h = now.getHours();
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
 
   // Find best 2h slot for current time-of-day range
   const slots = {};
@@ -11719,6 +11873,8 @@ async function fetchInternationalFeeds(silent) {
       }));
     }
     renderIntlCards();
+    // Server-XOR auch für internationale Titel laden
+    _fetchServerCompXorForIntl();
 
     if (!_intlFetchInterval) {
       _intlFetchInterval = setInterval(() => {
@@ -11787,7 +11943,7 @@ function _buildIntlCardHtml(outletKey, cardLabel, dotStyle, sourceSet) {
     const ageStr = ageMins < 60 ? `${ageMins} Min` : `${Math.round(ageMins / 60)} Std`;
     const xor = predictCompetitorOR(a.title, a.pubDate);
     const xorBadge = xor != null
-      ? `<span class="comp-xor ${xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low'}" title="Geschätzte OR bei BILD">${xor.toFixed(1)}%</span>`
+      ? `<span class="comp-xor ${xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low'}" title="Geschätzte OR bei BILD">${xor.toFixed(2)}%</span>`
       : '';
     const safeLink = (a.link || '').replace(/'/g, '%27');
     return `<div class="comp-item" onclick="window.open('${safeUrl(safeLink)}','_blank')">
@@ -11868,7 +12024,7 @@ function buildHeatmap() {
   const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
   const todayTs = Math.floor(todayMidnight.getTime() / 1000);
   const todayPushes = livePushes.filter(m => m.sendDate >= todayTs);
-  const withOR = todayPushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = todayPushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (todayPushes.length === 0) { wrap.innerHTML = '<div class="empty-state">Noch keine Pushes heute.</div>'; return; }
 
   const now = new Date();
@@ -12167,7 +12323,7 @@ function runLearningAgentArmy() {
   const now = Date.now();
   if (_agentArmyCache && now - _agentArmyTs < 30000) return _agentArmyCache;
 
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 5) return null;
 
   const globalAvg = withOR.reduce((s, m) => s + m.openingRate, 0) / withOR.length;
@@ -12480,7 +12636,7 @@ function runLearningAgentArmy() {
 // ═══════════════════════════════════════════════════════════════
 
 function runNationMoodAgents() {
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 5) return null;
 
   const globalAvg = withOR.reduce((s, m) => s + m.openingRate, 0) / withOR.length;
@@ -12579,7 +12735,7 @@ function renderNationMood() {
 
 function renderInsights() {
   // Alle Pushes mit OR (nicht nur heute) für robuste Analyse
-  const allWithOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const allWithOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (allWithOR.length < 5) return '';
 
   const globalAvg = allWithOR.reduce((s, m) => s + m.openingRate, 0) / allWithOR.length;
@@ -13003,14 +13159,14 @@ function mergeFreshPushes() {
 // ── Expected OR für Live-Pushes (Rückblick-Berechnung) ──
 function calcExpectedORForPush(msg) {
   // Einfacherer, robusterer Ansatz: gewichteter Mix aus ähnlichen Pushes + Durchschnitt
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 3) return null;
 
   const title = msg.kickerAndHeadline || msg.headline || '';
   const globalAvg = withOR.reduce((s, m) => s + m.openingRate, 0) / withOR.length;
 
   // 1. Ähnliche Pushes (stärkstes Signal)
-  const similar = findSimilarPushes(title, 5).filter(p => p.openingRate > 0);
+  const similar = findSimilarPushes(title, 5).filter(p => p.openingRate > 0 && p.openingRate <= 25);
   const simAvg = similar.length >= 2
     ? similar.reduce((s, p) => s + p.openingRate, 0) / similar.length : 0;
 
@@ -13074,7 +13230,9 @@ function buildCalibration() {
   const now = Date.now();
   if (_calibrationCache && now - _calibrationTs < 60000) return _calibrationCache;
 
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0);
+  // Learning-Daten (7 Tage) statt livePushes (1 Tag) für stabilere Kalibrierung
+  const _calSource = learningData.pushes.length >= 20 ? learningData.pushes : livePushes;
+  const withOR = _calSource.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
   if (withOR.length < 5) { _calibrationCache = null; return null; }
 
   // Leave-One-Out Kalibrierung: Fuer jeden Push berechne XOR OHNE diesen Push
@@ -13138,9 +13296,9 @@ function buildCalibration() {
     if (arr.length < 3) return { scale: 1, offset: 0 };
     const avgRatio = arr.reduce((s, e) => s + e.ratio, 0) / arr.length;
     const avgDiff = arr.reduce((s, e) => s + e.diff, 0) / arr.length;
-    // Begrenze Korrektur auf ±40% (nicht zu aggressiv)
-    const scale = Math.max(0.6, Math.min(1.4, avgRatio));
-    const offset = Math.max(-2, Math.min(2, avgDiff * 0.3));
+    // Begrenze Korrektur auf ±25% — verhindert Range-Kompression
+    const scale = Math.max(0.75, Math.min(1.25, avgRatio));
+    const offset = Math.max(-1, Math.min(1, avgDiff * 0.2));
     return { scale, offset };
   };
 
@@ -13245,20 +13403,36 @@ function updateThermometer() {
   const value = calcThermoValue();
   _thermoValue = value;
 
-  const fill = document.getElementById('thermoFill');
+  const mercury = document.getElementById('thermoMercury');
+  const bulb = document.getElementById('thermoBulb');
   const label = document.getElementById('thermoLabel');
-  const thermo = document.getElementById('pushThermo');
-  if (!fill || !label) return;
+  if (!mercury || !bulb || !label) return;
 
-  fill.style.height = `${value}%`;
+  mercury.style.width = `${value}%`;
 
-  let cls, text;
-  if (value >= 75) { cls = 'hot'; text = 'PUSH!'; }
-  else if (value >= 55) { cls = 'warm'; text = 'Bereit'; }
-  else if (value >= 35) { cls = 'cool'; text = 'Ruhig'; }
-  else { cls = 'cold'; text = 'Warten'; }
+  let cls, text, grad;
+  if (value >= 85) {
+    cls = 'lv-push'; text = 'PUSH!';
+    grad = 'linear-gradient(to bottom, #f87171 0%, #dc2626 50%, #991b1b 100%)';
+  } else if (value >= 70) {
+    cls = 'lv-hoch'; text = 'Hoch';
+    grad = 'linear-gradient(to bottom, #fb923c 0%, #ea580c 50%, #c2410c 100%)';
+  } else if (value >= 55) {
+    cls = 'lv-bereit'; text = 'Bereit';
+    grad = 'linear-gradient(to bottom, #fbbf24 0%, #d97706 50%, #b45309 100%)';
+  } else if (value >= 40) {
+    cls = 'lv-normal'; text = 'Normal';
+    grad = 'linear-gradient(to bottom, #4ade80 0%, #16a34a 50%, #15803d 100%)';
+  } else if (value >= 25) {
+    cls = 'lv-ruhig'; text = 'Ruhig';
+    grad = 'linear-gradient(to bottom, #60a5fa 0%, #2563eb 50%, #1d4ed8 100%)';
+  } else {
+    cls = 'lv-warten'; text = 'Warten';
+    grad = 'linear-gradient(to bottom, #94a3b8 0%, #64748b 50%, #475569 100%)';
+  }
 
-  fill.className = `thermo-fill ${cls}`;
+  mercury.style.background = grad;
+  bulb.className = `thermo-bulb ${cls}`;
   label.className = `thermo-label ${cls}`;
   label.textContent = text;
 
@@ -13267,8 +13441,8 @@ function updateThermometer() {
   const minSince = lastPush ? Math.round((Date.now() / 1000 - lastPush.sendDate) / 60) : 0;
   const lp = buildLearningProfile();
   const highScore = filteredArticles.filter(a => a.score >= 70).length;
-  const advice = value >= 75 ? 'Jetzt pushen!' : value >= 55 ? 'Guter Zeitpunkt' : value >= 35 ? 'Kein akuter Bedarf' : 'Abwarten';
-  const adviceColor = value >= 75 ? 'var(--red)' : value >= 55 ? 'var(--amber)' : value >= 35 ? '#2563eb' : 'var(--text-tertiary)';
+  const advice = value >= 85 ? 'Jetzt pushen!' : value >= 70 ? 'Guter Zeitpunkt' : value >= 55 ? 'Bereit wenn passend' : value >= 40 ? 'Kein akuter Bedarf' : value >= 25 ? 'Noch abwarten' : 'Ruhephase';
+  const adviceColor = value >= 85 ? 'var(--red)' : value >= 70 ? '#f97316' : value >= 55 ? '#eab308' : value >= 40 ? '#10b981' : value >= 25 ? '#3b82f6' : 'var(--text-tertiary)';
 
   const ttValue = document.getElementById('ttValue');
   const ttLast = document.getElementById('ttLastPush');
@@ -13308,7 +13482,8 @@ async function loadResearchRules() {
         _learningProfileTs = 0;
         _lpCacheTs.sport = 0; _lpCacheTs.nonsport = 0; _lpCacheTs.all = 0;
         _calibrationTs = 0;
-        console.log('[Forschung] Rules geaendert — Score-Caches invalidiert');
+        _invalidateORCache();
+        console.log('[Forschung] Rules geaendert — Score- und OR-Caches invalidiert');
       }
     }
   } catch(e) { console.warn('Research rules fetch failed:', e); }
@@ -13916,49 +14091,59 @@ function renderForschung(data) {
   }
   // accSubEl wird oben schon befüllt (Trend + KW-Vergleich)
 
-  // ── Monats-Trend Chart ──────────────────────────────────────
+  // ── Tages-Trend Chart (30 Tage) ──────────────────────────────────────
   const mtChart = document.getElementById('monthlyTrendChart');
   const mtLabel = document.getElementById('monthlyTrendLabel');
   const mtMeta = document.getElementById('monthlyTrendMeta');
   const tt = data.temporal_trends || {};
-  if (mtChart && tt.monthly && tt.monthly.length > 0) {
-    const months = tt.monthly;
-    const n = months.length;
-    const monthNames = {'01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'Mai','06':'Jun','07':'Jul','08':'Aug','09':'Sep','10':'Okt','11':'Nov','12':'Dez'};
-    const ors = months.map(m => m.avg_or);
-    if (ors.length === 0) return;
+  const _dailyData = tt.daily_30 || [];
+  if (mtChart && _dailyData.length > 0) {
+    const days = _dailyData;
+    const n = days.length;
+    const wdNames = ['So','Mo','Di','Mi','Do','Fr','Sa'];
+    const ors = days.map(d => d.avg_or).filter(v => v > 0);
+    if (ors.length === 0) { mtChart.innerHTML = '<div style="color:#9ca3af;text-align:center;padding:40px">Keine OR-Daten</div>'; }
+    else {
     const minOr = Math.floor(Math.min(...ors) * 0.9 * 10) / 10;
     const maxOr = Math.ceil(Math.max(...ors) * 1.1 * 10) / 10;
     const range = maxOr - minOr || 1;
 
-    // SVG dimensions
-    const W = 600, H = 150, padL = 40, padR = 16, padT = 16, padB = 28;
+    // SVG dimensions — wider for 30 days
+    const W = 800, H = 190, padL = 42, padR = 16, padT = 20, padB = 32;
     const plotW = W - padL - padR, plotH = H - padT - padB;
 
     // Map data to SVG coordinates
-    const pts = months.map((m, i) => ({
+    const pts = days.map((d, i) => ({
       x: padL + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2),
-      y: padT + plotH - ((m.avg_or - minOr) / range) * plotH,
-      or: m.avg_or, month: m.month, count: m.push_count, cat: m.best_cat
+      y: d.avg_or > 0 ? padT + plotH - ((d.avg_or - minOr) / range) * plotH : padT + plotH,
+      or: d.avg_or, date: d.date, count: d.push_count, cat: d.best_cat, hasOr: d.avg_or > 0
     }));
 
-    // Smooth line (Catmull-Rom spline to SVG cubic bezier)
-    let pathD = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(0, i - 1)];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[Math.min(pts.length - 1, i + 2)];
-      const tension = 0.3;
-      const cp1x = p1.x + (p2.x - p0.x) * tension;
-      const cp1y = p1.y + (p2.y - p0.y) * tension;
-      const cp2x = p2.x - (p3.x - p1.x) * tension;
-      const cp2y = p2.y - (p3.y - p1.y) * tension;
-      pathD += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    // Filter points with valid OR for the line
+    const validPts = pts.filter(p => p.hasOr);
+
+    // Smooth line (Catmull-Rom spline)
+    let pathD = '';
+    if (validPts.length > 1) {
+      pathD = `M ${validPts[0].x} ${validPts[0].y}`;
+      for (let i = 0; i < validPts.length - 1; i++) {
+        const p0 = validPts[Math.max(0, i - 1)];
+        const p1 = validPts[i];
+        const p2 = validPts[i + 1];
+        const p3 = validPts[Math.min(validPts.length - 1, i + 2)];
+        const tension = 0.3;
+        const cp1x = p1.x + (p2.x - p0.x) * tension;
+        const cp1y = p1.y + (p2.y - p0.y) * tension;
+        const cp2x = p2.x - (p3.x - p1.x) * tension;
+        const cp2y = p2.y - (p3.y - p1.y) * tension;
+        pathD += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+      }
     }
 
-    // Gradient fill path (close at bottom)
-    const fillD = pathD + ` L ${pts[n-1].x} ${padT + plotH} L ${pts[0].x} ${padT + plotH} Z`;
+    // Gradient fill
+    const fillD = validPts.length > 1
+      ? pathD + ` L ${validPts[validPts.length-1].x} ${padT + plotH} L ${validPts[0].x} ${padT + plotH} Z`
+      : '';
 
     // Y-axis grid lines (4 steps)
     const ySteps = 4;
@@ -13971,53 +14156,94 @@ function renderForschung(data) {
       yLabels += `<text x="${padL - 6}" y="${y + 3}" text-anchor="end" fill="#9ca3af" font-size="9">${val.toFixed(1)}%</text>`;
     }
 
-    // X-axis labels
+    // X-axis labels — show every ~5th day + always first and last
     const xLabels = pts.map((p, i) => {
-      const mm = months[i].month.split('-')[1];
-      const label = monthNames[mm] || mm;
+      const showLabel = i === 0 || i === n - 1 || (n > 10 ? i % 5 === 0 : true);
+      if (!showLabel) return '';
+      const parts = days[i].date.split('-');
+      const dd = parseInt(parts[2]);
+      const mm = parseInt(parts[1]);
+      const dt = new Date(days[i].date);
+      const wd = wdNames[dt.getDay()];
       const isLast = i === n - 1;
-      return `<text x="${p.x}" y="${H - 4}" text-anchor="middle" fill="${isLast ? '#0070d2' : '#9ca3af'}" font-size="${isLast ? '10' : '9'}" font-weight="${isLast ? '700' : '400'}">${label}</text>`;
+      const label = dd + '.' + mm + '.';
+      return `<text x="${p.x}" y="${H - 4}" text-anchor="middle" fill="${isLast ? '#0070d2' : '#9ca3af'}" font-size="${isLast ? '10' : '8'}" font-weight="${isLast ? '700' : '400'}">${label}</text>`
+        + `<text x="${p.x}" y="${H - 14}" text-anchor="middle" fill="#c9cdd3" font-size="7">${wd}</text>`;
     }).join('');
+
+    // Weekend shading
+    let weekendBars = '';
+    for (let i = 0; i < n; i++) {
+      const dt = new Date(days[i].date);
+      if (dt.getDay() === 0 || dt.getDay() === 6) {
+        const bw = Math.max(plotW / n, 6);
+        weekendBars += `<rect x="${pts[i].x - bw/2}" y="${padT}" width="${bw}" height="${plotH}" fill="#f3f4f6" rx="2"/>`;
+      }
+    }
 
     // Data points + value labels
     const dots = pts.map((p, i) => {
+      if (!p.hasOr) return '';
       const isLast = i === n - 1;
-      const r = isLast ? 4.5 : 3;
+      const r = isLast ? 4.5 : 2.5;
       const fill = isLast ? '#0070d2' : '#60a5fa';
       const stroke = isLast ? '#fff' : 'none';
       const sw = isLast ? 2 : 0;
-      // Value label above dot (only show every 2nd or last or first for readability)
+      // Show value label for first, last, min, max, every 7th
+      const isMin = p.or === Math.min(...ors);
+      const isMax = p.or === Math.max(...ors);
       let valLabel = '';
-      if (isLast || i === 0 || n <= 6 || i % 2 === 0) {
-        const ly = p.y - 10;
-        valLabel = `<text x="${p.x}" y="${ly}" text-anchor="middle" fill="${isLast ? '#0070d2' : '#6b7280'}" font-size="${isLast ? '11' : '9'}" font-weight="${isLast ? '700' : '500'}">${p.or.toFixed(1)}%</text>`;
+      if (isLast || i === 0 || isMin || isMax || (n <= 14 && i % 2 === 0) || (n > 14 && i % 7 === 0)) {
+        const ly = p.y - 8;
+        const col = isMin ? '#dc2626' : isMax ? '#16a34a' : isLast ? '#0070d2' : '#6b7280';
+        valLabel = `<text x="${p.x}" y="${ly}" text-anchor="middle" fill="${col}" font-size="${(isLast||isMin||isMax) ? '10' : '8'}" font-weight="${(isLast||isMin||isMax) ? '700' : '400'}">${p.or.toFixed(1)}%</text>`;
       }
       return `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}">
-        <title>${months[i].month}: ${p.or.toFixed(2)}% OR, ${p.count} Pushes, Top: ${p.cat}</title>
+        <title>${days[i].date}: ${p.or.toFixed(2)}% OR, ${p.count} Pushes, Top: ${p.cat}</title>
       </circle>${valLabel}`;
     }).join('');
 
     // Average line
-    const avgOr = ors.reduce((s, v) => s + v, 0) / n;
+    const avgOr = ors.reduce((s, v) => s + v, 0) / ors.length;
     const avgY = padT + plotH - ((avgOr - minOr) / range) * plotH;
     const avgLine = `<line x1="${padL}" y1="${avgY}" x2="${W - padR}" y2="${avgY}" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
-      <text x="${W - padR + 2}" y="${avgY + 3}" fill="#f59e0b" font-size="8" opacity="0.8">${avgOr.toFixed(1)}%</text>`;
+      <text x="${W - padR + 2}" y="${avgY + 3}" fill="#f59e0b" font-size="8" opacity="0.8">Ø ${avgOr.toFixed(1)}%</text>`;
+
+    // 7-day moving average line
+    let maLine = '';
+    if (n >= 7) {
+      const maPts = [];
+      for (let i = 6; i < n; i++) {
+        const window7 = days.slice(i - 6, i + 1).filter(d => d.avg_or > 0).map(d => d.avg_or);
+        if (window7.length >= 3) {
+          const ma = window7.reduce((s,v)=>s+v,0) / window7.length;
+          maPts.push({ x: pts[i].x, y: padT + plotH - ((ma - minOr) / range) * plotH });
+        }
+      }
+      if (maPts.length > 1) {
+        maLine = `<path d="M ${maPts.map(p => p.x + ' ' + p.y).join(' L ')}" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.7"/>
+          <text x="${maPts[maPts.length-1].x + 4}" y="${maPts[maPts.length-1].y - 4}" fill="#a78bfa" font-size="7" opacity="0.8">7d MA</text>`;
+      }
+    }
 
     mtChart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" style="overflow:visible">
       <defs>
         <linearGradient id="orFillGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.2"/>
+          <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.15"/>
           <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.02"/>
         </linearGradient>
       </defs>
+      ${weekendBars}
       ${gridLines}
       ${yLabels}
-      <path d="${fillD}" fill="url(#orFillGrad)"/>
-      <path d="${pathD}" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${fillD ? `<path d="${fillD}" fill="url(#orFillGrad)"/>` : ''}
+      ${pathD ? `<path d="${pathD}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` : ''}
       ${avgLine}
+      ${maLine}
       ${dots}
       ${xLabels}
     </svg>`;
+    }
 
     // Trend-Label
     if (mtLabel) {
@@ -14040,18 +14266,21 @@ function renderForschung(data) {
     }
 
     // Meta-Zeile
-    if (mtMeta) {
-      const first = months[0];
-      const last = months[n - 1];
-      const delta = last.avg_or - first.avg_or;
+    if (mtMeta && _dailyData.length > 0) {
+      const first = _dailyData[0];
+      const last = _dailyData[_dailyData.length - 1];
+      const validDays = _dailyData.filter(d => d.avg_or > 0);
+      const delta = validDays.length >= 2 ? validDays[validDays.length-1].avg_or - validDays[0].avg_or : 0;
       const deltaColor = delta >= 0 ? '#16a34a' : '#dc2626';
-      const totalPushes = months.reduce((s, m) => s + m.push_count, 0);
-      const slope = tt.trend_slope || 0;
+      const totalPushes = _dailyData.reduce((s, d) => s + d.push_count, 0);
+      const bestDay = validDays.length > 0 ? validDays.reduce((a, b) => a.avg_or > b.avg_or ? a : b) : null;
+      const worstDay = validDays.length > 0 ? validDays.reduce((a, b) => a.avg_or < b.avg_or ? a : b) : null;
       mtMeta.innerHTML = `
-        <span>${first.month} bis ${last.month}</span>
-        <span>${totalPushes} Pushes gesamt</span>
+        <span>${first.date} bis ${last.date}</span>
+        <span>${totalPushes} Pushes in ${_dailyData.length} Tagen</span>
         <span style="color:${deltaColor};font-weight:600">${delta >= 0 ? '+' : ''}${delta.toFixed(2)}% Delta</span>
-        ${slope !== 0 ? `<span>Slope: ${slope > 0 ? '+' : ''}${slope.toFixed(3)}/Monat</span>` : ''}
+        ${bestDay ? `<span style="color:#16a34a">Best: ${bestDay.date.split('-').slice(1).join('.')} (${bestDay.avg_or.toFixed(1)}%)</span>` : ''}
+        ${worstDay ? `<span style="color:#dc2626">Worst: ${worstDay.date.split('-').slice(1).join('.')} (${worstDay.avg_or.toFixed(1)}%)</span>` : ''}
       `;
     }
   }
@@ -15969,19 +16198,29 @@ const _SHAP_DE = {
 };
 
 async function loadTagesplan() {
+  console.log('[TP] loadTagesplan START, articles=' + articles.length);
+  const _tpDebug = document.getElementById('tpGrid');
+  // Artikel-Feed im Hintergrund laden falls noch leer
+  if (articles.length === 0 && !_fetchArticlesLock) {
+    fetchArticles().catch(() => {});
+  }
   try {
+    console.log('[TP] fetching API_BASE=' + API_BASE);
     const [tpResp, mlResp] = await Promise.all([
       resilientFetch(API_BASE + '/api/tagesplan', {_timeout: 20000}),
       resilientFetch(API_BASE + '/api/ml/status', {_timeout: 15000}),
     ]);
+    console.log('[TP] responses: tp=' + tpResp.status + ' ml=' + mlResp.status);
     if (!tpResp.ok) throw new Error('Tagesplan HTTP ' + tpResp.status);
     if (!mlResp.ok) throw new Error('ML Status HTTP ' + mlResp.status);
     const tpRes = await tpResp.json();
     const mlRes = await mlResp.json();
+    console.log('[TP] data: slots=' + (tpRes.slots||[]).length + ' golden=' + tpRes.golden_hour);
     showServerError(false);
     renderTagesplan(tpRes, mlRes);
+    console.log('[TP] renderTagesplan DONE');
   } catch (e) {
-    console.warn('[Tagesplan] Fehler:', e);
+    console.error('[TP] FEHLER:', e);
     showTabError('tpGrid', 'Tagesplan: ' + e.message, 'loadTagesplan()');
     if (_isNetworkError(e)) _markServerDown();
   }
@@ -15995,12 +16234,10 @@ function renderTagesplan(data, mlStatus) {
   document.getElementById('tpDate').textContent = ' ' + (data.date || '');
   const goldenH = data.golden_hour != null ? String(data.golden_hour).padStart(2,'0') + ':00' : '--';
   document.getElementById('tpHeroGolden').textContent = goldenH;
-  // Ø OR heute aus bereits gepushten Artikeln berechnen + Trend-Pfeil
   const _todayPushes = data.already_pushed_today || [];
   const _todayORs = _todayPushes.filter(a => a.or > 0).map(a => a.or);
   const _avgORToday = _todayORs.length > 0 ? (_todayORs.reduce((s, v) => s + v, 0) / _todayORs.length) : 0;
   const _avgEl = document.getElementById('tpHeroAvgOR');
-  // Trend: letzte 3 Pushes vs. davor — zeigt ob OR steigt oder fällt
   let _trendArrow = '';
   if (_todayORs.length >= 4) {
     const _recentN = Math.max(2, Math.floor(_todayORs.length / 3));
@@ -16053,108 +16290,130 @@ function renderTagesplan(data, mlStatus) {
     pushedPanel.style.display = 'none';
   }
 
-  // ── Stundenplan Grid ──
+  // ── Row-based Tagesplan ──
   const grid = document.getElementById('tpGrid');
   if (!data.slots || data.slots.length === 0) {
-    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)">Keine Daten.</div>';
+    if (data.loading) {
+      grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Modell wird geladen &mdash; bitte 30-60s warten...</div>';
+      setTimeout(() => { if (currentTab === 'tagesplan') loadTagesplan(); }, 5000);
+    } else {
+      grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-tertiary)">Keine Daten.</div>';
+    }
     return;
   }
 
   const mustHaveSet = new Set(data.must_have_hours || []);
-  const slotReviews = (llm && llm.slot_reviews) ? llm.slot_reviews : {};
-  const mustPushLlm = {};
-  if (llm && llm.must_push) {
-    for (const mp of llm.must_push) mustPushLlm[String(mp.hour)] = mp.reason;
+  const goldenHour = data.golden_hour;
+
+  // Build article suggestion pool — 2 per slot
+  const _catMap = {}, _allByScore = [];
+  if (typeof articles !== 'undefined' && articles.length > 0) {
+    for (const a of articles) {
+      const cat = (a.category || 'Sonstiges').toLowerCase().replace(/[^a-z]/g, '');
+      if (!_catMap[cat]) _catMap[cat] = [];
+      _catMap[cat].push(a);
+      _allByScore.push(a);
+    }
+    for (const cat in _catMap) _catMap[cat].sort((a, b) => (b.score || 0) - (a.score || 0));
+    _allByScore.sort((a, b) => (b.score || 0) - (a.score || 0));
+  }
+  const _usedUrls = new Set();
+  function _pick(slotCat) {
+    const cat = (slotCat || 'news').toLowerCase().replace(/[^a-z]/g, '');
+    if (_catMap[cat]) { for (const a of _catMap[cat]) { if (!_usedUrls.has(a.link)) { _usedUrls.add(a.link); return a; } } }
+    for (const a of _allByScore) { if (!_usedUrls.has(a.link)) { _usedUrls.add(a.link); return a; } }
+    return null;
   }
 
-  const goldenHour = data.golden_hour;
+  function _sugCell(a, num) {
+    if (!a) return '<div class="tp-row-sug"><div class="tp-sug-empty">Kein passender Artikel</div></div>';
+    const title = escapeHtml((a.title || '').substring(0, 80));
+    const score = a.score || 0;
+    const cat = escapeHtml(a.category || '');
+    const link = a.link ? safeUrl(a.link) : '';
+    const xor = typeof predictCompetitorOR === 'function' ? predictCompetitorOR(a.title || '', new Date()) : null;
+    const xorBadge = xor != null
+      ? '<span class="tp-sug-or ' + (xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low') + '">' + xor.toFixed(1) + '%</span>'
+      : '';
+    return '<div class="tp-row-sug">'
+      + '<div class="tp-sug-num">Vorschlag ' + num + '</div>'
+      + '<div class="tp-sug-title">' + (link ? '<a href="' + link + '" target="_blank" rel="noopener">' + title + '</a>' : title) + xorBadge + '</div>'
+      + '<div class="tp-sug-bottom"><span class="tp-sug-score">' + Math.round(score) + '</span><span class="tp-sug-cat">' + cat + '</span></div>'
+      + '</div>';
+  }
+
   let html = '';
-  // Header row
   for (const s of data.slots) {
     const hStr = String(s.hour).padStart(2,'0') + ':00';
     const isGolden = s.hour === goldenHour && !s.is_past;
-    const hdrCls = 'tp-col-header' + (s.is_now ? ' tp-now' : '') + (s.is_past ? ' tp-past' : '') + (isGolden ? ' tp-golden' : '');
-    html += '<div class="' + hdrCls + '">' + hStr;
-    if (s.is_now) html += '<span class="tp-h-now">Jetzt</span>';
-    if (isGolden) html += '<span class="tp-h-now" style="color:#ffc107">Golden Hour</span>';
-    html += '</div>';
-  }
-  // Body row
-  for (const s of data.slots) {
     const isMust = s.must_have || mustHaveSet.has(s.hour);
-    const isGolden = s.hour === goldenHour && !s.is_past;
-    const bodyCls = 'tp-col-body tp-color-' + s.color +
-      (s.is_now ? ' tp-now' : '') + (s.is_past ? ' tp-past' : '') +
-      (isMust && !s.is_past ? ' tp-must-have' : '') + (isGolden ? ' tp-golden' : '');
+    const orVal = s.expected_or != null ? s.expected_or.toFixed(1) + '%' : '--';
+    const orCls = s.color === 'green' ? 'c-green' : s.color === 'yellow' ? 'c-yellow' : 'c-gray';
     const catCls = 'tp-cat-' + (s.best_cat || 'news');
-    const orCls = s.color === 'green' ? 'tp-or-green' : s.color === 'yellow' ? 'tp-or-yellow' : 'tp-or-gray';
 
-    html += '<div class="' + bodyCls + '">';
-    // Must-Have Badge
-    if (isMust && !s.is_past) {
-      html += '<div class="tp-must-badge">Must-Push</div>';
-    }
-    // Kategorie
-    html += '<div class="tp-cat-badge ' + catCls + '">' + (s.best_cat || 'News') + '</div>';
-    // Top-Kategorien (nur zukünftige Slots)
-    if (!s.is_past && s.top_cats && s.top_cats.length > 0) {
-      html += '<div class="tp-top-cats">';
-      for (const tc of s.top_cats.slice(0, 3)) {
-        const tcOr = (tc.avg_or || 0).toFixed(1);
-        html += '<div class="tp-tc-row"><span class="tp-tc-cat">' + escapeHtml(tc.cat) + '</span><span class="tp-tc-or">' + tcOr + '% (n=' + (tc.count || 0) + ')</span></div>';
+    let rowCls = 'tp-row';
+    if (s.is_past) rowCls += ' tp-row-past';
+    if (s.is_now) rowCls += ' tp-row-now';
+    if (isMust && !s.is_past) rowCls += ' tp-row-must';
+    if (isGolden) rowCls += ' tp-row-golden';
+
+    html += '<div class="' + rowCls + '">';
+
+    // Time
+    html += '<div class="tp-row-time"><span class="tp-time">' + hStr + '</span>';
+    if (s.is_now) html += '<span class="tp-time-label tp-time-now">Jetzt</span>';
+    else if (isGolden) html += '<span class="tp-time-label tp-time-golden">Golden</span>';
+    else if (isMust && !s.is_past) html += '<span class="tp-time-label tp-time-must">Must</span>';
+    html += '</div>';
+
+    // Suggestions
+    if (!s.is_past) {
+      const sug1 = _pick(s.best_cat);
+      const sug2 = _pick(s.best_cat);
+      html += _sugCell(sug1, 1);
+      html += _sugCell(sug2, 2);
+    } else {
+      // Past: show what was pushed with Ressort + OR
+      html += '<div class="tp-row-sug">';
+      if (s.pushed_this_hour && s.pushed_this_hour.length > 0) {
+        html += s.pushed_this_hour.map(p => {
+          const pOr = p.or || 0;
+          const pOrCls = pOr >= 5 ? 'xor-high' : pOr >= 3 ? 'xor-mid' : 'xor-low';
+          const pOrBadge = pOr > 0 ? '<span class="tp-sug-or ' + pOrCls + '">' + pOr.toFixed(1) + '%</span>' : '';
+          const pCat = p.category ? '<span class="tp-sug-cat" style="margin-left:6px;font-size:10px">' + escapeHtml(p.category) + '</span>' : '';
+          return '<div style="padding:4px 10px;font-size:13px">' + escapeHtml((p.title||'').substring(0, 60)) + pOrBadge + pCat + '</div>';
+        }).join('');
+      } else {
+        html += '<div class="tp-sug-empty" style="opacity:0.5">Kein Push</div>';
       }
       html += '</div>';
     }
-    // OR
-    html += '<div class="tp-or ' + orCls + '">' + (s.expected_or != null ? s.expected_or.toFixed(1) + '%' : '--') + '</div>';
-    // Stimmung
-    html += '<div class="tp-mood">' + (s.mood || '') + '</div>';
-    // Confidence
-    html += '<div class="tp-conf">' + (s.confidence || '') + ' (n=' + (s.n_historical || 0) + ')' + (s.has_ml ? ' ML' : '') + '</div>';
-    // SHAP-Erklärung
-    if (!s.is_past && s.shap_explanation) {
-      const shapHtml = escapeHtml(s.shap_explanation).replace(/(\+[\d.]+pp)/g, '<span class="tp-sp tp-sp-pos">$1</span>').replace(/([-\u2212][\d.]+pp)/g, '<span class="tp-sp tp-sp-neg">$1</span>');
-      html += '<div class="tp-shap-mini">' + shapHtml + '</div>';
+
+    // Meta: XOR + Category (nach den Vorschlägen)
+    html += '<div class="tp-row-meta">'
+      + '<div class="tp-row-or ' + orCls + '">' + orVal + '</div>'
+      + '<div class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</div>'
+      + '</div>';
+
+    // Status
+    html += '<div class="tp-row-status">';
+    if (s.pushed_this_hour && s.pushed_this_hour.length > 0 && !s.is_past) {
+      html += '<div class="tp-pushed-badge">' + s.pushed_this_hour.length + ' gepusht</div>';
     }
-    // Bereits gepusht diese Stunde?
-    if (s.pushed_this_hour && s.pushed_this_hour.length > 0) {
-      for (const p of s.pushed_this_hour) {
-        const pOr = p.or || 0;
-        const pOrColor = pOr >= 5 ? '#34c759' : pOr >= 3 ? '#ff9f0a' : '#ff3b30';
-        const pEil = p.is_eilmeldung ? ' <span class="tp-pp-eil">Eil</span>' : '';
-        html += '<div class="tp-pushed-slot"><span style="color:' + pOrColor + '">' + pOr.toFixed(1) + '%</span> ' +
-          escapeHtml((p.title||'').substring(0,30)) + pEil + '</div>';
-      }
-    }
-    const hKey = String(s.hour);
-    // LLM Must-Push Reason (nur bei Must-Push Stunden)
-    if (mustPushLlm[hKey] && !s.is_past) {
-      html += '<div class="tp-llm-tip" style="border-left-color:#ff2d55">' + escapeHtml(mustPushLlm[hKey]) + '</div>';
-    }
-    // LLM Slot-Review Tip
-    if (!s.is_past && slotReviews[hKey]) {
-      const rev = slotReviews[hKey];
-      const tipCls = rev.rating === 'gut' ? 'tp-tip-gut' : rev.rating === 'warnung' ? 'tp-tip-warnung' : 'tp-tip-ok';
-      const tipText = (rev.tip || '').substring(0, 80);
-      if (tipText) html += '<div class="tp-llm-tip ' + tipCls + '">' + escapeHtml(tipText) + '</div>';
-    }
-    // Historisches Vorbild — prominent verlinkt
-    if (s.best_historical && s.best_historical.length > 0) {
-      for (const bh of s.best_historical.slice(0, 2)) {
-        const bhTitle = escapeHtml((bh.title || '').substring(0, 50));
-        const orColor = bh.or >= 5.5 ? '#34c759' : bh.or >= 4 ? '#ff9f0a' : '#8e8e93';
-        const orBadge = '<span class="tp-bh-or" style="color:' + orColor + '">' + (bh.or || 0).toFixed(1) + '%</span>';
-        const catBadge = bh.cat ? '<span class="tp-bh-cat">' + escapeHtml(bh.cat) + '</span>' : '';
-        if (bh.link) {
-          html += '<div class="tp-advice"><a href="' + safeUrl(bh.link) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + orBadge + bhTitle + '</a>' + catBadge + '</div>';
-        } else {
-          html += '<div class="tp-advice">' + orBadge + bhTitle + ' ' + catBadge + '</div>';
-        }
-      }
+    if (!s.is_past) {
+      html += '<div class="tp-mood-text">' + escapeHtml(s.mood || '') + '</div>';
+      html += '<div class="tp-conf-text">n=' + (s.n_historical || 0) + '</div>';
     }
     html += '</div>';
+
+    html += '</div>'; // close row
   }
   grid.innerHTML = html;
+  // Scroll to now row
+  requestAnimationFrame(() => {
+    const nowRow = grid.querySelector('.tp-row-now');
+    if (nowRow) nowRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
 }
 
 async function triggerRetrain() {

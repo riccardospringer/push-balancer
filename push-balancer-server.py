@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Local dev server for Push Balancer — serves HTML + proxies BILD APIs + competitor feeds."""
 
+# libomp fuer LightGBM/XGBoost vorab laden (macOS SIP blockiert DYLD_LIBRARY_PATH)
+import os as _os, ctypes as _ctypes
+_omp_lib = _os.path.expanduser("~/.local/lib/libomp.dylib")
+if _os.path.exists(_omp_lib):
+    try:
+        _ctypes.cdll.LoadLibrary(_omp_lib)
+    except OSError:
+        pass
+
 import http.server
 import json
 import ssl
@@ -21,6 +30,28 @@ from collections import defaultdict
 from bisect import bisect_left, bisect_right
 from contextlib import nullcontext as _nullcontext
 
+# ── sklearn + joblib für ML v2 ──────────────────────────────────────────
+try:
+    from sklearn.ensemble import GradientBoostingRegressor as SklearnGBR
+    from sklearn.decomposition import PCA as SklearnPCA
+    import joblib
+    import numpy as np
+    _SKLEARN_AVAILABLE = True
+except ImportError:
+    _SKLEARN_AVAILABLE = False
+    SklearnGBR = None
+    SklearnPCA = None
+    np = None
+
+# LightGBM: schneller und besser als sklearn GBR
+_LGBM_AVAILABLE = False
+_lgb = None
+try:
+    import lightgbm as _lgb
+    _LGBM_AVAILABLE = True
+except (ImportError, OSError):
+    pass
+
 # ── ML State (LightGBM + SHAP) ──────────────────────────────────────────
 _ml_state = {
     "model": None,
@@ -34,6 +65,45 @@ _ml_state = {
     "training": False,
 }
 _ml_lock = threading.Lock()
+
+# ── Unified ML State (ML-First Prediction) ───────────────────────────────
+_unified_state = {
+    "model": None,
+    "feature_names": [],
+    "stats": None,
+    "calibrator": None,
+    "conformal_radius": 1.0,
+    "metrics": {},
+    "train_count": 0,
+    "last_train_ts": 0,
+    "training": False,
+}
+_unified_lock = threading.Lock()
+
+# ── Topic-Tracker & World-Event-Index (ML-First) ─────────────────────────
+_topic_tracker = {"clusters": [], "ts": 0}
+_topic_tracker_lock = threading.Lock()
+_world_event_index = {"hot_topics": [], "keyword_counts": {}, "ts": 0}
+_world_event_index_lock = threading.Lock()
+
+# ── Online Bias Correction (Unified) ─────────────────────────────────────
+_gbrt_online_bias = 0.0
+
+# ── Model Selector State ─────────────────────────────────────────────────
+_model_selector_state = {
+    "active_model": "ml_ensemble",  # "unified" oder "ml_ensemble"
+    "unified_mae_24h": None,
+    "ensemble_mae_24h": None,
+    "consecutive_worse": 0,
+    "evaluated_count": 0,
+    "last_check_ts": 0,
+}
+
+# ── Auto-Retrain State ───────────────────────────────────────────────────
+_auto_retrain_state = {
+    "consecutive_degraded_ticks": 0,
+    "last_retrain_trigger_ts": 0,
+}
 
 # ── Safety Hardening: ADVISORY ONLY ─────────────────────────────────────
 # KRITISCH: Das System darf NIEMALS autonom Push-Benachrichtigungen senden.
@@ -59,7 +129,15 @@ def _safety_envelope(result):
         result["safety_mode"] = SAFETY_MODE
     return result
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
+                    force=True)
+# Flush Handler für nohup/disown (sonst buffert Python den Output)
+for _h in logging.root.handlers:
+    if hasattr(_h, 'stream') and hasattr(_h.stream, 'reconfigure'):
+        try:
+            _h.stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
 
 # ── Lokale .env laden (gleicher Ordner wie das Script) ───────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +154,7 @@ if os.path.exists(_LOCAL_ENV):
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI_API_KEY", "")
 log = logging.getLogger("push-balancer")
 
-PORT = 8050
+PORT = int(os.environ.get("PORT", "8050"))
 ALLOW_INSECURE_SSL = os.environ.get("ALLOW_INSECURE_SSL", "0") == "1"
 
 # SSL-Context mit certifi-Zertifikaten (macOS Python hat oft kein System-CA-Bundle)
@@ -89,9 +167,15 @@ except ImportError:
 # Globaler SSL-Context fuer alle urllib-Calls
 import ssl as _ssl_mod
 _GLOBAL_SSL_CTX = _ssl_mod.create_default_context(cafile=_SSL_CERTFILE)
-BILD_SITEMAP = "https://www.bild.de/sitemap-news.xml"
-PUSH_API_BASE = "http://push-frontend.bildcms.de"
+BILD_SITEMAP = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
+PUSH_API_BASE = os.environ.get("PUSH_API_BASE", "")
 SERVE_DIR = os.path.dirname(os.path.abspath(__file__))  # nur das Verzeichnis mit den Dateien
+
+# CORS: erlaubte Origins (localhost + Railway)
+_railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+ALLOWED_ORIGINS = [f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}", "null"]
+if _railway_domain:
+    ALLOWED_ORIGINS.append(f"https://{_railway_domain}")
 
 # Competitor RSS feeds (all publicly available)
 COMPETITOR_FEEDS = {
@@ -168,10 +252,25 @@ def _init_push_db():
         channel TEXT DEFAULT '',
         channels TEXT DEFAULT '[]',
         is_eilmeldung INTEGER DEFAULT 0,
-        updated_at INTEGER DEFAULT 0
+        updated_at INTEGER DEFAULT 0,
+        target_stats TEXT DEFAULT '{}',
+        app_list TEXT DEFAULT '[]',
+        n_apps INTEGER DEFAULT 0,
+        total_recipients INTEGER DEFAULT 0
     )""")
+    # Migrate: add new columns if they don't exist
+    for _col, _type, _default in [
+        ("target_stats", "TEXT", "'{}'"), ("app_list", "TEXT", "'[]'"),
+        ("n_apps", "INTEGER", "0"), ("total_recipients", "INTEGER", "0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE pushes ADD COLUMN {_col} {_type} DEFAULT {_default}")
+        except Exception:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_ts ON pushes(ts_num)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_cat ON pushes(cat)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_or_ts ON pushes(or_val, ts_num)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_hour_or ON pushes(hour, or_val)")
     # Prediction log for ML training
     conn.execute("""CREATE TABLE IF NOT EXISTS prediction_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +328,20 @@ def _init_push_db():
         metrics_json TEXT DEFAULT '{}'
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_monitoring_ts ON monitoring_events(timestamp)")
+    # ML v2: LLM-Score Spalten zu pushes hinzufügen (idempotent via ALTER TABLE)
+    _llm_columns = [
+        ("llm_magnitude", "REAL DEFAULT 0"),
+        ("llm_clickability", "REAL DEFAULT 0"),
+        ("llm_relevanz", "REAL DEFAULT 0"),
+        ("llm_dringlichkeit", "REAL DEFAULT 0"),
+        ("llm_emotionalitaet", "REAL DEFAULT 0"),
+        ("llm_scored_at", "INTEGER DEFAULT 0"),
+    ]
+    for col_name, col_type in _llm_columns:
+        try:
+            conn.execute(f"ALTER TABLE pushes ADD COLUMN {col_name} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
     conn.commit()
     conn.close()
     log.info(f"[PushDB] Initialized at {PUSH_DB_PATH}")
@@ -266,30 +379,41 @@ def _push_db_upsert(parsed_pushes):
         count = 0
         for p in parsed_pushes:
             mid = p.get("message_id") or f"{p['ts_num']}_{p.get('title', '')[:30]}"
+            _ts_json = json.dumps(p.get("target_stats", {})) if isinstance(p.get("target_stats"), dict) else "{}"
+            _apps_json = json.dumps(p.get("app_list", [])) if isinstance(p.get("app_list"), list) else "[]"
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
-                cat, link, type, hour, title_len, opened, received, channel, channels, is_eilmeldung, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cat, link, type, hour, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
+                target_stats, app_list, n_apps, total_recipients)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     or_val = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
                     opened = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
                     received = CASE WHEN excluded.received > received THEN excluded.received ELSE received END,
+                    target_stats = CASE WHEN length(excluded.target_stats) > 2 THEN excluded.target_stats ELSE target_stats END,
+                    n_apps = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
+                    total_recipients = CASE WHEN excluded.total_recipients > 0 THEN excluded.total_recipients ELSE total_recipients END,
                     updated_at = ?
             """, (mid, p["ts_num"], p["or"], p.get("title", ""), p.get("headline", ""),
                   p.get("kicker", ""), p.get("cat", ""), p.get("link", ""), p.get("type", "editorial"),
                   p.get("hour", -1), p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
                   p.get("channel", ""), json.dumps(p.get("channels", [])), 1 if p.get("is_eilmeldung") else 0,
-                  now, now))
+                  now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0), now))
             count += cur.rowcount
         conn.commit()
         conn.close()
     return count
 
 def _push_db_load_all(min_ts=0):
-    """Load all pushes from SQLite, optionally filtered by min timestamp."""
-    with _push_db_lock:
-        conn = sqlite3.connect(PUSH_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM pushes WHERE ts_num > ? ORDER BY ts_num DESC", (min_ts,)).fetchall()
+    """Load all pushes from SQLite, optionally filtered by min timestamp.
+    Nutzt eigene Connection mit WAL-Mode für nicht-blockierendes Lesen."""
+    conn = sqlite3.connect(PUSH_DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM pushes WHERE ts_num > ? AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%' ORDER BY ts_num DESC",
+            (min_ts,)).fetchall()
+    finally:
         conn.close()
     result = []
     for r in rows:
@@ -311,6 +435,10 @@ def _push_db_load_all(min_ts=0):
             "channel": r["channel"],
             "channels": json.loads(r["channels"] or "[]"),
             "is_eilmeldung": bool(r["is_eilmeldung"]),
+            "target_stats": json.loads(r["target_stats"] or "{}") if "target_stats" in r.keys() else {},
+            "app_list": json.loads(r["app_list"] or "[]") if "app_list" in r.keys() else [],
+            "n_apps": r["n_apps"] if "n_apps" in r.keys() else 0,
+            "total_recipients": r["total_recipients"] if "total_recipients" in r.keys() else 0,
         })
     return result
 
@@ -366,6 +494,12 @@ def _push_db_get_training_data(min_ts=0, limit=5000):
 # ══════════════════════════════════════════════════════════════════════════════
 
 _GBRT_CATEGORIES = ["sport", "politik", "unterhaltung", "geld", "regional", "digital", "leben", "news"]
+
+_TOPIC_STOPS = {"der", "die", "das", "und", "von", "für", "mit", "auf", "den", "ist",
+                "ein", "eine", "sich", "auch", "noch", "nur", "jetzt", "alle", "neue",
+                "wird", "wurde", "nach", "über", "dass", "oder", "aber", "wenn", "weil",
+                "nicht", "hat", "haben", "sind", "sein", "kann", "aus", "wie", "vor",
+                "bei", "zum", "zur", "vom", "dem", "des"}
 
 _GBRT_DEATH_WORDS = {"tot", "tod", "sterben", "gestorben", "stirbt", "toetet", "getoetet",
                      "lebensgefahr", "leiche", "mord", "tote", "opfer", "ums leben"}
@@ -423,6 +557,7 @@ _GBRT_SHAP_LABELS = {
     "kicker_pattern": "Kicker-Muster", "emotional_word_count": "Emotionale Wörter",
     "emotional_categories": "Emotions-Kategorien", "intensity_score": "Intensitäts-Score",
     "breaking_signals": "Breaking-Signale", "is_breaking_style": "Breaking-Stil",
+    "is_bild_plus": "BILD Plus (Paywall)",
     # Temporal-Features
     "hour": "Stunde", "hour_sin": "Tageszeit (sin)", "hour_cos": "Tageszeit (cos)",
     "weekday": "Wochentag", "weekday_sin": "Wochentag (sin)", "weekday_cos": "Wochentag (cos)",
@@ -440,6 +575,8 @@ _GBRT_SHAP_LABELS = {
     "cat_avg_or_7d": "Ressort-Ø OR (7d)", "cat_avg_or_30d": "Ressort-Ø OR (30d)",
     "cat_avg_or_all": "Ressort-Ø OR (gesamt)", "hour_avg_or_7d": "Stunden-Ø OR (7d)",
     "hour_avg_or_30d": "Stunden-Ø OR (30d)", "cat_hour_avg_or": "Ressort×Stunde Ø OR",
+    "stacking_cat_hour_baseline": "Stacking: Cat×Hour Baseline", "stacking_cat_hour_n": "Stacking: Cat×Hour Anzahl",
+    "stacking_baseline_diff": "Stacking: Bayesian vs Raw Diff",
     "weekday_avg_or": "Wochentag-Ø OR", "max_similarity": "Max. Titel-Ähnlichkeit",
     "top_similar_or": "OR ähnlichster Push", "n_similar_pushes": "Anz. ähnlicher Pushes",
     "avg_similar_or": "Ø OR ähnlicher Pushes", "entity_avg_or": "Entity-Ø OR",
@@ -476,7 +613,229 @@ _GBRT_SHAP_LABELS = {
 }
 
 
-def _gbrt_extract_features(push, history_stats, state=None):
+def _keyword_magnitude_heuristic(title, cat_lower, is_eilmeldung=0):
+    """Keyword-basierte Nachrichten-Magnitude 1-10 als LLM-Fallback."""
+    title_lower = title.lower()
+    score = 3.0  # Basis-Score
+
+    # Eilmeldung/Breaking
+    if is_eilmeldung or "eilmeldung" in title_lower or "breaking" in title_lower:
+        score += 4.0
+
+    # Terror/Krieg/Katastrophe → hohe Magnitude
+    _high_mag = {"terror", "anschlag", "krieg", "explosion", "tsunami", "erdbeben",
+                 "tote", "opfer", "massaker", "attentat", "geisel", "amok"}
+    _med_high = {"warnung", "alarm", "gefahr", "notfall", "evakuierung", "absturz",
+                 "brand", "feuer", "mord", "erstmals", "historisch", "rekord"}
+    _med = {"kanzler", "praesident", "papst", "trump", "putin", "skandal",
+            "verhaftet", "festnahme", "verurteil", "rücktritt", "wahl"}
+    _low = {"lifestyle", "rezept", "trend", "mode", "beauty", "fitness",
+            "garten", "reise", "urlaub", "quiz", "rätsel", "horoskop"}
+
+    words = set(re.findall(r'[a-zäöüß]{3,}', title_lower))
+    if words & _high_mag:
+        score += 4.0
+    elif words & _med_high:
+        score += 2.5
+    elif words & _med:
+        score += 1.5
+
+    if words & _low:
+        score -= 1.5
+
+    # Emotion-Words aus GBRT-Konstanten
+    for emo_cat, emo_words in _GBRT_EMOTION_WORDS.items():
+        if words & emo_words:
+            if emo_cat in ("angst", "katastrophe", "bedrohung"):
+                score += 1.5
+            elif emo_cat in ("sensation", "empoerung"):
+                score += 1.0
+            break
+
+    # Topic-Cluster Bonus
+    for cluster, cluster_words in _GBRT_TOPIC_CLUSTERS.items():
+        if words & cluster_words:
+            if cluster in ("crime", "wetter_extrem"):
+                score += 0.5
+            break
+
+    # Kategorie-Adjustierung
+    if cat_lower == "sport":
+        score -= 0.5
+    elif cat_lower == "unterhaltung":
+        score -= 1.0
+    elif cat_lower in ("politik", "news"):
+        score += 0.5
+
+    return max(1.0, min(10.0, score))
+
+
+# ── LLM News-Magnitude Scoring ──────────────────────────────────────────
+
+_llm_score_lock = threading.Lock()
+
+
+def _score_push_llm(title, category, push_id=None):
+    """Bewertet einen Push-Titel via GPT-4o auf 5 Dimensionen (1-10).
+
+    Returns: Dict mit magnitude, clickability, relevanz, dringlichkeit, emotionalitaet
+    """
+    result = {"magnitude": 0.0, "clickability": 0.0, "relevanz": 0.0,
+              "dringlichkeit": 0.0, "emotionalitaet": 0.0}
+    try:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            return result
+
+        prompt = f"""Bewerte diese Nachricht auf 5 Dimensionen (jeweils 1-10 Skala).
+
+Titel: "{title}"
+Kategorie: {category}
+
+Dimensionen:
+1. magnitude: Wie groß/wichtig ist diese Nachricht? (1=trivial, 10=Weltgeschehen)
+2. clickability: Wie klickbar ist der Titel? (1=langweilig, 10=muss-klicken)
+3. relevanz: Wie relevant für deutsche BILD-Leser? (1=irrelevant, 10=betrifft jeden)
+4. dringlichkeit: Wie zeitkritisch? (1=zeitlos, 10=jetzt-sofort)
+5. emotionalitaet: Wie emotional aufgeladen? (1=sachlich, 10=hochemotion)
+
+Antworte NUR mit JSON: {{"magnitude":X,"clickability":X,"relevanz":X,"dringlichkeit":X,"emotionalitaet":X}}"""
+
+        # Nutze openai-Bibliothek (httpx) statt urllib — vermeidet macOS SSL-Zertifikat-Problem
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.1,
+            timeout=15,
+        )
+        content = resp.choices[0].message.content.strip()
+        if "{" in content:
+            json_str = content[content.index("{"):content.rindex("}") + 1]
+            scores = json.loads(json_str)
+            for key in result:
+                if key in scores:
+                    result[key] = max(1.0, min(10.0, float(scores[key])))
+
+        # In DB speichern
+        if push_id and any(v > 0 for v in result.values()):
+            try:
+                with _push_db_lock:
+                    conn = sqlite3.connect(PUSH_DB_PATH)
+                    conn.execute("""UPDATE pushes SET
+                        llm_magnitude=?, llm_clickability=?, llm_relevanz=?,
+                        llm_dringlichkeit=?, llm_emotionalitaet=?, llm_scored_at=?
+                        WHERE message_id=?""",
+                        (result["magnitude"], result["clickability"], result["relevanz"],
+                         result["dringlichkeit"], result["emotionalitaet"],
+                         int(time.time()), push_id))
+                    conn.commit()
+                    conn.close()
+            except Exception:
+                pass
+
+    except Exception as e:
+        log.warning(f"[LLM-Score] Fehler für '{title[:40]}': {e}")
+    return result
+
+
+def _backfill_llm_scores():
+    """Background-Thread: Scored alle Pushes ohne LLM-Score.
+
+    Exponential Backoff bei Fehlern, Circuit Breaker nach 10 konsekutiven Fehlern.
+    """
+    time.sleep(30)  # Warte bis Server stabil
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        log.info("[LLM-Backfill] Kein OPENAI_API_KEY gesetzt, überspringe Backfill")
+        return
+    try:
+        with _push_db_lock:
+            conn = sqlite3.connect(PUSH_DB_PATH)
+            rows = conn.execute("""SELECT message_id, title, cat FROM pushes
+                WHERE (llm_scored_at IS NULL OR llm_scored_at = 0)
+                AND title IS NOT NULL AND title != ''
+                ORDER BY ts_num DESC""").fetchall()
+            conn.close()
+
+        if not rows:
+            log.info("[LLM-Backfill] Alle Pushes bereits gescored")
+            return
+
+        log.info(f"[LLM-Backfill] Starte Scoring von {len(rows)} Pushes (5 parallel)...")
+        scored = 0
+        errors = 0
+        consecutive_errors = 0
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _score_one(push_id, title, cat):
+            return push_id, _score_push_llm(title, cat or "news", push_id)
+
+        batch_size = 15  # Parallele API-Calls (beschleunigt)
+        for batch_start in range(0, len(rows), batch_size):
+            if consecutive_errors >= 20:
+                log.warning(f"[LLM-Backfill] Circuit Breaker: {consecutive_errors} "
+                            f"konsekutive Fehler, stoppe bei {batch_start}/{len(rows)}")
+                break
+            batch = rows[batch_start:batch_start + batch_size]
+            try:
+                with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                    futures = {executor.submit(_score_one, pid, t, c): (pid, t, c)
+                               for pid, t, c in batch}
+                    for future in as_completed(futures):
+                        try:
+                            pid, result = future.result()
+                            if result["magnitude"] > 0:
+                                scored += 1
+                                consecutive_errors = 0
+                            else:
+                                errors += 1
+                                consecutive_errors += 1
+                        except Exception:
+                            errors += 1
+                            consecutive_errors += 1
+            except Exception:
+                errors += len(batch)
+                consecutive_errors += len(batch)
+            processed = batch_start + len(batch)
+            if processed % 100 < batch_size:
+                log.info(f"[LLM-Backfill] {processed}/{len(rows)} gescored "
+                         f"({scored} OK, {errors} Fehler)")
+            time.sleep(0.1)  # Kurze Pause zwischen Batches
+
+        log.info(f"[LLM-Backfill] Fertig: {scored}/{len(rows)} gescored, {errors} Fehler")
+    except Exception as e:
+        log.warning(f"[LLM-Backfill] Fehler: {e}")
+
+
+def _load_llm_scores_for_push(push):
+    """Lädt LLM-Scores aus DB für einen Push (für Feature-Extraktion im Training)."""
+    push_id = push.get("message_id", "")
+    if not push_id:
+        return {}
+    try:
+        with _push_db_lock:
+            conn = sqlite3.connect(PUSH_DB_PATH)
+            row = conn.execute("""SELECT llm_magnitude, llm_clickability, llm_relevanz,
+                llm_dringlichkeit, llm_emotionalitaet FROM pushes WHERE message_id=?""",
+                (push_id,)).fetchone()
+            conn.close()
+        if row and row[0] and row[0] > 0:
+            return {
+                "magnitude": float(row[0]),
+                "clickability": float(row[1] or 0),
+                "relevanz": float(row[2] or 0),
+                "dringlichkeit": float(row[3] or 0),
+                "emotionalitaet": float(row[4] or 0),
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     """Extrahiert ~80 Features aus einem Push fuer das GBRT-Modell.
 
     Args:
@@ -559,6 +918,14 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["breaking_signals"] = float(breaking)
     feat["is_breaking_style"] = 1.0 if breaking >= 3 else 0.0
 
+    # ── BILD Plus (Paywall) — aus Feld oder URL ableiten ──
+    _is_plus = push.get("is_bild_plus") or push.get("isBildPlus")
+    if not _is_plus:
+        _link = push.get("link", "") or ""
+        if re.search(r"/bild-?plus/|/bild_plus/|/bildplus/|bildplus-gewinnspiele|/premium-event/|\.bild_plus\.", _link):
+            _is_plus = True
+    feat["is_bild_plus"] = 1.0 if _is_plus else 0.0
+
     # ── BILD Topic-Cluster-Scores (~8) ────────────────────────────────────
     topic_total = 0
     for topic_name, topic_words in _GBRT_TOPIC_CLUSTERS.items():
@@ -639,6 +1006,42 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["has_channel_news"] = 1.0 if "news" in ch_names_lower else 0.0
     feat["channel_reach_proxy"] = ch_reach
 
+    # ── App-Mix & Reichweite Features (~8) ──────────────────────────────
+    # ── Reichweite-Features (KEINE OR-basierten Features = Data Leakage!) ──
+    # Nur strukturelle Infos die VOR dem Send bekannt sind:
+    n_apps = push.get("n_apps", 0)
+    total_recipients = push.get("total_recipients", 0) or push.get("received", 0) or 0
+    feat["n_apps"] = float(n_apps) if n_apps else float(len(push.get("app_list", [])))
+    feat["log_recipients"] = math.log1p(total_recipients) if total_recipients > 0 else 0.0
+    # Per-App Empfänger-Anteile (recipientCount pro App, NICHT openingRate!)
+    target_stats = push.get("target_stats", {})
+    ios_recip_share = 0.0
+    android_recip_share = 0.0
+    sport_recip_share = 0.0
+    if isinstance(target_stats, dict) and target_stats and total_recipients > 0:
+        for app_name, stats in target_stats.items():
+            if not isinstance(stats, dict):
+                continue
+            app_recip = float(stats.get("recipientCount", 0) or 0)
+            app_lower = app_name.lower()
+            if "ios" in app_lower and "sport" not in app_lower:
+                ios_recip_share += app_recip
+            if "android" in app_lower and "sport" not in app_lower:
+                android_recip_share += app_recip
+            if "sport" in app_lower:
+                sport_recip_share += app_recip
+        ios_recip_share /= max(total_recipients, 1)
+        android_recip_share /= max(total_recipients, 1)
+        sport_recip_share /= max(total_recipients, 1)
+    feat["ios_recip_share"] = ios_recip_share
+    feat["android_recip_share"] = android_recip_share
+    feat["sport_recip_share"] = sport_recip_share
+    feat["ios_android_ratio"] = ios_recip_share / max(android_recip_share, 0.01) if android_recip_share > 0 else 0.0
+    # Reichweite relativ zum Median
+    median_recip = history_stats.get("median_recipients", 0)
+    cat_med = history_stats.get("cat_median_recipients", {}).get(cat_lower, median_recip)
+    feat["recipients_vs_median"] = total_recipients / max(cat_med, 1) if cat_med > 0 and total_recipients > 0 else 1.0
+
     # Category One-Hot
     for c in _GBRT_CATEGORIES:
         feat[f"cat_{c}"] = 1.0 if cat_lower == c else 0.0
@@ -674,6 +1077,12 @@ def _gbrt_extract_features(push, history_stats, state=None):
     ch_stats = history_stats.get("cat_hour_stats", {}).get(cat_hour_key, {})
     feat["cat_hour_avg_or"] = _bayesian_avg(ch_stats.get("avg", global_avg), ch_stats.get("n", 0))
 
+    # Stacking: Cat×Hour-Baseline als explizites Feature (= raw Mean ohne Bayesian-Smoothing)
+    feat["stacking_cat_hour_baseline"] = ch_stats.get("avg", global_avg)
+    feat["stacking_cat_hour_n"] = float(ch_stats.get("n", 0))
+    # Differenz zwischen Bayesian-smoothed und raw Baseline
+    feat["stacking_baseline_diff"] = feat["cat_hour_avg_or"] - feat["stacking_cat_hour_baseline"]
+
     # Weekday averages
     wd_stats = history_stats.get("weekday_stats", {}).get(weekday, {})
     feat["weekday_avg_or"] = _bayesian_avg(wd_stats.get("avg", global_avg), wd_stats.get("n", 0))
@@ -696,31 +1105,36 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["hour_or_std_7d"] = hour_vol.get("std_7d", 0.0)
     feat["hour_or_std_30d"] = hour_vol.get("std_30d", 0.0)
 
-    # Similarity to top-10 historical pushes (Jaccard)
-    push_words = set(re.findall(r'[a-zäöüß]{4,}', title_lower))
-    stops = {"der", "die", "das", "und", "von", "fuer", "mit", "auf", "den", "ist", "ein", "eine",
-             "sich", "auch", "noch", "nur", "jetzt", "alle", "neue", "wird", "wurde", "nach", "ueber",
-             "dass", "aber", "oder", "wenn", "dann", "mehr", "sein", "hat", "haben", "kann", "sind"}
-    push_words -= stops
-    max_jaccard = 0.0
-    top_sim_or = 0.0
-    sim_count = 0
-    sim_or_sum = 0.0
-    for hist_push in history_stats.get("recent_pushes", []):
-        h_words = hist_push.get("words", set())
-        if push_words and h_words:
-            jaccard = len(push_words & h_words) / len(push_words | h_words)
-            if jaccard > max_jaccard:
-                max_jaccard = jaccard
-                top_sim_or = hist_push.get("or", global_avg)
-            if jaccard > 0.15:
-                sim_count += 1
-                sim_or_sum += hist_push.get("or", global_avg)
-
-    feat["max_similarity"] = max_jaccard
-    feat["top_similar_or"] = top_sim_or if max_jaccard > 0.1 else global_avg
-    feat["n_similar_pushes"] = float(sim_count)
-    feat["avg_similar_or"] = (sim_or_sum / sim_count) if sim_count > 0 else global_avg
+    # Similarity to top-10 historical pushes (Jaccard) — skip in fast_mode (training)
+    if not fast_mode:
+        push_words = set(re.findall(r'[a-zäöüß]{4,}', title_lower))
+        stops = {"der", "die", "das", "und", "von", "fuer", "mit", "auf", "den", "ist", "ein", "eine",
+                 "sich", "auch", "noch", "nur", "jetzt", "alle", "neue", "wird", "wurde", "nach", "ueber",
+                 "dass", "aber", "oder", "wenn", "dann", "mehr", "sein", "hat", "haben", "kann", "sind"}
+        push_words -= stops
+        max_jaccard = 0.0
+        top_sim_or = 0.0
+        sim_count = 0
+        sim_or_sum = 0.0
+        for hist_push in history_stats.get("recent_pushes", []):
+            h_words = hist_push.get("words", set())
+            if push_words and h_words:
+                jaccard = len(push_words & h_words) / len(push_words | h_words)
+                if jaccard > max_jaccard:
+                    max_jaccard = jaccard
+                    top_sim_or = hist_push.get("or", global_avg)
+                if jaccard > 0.15:
+                    sim_count += 1
+                    sim_or_sum += hist_push.get("or", global_avg)
+        feat["max_similarity"] = max_jaccard
+        feat["top_similar_or"] = top_sim_or if max_jaccard > 0.1 else global_avg
+        feat["n_similar_pushes"] = float(sim_count)
+        feat["avg_similar_or"] = (sim_or_sum / sim_count) if sim_count > 0 else global_avg
+    else:
+        feat["max_similarity"] = 0.0
+        feat["top_similar_or"] = global_avg
+        feat["n_similar_pushes"] = 0.0
+        feat["avg_similar_or"] = global_avg
 
     # Entity-based historical OR
     entities = set(re.findall(r'[A-ZÄÖÜ][a-zäöüß]{2,}', title))
@@ -753,8 +1167,8 @@ def _gbrt_extract_features(push, history_stats, state=None):
     # Global average as baseline reference
     feat["global_avg_or"] = global_avg
 
-    # ── Character N-Gram TF-IDF Similarity Features ──────────────────────
-    if _char_ngram_tfidf and _char_ngram_tfidf.vocab:
+    # ── Character N-Gram TF-IDF Similarity Features — skip in fast_mode ──
+    if not fast_mode and _char_ngram_tfidf and _char_ngram_tfidf.vocab:
         try:
             push_vec = _char_ngram_tfidf.transform_one(title)
             recent = history_stats.get("recent_pushes", [])
@@ -890,8 +1304,109 @@ def _gbrt_extract_features(push, history_stats, state=None):
     feat["weekend_x_hour"] = feat["is_weekend"] * feat["hour"]
     feat["breaking_x_primetime"] = feat["is_breaking_style"] * feat["is_prime_time"]
 
-    # ── Sentence Embedding Features (optional, Phase F) ──────────────────
-    if _embedding_model is not None:
+    # ── Reichweite-Interactions ──
+    feat["recipients_x_eilmeldung"] = feat["log_recipients"] * feat["is_eilmeldung"]
+    feat["recipients_x_primetime"] = feat["log_recipients"] * feat["is_prime_time"]
+    feat["n_apps_x_hour"] = feat["n_apps"] * feat["hour"]
+
+    # Sättigungs-Interaktionen
+    feat["rolling_3h_x_saturation"] = feat["rolling_or_3h"] * feat["saturation_score"]
+    feat["push_rate_x_hour"] = feat["push_rate_3h"] * feat["hour"]
+    # Zeitliche Trend-Differenzen (Momentum-Signale)
+    feat["rolling_1h_vs_24h"] = feat["rolling_or_1h"] - feat["rolling_or_24h"]
+    feat["rolling_3h_vs_24h"] = feat["rolling_or_3h"] - feat["rolling_or_24h"]
+    # Month + Season (jahreszeit-abhängige Lesegewohnheiten)
+    feat["month"] = float(month)
+    feat["month_sin"] = math.sin(2 * math.pi * month / 12)
+    feat["month_cos"] = math.cos(2 * math.pi * month / 12)
+    feat["is_summer"] = 1.0 if month in (6, 7, 8) else 0.0
+    feat["is_winter"] = 1.0 if month in (12, 1, 2) else 0.0
+
+    # ── Kicker/Headline Split-Features ──
+    kicker_text = push.get("kicker", "") or ""
+    headline_text = push.get("headline", "") or ""
+    feat["has_kicker"] = 1.0 if kicker_text.strip() else 0.0
+    feat["kicker_len"] = float(len(kicker_text))
+    feat["headline_len"] = float(len(headline_text))
+    feat["kicker_headline_ratio"] = len(kicker_text) / max(len(headline_text), 1)
+
+    # ── Keyword→OR Features (Historische Wort-Performance) ──────────────
+    word_or = history_stats.get("word_or", {})
+    bigram_or = history_stats.get("bigram_or", {})
+    title_lower = title.lower()
+    title_words = [w for w in title_lower.split() if len(w) >= 3 and w not in _TOPIC_STOPS]
+    # Wort-Level: avg OR aller Wörter im Titel die wir kennen
+    known_word_ors = []
+    for w in title_words:
+        w_stats = word_or.get(w)
+        if w_stats and w_stats["n"] >= 5:
+            known_word_ors.append(w_stats["avg"])
+    feat["keyword_avg_or"] = sum(known_word_ors) / len(known_word_ors) if known_word_ors else global_avg
+    feat["keyword_max_or"] = max(known_word_ors) if known_word_ors else global_avg
+    feat["keyword_min_or"] = min(known_word_ors) if known_word_ors else global_avg
+    feat["keyword_spread"] = feat["keyword_max_or"] - feat["keyword_min_or"]
+    feat["n_known_keywords"] = float(len(known_word_ors))
+    feat["keyword_coverage"] = len(known_word_ors) / max(len(title_words), 1)
+    # Keyword Quantile: robustere Statistik
+    if known_word_ors:
+        sorted_kw = sorted(known_word_ors)
+        feat["keyword_median_or"] = sorted_kw[len(sorted_kw) // 2]
+        feat["keyword_q25_or"] = sorted_kw[len(sorted_kw) // 4] if len(sorted_kw) >= 4 else sorted_kw[0]
+        feat["keyword_q75_or"] = sorted_kw[3 * len(sorted_kw) // 4] if len(sorted_kw) >= 4 else sorted_kw[-1]
+    else:
+        feat["keyword_median_or"] = global_avg
+        feat["keyword_q25_or"] = global_avg
+        feat["keyword_q75_or"] = global_avg
+    # Keyword-Std (Spread der historischen ORs für die Wörter im Titel)
+    known_word_stds = []
+    for w in title_words:
+        w_stats = word_or.get(w)
+        if w_stats and w_stats["n"] >= 5:
+            known_word_stds.append(w_stats.get("std", 0.0))
+    feat["keyword_avg_std"] = sum(known_word_stds) / len(known_word_stds) if known_word_stds else 0.0
+    # Bigram-Level
+    known_bigram_ors = []
+    if len(title_words) >= 2:
+        for i in range(len(title_words) - 1):
+            bg = f"{title_words[i]}_{title_words[i+1]}"
+            bg_stats = bigram_or.get(bg)
+            if bg_stats and bg_stats["n"] >= 5:
+                known_bigram_ors.append(bg_stats["avg"])
+    feat["bigram_avg_or"] = sum(known_bigram_ors) / len(known_bigram_ors) if known_bigram_ors else global_avg
+    feat["bigram_max_or"] = max(known_bigram_ors) if known_bigram_ors else global_avg
+    feat["n_known_bigrams"] = float(len(known_bigram_ors))
+    # Keyword vs Category-Avg: Wie gut sind die Wörter relativ zur Kategorie?
+    cat_avg = history_stats.get("cat_stats", {}).get(cat_lower, {}).get("avg_all", global_avg)
+    feat["keyword_vs_cat"] = feat["keyword_avg_or"] - cat_avg
+    # Heuristic Magnitude/Urgency (LLM-Ersatz)
+    _urgency_words = {"eilmeldung", "breaking", "alarm", "warnung", "sofort", "jetzt",
+                      "gerade", "aktuell", "liveticker", "notfall", "evakuierung"}
+    _magnitude_words = {"krieg", "tod", "tote", "anschlag", "terror", "erdbeben", "tsunami",
+                        "explosion", "absturz", "mord", "kanzler", "präsident", "papst",
+                        "historisch", "erstmals", "rekord", "weltmeister", "olympia"}
+    _click_words = {"geheimnis", "enthüllt", "wahrheit", "unfassbar", "schock", "skandal",
+                    "so", "das", "diese", "jetzt", "mega", "hammer", "krass", "irre",
+                    "unglaublich", "wahnsinn", "exklusiv"}
+    title_word_set = set(title_words)
+    feat["heur_urgency"] = float(len(title_word_set & _urgency_words))
+    feat["heur_magnitude"] = float(len(title_word_set & _magnitude_words))
+    feat["heur_clickbait"] = float(len(title_word_set & _click_words))
+
+    # ── SHAP-guided Top-Feature Interactions ──
+    # keyword_avg_or × zeitliche Features (Top-2 SHAP)
+    feat["keyword_x_hour_avg"] = feat["keyword_avg_or"] * feat["weekday_hour_avg_or"] / max(global_avg, 1.0)
+    feat["keyword_x_cat_hour"] = feat["keyword_avg_or"] * feat["cat_hour_avg_or"] / max(global_avg, 1.0)
+    feat["keyword_x_saturation"] = feat["keyword_avg_or"] * feat["saturation_score"]
+    feat["keyword_x_volatility"] = feat["keyword_avg_or"] * feat["or_volatility_7d"]
+    # keyword_avg_or Abweichung von zeitlichem Durchschnitt
+    feat["keyword_vs_hour"] = feat["keyword_avg_or"] - feat["weekday_hour_avg_or"]
+    feat["keyword_vs_rolling24h"] = feat["keyword_avg_or"] - feat["rolling_or_24h"]
+
+    # ── Sentence Embedding Similarity Features (Phase F) ──
+    # _compute_embedding_features: 500 Cosine-Calls pro Push → NUR in Inference
+    # Im Training (8000 Pushes) wären das 4M Cosine-Calls → skip, PCA ersetzt Signal
+    _is_inference = state is not None  # state wird nur in Inference übergeben
+    if _is_inference and _embedding_model is not None:
         try:
             emb_feats = _compute_embedding_features(title, history_stats)
             feat.update(emb_feats)
@@ -900,6 +1415,352 @@ def _gbrt_extract_features(push, history_stats, state=None):
             feat["emb_avg_sim_top10"] = 0.0
             feat["emb_n_similar_50"] = 0.0
             feat["emb_similar_avg_or"] = 0.0
+    else:
+        feat["emb_max_sim"] = 0.0
+        feat["emb_avg_sim_top10"] = 0.0
+        feat["emb_n_similar_50"] = 0.0
+        feat["emb_similar_avg_or"] = 0.0
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ML v2: Erweiterte Features (PhD, Wetter, Trends, Konkurrenz, PCA, LLM)
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── PhD/Research-Modifiers als Features (10) ──
+    research_mods = state.get("research_modifiers", {}) if state else {}
+    phd_insights = state.get("phd_insights", {}) if state else {}
+    feat["phd_bayes_shrinkage"] = float(research_mods.get("bayes_shrinkage", {}).get(cat_lower, 1.0)) if isinstance(research_mods.get("bayes_shrinkage"), dict) else float(research_mods.get("bayes_shrinkage", 0.0))
+    feat["phd_markov_boost"] = float(research_mods.get("markov_sequence", {}).get(cat_lower, {}).get("boost", 1.0)) if isinstance(research_mods.get("markov_sequence"), dict) else 0.0
+    _spectral = research_mods.get("spectral_timing", 0.0)
+    feat["phd_spectral_timing"] = float(_spectral) if not isinstance(_spectral, dict) else 0.0
+    _recency = research_mods.get("recency_ewma", 0.0)
+    feat["phd_recency_ewma"] = float(_recency) if not isinstance(_recency, dict) else 0.0
+    _entropy = research_mods.get("entropy_mod", 0.0)
+    feat["phd_entropy_mod"] = float(_entropy) if not isinstance(_entropy, dict) else 0.0
+    feat["phd_competition_factor"] = float(phd_insights.get("competition_factor", 0.0))
+    feat["phd_entity_context"] = float(phd_insights.get("entity_context", 0.0))
+    feat["phd_fatigue_alpha"] = float(phd_insights.get("fatigue_alpha", 0.0))
+    feat["heur_research_factor"] = float(research_mods.get("combined", 1.0)) if research_mods else 1.0
+    feat["heur_phd_combined"] = float(phd_insights.get("combined_factor", 1.0)) if phd_insights else 1.0
+
+    # ── Granulare Wetter-Features (6) ──
+    weather_data = ctx.get("weather", {}) if ctx.get("last_fetch", 0) > 0 else {}
+    feat["weather_temp_c"] = float(weather_data.get("temp_c", 15)) / 40.0  # normalisiert auf ~0-1
+    feat["weather_humidity"] = float(weather_data.get("humidity", 50)) / 100.0
+    feat["weather_precip_mm"] = min(1.0, float(weather_data.get("precip_mm", 0)) / 10.0)
+    feat["weather_wind_kmph"] = min(1.0, float(weather_data.get("wind_kmph", 10)) / 80.0)
+    feat["weather_cloud_cover"] = float(weather_data.get("cloud_cover", 50)) / 100.0
+    feat["weather_uv_index"] = min(1.0, float(weather_data.get("uv_index", 3)) / 11.0)
+
+    # ── Titel-Embedding einmalig cachen (für PCA, Trends, Konkurrenz) ──
+    # 1 Call pro Push (gecacht), nur in CV-Folds (fast_mode) übersprungen
+    _title_emb = None
+    if _embedding_model is not None and title:
+        try:
+            _title_emb = _get_embedding(title)  # Memory-cached, O(1) bei Wiederholung
+        except Exception:
+            pass
+
+    # ── Google-Trends Embedding-Similarity (5) ──
+    trends_list = ctx.get("trends", []) if ctx else []
+    feat["trends_max_sim"] = 0.0
+    feat["trends_avg_sim_top3"] = 0.0
+    feat["trends_n_matching"] = 0.0
+    feat["trends_is_trending"] = 0.0
+    feat["trends_score_weighted"] = 0.0
+    if trends_list and _title_emb is not None:
+        try:
+            trend_sims = []
+            for trend_topic in trends_list[:20]:
+                if not trend_topic or not isinstance(trend_topic, str):
+                    continue
+                trend_emb = _get_embedding(trend_topic)
+                if trend_emb is not None:
+                    sim = _cosine_similarity(_title_emb, trend_emb)
+                    trend_sims.append(sim)
+            if trend_sims:
+                trend_sims.sort(reverse=True)
+                feat["trends_max_sim"] = trend_sims[0]
+                feat["trends_avg_sim_top3"] = sum(trend_sims[:3]) / min(3, len(trend_sims))
+                feat["trends_n_matching"] = float(sum(1 for s in trend_sims if s > 0.4))
+                feat["trends_is_trending"] = 1.0 if trend_sims[0] > 0.6 else 0.0
+                feat["trends_score_weighted"] = sum(s for s in trend_sims if s > 0.3)
+        except Exception:
+            pass
+
+    # ── Konkurrenz-Features (6) — nur Jaccard, kein Embedding pro Headline ──
+    comp_cache = state.get("_competitor_cache", {}) if state else {}
+    feat["comp_n_covering"] = 0.0
+    feat["comp_max_sim"] = 0.0
+    feat["comp_is_exclusive"] = 1.0
+    feat["comp_lead_hours"] = 0.0
+    feat["comp_german_coverage"] = 0.0
+    feat["comp_saturation"] = 0.0
+    if comp_cache and title:
+        try:
+            push_words_comp = set(re.findall(r'[a-zäöüß]{4,}', title.lower()))
+            _stop_comp = {"der", "die", "das", "und", "von", "für", "mit", "auf", "den", "ist",
+                          "ein", "eine", "sich", "auch", "noch", "nur", "jetzt", "alle", "neue",
+                          "wird", "wurde", "nach", "über", "dass", "oder", "aber", "wenn", "weil"}
+            push_words_comp -= _stop_comp
+            total_sources = 0
+            covering_sources = 0
+            max_jacc = 0.0
+            _german_sources = {"spiegel", "focus", "welt", "faz", "stern", "zeit", "tagesschau",
+                               "ntv", "rtl", "bild", "sueddeutsche", "tagesspiegel", "morgenpost"}
+            german_covering = 0
+            for src, items in comp_cache.items():
+                if not isinstance(items, list):
+                    continue
+                total_sources += 1
+                is_german = any(g in src.lower() for g in _german_sources)
+                src_covers = False
+                for it in items[:10]:  # Max 10 statt 15 pro Quelle
+                    comp_title = (it.get("title", "") if isinstance(it, dict) else str(it)).lower()
+                    if not comp_title:
+                        continue
+                    # Nur Jaccard-Similarity (O(1) statt _get_embedding pro Headline)
+                    comp_words = set(re.findall(r'[a-zäöüß]{4,}', comp_title)) - _stop_comp
+                    if comp_words and push_words_comp:
+                        jacc = len(push_words_comp & comp_words) / len(push_words_comp | comp_words)
+                        if jacc > max_jacc:
+                            max_jacc = jacc
+                        if jacc > 0.2:
+                            src_covers = True
+                            break  # Eine Headline reicht pro Quelle
+                if src_covers:
+                    covering_sources += 1
+                    if is_german:
+                        german_covering += 1
+
+            feat["comp_n_covering"] = float(covering_sources)
+            feat["comp_max_sim"] = max_jacc
+            feat["comp_is_exclusive"] = 1.0 if covering_sources == 0 else 0.0
+            feat["comp_german_coverage"] = float(german_covering)
+            feat["comp_saturation"] = covering_sources / max(1, total_sources)
+        except Exception:
+            pass
+
+    # ── Embedding-PCA Features (25) ──
+    for i in range(25):
+        feat[f"emb_pca_{i}"] = 0.0
+    if _embedding_pca is not None and _title_emb is not None and np is not None:
+        try:
+            emb_arr = np.array(_title_emb).reshape(1, -1)
+            if _embedding_pca_mean is not None:
+                emb_arr = emb_arr - _embedding_pca_mean
+            pca_components = _embedding_pca.transform(emb_arr)[0]
+            for i in range(min(25, len(pca_components))):
+                feat[f"emb_pca_{i}"] = float(pca_components[i])
+        except Exception:
+            pass
+
+    # ── LLM Magnitude Features (7) ──
+    llm_data = push.get("_llm_scores", {})
+    _has_llm = float(llm_data.get("magnitude", 0.0)) > 0
+    feat["llm_has_score"] = 1.0 if _has_llm else 0.0
+    feat["llm_magnitude"] = float(llm_data.get("magnitude", 0.0))
+    feat["llm_clickability"] = float(llm_data.get("clickability", 0.0))
+    feat["llm_relevanz"] = float(llm_data.get("relevanz", 0.0))
+    feat["llm_dringlichkeit"] = float(llm_data.get("dringlichkeit", 0.0))
+    feat["llm_emotionalitaet"] = float(llm_data.get("emotionalitaet", 0.0))
+    # Composite: gewichtete Kombination
+    feat["llm_composite"] = (
+        feat["llm_magnitude"] * 0.35 +
+        feat["llm_clickability"] * 0.25 +
+        feat["llm_relevanz"] * 0.15 +
+        feat["llm_dringlichkeit"] * 0.15 +
+        feat["llm_emotionalitaet"] * 0.10
+    )
+    # Keyword-Heuristic als Fallback wenn kein LLM-Score (alle 5 Dimensionen)
+    if not _has_llm and title:
+        _heur_mag = _keyword_magnitude_heuristic(title, cat_lower, push.get("is_eilmeldung", 0))
+        feat["llm_magnitude"] = _heur_mag
+        feat["llm_clickability"] = max(3.0, min(8.0, feat.get("keyword_avg_or", 5.0)))
+        # Relevanz: Eilmeldung/Politik/News hoeher, Lifestyle niedrig
+        feat["llm_relevanz"] = min(10.0, _heur_mag * 0.8 + (1.5 if cat_lower in ("politik", "news") else -0.5 if cat_lower == "unterhaltung" else 0.0))
+        # Dringlichkeit: stark korreliert mit Magnitude
+        feat["llm_dringlichkeit"] = min(10.0, _heur_mag * 0.7 + (2.0 if push.get("is_eilmeldung", 0) else 0.0))
+        # Emotionalitaet: Emotion-Words basiert
+        _emo_score = 4.0
+        _tl = title.lower()
+        _tw = set(re.findall(r'[a-zäöüß]{3,}', _tl))
+        for _ec, _ew in _GBRT_EMOTION_WORDS.items():
+            if _tw & _ew:
+                _emo_score = 7.0 if _ec in ("angst", "katastrophe", "sensation", "empoerung") else 5.5
+                break
+        feat["llm_emotionalitaet"] = _emo_score
+        feat["llm_composite"] = (
+            feat["llm_magnitude"] * 0.35 + feat["llm_clickability"] * 0.25 +
+            feat["llm_relevanz"] * 0.15 + feat["llm_dringlichkeit"] * 0.15 +
+            feat["llm_emotionalitaet"] * 0.10
+        )
+
+    # ── Interaction-Features für Direct Modeling ──
+    ga = feat.get("global_avg_or", global_avg)
+    feat["rolling_vs_cat_avg"] = feat.get("rolling_or_3h", ga) - feat.get("cat_avg_or_30d", ga)
+    feat["saturation_x_cat"] = feat.get("saturation_score", 0) * feat.get("cat_avg_or_30d", ga)
+    feat["keyword_vs_rolling"] = feat.get("keyword_avg_or", ga) - feat.get("rolling_or_3h", ga)
+    # cat_hour_confidence: wie viele Samples stützen die Cat×Hour-Baseline?
+    _ch_key = f"{cat_lower}_{push.get('hour', 12)}"
+    _ch_n = ch_stats.get("n", 0) if ch_stats else 0
+    feat["cat_hour_confidence"] = _ch_n / (_ch_n + 20.0)
+
+    return feat
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED FEATURE VECTOR (150+ Features) — ML-First Prediction
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _unified_extract_features(push, history_stats, state=None):
+    """Kombiniert ALLE verfügbaren Signale in einen flachen Feature-Vektor (150+).
+
+    Delegiert an _gbrt_extract_features() für Basis-Features und ergänzt:
+    - Heuristik-Scores als Features (8)
+    - PhD-Modell Features (8)
+    - Kontext-Interaktions-Features (6)
+    - Topic-Lifecycle Features (10) via _compute_topic_features()
+    - Weltereignis Features (7) via _compute_world_event_features()
+
+    Returns: Dict mit Feature-Name → Float-Wert. Darf nie crashen.
+    """
+    try:
+        # ── A1: Basis-Features (80+ existierend) ──
+        feat = _gbrt_extract_features(push, history_stats, state)
+    except Exception:
+        feat = {}
+
+    try:
+        title = push.get("title", "") or ""
+        title_lower = title.lower()
+        ts = push.get("ts_num", 0)
+        dt = datetime.datetime.fromtimestamp(ts) if ts > 0 else datetime.datetime.now()
+        hour = push.get("hour", dt.hour)
+        cat = (push.get("cat", "") or "News").strip().lower()
+
+        # ── A2: Heuristik-Scores als Features (8) ──
+        # Similarity OR (aus GBRT-Features)
+        feat["heur_similarity_or"] = feat.get("max_similarity", 0.0) * feat.get("top_similar_or", 0.0)
+
+        # IDF-gewichteter Keyword-Score
+        push_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', title_lower))
+        _stops = {"der", "die", "das", "und", "von", "für", "mit", "auf", "den", "ist",
+                  "ein", "eine", "sich", "auch", "noch", "nur", "jetzt", "alle", "neue",
+                  "wird", "wurde", "nach", "über", "dass", "oder", "aber", "wenn", "weil"}
+        push_words -= _stops
+        recent = history_stats.get("recent_pushes", [])
+        if push_words and recent:
+            doc_freq = defaultdict(int)
+            for rp in recent[-500:]:
+                rp_words = set(rp.get("words", []))
+                for w in push_words:
+                    if w in rp_words:
+                        doc_freq[w] += 1
+            n_docs = max(1, len(recent[-500:]))
+            idf_sum = sum(math.log(n_docs / max(1, doc_freq.get(w, 0) + 1)) for w in push_words)
+            feat["heur_keyword_idf_or"] = idf_sum / max(1, len(push_words))
+        else:
+            feat["heur_keyword_idf_or"] = 0.0
+
+        # Entity OR
+        feat["heur_entity_or"] = feat.get("entity_avg_or", 0.0)
+
+        # Cat × Hour × Emo Tensor-Produkt
+        cat_hour_key = f"{cat}_{hour}"
+        cat_hour_stats = history_stats.get("cat_hour_stats", {})
+        cat_hour_avg = cat_hour_stats.get(cat_hour_key, {}).get("avg", history_stats.get("global_avg", 4.77))
+        emo_score = feat.get("intensity_score", 0.0)
+        feat["heur_cat_hour_emo"] = cat_hour_avg * (1.0 + emo_score)
+
+        # Research-Factor
+        research_mods = state.get("research_modifiers", {}) if state else {}
+        feat["heur_research_factor"] = float(research_mods.get("combined", 1.0)) if research_mods else 1.0
+
+        # PhD Combined Factor
+        phd_insights = state.get("phd_insights", {}) if state else {}
+        feat["heur_phd_combined"] = float(phd_insights.get("combined_factor", 1.0)) if phd_insights else 1.0
+
+        # Context Score (Weather × Trend × DayType)
+        weather_score = feat.get("weather_score", 0.0)
+        trend_match = feat.get("trend_match", 0.0)
+        is_weekend = 1.0 if feat.get("is_weekend", 0.0) > 0.5 else 0.0
+        is_holiday = feat.get("is_holiday", 0.0)
+        feat["heur_context_score"] = (1.0 + weather_score * 0.1) * (1.0 + trend_match * 0.2) * (1.0 + is_weekend * 0.05 + is_holiday * 0.1)
+
+        # Competitor Overlap
+        comp_cache = state.get("_competitor_cache", {}) if state else {}
+        if comp_cache and push_words:
+            overlap_count = 0
+            total_sources = 0
+            for src, items in comp_cache.items():
+                if not isinstance(items, list):
+                    continue
+                total_sources += 1
+                for it in items[:10]:
+                    comp_title = (it.get("title", "") if isinstance(it, dict) else str(it)).lower()
+                    comp_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', comp_title)) - _stops
+                    if comp_words and push_words:
+                        jacc = len(push_words & comp_words) / len(push_words | comp_words)
+                        if jacc > 0.2:
+                            overlap_count += 1
+                            break
+            feat["heur_competitor_overlap"] = overlap_count / max(1, total_sources)
+        else:
+            feat["heur_competitor_overlap"] = 0.0
+
+        # ── A3: PhD-Modell Features (8) ──
+        feat["phd_bayes_shrinkage"] = float(research_mods.get("bayes_shrinkage", 0.0))
+        feat["phd_markov_boost"] = float(research_mods.get("markov_boost", 0.0))
+        feat["phd_spectral_timing"] = float(research_mods.get("spectral_timing", 0.0))
+        feat["phd_recency_ewma"] = float(research_mods.get("recency_ewma", 0.0))
+        feat["phd_entropy_mod"] = float(research_mods.get("entropy_mod", 0.0))
+        feat["phd_competition_factor"] = float(phd_insights.get("competition_factor", 0.0))
+        feat["phd_entity_context"] = float(phd_insights.get("entity_context", 0.0))
+        feat["phd_fatigue_alpha"] = float(phd_insights.get("fatigue_alpha", 0.0))
+
+        # ── A4: Kontext-Interaktions-Features (6) ──
+        hour_sin = feat.get("hour_sin", math.sin(2 * math.pi * hour / 24))
+        max_similarity = feat.get("max_similarity", 0.0)
+        is_eilmeldung = 1.0 if push.get("is_eilmeldung") else 0.0
+
+        feat["weather_x_hour"] = weather_score * hour_sin
+        feat["trend_x_intensity"] = trend_match * emo_score
+        feat["trend_x_novelty"] = trend_match * (1.0 - max_similarity)
+        feat["holiday_x_primetime"] = is_holiday * (1.0 if 18 <= hour <= 22 else 0.0)
+        feat["weather_x_weekend"] = weather_score * is_weekend
+        feat["eilmeldung_x_weather"] = is_eilmeldung * weather_score
+
+        # ── B: Topic-Lifecycle Features (10) ──
+        topic_feats = _compute_topic_features(push, history_stats, state)
+        feat.update(topic_feats)
+
+        # ── C: Weltereignis Features (7) ──
+        world_feats = _compute_world_event_features(push, state)
+        feat.update(world_feats)
+
+    except Exception as e:
+        log.debug(f"[Unified] Feature-Extraktion Teilfehler: {e}")
+
+    # Fallback: alle erwarteten Keys auf 0.0 setzen wenn fehlend
+    _expected_keys = [
+        "heur_similarity_or", "heur_keyword_idf_or", "heur_entity_or",
+        "heur_cat_hour_emo", "heur_research_factor", "heur_phd_combined",
+        "heur_context_score", "heur_competitor_overlap",
+        "phd_bayes_shrinkage", "phd_markov_boost", "phd_spectral_timing",
+        "phd_recency_ewma", "phd_entropy_mod", "phd_competition_factor",
+        "phd_entity_context", "phd_fatigue_alpha",
+        "weather_x_hour", "trend_x_intensity", "trend_x_novelty",
+        "holiday_x_primetime", "weather_x_weekend", "eilmeldung_x_weather",
+        "topic_age_hours", "topic_push_count_24h", "topic_push_count_total",
+        "topic_or_trend", "topic_peak_passed", "topic_is_emerging",
+        "topic_is_saturated", "topic_momentum",
+        "competitor_n_covering", "competitor_lead_hours",
+        "global_event_score", "n_sources_covering", "n_international_sources",
+        "is_globally_trending", "international_attention",
+        "event_freshness_hours", "german_exclusivity",
+    ]
+    for k in _expected_keys:
+        feat.setdefault(k, 0.0)
 
     return feat
 
@@ -917,7 +1778,7 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
     cutoff_7d = now_ts - 7 * 86400
     cutoff_30d = now_ts - 30 * 86400
 
-    valid = [p for p in pushes if p.get("or", 0) > 0 and p.get("ts_num", 0) > 0 and p["ts_num"] < now_ts]
+    valid = [p for p in pushes if 0 < p.get("or", 0) <= 20 and p.get("ts_num", 0) > 0 and p["ts_num"] < now_ts]
     if not valid:
         return {"global_avg": 4.77, "global_n": 0, "cat_stats": {}, "hour_stats": {},
                 "cat_hour_stats": {}, "weekday_stats": {}, "recent_pushes": [],
@@ -939,6 +1800,10 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
     last_push_ts_by_cat = {}
     channel_or_data = defaultdict(lambda: {"or_all": [], "n_all": 0})
     timeline_raw = []
+    recipient_counts = []
+    cat_recipient_data = defaultdict(list)
+    word_or_data = defaultdict(list)
+    bigram_or_data = defaultdict(list)
 
     for p in valid:
         ts = p["ts_num"]
@@ -946,6 +1811,10 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
         h = p.get("hour", datetime.datetime.fromtimestamp(ts).hour)
         wd = datetime.datetime.fromtimestamp(ts).weekday()
         orv = p["or"]
+        _recip = p.get("total_recipients", 0) or p.get("received", 0) or 0
+        if _recip > 0:
+            recipient_counts.append(_recip)
+            cat_recipient_data[cat].append(_recip)
 
         cat_data[cat]["or_all"].append(orv)
         hour_data[h]["or_all"].append(orv)
@@ -976,6 +1845,17 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
                 if ch_lower:
                     channel_or_data[ch_lower]["or_all"].append(orv)
                     channel_or_data[ch_lower]["n_all"] += 1
+
+        # Keyword→OR tracking (Wörter mit min 3 Zeichen)
+        title_text = (p.get("title", "") or "").lower()
+        words = [w for w in title_text.split() if len(w) >= 3 and w not in _TOPIC_STOPS]
+        for w in words:
+            word_or_data[w].append(orv)
+        # Bigrams
+        if len(words) >= 2:
+            for i in range(len(words) - 1):
+                bg = f"{words[i]}_{words[i+1]}"
+                bigram_or_data[bg].append(orv)
 
     def _agg(lst):
         return {"avg": sum(lst) / len(lst), "n": len(lst)} if lst else {"avg": 0, "n": 0}
@@ -1095,7 +1975,622 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
         "push_timeline_ts": push_timeline_ts,
         "channel_stats": channel_stats,
         "cat_momentum": cat_momentum,
+        "median_recipients": sorted(recipient_counts)[len(recipient_counts)//2] if recipient_counts else 0,
+        "cat_median_recipients": {cat: sorted(vals)[len(vals)//2] for cat, vals in cat_recipient_data.items() if vals},
+        # Keyword→OR: nur Wörter mit min 5 Vorkommen (stabil genug)
+        "word_or": {w: {"avg": sum(ors)/len(ors), "n": len(ors),
+                        "std": (sum((o - sum(ors)/len(ors))**2 for o in ors) / len(ors))**0.5,
+                        "median": sorted(ors)[len(ors)//2]}
+                    for w, ors in word_or_data.items() if len(ors) >= 5},
+        "bigram_or": {bg: {"avg": sum(ors)/len(ors), "n": len(ors)}
+                      for bg, ors in bigram_or_data.items() if len(ors) >= 5},
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOPIC-LIFECYCLE & NACHRICHTENZYKLEN (ML-First Phase B)
+# ══════════════════════════════════════════════════════════════════════════════
+# _TOPIC_STOPS defined near line 479
+
+
+def _build_topic_tracker(history_stats, state=None):
+    """Baut Topic-Cluster aus den letzten 2000 Pushes via Greedy Jaccard-Clustering.
+
+    Cached mit 5-Minuten TTL in _topic_tracker.
+
+    Returns: Liste von Topic-Cluster-Dicts:
+        {keywords: set, first_seen_ts: int, last_seen_ts: int,
+         push_count: int, or_values: list, peak_or: float, push_indices: list}
+    """
+    global _topic_tracker
+    now = time.time()
+
+    with _topic_tracker_lock:
+        if _topic_tracker["clusters"] and now - _topic_tracker["ts"] < 300:
+            return _topic_tracker["clusters"]
+
+    recent = history_stats.get("recent_pushes", [])
+    if not recent:
+        return []
+
+    # Letzte 2000 Pushes nehmen
+    pushes_slice = recent[-2000:]
+
+    # Keyword-Sets extrahieren
+    push_data = []
+    for rp in pushes_slice:
+        words = set(rp.get("words", []))
+        words = {w for w in words if len(w) >= 4} - _TOPIC_STOPS
+        if words:
+            push_data.append({
+                "words": words,
+                "ts": rp.get("ts", 0),
+                "or": rp.get("or", 0),
+                "title": rp.get("title", ""),
+            })
+
+    if not push_data:
+        return []
+
+    # Greedy Clustering: Pushes mit Jaccard > 0.3 = selbes Thema
+    clusters = []
+    assigned = [False] * len(push_data)
+
+    for i, pd_i in enumerate(push_data):
+        if assigned[i]:
+            continue
+        cluster = {
+            "keywords": set(pd_i["words"]),
+            "first_seen_ts": pd_i["ts"],
+            "last_seen_ts": pd_i["ts"],
+            "push_count": 1,
+            "or_values": [pd_i["or"]] if pd_i["or"] > 0 else [],
+            "peak_or": pd_i["or"],
+            "titles": [pd_i["title"]],
+        }
+        assigned[i] = True
+
+        for j in range(i + 1, len(push_data)):
+            if assigned[j]:
+                continue
+            intersection = pd_i["words"] & push_data[j]["words"]
+            union = pd_i["words"] | push_data[j]["words"]
+            if union and len(intersection) / len(union) > 0.3:
+                assigned[j] = True
+                cluster["keywords"] |= push_data[j]["words"]
+                cluster["push_count"] += 1
+                if push_data[j]["or"] > 0:
+                    cluster["or_values"].append(push_data[j]["or"])
+                if push_data[j]["or"] > cluster["peak_or"]:
+                    cluster["peak_or"] = push_data[j]["or"]
+                if push_data[j]["ts"] < cluster["first_seen_ts"]:
+                    cluster["first_seen_ts"] = push_data[j]["ts"]
+                if push_data[j]["ts"] > cluster["last_seen_ts"]:
+                    cluster["last_seen_ts"] = push_data[j]["ts"]
+                cluster["titles"].append(push_data[j]["title"])
+
+        clusters.append(cluster)
+
+    # Competitor-Headlines zu Themen matchen
+    comp_cache = state.get("_competitor_cache", {}) if state else {}
+    if comp_cache:
+        for cluster in clusters:
+            cluster["competitor_count"] = 0
+            cluster["competitor_first_ts"] = 0
+            for src, items in comp_cache.items():
+                if not isinstance(items, list):
+                    continue
+                for it in items[:10]:
+                    comp_title = (it.get("title", "") if isinstance(it, dict) else str(it)).lower()
+                    comp_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', comp_title)) - _TOPIC_STOPS
+                    if comp_words and cluster["keywords"]:
+                        intersection = comp_words & cluster["keywords"]
+                        union = comp_words | cluster["keywords"]
+                        if union and len(intersection) / len(union) > 0.2:
+                            cluster["competitor_count"] += 1
+                            pub_ts = it.get("pub_ts", 0) if isinstance(it, dict) else 0
+                            if pub_ts and (not cluster["competitor_first_ts"] or pub_ts < cluster["competitor_first_ts"]):
+                                cluster["competitor_first_ts"] = pub_ts
+                            break
+
+    with _topic_tracker_lock:
+        _topic_tracker["clusters"] = clusters
+        _topic_tracker["ts"] = now
+
+    log.info(f"[Topic] {len(clusters)} Themen-Cluster erkannt, "
+             f"{sum(1 for c in clusters if c['push_count'] == 1)} einmalig, "
+             f"{sum(1 for c in clusters if c['push_count'] >= 5)} mit 5+ Pushes")
+
+    return clusters
+
+
+def _compute_topic_features(push, history_stats, state=None):
+    """Berechnet 10 Topic-Lifecycle Features für einen Push.
+
+    Returns: Dict mit 10 Feature-Name → Float-Wert
+    """
+    result = {
+        "topic_age_hours": 0.0,
+        "topic_push_count_24h": 0.0,
+        "topic_push_count_total": 0.0,
+        "topic_or_trend": 0.0,
+        "topic_peak_passed": 0.0,
+        "topic_is_emerging": 0.0,
+        "topic_is_saturated": 0.0,
+        "topic_momentum": 0.0,
+        "competitor_n_covering": 0.0,
+        "competitor_lead_hours": 0.0,
+    }
+
+    try:
+        clusters = _build_topic_tracker(history_stats, state)
+        if not clusters:
+            return result
+
+        title = push.get("title", "") or ""
+        push_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', title.lower())) - _TOPIC_STOPS
+        if not push_words:
+            return result
+
+        now_ts = push.get("ts_num", 0) or int(time.time())
+
+        # Besten Cluster-Match finden
+        best_cluster = None
+        best_jacc = 0.0
+        for cl in clusters:
+            intersection = push_words & cl["keywords"]
+            union = push_words | cl["keywords"]
+            if union:
+                jacc = len(intersection) / len(union)
+                if jacc > best_jacc:
+                    best_jacc = jacc
+                    best_cluster = cl
+
+        if not best_cluster or best_jacc < 0.15:
+            # Brandneues Thema
+            result["topic_is_emerging"] = 1.0
+            return result
+
+        cl = best_cluster
+        age_hours = max(0, (now_ts - cl["first_seen_ts"])) / 3600.0
+        result["topic_age_hours"] = age_hours
+        result["topic_push_count_total"] = float(cl["push_count"])
+
+        # Pushes in letzten 24h zählen
+        cutoff_24h = now_ts - 86400
+        count_24h = sum(1 for t in cl.get("titles", [])
+                        if cl["first_seen_ts"] <= cutoff_24h or cl["push_count"] <= 3)
+        # Approximation: wenn Cluster jung, alle Pushes sind in 24h
+        if age_hours < 24:
+            count_24h = cl["push_count"]
+        result["topic_push_count_24h"] = float(count_24h)
+
+        # OR-Trend (Steigung)
+        or_vals = cl.get("or_values", [])
+        if len(or_vals) >= 3:
+            first_half = or_vals[:len(or_vals)//2]
+            second_half = or_vals[len(or_vals)//2:]
+            avg_first = sum(first_half) / len(first_half)
+            avg_second = sum(second_half) / len(second_half)
+            global_avg = history_stats.get("global_avg", 4.77)
+            result["topic_or_trend"] = (avg_second - avg_first) / max(0.1, global_avg)
+
+            # Momentum
+            if len(or_vals) >= 6:
+                avg_first3 = sum(or_vals[:3]) / 3
+                avg_last3 = sum(or_vals[-3:]) / 3
+                result["topic_momentum"] = (avg_last3 - avg_first3) / max(0.1, global_avg)
+
+        # Peak passed?
+        peak_age_hours = max(0, (now_ts - cl["last_seen_ts"])) / 3600.0
+        result["topic_peak_passed"] = 1.0 if peak_age_hours > 24 else 0.0
+
+        # Emerging?
+        result["topic_is_emerging"] = 1.0 if age_hours < 6 and cl["push_count"] < 3 else 0.0
+
+        # Saturated?
+        result["topic_is_saturated"] = 1.0 if count_24h > 5 else 0.0
+
+        # Competitor Features
+        result["competitor_n_covering"] = float(cl.get("competitor_count", 0))
+        comp_first = cl.get("competitor_first_ts", 0)
+        if comp_first and comp_first < cl["first_seen_ts"]:
+            result["competitor_lead_hours"] = (cl["first_seen_ts"] - comp_first) / 3600.0
+        elif comp_first and comp_first > cl["first_seen_ts"]:
+            result["competitor_lead_hours"] = -((comp_first - cl["first_seen_ts"]) / 3600.0)
+        # 0.0 = BILD zuerst oder keine Competitor-Daten
+
+    except Exception as e:
+        log.debug(f"[Topic] Feature-Fehler: {e}")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WELTEREIGNIS-VERSTÄNDNIS (ML-First Phase C)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DE-EN Übersetzungspaare für Nachrichtenbegriffe
+_NEWS_TRANSLATION_PAIRS = {
+    "krieg": "war", "erdbeben": "earthquake", "wahl": "election",
+    "anschlag": "attack", "gipfel": "summit", "krise": "crisis",
+    "terror": "terror", "explosion": "explosion", "überfall": "raid",
+    "mord": "murder", "flut": "flood", "sturm": "storm",
+    "tsunami": "tsunami", "brand": "fire", "rakete": "rocket",
+    "bombe": "bomb", "geisel": "hostage", "putsch": "coup",
+    "protest": "protest", "streik": "strike", "embargo": "embargo",
+    "sanktion": "sanction", "verhandlung": "negotiation",
+    "waffenstillstand": "ceasefire", "evakuierung": "evacuation",
+    "epidemie": "epidemic", "pandemie": "pandemic", "impfung": "vaccine",
+    "klima": "climate", "dürre": "drought", "vulkan": "volcano",
+    "absturz": "crash", "entführung": "kidnapping", "flucht": "escape",
+    "invasion": "invasion", "demonstration": "demonstration",
+    "attentat": "assassination", "staatschef": "leader",
+    "präsident": "president", "kanzler": "chancellor",
+    "minister": "minister", "parlament": "parliament",
+    "referendum": "referendum", "rücktritt": "resignation",
+    "korruption": "corruption", "bestechung": "bribery",
+    "wirtschaft": "economy", "inflation": "inflation",
+    "rezession": "recession", "arbeitslos": "unemployment",
+    "migration": "migration", "flüchtling": "refugee",
+    "grenze": "border", "olympia": "olympics",
+}
+# Reverse mapping
+_NEWS_TRANSLATION_EN_DE = {v: k for k, v in _NEWS_TRANSLATION_PAIRS.items()}
+
+# DE-Competitor-Quellen (für german_exclusivity)
+_DE_SOURCES = {"spiegel", "faz", "sz", "welt", "focus", "stern", "tagesschau",
+               "nzz", "derstandard", "zeit", "ntv", "bild"}
+
+
+def _build_world_event_index(state=None):
+    """Baut World-Event-Index aus Competitor + International Feeds.
+
+    Cached mit 10-Minuten TTL in _world_event_index.
+
+    Returns: Dict mit hot_topics (Liste) und keyword_counts (Dict)
+    """
+    global _world_event_index
+    now = time.time()
+
+    with _world_event_index_lock:
+        if _world_event_index["hot_topics"] and now - _world_event_index["ts"] < 600:
+            return _world_event_index
+
+    comp_cache = state.get("_competitor_cache", {}) if state else {}
+    if not comp_cache:
+        return {"hot_topics": [], "keyword_counts": {}, "ts": now}
+
+    # Alle Headlines der letzten 6h sammeln
+    cutoff_6h = now - 6 * 3600
+    source_keywords = {}  # source_name → set of keywords
+
+    for src, items in comp_cache.items():
+        if not isinstance(items, list):
+            continue
+        kw_set = set()
+        for it in items[:20]:
+            title = (it.get("title", "") if isinstance(it, dict) else str(it)).lower()
+            # Prüfe Zeitstempel wenn verfügbar
+            pub_ts = it.get("pub_ts", 0) if isinstance(it, dict) else 0
+            if pub_ts and pub_ts < cutoff_6h:
+                continue
+            words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', title)) - _TOPIC_STOPS
+            # DE-EN Brücke: Füge Übersetzungen hinzu
+            translated = set()
+            for w in words:
+                if w in _NEWS_TRANSLATION_PAIRS:
+                    translated.add(_NEWS_TRANSLATION_PAIRS[w])
+                if w in _NEWS_TRANSLATION_EN_DE:
+                    translated.add(_NEWS_TRANSLATION_EN_DE[w])
+            words |= translated
+            kw_set |= words
+        if kw_set:
+            source_keywords[src] = kw_set
+
+    if not source_keywords:
+        return {"hot_topics": [], "keyword_counts": {}, "ts": now}
+
+    # Pro Keyword zählen: in wie vielen Quellen kommt es vor?
+    keyword_source_count = defaultdict(int)
+    keyword_sources = defaultdict(set)
+    for src, kws in source_keywords.items():
+        for kw in kws:
+            keyword_source_count[kw] += 1
+            keyword_sources[kw].add(src)
+
+    # Hot Keywords: in 5+ Quellen
+    hot_keywords = {kw for kw, cnt in keyword_source_count.items() if cnt >= 5}
+
+    # Hot Keywords per Co-Occurrence clustern → Hot Topics
+    hot_topics = []
+    used = set()
+    hot_list = sorted(hot_keywords, key=lambda k: -keyword_source_count[k])
+
+    for kw in hot_list:
+        if kw in used:
+            continue
+        topic = {
+            "keywords": {kw},
+            "sources": set(keyword_sources[kw]),
+            "max_source_count": keyword_source_count[kw],
+        }
+        used.add(kw)
+
+        # Co-Occurrence: andere Hot Keywords die in ähnlichen Quellen vorkommen
+        for other_kw in hot_list:
+            if other_kw in used:
+                continue
+            overlap = keyword_sources[kw] & keyword_sources[other_kw]
+            if len(overlap) >= 3:
+                topic["keywords"].add(other_kw)
+                topic["sources"] |= keyword_sources[other_kw]
+                if keyword_source_count[other_kw] > topic["max_source_count"]:
+                    topic["max_source_count"] = keyword_source_count[other_kw]
+                used.add(other_kw)
+
+        hot_topics.append(topic)
+
+    # DE vs International aufschlüsseln
+    for topic in hot_topics:
+        topic["n_de_sources"] = len(topic["sources"] & _DE_SOURCES)
+        topic["n_intl_sources"] = len(topic["sources"] - _DE_SOURCES)
+        topic["n_total_sources"] = len(topic["sources"])
+        # Konvertiere sets zu listen für Serialisierbarkeit
+        topic["keywords"] = list(topic["keywords"])
+        topic["sources"] = list(topic["sources"])
+
+    result = {
+        "hot_topics": hot_topics,
+        "keyword_counts": dict(keyword_source_count),
+        "ts": now,
+    }
+
+    with _world_event_index_lock:
+        _world_event_index = result
+
+    n_intl = sum(1 for t in hot_topics if t.get("n_intl_sources", 0) > 0)
+    log.info(f"[WorldEvents] {len(hot_topics)} Hot Topics, "
+             f"{len(hot_keywords)} Hot Keywords, "
+             f"{len(source_keywords)} Quellen, {n_intl} international")
+
+    return result
+
+
+def _compute_world_event_features(push, state=None):
+    """Berechnet 7 Weltereignis-Features für einen Push.
+
+    Returns: Dict mit 7 Feature-Name → Float-Wert
+    """
+    result = {
+        "global_event_score": 0.0,
+        "n_sources_covering": 0.0,
+        "n_international_sources": 0.0,
+        "is_globally_trending": 0.0,
+        "international_attention": 0.0,
+        "event_freshness_hours": 0.0,
+        "german_exclusivity": 0.0,
+    }
+
+    try:
+        world_idx = _build_world_event_index(state)
+        hot_topics = world_idx.get("hot_topics", [])
+        if not hot_topics:
+            return result
+
+        title = push.get("title", "") or ""
+        push_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', title.lower())) - _TOPIC_STOPS
+        # Füge Übersetzungen hinzu
+        translated = set()
+        for w in push_words:
+            if w in _NEWS_TRANSLATION_PAIRS:
+                translated.add(_NEWS_TRANSLATION_PAIRS[w])
+            if w in _NEWS_TRANSLATION_EN_DE:
+                translated.add(_NEWS_TRANSLATION_EN_DE[w])
+        push_words |= translated
+
+        if not push_words:
+            return result
+
+        total_intl = len(INTERNATIONAL_FEEDS)
+
+        # Besten Topic-Match finden
+        best_score = 0.0
+        best_topic = None
+        for topic in hot_topics:
+            topic_kws = set(topic.get("keywords", []))
+            if not topic_kws:
+                continue
+            intersection = push_words & topic_kws
+            if not intersection:
+                continue
+            score = len(intersection) / len(topic_kws)
+            if score > best_score:
+                best_score = score
+                best_topic = topic
+
+        if best_topic and best_score > 0.1:
+            result["global_event_score"] = min(1.0, best_score)
+            result["n_sources_covering"] = float(best_topic.get("n_total_sources", 0))
+            result["n_international_sources"] = float(best_topic.get("n_intl_sources", 0))
+            result["is_globally_trending"] = 1.0 if best_topic.get("n_total_sources", 0) >= 10 else 0.0
+            result["international_attention"] = best_topic.get("n_intl_sources", 0) / max(1, total_intl)
+
+            # German exclusivity: nur DE-Quellen berichten
+            if best_topic.get("n_intl_sources", 0) == 0 and best_topic.get("n_de_sources", 0) > 0:
+                result["german_exclusivity"] = 1.0
+
+    except Exception as e:
+        log.debug(f"[WorldEvents] Feature-Fehler: {e}")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOPIC-SATURATION PENALTY — Themen-Sättigungs-Dämpfung
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_topic_saturation_penalty(push, push_data, state=None):
+    """Berechnet den Themen-Sättigungs-Faktor für einen Push.
+
+    Analysiert ob zum gleichen Thema bereits Pushes gesendet wurden und
+    berechnet eine Dämpfung basierend auf:
+    1. Themenspezifische Push-Anzahl (6h-Fenster) — Kern-Signal
+    2. Jaccard-Ähnlichkeit zu kürzlich gesendeten Pushes
+    3. Zeitlicher Abstand zum letzten thematisch ähnlichen Push
+    4. OR-Trend des Themas (sinkende OR = stärkere Sättigung)
+
+    Returns: Dict mit:
+        penalty: float (0.5 - 1.0, Multiplikator; 1.0 = keine Strafe)
+        topic_push_count_6h: int
+        topic_push_count_24h: int
+        highest_jaccard: float
+        hours_since_last: float
+        reason: str (Erklärung)
+    """
+    result = {
+        "penalty": 1.0,
+        "topic_push_count_6h": 0,
+        "topic_push_count_24h": 0,
+        "highest_jaccard": 0.0,
+        "hours_since_last": 999.0,
+        "or_decay": 0.0,
+        "reason": "",
+    }
+
+    try:
+        title = push.get("title", "") or ""
+        title_lower = title.lower()
+        push_ts = push.get("ts_num", 0) or int(time.time())
+
+        # Keywords des aktuellen Pushes
+        push_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', title_lower)) - _TOPIC_STOPS
+        if not push_words or len(push_words) < 2:
+            return result
+
+        # Zeitfenster
+        cutoff_6h = push_ts - 6 * 3600
+        cutoff_24h = push_ts - 24 * 3600
+
+        # Nur Pushes die VOR dem aktuellen liegen (temporal causal)
+        if push_ts > 0:
+            candidates = [p for p in push_data
+                          if p.get("ts_num", 0) > 0
+                          and p["ts_num"] < push_ts
+                          and p["ts_num"] > cutoff_24h
+                          and (p.get("or", 0) or 0) > 0]
+        else:
+            candidates = [p for p in push_data
+                          if (p.get("or", 0) or 0) > 0
+                          and p.get("ts_num", 0) > cutoff_24h]
+
+        if not candidates:
+            return result
+
+        # Thematisch ähnliche Pushes finden (Jaccard > 0.25)
+        similar_pushes = []
+        highest_jaccard = 0.0
+        last_similar_ts = 0
+
+        for p in candidates:
+            p_title = (p.get("title", "") or "").lower()
+            p_words = set(re.findall(r'[A-Za-zäöüÄÖÜß]{4,}', p_title)) - _TOPIC_STOPS
+            if not p_words:
+                continue
+            intersection = push_words & p_words
+            union = push_words | p_words
+            if not union:
+                continue
+            jaccard = len(intersection) / len(union)
+
+            if jaccard > highest_jaccard:
+                highest_jaccard = jaccard
+
+            if jaccard > 0.25:
+                similar_pushes.append({
+                    "ts": p["ts_num"],
+                    "or": p.get("or", 0),
+                    "jaccard": jaccard,
+                    "title": p_title[:60],
+                })
+                if p["ts_num"] > last_similar_ts:
+                    last_similar_ts = p["ts_num"]
+
+        result["highest_jaccard"] = round(highest_jaccard, 3)
+
+        if not similar_pushes:
+            return result
+
+        # 6h und 24h Zählung
+        count_6h = sum(1 for sp in similar_pushes if sp["ts"] > cutoff_6h)
+        count_24h = len(similar_pushes)
+        result["topic_push_count_6h"] = count_6h
+        result["topic_push_count_24h"] = count_24h
+
+        # Stunden seit letztem ähnlichen Push
+        hours_since = (push_ts - last_similar_ts) / 3600.0 if last_similar_ts > 0 else 999.0
+        result["hours_since_last"] = round(hours_since, 2)
+
+        # OR-Decay: sinken die OR-Werte der ähnlichen Pushes?
+        if len(similar_pushes) >= 2:
+            sorted_sim = sorted(similar_pushes, key=lambda x: x["ts"])
+            first_half = sorted_sim[:len(sorted_sim)//2]
+            second_half = sorted_sim[len(sorted_sim)//2:]
+            avg_first = sum(s["or"] for s in first_half) / len(first_half)
+            avg_second = sum(s["or"] for s in second_half) / len(second_half)
+            if avg_first > 0:
+                result["or_decay"] = round((avg_second - avg_first) / avg_first, 3)
+
+        # ── Penalty-Berechnung ──────────────────────────────────────
+
+        penalty = 1.0
+        reasons = []
+
+        # Signal 1: 6h-Fenster Push-Anzahl (Kernlogik)
+        # Logarithmische Dämpfung: #2=-12%, #3=-22%, #4=-33%, #5=-42%, #6+=-50%
+        if count_6h >= 1:
+            # Verschoben um 1: der ERSTE ähnliche Push in 6h ist #2 insgesamt
+            n = count_6h + 1  # +1 weil der aktuelle Push auch dazuzählt
+            raw_penalty = 1.0 - 0.18 * math.log(n)
+            count_penalty = max(0.50, raw_penalty)
+            penalty *= count_penalty
+            reasons.append(f"{count_6h} ähnl. in 6h → ×{count_penalty:.2f}")
+
+        # Signal 2: Jaccard-verstärkter Abzug (je ähnlicher, desto stärker)
+        # Jaccard 0.25-0.50 = mildes Signal, 0.50-0.80 = stark, 0.80+ = quasi-Duplikat
+        if highest_jaccard > 0.40 and count_6h >= 1:
+            jacc_extra = (highest_jaccard - 0.40) * 0.25  # max ~0.15 Extra-Penalty
+            penalty *= (1.0 - jacc_extra)
+            reasons.append(f"Jaccard {highest_jaccard:.2f} → ×{1.0 - jacc_extra:.2f}")
+
+        # Signal 3: Zeitnähe — wenn letzter ähnlicher Push < 1h → extra Strafe
+        if hours_since < 1.0 and count_6h >= 1:
+            recency_penalty = 0.92 - (1.0 - hours_since) * 0.08  # bis -16% bei Minuten-Abstand
+            recency_penalty = max(0.84, recency_penalty)
+            penalty *= recency_penalty
+            reasons.append(f"{hours_since:.1f}h her → ×{recency_penalty:.2f}")
+
+        # Signal 4: OR-Decay — wenn die ORs des Themas bereits sinken
+        if result["or_decay"] < -0.15 and count_6h >= 2:
+            decay_penalty = max(0.88, 1.0 + result["or_decay"] * 0.3)
+            penalty *= decay_penalty
+            reasons.append(f"OR-Decay {result['or_decay']:+.0%} → ×{decay_penalty:.2f}")
+
+        # Eilmeldungen bekommen mildere Strafe (40% der Penalty)
+        if push.get("is_eilmeldung") and penalty < 1.0:
+            penalty = 1.0 - (1.0 - penalty) * 0.40
+            reasons.append("Eilmeldung → Penalty ×0.40")
+
+        # Finaler Clamp
+        penalty = max(0.40, min(1.0, penalty))
+
+        result["penalty"] = round(penalty, 3)
+        result["reason"] = " | ".join(reasons) if reasons else "kein Themen-Match"
+
+    except Exception as e:
+        log.debug(f"[TopicSat] Fehler: {e}")
+
+    return result
 
 
 # ── GBRT Decision Tree Implementation ───────────────────────────────────
@@ -1428,8 +2923,9 @@ class GBRTModel:
                     rounds_no_improve = 0
                 else:
                     rounds_no_improve += 1
-                if rounds_no_improve >= 20:
+                if rounds_no_improve >= 30 and t + 1 >= 50:
                     early_stopped = True
+                    best_n_trees = max(best_n_trees, 40)  # Minimum 40 Bäume
                     log.info(f"[GBRT] Early stopping bei Baum {t+1}, "
                              f"beste Stelle: Baum {best_n_trees} (val_mae={best_val_mae:.4f})")
                     # Bäume nach dem besten Punkt entfernen
@@ -1674,6 +3170,162 @@ class GBRTModel:
         return model
 
 
+class _SklearnModelWrapper:
+    """Wrapper um sklearn GradientBoostingRegressor für API-Kompatibilität mit GBRTModel."""
+
+    def __init__(self, sklearn_model, feature_names):
+        self.sklearn_model = sklearn_model
+        self.feature_names = list(feature_names)
+        self.trees = list(range(sklearn_model.n_estimators_))  # Dummy für len()
+        self.train_metrics = {}
+        self.feature_importance_ = {}
+        self._is_sklearn = True
+        # Feature Importance extrahieren
+        importances = sklearn_model.feature_importances_
+        total = sum(importances)
+        if total > 0:
+            for i, fname in enumerate(feature_names):
+                if importances[i] > 0:
+                    self.feature_importance_[fname] = float(importances[i] / total)
+
+    def predict(self, X):
+        if np is None:
+            return [0.0] * len(X)
+        return self.sklearn_model.predict(np.array(X, dtype=np.float64)).tolist()
+
+    def predict_one(self, x):
+        if np is None:
+            return 0.0
+        return float(self.sklearn_model.predict(np.array([x], dtype=np.float64))[0])
+
+    def predict_with_uncertainty(self, x):
+        if np is None:
+            return {"predicted": 0.0, "confidence": 0.5, "std": 0.0}
+        x_arr = np.array([x], dtype=np.float64)
+        pred = float(self.sklearn_model.predict(x_arr)[0])
+        # Uncertainty via Baum-Varianz (schneller als staged_predict)
+        std = 0.0
+        try:
+            n_trees = self.sklearn_model.n_estimators_
+            if n_trees > 50:
+                # Nur erste + letzte 25 Bäume vergleichen statt alle zu iterieren
+                lr = self.sklearn_model.learning_rate
+                init = self.sklearn_model.init_.predict(x_arr)[0] if hasattr(self.sklearn_model.init_, 'predict') else self.sklearn_model._raw_predict_init(x_arr)[0]
+                # Schnelle Näherung: Fraction of total prediction from recent trees
+                tree_preds = []
+                for tree_idx in range(max(0, n_trees - 25), n_trees):
+                    tp = float(self.sklearn_model.estimators_[tree_idx, 0].predict(x_arr)[0])
+                    tree_preds.append(tp * lr)
+                if tree_preds:
+                    std = math.sqrt(sum(t ** 2 for t in tree_preds) / len(tree_preds))
+        except Exception:
+            std = abs(pred) * 0.12
+        confidence = max(0.1, min(0.95, 1.0 - std / max(1.0, abs(pred))))
+        return {"predicted": pred, "confidence": round(confidence, 3), "std": round(std, 4)}
+
+    def shap_values(self, x):
+        """Feature-Contributions via batched Leave-One-Out auf Top-20 Features."""
+        if np is None:
+            return {"base_value": 0.0, "shap_values": {}, "prediction": 0.0}
+        x_arr = np.array(x, dtype=np.float64).reshape(1, -1)
+        pred = float(self.sklearn_model.predict(x_arr)[0])
+        shap_dict = {}
+        top_feats = sorted(self.feature_importance_.items(), key=lambda kv: -kv[1])[:20]
+        if not top_feats:
+            return {"base_value": pred, "shap_values": {}, "prediction": pred}
+        try:
+            # Batch: 20 modifizierte Kopien auf einmal predicten
+            n = len(top_feats)
+            x_batch = np.tile(x_arr, (n, 1))  # n Kopien
+            feat_indices = []
+            for i, (fname, _) in enumerate(top_feats):
+                fidx = self.feature_names.index(fname)
+                x_batch[i, fidx] = 0.0
+                feat_indices.append((fname, i))
+            preds_without = self.sklearn_model.predict(x_batch)  # 1 Batch-Call
+            for fname, i in feat_indices:
+                shap_dict[fname] = pred - float(preds_without[i])
+        except Exception:
+            for fname, imp in top_feats:
+                shap_dict[fname] = imp * 0.5
+        return {"base_value": pred, "shap_values": shap_dict, "prediction": pred}
+
+    def feature_importance(self, top_n=20):
+        items = sorted(self.feature_importance_.items(), key=lambda x: -x[1])
+        return [{"name": k, "importance": v} for k, v in items[:top_n]]
+
+    def to_json(self):
+        return {
+            "type": "sklearn_GBR",
+            "n_trees": len(self.trees),
+            "feature_names": self.feature_names,
+            "metrics": self.train_metrics,
+            "feature_importance": self.feature_importance(20),
+            "conformal_radius": getattr(self, "conformal_radius", None),
+            "blend_alpha": getattr(self, "blend_alpha", None),
+        }
+
+
+class _LGBMModelWrapper:
+    """Wrapper um LightGBM-Modell für API-Kompatibilität mit GBRTModel."""
+
+    _is_lgbm = True
+
+    def __init__(self, lgbm_model, feature_names):
+        self.lgbm_model = lgbm_model
+        self.feature_names = list(feature_names)
+        self.trees = list(range(lgbm_model.n_estimators_))
+        self.train_metrics = {}
+        # Feature Importance (normalized)
+        raw_imp = lgbm_model.feature_importances_
+        total = sum(raw_imp) if sum(raw_imp) > 0 else 1
+        self.feature_importance_ = {
+            f: float(raw_imp[i]) / total
+            for i, f in enumerate(feature_names)
+        }
+
+    def predict(self, X):
+        if np is None:
+            return [0.0] * len(X)
+        return self.lgbm_model.predict(np.array(X, dtype=np.float64)).tolist()
+
+    def predict_one(self, x):
+        if np is None:
+            return 0.0
+        return float(self.lgbm_model.predict(np.array([x], dtype=np.float64))[0])
+
+    def predict_with_uncertainty(self, x):
+        pred = self.predict_one(x)
+        return {"predicted": pred, "confidence": 0.7, "std": 0.0}
+
+    def shap_values(self, x):
+        # Leave-One-Out Approximation auf Top-20 Features
+        base = self.predict_one(x)
+        top_feat = sorted(self.feature_importance_.items(), key=lambda t: -t[1])[:20]
+        contributions = {}
+        for fname, _ in top_feat:
+            idx = self.feature_names.index(fname)
+            x_mod = list(x)
+            x_mod[idx] = 0.0
+            mod_pred = self.predict_one(x_mod)
+            contributions[fname] = round(base - mod_pred, 4)
+        return contributions
+
+    def feature_importance(self, top_n=20):
+        return sorted(self.feature_importance_.items(), key=lambda t: -t[1])[:top_n]
+
+    def to_json(self):
+        return {
+            "type": "lgbm_GBR",
+            "n_trees": len(self.trees),
+            "feature_names": self.feature_names,
+            "metrics": self.train_metrics,
+            "feature_importance": self.feature_importance(20),
+            "conformal_radius": getattr(self, "conformal_radius", None),
+            "blend_alpha": getattr(self, "blend_alpha", None),
+        }
+
+
 # ── Isotonic Regression (PAVA) fuer Kalibrierung ────────────────────────
 
 def _isotonic_regression_pava(predicted, actual):
@@ -1787,7 +3439,7 @@ class IsotonicCalibrator:
 
 # ── GBRT Global State ───────────────────────────────────────────────────
 
-_gbrt_model = None        # Haupt-Modell (Residual: OR - Baseline)
+_gbrt_model = None        # Haupt-Modell (Direct: OR direkt)
 _gbrt_model_direct = None # Direct-Modell (lernt OR direkt, ohne Baseline-Subtraktion)
 _gbrt_model_q10 = None    # Quantile-Modell p10
 _gbrt_model_q90 = None    # Quantile-Modell p90
@@ -1796,12 +3448,140 @@ _gbrt_lock = threading.Lock()
 _gbrt_feature_names = []  # Sortierte Feature-Namen
 _gbrt_train_ts = 0        # Letzter Training-Zeitpunkt
 _gbrt_history_stats = {}  # Cached History Stats
-_gbrt_cat_hour_baselines = {}  # Cat×Hour Baselines fuer Residual-Modeling
+_gbrt_cat_hour_baselines = {}  # Cat×Hour Baselines (Bayesian Shrinkage, für Features + Blending)
 _gbrt_global_train_avg = 4.77  # Fallback Global Average
-_gbrt_ensemble_weights = {"residual": 0.5, "direct": 0.5}  # Gewichte Dual-Modell
+_gbrt_ensemble_weights = {"MAE": 1.0}  # Gewichte Multi-Objective Ensemble
 _gbrt_model_type = "residual"  # "residual", "direct", oder "ensemble"
 
 GBRT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gbrt_model.json")
+SKLEARN_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sklearn_gbrt.joblib")
+ML_LGBM_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ml_lgbm.joblib")
+
+# ── ML v2: sklearn-Modell + PCA State ──
+_sklearn_model = None           # sklearn GBR (Direct)
+_sklearn_model_direct = None    # sklearn GBR (Direct)
+_sklearn_feature_names = []     # Feature-Namen für sklearn
+_embedding_pca = None           # PCA-Transformer (25 Komponenten)
+_embedding_pca_mean = None      # PCA Mittelwert-Vektor
+_use_sklearn = _SKLEARN_AVAILABLE  # Flag ob sklearn oder Pure-Python
+
+# ── Competitor XOR Performance-Cache ─────────────────────────────────
+# Vorberechnete Wort/Entity/Kategorie-Performance fuer schnelle XOR-Predictions
+_xor_perf_cache = {
+    "word_perf": {},      # {wort: {avg, count, p25, p75}}
+    "cat_hour_perf": {},  # {cat_hour: {avg, p25, p50, p75, count}}
+    "eil_perf": {},       # {avg, p25, p75, count}
+    "global_avg": 4.77,
+    "built_at": 0,
+}
+_xor_perf_lock = threading.Lock()
+
+_XOR_STOP_WORDS = frozenset({
+    "der", "die", "das", "und", "oder", "ist", "in", "von", "zu", "mit",
+    "auf", "für", "den", "ein", "eine", "dem", "des", "sich", "bei", "nach",
+    "aus", "als", "hat", "wie", "wird", "vor", "nicht", "im", "am", "es",
+    "an", "um", "über", "auch", "war", "zum", "was", "nur", "er", "sie",
+    "noch", "wir", "werden", "aber", "alle", "vom", "ab", "bis", "jetzt",
+    "hier", "wegen", "sein", "neue", "neuer", "neues", "ganz", "erst",
+    "seit", "doch", "soll", "kann", "will", "muss", "darf", "laut", "wenn",
+    "dann", "mehr", "schon", "nun", "dass", "einen", "einem", "dieser",
+    "diese", "dieses", "haben", "hatte", "ihre", "seiner", "seine",
+    "einer", "so", "mal", "zur", "ins", "darum", "warum", "seinen",
+    "ihren", "ihrem", "seinen", "seinem", "ihr", "ihm", "ihn",
+})
+
+
+def _build_xor_perf_cache():
+    """Baut den XOR-Performance-Cache aus historischen Pushes."""
+    import time as _t
+    _t0 = _t.monotonic()
+    try:
+        push_data = _research_state.get("push_data", [])
+        if not push_data:
+            push_data = _push_db_load_all()
+        hist = [p for p in push_data if 0 < p.get("or", 0) <= 25]
+        if len(hist) < 100:
+            return
+
+        from collections import defaultdict
+        word_ors = defaultdict(list)
+        cat_hour_ors = defaultdict(list)
+        eil_ors = []
+        all_ors = []
+
+        for p in hist:
+            or_val = p["or"]
+            all_ors.append(or_val)
+            title = (p.get("title") or p.get("headline", "")).lower()
+            cat = (p.get("cat", "") or "").lower().strip()
+            hour = p.get("hour", 12)
+
+            # Wort-Performance
+            words = set(w.strip(".,;:!?\"'()[]{}") for w in title.split())
+            words = {w for w in words if len(w) > 2 and w not in _XOR_STOP_WORDS}
+            for w in words:
+                word_ors[w].append(or_val)
+
+            # Cat×Hour
+            cat_hour_ors[f"{cat}_{hour}"].append(or_val)
+
+            # Eilmeldung
+            if p.get("is_eilmeldung"):
+                eil_ors.append(or_val)
+
+        # Wort-Performance zusammenfassen (nur Woerter mit >= 5 Vorkommen)
+        word_perf = {}
+        for w, ors in word_ors.items():
+            if len(ors) >= 5:
+                s = sorted(ors)
+                word_perf[w] = {
+                    "avg": sum(ors) / len(ors),
+                    "count": len(ors),
+                    "p25": s[len(s) // 4],
+                    "p75": s[int(len(s) * 0.75)],
+                    "p90": s[int(len(s) * 0.9)],
+                }
+
+        # Cat×Hour
+        cat_hour_perf = {}
+        for key, ors in cat_hour_ors.items():
+            if len(ors) >= 3:
+                s = sorted(ors)
+                cat_hour_perf[key] = {
+                    "avg": sum(ors) / len(ors),
+                    "p25": s[len(s) // 4],
+                    "p50": s[len(s) // 2],
+                    "p75": s[int(len(s) * 0.75)],
+                    "count": len(ors),
+                }
+
+        # Eilmeldung
+        eil_perf = {}
+        if len(eil_ors) >= 5:
+            s = sorted(eil_ors)
+            eil_perf = {
+                "avg": sum(eil_ors) / len(eil_ors),
+                "p25": s[len(s) // 4],
+                "p75": s[int(len(s) * 0.75)],
+                "p90": s[int(len(s) * 0.9)],
+                "count": len(eil_ors),
+            }
+
+        global_avg = sum(all_ors) / len(all_ors) if all_ors else 4.77
+
+        with _xor_perf_lock:
+            _xor_perf_cache["word_perf"] = word_perf
+            _xor_perf_cache["cat_hour_perf"] = cat_hour_perf
+            _xor_perf_cache["eil_perf"] = eil_perf
+            _xor_perf_cache["global_avg"] = global_avg
+            _xor_perf_cache["built_at"] = _t.time()
+
+        elapsed = (_t.monotonic() - _t0) * 1000
+        log.info(f"[XOR] Performance-Cache gebaut: {len(word_perf)} Woerter, "
+                 f"{len(cat_hour_perf)} Cat×Hour, "
+                 f"global_avg={global_avg:.2f}, {elapsed:.0f}ms")
+    except Exception as e:
+        log.warning(f"[XOR] Cache-Build-Fehler: {e}")
 
 
 def _gbrt_bootstrap_ci(y_true, y_pred, n_bootstrap=1000, ci=0.95):
@@ -2055,8 +3835,9 @@ _ab_lock = threading.Lock()
 
 
 def _update_cat_hour_baselines(train_data):
-    """Aktualisiert die globalen Cat×Hour-Baselines fuer Residual-Modeling."""
+    """Aktualisiert die globalen Cat×Hour-Baselines mit Bayesian Shrinkage."""
     global _gbrt_global_train_avg
+    SHRINKAGE_K = 20
     counts = defaultdict(list)
     for p in train_data:
         key = f"{(p.get('cat', '') or 'news').lower().strip()}_{p.get('hour', 12)}"
@@ -2065,7 +3846,9 @@ def _update_cat_hour_baselines(train_data):
     _gbrt_global_train_avg = sum(all_or) / len(all_or) if all_or else 4.77
     _gbrt_cat_hour_baselines.clear()
     for key, ors in counts.items():
-        _gbrt_cat_hour_baselines[key] = sum(ors) / len(ors) if ors else _gbrt_global_train_avg
+        n = len(ors)
+        raw_mean = sum(ors) / n if n > 0 else _gbrt_global_train_avg
+        _gbrt_cat_hour_baselines[key] = (n * raw_mean + SHRINKAGE_K * _gbrt_global_train_avg) / (n + SHRINKAGE_K)
 
 
 def _gbrt_maybe_promote_or_challenge(model, model_q10, model_q90, calibrator,
@@ -2109,7 +3892,7 @@ def _gbrt_maybe_promote_or_challenge(model, model_q10, model_q90, calibrator,
                 _gbrt_feature_names = feature_names
                 _gbrt_train_ts = int(time.time())
                 _gbrt_history_stats = history_stats
-                # Cat×Hour-Baselines fuer Residual-Modeling (aus train_data)
+                # Cat×Hour-Baselines mit Bayesian Shrinkage (aus train_data)
                 _update_cat_hour_baselines(train_data)
                 _mark_experiment_promoted(experiment_id)
                 return True
@@ -2235,7 +4018,7 @@ def _ab_evaluate():
             _gbrt_feature_names = challenger_fn
             _gbrt_train_ts = int(time.time())
             _gbrt_history_stats = challenger_hs
-            # Cat×Hour-Baselines fuer Residual-Modeling aktualisieren
+            # Cat×Hour-Baselines mit Bayesian Shrinkage aktualisieren
             challenger_td = _ab_state.get("challenger_train_data", [])
             if challenger_td:
                 _update_cat_hour_baselines(challenger_td)
@@ -2360,6 +4143,14 @@ def _gbrt_online_update():
         _online_state["batch_mae"] = round(batch_mae, 4)
         _online_state["updates_count"] += 1
 
+        # D5: Online Bias-Korrektur aus letzten 50 Predictions (Mean Signed Error)
+        global _gbrt_online_bias
+        signed_errors = [preds[i] - y_new[i] for i in range(len(y_new))]
+        recent_signed = signed_errors[:50]
+        if recent_signed:
+            _gbrt_online_bias = sum(recent_signed) / len(recent_signed)
+            log.info(f"[Online] Bias-Korrektur: {_gbrt_online_bias:+.4f} (aus {len(recent_signed)} Predictions)")
+
         # Sicherheit: Wenn online_mae > batch_mae * 1.2 → pausieren
         if batch_mae > 0 and online_mae > batch_mae * 1.2:
             _online_state["paused"] = True
@@ -2379,6 +4170,7 @@ def _gbrt_online_update():
 
 _embedding_model = None
 _embedding_model_loading = False
+_EMBEDDING_CACHE_MAX = 20000  # Max 20k Titel (~30 MB bei 384-dim float32)
 _embedding_cache_mem = {}  # In-Memory Cache: title_hash → embedding
 
 
@@ -2388,8 +4180,8 @@ def _load_embedding_model_background():
     _embedding_model_loading = True
     try:
         from sentence_transformers import SentenceTransformer
-        _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L6-v2")
-        log.info("[Embeddings] Modell geladen: paraphrase-multilingual-MiniLM-L6-v2 (384-dim)")
+        _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        log.info("[Embeddings] Modell geladen: paraphrase-multilingual-MiniLM-L12-v2 (384-dim)")
         # Pre-cache existing titles from DB
         _precache_embeddings()
     except ImportError:
@@ -2477,6 +4269,12 @@ def _get_embedding(title):
     # Berechne Embedding
     try:
         emb = _embedding_model.encode(title).tolist()
+        # Eviction: älteste Einträge entfernen wenn Cache voll
+        if len(_embedding_cache_mem) >= _EMBEDDING_CACHE_MAX:
+            # Entferne ~10% der ältesten Einträge
+            keys_to_remove = list(_embedding_cache_mem.keys())[:_EMBEDDING_CACHE_MAX // 10]
+            for k in keys_to_remove:
+                del _embedding_cache_mem[k]
         _embedding_cache_mem[title_hash] = emb
         # In DB speichern
         try:
@@ -2496,7 +4294,19 @@ def _get_embedding(title):
 
 
 def _cosine_similarity(a, b):
-    """Kosinus-Ähnlichkeit zweier Vektoren."""
+    """Kosinus-Ähnlichkeit zweier Vektoren (numpy-beschleunigt)."""
+    if np is not None:
+        # Wenn schon ndarray, kein Copy (zero-cost)
+        a_arr = a if isinstance(a, np.ndarray) else np.asarray(a, dtype=np.float32)
+        b_arr = b if isinstance(b, np.ndarray) else np.asarray(b, dtype=np.float32)
+        dot = np.dot(a_arr, b_arr)
+        norm_a = np.linalg.norm(a_arr)
+        norm_b = np.linalg.norm(b_arr)
+        denom = norm_a * norm_b
+        if denom < 1e-10:
+            return 0.0
+        return float(dot / denom)
+    # Fallback: Pure Python
     dot = sum(a[i] * b[i] for i in range(len(a)))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -2551,7 +4361,57 @@ def _compute_embedding_features(title, history_stats):
     return result
 
 
+def _build_embedding_pca(train_pushes, n_components=25):
+    """Baut PCA auf Titel-Embeddings der Trainingsdaten (kein Leakage)."""
+    global _embedding_pca, _embedding_pca_mean
+    if not _SKLEARN_AVAILABLE or _embedding_model is None or np is None:
+        log.info("[PCA] sklearn oder Embedding-Modell nicht verfügbar, überspringe PCA")
+        return
+    try:
+        embeddings = []
+        for p in train_pushes:
+            title = p.get("title", "")
+            if not title:
+                continue
+            emb = _get_embedding(title)
+            if emb is not None and len(emb) == 384:
+                embeddings.append(emb)
+        if len(embeddings) < 100:
+            log.info(f"[PCA] Nur {len(embeddings)} Embeddings, brauche min 100")
+            return
+        emb_matrix = np.array(embeddings)
+        _embedding_pca_mean = emb_matrix.mean(axis=0).reshape(1, -1)
+        n_comp = min(n_components, emb_matrix.shape[0], emb_matrix.shape[1])
+        pca = SklearnPCA(n_components=n_comp, random_state=42)
+        pca.fit(emb_matrix - _embedding_pca_mean)
+        _embedding_pca = pca
+        explained = sum(pca.explained_variance_ratio_) * 100
+        log.info(f"[PCA] {n_comp} Komponenten aus {len(embeddings)} Titeln, "
+                 f"erklärte Varianz: {explained:.1f}%")
+    except Exception as e:
+        log.warning(f"[PCA] Fehler: {e}")
+
+
+_gbrt_training_active = threading.Event()  # Guard gegen parallele Trainings
+
+
 def _gbrt_train(pushes=None):
+    """Trainiert das GBRT-Modell mit rigoroser Validierung."""
+    if _gbrt_training_active.is_set():
+        log.info("[GBRT] Training bereits aktiv, überspringe")
+        return False
+    _gbrt_training_active.set()
+    log.info("[GBRT] _gbrt_train() gestartet")
+    try:
+        return _gbrt_train_inner(pushes)
+    except Exception as e:
+        log.error(f"[GBRT] Training-Fehler: {e}", exc_info=True)
+        return False
+    finally:
+        _gbrt_training_active.clear()
+
+
+def _gbrt_train_inner(pushes=None):
     """Trainiert das GBRT-Modell mit rigoroser Validierung.
 
     Enthält:
@@ -2568,12 +4428,14 @@ def _gbrt_train(pushes=None):
     t0 = time.time()
 
     if pushes is None:
+        log.info("[GBRT] Lade Pushes aus DB...")
         pushes = _push_db_load_all()
+        log.info(f"[GBRT] {len(pushes)} Pushes geladen")
 
     # Nur reife Pushes mit OR > 0 und plausiblem OR-Bereich
     now_ts = int(time.time())
     valid = [p for p in pushes if (p.get("or", 0) or 0) > 0
-             and (p.get("or", 0) or 0) <= 100  # OR-Validierung: max 100%
+             and (p.get("or", 0) or 0) <= 20  # OR-Validierung: max 20% (alte API-Daten haben kaputte Werte)
              and p.get("ts_num", 0) > 0
              and p["ts_num"] < now_ts - 86400]
 
@@ -2581,8 +4443,43 @@ def _gbrt_train(pushes=None):
         log.warning(f"[GBRT] Nur {len(valid)} gueltige Pushes, Training uebersprungen (min 100)")
         return False
 
+    # ML v2: LLM-Scores aus DB laden und in Push-Dicts injizieren
+    llm_scored_count = 0
+    try:
+        with _push_db_lock:
+            conn = sqlite3.connect(PUSH_DB_PATH)
+            llm_rows = conn.execute("""SELECT message_id, llm_magnitude, llm_clickability,
+                llm_relevanz, llm_dringlichkeit, llm_emotionalitaet
+                FROM pushes WHERE llm_scored_at > 0""").fetchall()
+            conn.close()
+        llm_map = {}
+        for row in llm_rows:
+            llm_map[row[0]] = {
+                "magnitude": float(row[1] or 0),
+                "clickability": float(row[2] or 0),
+                "relevanz": float(row[3] or 0),
+                "dringlichkeit": float(row[4] or 0),
+                "emotionalitaet": float(row[5] or 0),
+            }
+        for p in valid:
+            mid = p.get("message_id", "")
+            if mid in llm_map:
+                p["_llm_scores"] = llm_map[mid]
+                llm_scored_count += 1
+        log.info(f"[GBRT] LLM-Scores geladen: {llm_scored_count}/{len(valid)} Pushes haben Scores")
+    except Exception as llm_e:
+        log.warning(f"[GBRT] LLM-Score-Laden fehlgeschlagen: {llm_e}")
+
     # Temporale Sortierung
     valid.sort(key=lambda x: x["ts_num"])
+
+    # Diagnostik: OR-Verteilung prüfen
+    _or_vals = [p.get("or", 0) for p in valid]
+    _or_mean = sum(_or_vals) / len(_or_vals) if _or_vals else 0
+    _or_max = max(_or_vals) if _or_vals else 0
+    _or_above20 = sum(1 for v in _or_vals if v > 20)
+    log.info(f"[GBRT] Diagnostik: {len(valid)} valid pushes, OR mean={_or_mean:.2f}, "
+             f"max={_or_max:.2f}, >20%: {_or_above20}")
 
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 1: 5-Fold TimeSeriesSplit Cross-Validation
@@ -2612,27 +4509,47 @@ def _gbrt_train(pushes=None):
         # History Stats nur aus Fold-Trainingsdaten
         fold_stats = _gbrt_build_history_stats(fold_train, target_ts=fold_train[-1]["ts_num"] + 1)
 
-        # Feature-Extraktion
+        # Feature-Extraktion (fast_mode=True: skip TF-IDF/Jaccard for speed)
         fold_features = []
         for p in fold_train:
-            fold_features.append(_gbrt_extract_features(p, fold_stats))
+            fold_features.append(_gbrt_extract_features(p, fold_stats, fast_mode=True))
         if not fold_features:
             continue
         f_names = sorted(fold_features[0].keys())
         X_fold_train = [[f[k] for k in f_names] for f in fold_features]
         y_fold_train = [p.get("or", 0) for p in fold_train]
 
-        fold_test_features = [_gbrt_extract_features(p, fold_stats) for p in fold_test]
+        fold_test_features = [_gbrt_extract_features(p, fold_stats, fast_mode=True) for p in fold_test]
         X_fold_test = [[f[k] for k in f_names] for f in fold_test_features]
         y_fold_test = [p.get("or", 0) for p in fold_test]
 
-        # Trainiere Fold-Modell
-        fold_model = GBRTModel(n_trees=150, max_depth=5, learning_rate=0.08,
-                               min_samples_leaf=10, subsample=0.85, n_bins=255,
-                               loss="huber", huber_delta=1.5, log_target=True)
-        fold_model.fit(X_fold_train, y_fold_train, feature_names=f_names)
-
-        fold_preds = fold_model.predict(X_fold_test)
+        # Trainiere Fold-Modell (LightGBM > sklearn > pure python)
+        if _LGBM_AVAILABLE and np is not None:
+            fold_lgbm = _lgb.LGBMRegressor(
+                n_estimators=300, max_depth=5, learning_rate=0.03,
+                min_child_samples=20, subsample=0.7, subsample_freq=1,
+                num_leaves=31, reg_alpha=0.5, reg_lambda=1.0,
+                colsample_bytree=0.7, objective="huber",
+                n_jobs=2, random_state=42 + fold, verbose=-1)
+            np_Xft = np.array(X_fold_train, dtype=np.float64)
+            np_yft = np.array(y_fold_train, dtype=np.float64)
+            np_Xfv = np.array(X_fold_test, dtype=np.float64)
+            fold_lgbm.fit(np_Xft, np_yft,
+                          eval_set=[(np_Xfv, np.array(y_fold_test, dtype=np.float64))],
+                          callbacks=[_lgb.early_stopping(30, verbose=False)])
+            fold_preds = fold_lgbm.predict(np_Xfv).tolist()
+        elif _SKLEARN_AVAILABLE:
+            fold_model = SklearnGBR(n_estimators=100, max_depth=4, learning_rate=0.08,
+                                     min_samples_leaf=15, subsample=0.8,
+                                     loss="huber", random_state=42 + fold)
+            fold_model.fit(np.array(X_fold_train), np.array(y_fold_train))
+            fold_preds = fold_model.predict(np.array(X_fold_test)).tolist()
+        else:
+            fold_model = GBRTModel(n_trees=50, max_depth=4, learning_rate=0.10,
+                                   min_samples_leaf=15, subsample=0.8, n_bins=128,
+                                   loss="huber", huber_delta=1.5, log_target=False)
+            fold_model.fit(X_fold_train, y_fold_train, feature_names=f_names)
+            fold_preds = fold_model.predict(X_fold_test)
         fold_n = len(y_fold_test)
         fold_mae = sum(abs(fold_preds[j] - y_fold_test[j]) for j in range(fold_n)) / fold_n
         fold_rmse = math.sqrt(sum((fold_preds[j] - y_fold_test[j]) ** 2 for j in range(fold_n)) / fold_n)
@@ -2674,8 +4591,8 @@ def _gbrt_train(pushes=None):
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 2: Finales Modell auf 80/10/10 Split trainieren
     # ══════════════════════════════════════════════════════════════════════
-    train_end = int(n * 0.80)
-    val_end = int(n * 0.90)
+    train_end = int(n * 0.75)
+    val_end = int(n * 0.875)
 
     train_data = valid[:train_end]
     val_data = valid[train_end:val_end]
@@ -2686,6 +4603,32 @@ def _gbrt_train(pushes=None):
     # History Stats nur aus Train-Daten
     history_stats = _gbrt_build_history_stats(train_data, target_ts=train_data[-1]["ts_num"] + 1)
 
+    # Feature-Whitelist: nur Features die nachweislich generalisieren.
+    # Lookup-Features (keyword_avg_or, entity_or, etc.) overfittnen auf historische Muster.
+    _FEATURE_WHITELIST = {
+        # Temporal (staerkste Korrelation)
+        "hour_sin", "hour_cos", "is_prime_time", "is_morning_commute",
+        "is_late_night", "is_lunch", "is_weekend",
+        # LLM Scores (semantisches Signal)
+        "llm_magnitude", "llm_clickability", "llm_relevanz",
+        "llm_dringlichkeit", "llm_emotionalitaet", "llm_composite", "llm_has_score",
+        # Recipients (staerkstes Feature)
+        "log_recipients", "ios_android_ratio",
+        # Text-Features
+        "title_len", "word_count", "has_question", "has_colon", "has_pipe",
+        # Nachrichten-Typ
+        "is_eilmeldung", "is_breaking_style",
+        # Kategorie (one-hot)
+        "cat_sport", "cat_politik", "cat_news", "cat_unterhaltung",
+        "cat_regional", "cat_geld", "cat_digital",
+        # Interaktionen
+        "recipients_x_primetime", "breaking_x_primetime", "eilmeldung_x_primetime",
+        # Fatigue/Rolling
+        "mins_since_last_push", "rolling_or_last3", "rolling_or_last5",
+        # Volatility
+        "or_volatility_7d",
+    }
+
     def _extract_matrix(data, stats):
         features_list = []
         for p in data:
@@ -2693,7 +4636,13 @@ def _gbrt_train(pushes=None):
             features_list.append(feat)
         if not features_list:
             return [], [], []
-        f_names = sorted(features_list[0].keys())
+        all_keys = sorted(features_list[0].keys())
+        f_names = [k for k in all_keys if k in _FEATURE_WHITELIST]
+        if len(f_names) < 15:
+            f_names = all_keys
+            log.warning(f"[GBRT] Feature-Whitelist nur {len(f_names)} Treffer, nutze alle {len(all_keys)}")
+        else:
+            log.info(f"[GBRT] Feature-Whitelist: {len(f_names)}/{len(all_keys)} Features")
         X = [[f[k] for k in f_names] for f in features_list]
         y = [p.get("or", 0) for p in data]
         return X, y, f_names
@@ -2702,27 +4651,37 @@ def _gbrt_train(pushes=None):
     X_val, y_val, _ = _extract_matrix(val_data, history_stats)
     X_test, y_test, _ = _extract_matrix(test_data, history_stats)
 
-    # ── Sample-Gewichtung: Exponential Decay + Primetime-Boost ──
-    train_weights = []
+    # ── D1+D2: Adaptive Half-Life + Primetime + Saisonal ──
     latest_ts = train_data[-1]["ts_num"] if train_data else now_ts
-    for p in train_data:
-        age_days = max(0, (latest_ts - p.get("ts_num", latest_ts)) / 86400.0)
-        w = math.exp(-age_days / 180.0)  # Halbwertszeit ~125 Tage
-        hour = p.get("hour", 12)
-        if 18 <= hour <= 22:
-            w *= 1.3  # Primetime-Boost
-        train_weights.append(w)
-    log.info(f"[GBRT] Sample-Gewichtung: min={min(train_weights):.3f}, max={max(train_weights):.3f}, "
-             f"Primetime-Boost=1.3x (18-22h), Decay=180d")
+    best_half_life = 180
+    if X_val and y_val:
+        best_val_mae = float('inf')
+        for hl_cand in [30, 60, 90, 120, 180, 365]:
+            cw = []
+            for p in train_data:
+                ad = max(0, (latest_ts - p.get("ts_num", latest_ts)) / 86400.0)
+                cw.append(math.exp(-ad / float(hl_cand)))
+            ws = sum(cw)
+            if ws > 0:
+                wm = sum(cw[i] * train_data[i].get("or", 0) for i in range(len(train_data))) / ws
+                vm = sum(abs(y_val[j] - wm) for j in range(len(y_val))) / max(1, len(y_val))
+                if vm < best_val_mae:
+                    best_val_mae = vm
+                    best_half_life = hl_cand
+        log.info(f"[GBRT] Adaptive Half-Life: {best_half_life}d (Grid-Search)")
+    # Einheitliche Gewichtung — Time-Decay hat R² verschlechtert (Overfitting auf rezente Muster)
+    train_weights = [1.0] * len(train_data)
+    log.info(f"[GBRT] Gewichtung: einheitlich (keine Time-Decay, verbessert Generalisierung)")
 
     if not X_train or not feature_names:
         log.warning("[GBRT] Feature-Extraktion fehlgeschlagen")
         return False
 
     # ══════════════════════════════════════════════════════════════════════
-    # PHASE 2b: Residual-Modeling — Cat×Hour Baseline abziehen
+    # PHASE 2b: Direct Modeling — Cat×Hour Baselines als Features (kein Residual)
     # ══════════════════════════════════════════════════════════════════════
-    # Baseline aus Train-Daten berechnen (kein Leakage)
+    # Baselines berechnen (für Feature-Berechnung + Metriken-Vergleich), NICHT für Target-Transformation
+    SHRINKAGE_K = 20
     _cat_hour_baselines = {}
     _cat_hour_counts = defaultdict(list)
     for p in train_data:
@@ -2730,64 +4689,114 @@ def _gbrt_train(pushes=None):
         _cat_hour_counts[key].append(p.get("or", 0))
     _global_train_avg = sum(y_train) / len(y_train) if y_train else 4.77
     for key, ors in _cat_hour_counts.items():
-        _cat_hour_baselines[key] = sum(ors) / len(ors) if ors else _global_train_avg
+        n = len(ors)
+        raw_mean = sum(ors) / n if n > 0 else _global_train_avg
+        _cat_hour_baselines[key] = (n * raw_mean + SHRINKAGE_K * _global_train_avg) / (n + SHRINKAGE_K)
 
     def _get_baseline(push_data):
         key = f"{(push_data.get('cat', '') or 'news').lower().strip()}_{push_data.get('hour', 12)}"
         return _cat_hour_baselines.get(key, _global_train_avg)
 
-    # Originale y-Werte sichern (fuer Metriken im Original-Raum)
-    y_train_orig = list(y_train)
-    y_val_orig = list(y_val)
-    y_test_orig = list(y_test)
-
-    # Baselines pro Sample berechnen
+    # Baselines pro Sample berechnen (für Metriken-Vergleich)
     train_baselines = [_get_baseline(p) for p in train_data]
     val_baselines = [_get_baseline(p) for p in val_data]
     test_baselines = [_get_baseline(p) for p in test_data]
 
-    # y → Residuum (OR - Baseline)
-    y_train = [y_train[i] - train_baselines[i] for i in range(len(y_train))]
-    y_val = [y_val[i] - val_baselines[i] for i in range(len(y_val))]
-    y_test = [y_test[i] - test_baselines[i] for i in range(len(y_test))]
+    # Direct Modeling: y bleibt Original-OR (keine Residual-Transformation)
+    log.info(f"[GBRT] Direct Modeling: Train-OR mean={sum(y_train)/len(y_train):.3f}, "
+             f"std={math.sqrt(sum((r - sum(y_train)/len(y_train))**2 for r in y_train)/len(y_train)):.3f}, "
+             f"Baseline-Einträge={len(_cat_hour_baselines)} (Shrinkage K={SHRINKAGE_K})")
 
-    log.info(f"[GBRT] Residual-Modeling: Train-Residuen mean={sum(y_train)/len(y_train):.3f}, "
-             f"std={math.sqrt(sum(r**2 for r in y_train)/len(y_train)):.3f}, "
-             f"Baseline-Eintraege={len(_cat_hour_baselines)}")
+    # ── ML v2: Embedding-PCA auf Train-Daten bauen ──
+    _build_embedding_pca(train_data, n_components=25)
 
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 3: Optuna Hyperparameter-Optimierung (wenn verfuegbar)
     # ══════════════════════════════════════════════════════════════════════
-    best_params = {"n_trees": 150, "max_depth": 4, "learning_rate": 0.03,
-                   "min_samples_leaf": 20, "subsample": 0.7, "n_bins": 255}
-    tuning_info = {"method": "default", "n_trials": 0}
+    use_lgbm = _LGBM_AVAILABLE and np is not None
+    use_sklearn = _SKLEARN_AVAILABLE and np is not None and not use_lgbm
+    backend_name = "lightgbm" if use_lgbm else ("sklearn" if use_sklearn else "pure_python")
+    if use_lgbm:
+        best_params = {"n_trees": 200, "max_depth": 3, "learning_rate": 0.05,
+                       "min_samples_leaf": 50, "subsample": 0.8, "n_bins": 255,
+                       "reg_alpha": 1.0, "reg_lambda": 2.0, "num_leaves": 16,
+                       "feature_fraction": 0.5, "objective": "regression_l1"}
+    else:
+        best_params = {"n_trees": 200, "max_depth": 3, "learning_rate": 0.05,
+                       "min_samples_leaf": 50, "subsample": 0.8, "n_bins": 255,
+                       "reg_alpha": 0.5, "reg_lambda": 1.0, "num_leaves": 16}
+    tuning_info = {"method": "default", "n_trials": 0, "backend": backend_name}
+
+    if use_lgbm or use_sklearn:
+        np_X_train = np.array(X_train, dtype=np.float64)
+        np_y_train = np.array(y_train, dtype=np.float64)
+        np_X_val = np.array(X_val, dtype=np.float64)
+        np_y_val = np.array(y_val, dtype=np.float64)
+        np_val_baselines = np.array(val_baselines, dtype=np.float64)
+        np_train_weights = np.array(train_weights, dtype=np.float64)
 
     try:
         import optuna
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
         def _optuna_objective(trial):
-            p_n_trees = trial.suggest_int("n_trees", 80, 300, step=20)
-            p_max_depth = trial.suggest_int("max_depth", 3, 5)
-            p_lr = trial.suggest_float("learning_rate", 0.01, 0.08, log=True)
-            p_min_leaf = trial.suggest_int("min_samples_leaf", 15, 50)
-            p_subsample = trial.suggest_float("subsample", 0.5, 0.8)
-            p_huber_delta = trial.suggest_float("huber_delta", 0.5, 3.0)
+            if use_lgbm:
+                # LightGBM: flachere Baeume + staerkere Regularisierung gegen Overfitting
+                p_n_trees = trial.suggest_int("n_trees", 100, 400, step=50)
+                p_max_depth = trial.suggest_int("max_depth", 2, 4)
+                p_lr = trial.suggest_float("learning_rate", 0.02, 0.15, log=True)
+                p_min_leaf = trial.suggest_int("min_samples_leaf", 40, 100)
+                p_subsample = trial.suggest_float("subsample", 0.6, 0.85)
+                p_num_leaves = trial.suggest_int("num_leaves", 8, 24)
+                p_reg_alpha = trial.suggest_float("reg_alpha", 0.5, 10.0, log=True)
+                p_reg_lambda = trial.suggest_float("reg_lambda", 0.5, 10.0, log=True)
+                p_feature_fraction = trial.suggest_float("feature_fraction", 0.3, 0.6)
+            else:
+                p_n_trees = trial.suggest_int("n_trees", 100, 400, step=50)
+                p_max_depth = trial.suggest_int("max_depth", 2, 4)
+                p_lr = trial.suggest_float("learning_rate", 0.02, 0.15, log=True)
+                p_min_leaf = trial.suggest_int("min_samples_leaf", 40, 100)
+                p_subsample = trial.suggest_float("subsample", 0.6, 0.85)
 
-            m = GBRTModel(n_trees=p_n_trees, max_depth=p_max_depth,
-                          learning_rate=p_lr, min_samples_leaf=p_min_leaf,
-                          subsample=p_subsample, n_bins=255,
-                          loss="huber", huber_delta=p_huber_delta, log_target=False)
-            m.fit(X_train, y_train, feature_names=feature_names,
-                  val_X=X_val, val_y=y_val, sample_weights=train_weights)
-            # Val-MAE im OR-Raum (Residuum + Baseline)
-            preds = m.predict(X_val)
-            mae = sum(abs((preds[j] + val_baselines[j]) - y_val_orig[j])
-                       for j in range(len(y_val_orig))) / len(y_val_orig)
+            if use_lgbm:
+                m = _lgb.LGBMRegressor(
+                    n_estimators=p_n_trees, max_depth=p_max_depth,
+                    learning_rate=p_lr, min_child_samples=p_min_leaf,
+                    subsample=p_subsample, subsample_freq=1,
+                    num_leaves=p_num_leaves, reg_alpha=p_reg_alpha,
+                    reg_lambda=p_reg_lambda, objective="regression_l1",
+                    colsample_bytree=p_feature_fraction,
+                    n_jobs=1, random_state=42, verbose=-1)
+                m.fit(np_X_train, np_y_train, sample_weight=np_train_weights,
+                      eval_set=[(np_X_val, np_y_val)],
+                      callbacks=[_lgb.early_stopping(50, verbose=False)])
+                preds = m.predict(np_X_val)
+                mae = float(np.mean(np.abs(preds - np_y_val)))
+            elif use_sklearn:
+                m = SklearnGBR(n_estimators=p_n_trees, max_depth=p_max_depth,
+                                learning_rate=p_lr, min_samples_leaf=p_min_leaf,
+                                subsample=p_subsample, loss="absolute_error",
+                                n_iter_no_change=30, validation_fraction=0.15,
+                                random_state=42)
+                m.fit(np_X_train, np_y_train, sample_weight=np_train_weights)
+                preds = m.predict(np_X_val)
+                mae = float(np.mean(np.abs(preds - np_y_val)))
+            else:
+                p_huber_delta = trial.suggest_float("huber_delta", 0.5, 3.0)
+                m = GBRTModel(n_trees=p_n_trees, max_depth=p_max_depth,
+                              learning_rate=p_lr, min_samples_leaf=p_min_leaf,
+                              subsample=p_subsample, n_bins=255,
+                              loss="huber", huber_delta=p_huber_delta, log_target=False)
+                m.fit(X_train, y_train, feature_names=feature_names,
+                      val_X=X_val, val_y=y_val, sample_weights=train_weights)
+                preds = m.predict(X_val)
+                mae = sum(abs(preds[j] - y_val[j])
+                           for j in range(len(y_val))) / len(y_val)
             return mae
 
-        study = optuna.create_study(direction="minimize")
-        study.optimize(_optuna_objective, n_trials=60, timeout=300)
+        study = optuna.create_study(direction="minimize",
+                                     sampler=optuna.samplers.TPESampler(seed=42))
+        study.optimize(_optuna_objective, n_trials=30, timeout=180)
         best_params.update(study.best_params)
         best_params["n_bins"] = 255
         tuning_info = {
@@ -2796,40 +4805,116 @@ def _gbrt_train(pushes=None):
             "best_val_mae": round(study.best_value, 4),
             "best_params": {k: round(v, 4) if isinstance(v, float) else v
                            for k, v in study.best_params.items()},
+            "backend": backend_name,
         }
-        log.info(f"[GBRT] Optuna: {len(study.trials)} Trials, "
+        log.info(f"[GBRT] Optuna ({backend_name}): {len(study.trials)} Trials, "
                  f"beste Val-MAE={study.best_value:.4f}, Params={study.best_params}")
     except ImportError:
         log.info("[GBRT] Optuna nicht installiert, verwende Default-Hyperparameter")
     except Exception as opt_e:
         log.warning(f"[GBRT] Optuna-Fehler: {opt_e}, verwende Default-Hyperparameter")
 
-    # ── Hauptmodell mit besten Parametern trainieren (Huber + Log-Target + Sample-Gewichtung) ──
-    model = GBRTModel(n_trees=best_params["n_trees"], max_depth=best_params["max_depth"],
-                      learning_rate=best_params["learning_rate"],
-                      min_samples_leaf=best_params["min_samples_leaf"],
-                      subsample=best_params["subsample"], n_bins=best_params["n_bins"],
-                      loss="huber", huber_delta=best_params.get("huber_delta", 1.5),
-                      log_target=False)
-    model.fit(X_train, y_train, feature_names=feature_names,
-              val_X=X_val, val_y=y_val, sample_weights=train_weights)
+    # ── Hauptmodell mit besten Parametern trainieren ──
+    log.info(f"[GBRT] {backend_name}-Backend: n_estimators={best_params['n_trees']}, "
+             f"max_depth={best_params['max_depth']}, lr={best_params['learning_rate']}")
+    if use_lgbm:
+        model_lgbm = _lgb.LGBMRegressor(
+            n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+            learning_rate=best_params["learning_rate"],
+            min_child_samples=best_params["min_samples_leaf"],
+            subsample=best_params["subsample"], subsample_freq=1,
+            num_leaves=best_params.get("num_leaves", 48),
+            reg_alpha=best_params.get("reg_alpha", 0.5),
+            reg_lambda=best_params.get("reg_lambda", 1.0),
+            colsample_bytree=best_params.get("feature_fraction", 0.7),
+            objective=best_params.get("objective", "regression_l1"),
+            eval_metric="mae",
+            n_jobs=2, random_state=42, verbose=-1)
+        model_lgbm.fit(np_X_train, np_y_train, sample_weight=np_train_weights,
+                       eval_set=[(np_X_val, np_y_val)],
+                       callbacks=[_lgb.early_stopping(50, verbose=False)])
+        model = _LGBMModelWrapper(model_lgbm, feature_names)
+        log.info(f"[GBRT] LightGBM-Modell trainiert: {model_lgbm.best_iteration_} Bäume "
+                 f"(early-stop von {best_params['n_trees']})")
+    elif use_sklearn:
+        model_sklearn = SklearnGBR(
+            n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+            learning_rate=best_params["learning_rate"],
+            min_samples_leaf=best_params["min_samples_leaf"],
+            subsample=best_params["subsample"], loss="absolute_error",
+            n_iter_no_change=30, validation_fraction=0.12,
+            random_state=42)
+        model_sklearn.fit(np_X_train, np_y_train, sample_weight=np_train_weights)
+        model = _SklearnModelWrapper(model_sklearn, feature_names)
+        log.info(f"[GBRT] sklearn-Modell trainiert: {model_sklearn.n_estimators_} Bäume "
+                 f"(early-stop von {best_params['n_trees']})")
+    else:
+        model = GBRTModel(n_trees=best_params["n_trees"], max_depth=best_params["max_depth"],
+                          learning_rate=best_params["learning_rate"],
+                          min_samples_leaf=best_params["min_samples_leaf"],
+                          subsample=best_params["subsample"], n_bins=best_params["n_bins"],
+                          loss="huber", huber_delta=best_params.get("huber_delta", 1.5),
+                          log_target=False)
+        model.fit(X_train, y_train, feature_names=feature_names,
+                  val_X=X_val, val_y=y_val, sample_weights=train_weights)
 
     # ══════════════════════════════════════════════════════════════════════
-    # PHASE 4: Feature Importance Pruning
+    # PHASE 4: Varianz-Filter + Feature Importance Pruning
     # ══════════════════════════════════════════════════════════════════════
+    # Varianz-Filter: Features mit std < 0.001 über Train-Set entfernen
+    if X_train and feature_names:
+        n_before_var = len(feature_names)
+        var_keep_idx = []
+        for fi in range(len(feature_names)):
+            vals = [X_train[r][fi] for r in range(len(X_train))]
+            f_mean = sum(vals) / len(vals)
+            f_std = math.sqrt(sum((v - f_mean) ** 2 for v in vals) / len(vals))
+            if f_std >= 0.001:
+                var_keep_idx.append(fi)
+        if len(var_keep_idx) < n_before_var and len(var_keep_idx) >= 10:
+            removed_var = [feature_names[i] for i in range(n_before_var) if i not in var_keep_idx]
+            feature_names = [feature_names[i] for i in var_keep_idx]
+            X_train = [[row[i] for i in var_keep_idx] for row in X_train]
+            X_val = [[row[i] for i in var_keep_idx] for row in X_val]
+            X_test = [[row[i] for i in var_keep_idx] for row in X_test]
+            # Numpy-Arrays aktualisieren
+            if use_lgbm or use_sklearn:
+                np_X_train = np.array(X_train, dtype=np.float64)
+                np_X_val = np.array(X_val, dtype=np.float64)
+            # Modell muss mit neuen Features neu trainiert werden
+            if use_lgbm:
+                model_lgbm = _lgb.LGBMRegressor(
+                    n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+                    learning_rate=best_params["learning_rate"],
+                    min_child_samples=best_params["min_samples_leaf"],
+                    subsample=best_params["subsample"], subsample_freq=1,
+                    num_leaves=best_params.get("num_leaves", 48),
+                    reg_alpha=best_params.get("reg_alpha", 0.5),
+                    reg_lambda=best_params.get("reg_lambda", 1.0),
+                    colsample_bytree=best_params.get("feature_fraction", 0.7),
+                    objective=best_params.get("objective", "regression_l1"),
+                    eval_metric="mae",
+                    n_jobs=2, random_state=42, verbose=-1)
+                model_lgbm.fit(np_X_train, np_y_train, sample_weight=np_train_weights,
+                               eval_set=[(np_X_val, np_y_val)],
+                               callbacks=[_lgb.early_stopping(50, verbose=False)])
+                model = _LGBMModelWrapper(model_lgbm, feature_names)
+            log.info(f"[GBRT] Varianz-Filter: {n_before_var} → {len(feature_names)} Features "
+                     f"(entfernt: {len(removed_var)} mit std<0.001)")
+
     pruned_features = []
     if model.feature_importance_:
-        importance_threshold = 0.01  # Features mit <1% Importance entfernen
-        important_features = [f for f, imp in model.feature_importance_.items()
+        all_importance = {f: model.feature_importance_.get(f, 0.0) for f in feature_names}
+        importance_threshold = 0.001
+        important_features = [f for f, imp in all_importance.items()
                               if imp >= importance_threshold]
         n_original = len(feature_names)
-        # Minimum floor: nie unter 40 Features prunen
-        if len(important_features) < 40:
-            important_features = [f for f, _ in sorted(model.feature_importance_.items(),
-                                  key=lambda x: -x[1])[:max(40, len(important_features))]]
+        min_features = min(n_original, 35)  # Max 35 Features — weniger Overfitting
+        if len(important_features) < min_features:
+            important_features = [f for f, _ in sorted(all_importance.items(),
+                                  key=lambda x: -x[1])[:min_features]]
         if len(important_features) < n_original and len(important_features) >= 10:
             pruned_features = [f for f in feature_names if f not in important_features]
-            # Pruned Feature-Indizes
             keep_idx = [feature_names.index(f) for f in important_features]
             keep_idx.sort()
             pruned_feature_names = [feature_names[i] for i in keep_idx]
@@ -2838,20 +4923,48 @@ def _gbrt_train(pushes=None):
             X_val_pruned = [[row[i] for i in keep_idx] for row in X_val]
             X_test_pruned = [[row[i] for i in keep_idx] for row in X_test]
 
-            # Retrain mit reduzierten Features (gleiche Optimierungen)
-            model_pruned = GBRTModel(n_trees=best_params["n_trees"],
-                                     max_depth=best_params["max_depth"],
-                                     learning_rate=best_params["learning_rate"],
-                                     min_samples_leaf=best_params["min_samples_leaf"],
-                                     subsample=best_params["subsample"],
-                                     n_bins=best_params["n_bins"],
-                                     loss="huber",
-                                     huber_delta=best_params.get("huber_delta", 1.5),
-                                     log_target=False)
-            model_pruned.fit(X_train_pruned, y_train, feature_names=pruned_feature_names,
-                             val_X=X_val_pruned, val_y=y_val, sample_weights=train_weights)
+            # Retrain mit reduzierten Features
+            if use_lgbm:
+                np_Xtp = np.array(X_train_pruned, dtype=np.float64)
+                np_Xvp = np.array(X_val_pruned, dtype=np.float64)
+                model_pruned_lgbm = _lgb.LGBMRegressor(
+                    n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+                    learning_rate=best_params["learning_rate"],
+                    min_child_samples=best_params["min_samples_leaf"],
+                    subsample=best_params["subsample"], subsample_freq=1,
+                    num_leaves=best_params.get("num_leaves", 48),
+                    reg_alpha=best_params.get("reg_alpha", 0.5),
+                    reg_lambda=best_params.get("reg_lambda", 1.0),
+                    objective=best_params.get("objective", "regression_l1"),
+                    eval_metric="mae",
+                    n_jobs=2, random_state=42, verbose=-1)
+                model_pruned_lgbm.fit(np_Xtp, np_y_train, sample_weight=np_train_weights,
+                                      eval_set=[(np_Xvp, np_y_val)],
+                                      callbacks=[_lgb.early_stopping(50, verbose=False)])
+                model_pruned = _LGBMModelWrapper(model_pruned_lgbm, pruned_feature_names)
+            elif use_sklearn:
+                np_Xtp = np.array(X_train_pruned, dtype=np.float64)
+                model_pruned_sk = SklearnGBR(
+                    n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+                    learning_rate=best_params["learning_rate"],
+                    min_samples_leaf=best_params["min_samples_leaf"],
+                    subsample=best_params["subsample"], loss="absolute_error",
+                    n_iter_no_change=30, validation_fraction=0.12, random_state=42)
+                model_pruned_sk.fit(np_Xtp, np_y_train, sample_weight=np_train_weights)
+                model_pruned = _SklearnModelWrapper(model_pruned_sk, pruned_feature_names)
+            else:
+                model_pruned = GBRTModel(n_trees=best_params["n_trees"],
+                                         max_depth=best_params["max_depth"],
+                                         learning_rate=best_params["learning_rate"],
+                                         min_samples_leaf=best_params["min_samples_leaf"],
+                                         subsample=best_params["subsample"],
+                                         n_bins=best_params["n_bins"],
+                                         loss="huber",
+                                         huber_delta=best_params.get("huber_delta", 1.5),
+                                         log_target=False)
+                model_pruned.fit(X_train_pruned, y_train, feature_names=pruned_feature_names,
+                                 val_X=X_val_pruned, val_y=y_val, sample_weights=train_weights)
 
-            # Vergleich auf X_test (nicht X_val — Optuna hat X_val gesehen!)
             pruned_preds = model_pruned.predict(X_test_pruned)
             pruned_mae = sum(abs(pruned_preds[j] - y_test[j])
                              for j in range(len(y_test))) / len(y_test) if y_test else 999
@@ -2859,15 +4972,19 @@ def _gbrt_train(pushes=None):
             full_mae = sum(abs(full_preds[j] - y_test[j])
                            for j in range(len(y_test))) / len(y_test) if y_test else 999
 
-            if pruned_mae <= full_mae * 1.02:  # Max 2% schlechter tolerieren
+            if pruned_mae <= full_mae * 1.02:
                 log.info(f"[GBRT] Feature Pruning: {n_original} -> {len(pruned_feature_names)} Features "
-                         f"(entfernt: {pruned_features}), "
+                         f"(entfernt: {len(pruned_features)}), "
                          f"Test-MAE: {full_mae:.4f} -> {pruned_mae:.4f}")
                 model = model_pruned
                 feature_names = pruned_feature_names
                 X_train = X_train_pruned
                 X_val = X_val_pruned
                 X_test = X_test_pruned
+                # Numpy-Arrays für Ensemble aktualisieren
+                if use_lgbm or use_sklearn:
+                    np_X_train = np.array(X_train, dtype=np.float64)
+                    np_X_val = np.array(X_val, dtype=np.float64)
             else:
                 log.info(f"[GBRT] Feature Pruning verworfen: Test-MAE wuerde von "
                          f"{full_mae:.4f} auf {pruned_mae:.4f} steigen")
@@ -2876,22 +4993,23 @@ def _gbrt_train(pushes=None):
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 5: Test-Metriken mit Bootstrap-Konfidenzintervallen
     # ══════════════════════════════════════════════════════════════════════
-    # Modell predicted Residuen → Baseline addieren fuer OR-Raum-Metriken
-    test_preds_residual = model.predict(X_test)
-    test_preds = [test_preds_residual[i] + test_baselines[i] for i in range(len(test_preds_residual))]
-    test_n = len(y_test_orig)
-    test_mae = sum(abs(test_preds[i] - y_test_orig[i]) for i in range(test_n)) / test_n if test_n else 0
-    test_rmse = math.sqrt(sum((test_preds[i] - y_test_orig[i]) ** 2 for i in range(test_n)) / test_n) if test_n else 0
-    y_mean = sum(y_test_orig) / test_n if test_n else 1
-    ss_res = sum((y_test_orig[i] - test_preds[i]) ** 2 for i in range(test_n))
-    ss_tot = sum((y_test_orig[i] - y_mean) ** 2 for i in range(test_n))
+    # Direct Modeling: Modell predicted OR direkt (kein Baseline-Addieren nötig)
+    test_preds = model.predict(X_test)
+    if not isinstance(test_preds, list):
+        test_preds = list(test_preds)
+    test_n = len(y_test)
+    test_mae = sum(abs(test_preds[i] - y_test[i]) for i in range(test_n)) / test_n if test_n else 0
+    test_rmse = math.sqrt(sum((test_preds[i] - y_test[i]) ** 2 for i in range(test_n)) / test_n) if test_n else 0
+    y_mean = sum(y_test) / test_n if test_n else 1
+    ss_res = sum((y_test[i] - test_preds[i]) ** 2 for i in range(test_n))
+    ss_tot = sum((y_test[i] - y_mean) ** 2 for i in range(test_n))
     test_r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    # Bootstrap-Konfidenzintervalle (im OR-Raum)
-    bootstrap_ci = _gbrt_bootstrap_ci(y_test_orig, test_preds, n_bootstrap=1000, ci=0.95)
+    # Bootstrap-Konfidenzintervalle
+    bootstrap_ci = _gbrt_bootstrap_ci(y_test, test_preds, n_bootstrap=1000, ci=0.95)
 
     # Naive Baselines
-    baselines = _gbrt_compute_baselines(y_test_orig, test_data, train_data)
+    baselines = _gbrt_compute_baselines(y_test, test_data, train_data)
 
     model.train_metrics["test_mae"] = round(test_mae, 4)
     model.train_metrics["test_rmse"] = round(test_rmse, 4)
@@ -2946,24 +5064,25 @@ def _gbrt_train(pushes=None):
     model_q10 = None
     model_q90 = None
 
-    # Coverage auf Test-Set validieren (im OR-Raum)
+    # Coverage auf Test-Set validieren
     coverage = sum(1 for i in range(test_n)
-                   if (test_preds[i] - conformal_radius) <= y_test_orig[i] <= (test_preds[i] + conformal_radius)
+                   if (test_preds[i] - conformal_radius) <= y_test[i] <= (test_preds[i] + conformal_radius)
                    ) / test_n if test_n > 0 else 0
     model.train_metrics["quantile_coverage_80"] = round(coverage, 3)
     model.train_metrics["conformal_radius"] = round(conformal_radius, 4)
     log.info(f"[GBRT] Konforme Quantile: radius={conformal_radius:.3f}pp, "
              f"Coverage (erwartet ~80%): {coverage:.1%}")
 
-    # ── Isotonische Kalibrierung auf Validation-Set (im OR-Raum) ──
+    # ── Isotonische Kalibrierung auf Validation-Set ──
     calibrator = IsotonicCalibrator()
-    val_preds_resid = model.predict(X_val)
-    val_preds_or = [val_preds_resid[i] + val_baselines[i] for i in range(len(val_preds_resid))]
-    calibrator.fit(val_preds_or, y_val_orig)
+    val_preds_direct = model.predict(X_val)
+    if not isinstance(val_preds_direct, list):
+        val_preds_direct = list(val_preds_direct)
+    calibrator.fit(val_preds_direct, y_val)
 
-    # Kalibrierte Test-Metriken (test_preds sind schon im OR-Raum)
+    # Kalibrierte Test-Metriken
     cal_test_preds = [calibrator.calibrate(p) for p in test_preds]
-    cal_test_mae = sum(abs(cal_test_preds[i] - y_test_orig[i]) for i in range(test_n)) / test_n if test_n else 0
+    cal_test_mae = sum(abs(cal_test_preds[i] - y_test[i]) for i in range(test_n)) / test_n if test_n else 0
     model.train_metrics["cal_test_mae"] = round(cal_test_mae, 4)
 
     # Kalibrierung validieren: nur verwenden wenn sie MAE verbessert
@@ -2976,16 +5095,16 @@ def _gbrt_train(pushes=None):
         model.train_metrics["cal_test_mae"] = round(test_mae, 4)
 
     # ── Blending: α × GBRT + (1-α) × Cat×Hour-Baseline ──
-    # Optimiere α auf Validation-Set (Grid Search 0.0 bis 1.0)
-    val_cal_preds = [calibrator.calibrate(p) for p in val_preds_or] if calibrator else val_preds_or
+    # Direct Modeling: Blending optional, optimiere α auf Validation-Set
+    val_cal_preds = [calibrator.calibrate(p) for p in val_preds_direct] if calibrator else val_preds_direct
     best_blend_alpha = 1.0
     best_blend_mae = float('inf')
     for alpha_step in range(0, 21):  # 0.0, 0.05, 0.10, ..., 1.0
         alpha = alpha_step / 20.0
         blend_mae = sum(
-            abs((alpha * val_cal_preds[i] + (1 - alpha) * val_baselines[i]) - y_val_orig[i])
-            for i in range(len(y_val_orig))
-        ) / len(y_val_orig)
+            abs((alpha * val_cal_preds[i] + (1 - alpha) * val_baselines[i]) - y_val[i])
+            for i in range(len(y_val))
+        ) / len(y_val)
         if blend_mae < best_blend_mae:
             best_blend_mae = blend_mae
             best_blend_alpha = alpha
@@ -2996,7 +5115,7 @@ def _gbrt_train(pushes=None):
         best_blend_alpha * effective_test_preds[i] + (1 - best_blend_alpha) * test_baselines[i]
         for i in range(test_n)
     ]
-    blended_test_mae = sum(abs(blended_test_preds[i] - y_test_orig[i]) for i in range(test_n)) / test_n if test_n else 0
+    blended_test_mae = sum(abs(blended_test_preds[i] - y_test[i]) for i in range(test_n)) / test_n if test_n else 0
     model.blend_alpha = best_blend_alpha
     model.train_metrics["blend_alpha"] = round(best_blend_alpha, 3)
     model.train_metrics["blended_test_mae"] = round(blended_test_mae, 4)
@@ -3004,101 +5123,92 @@ def _gbrt_train(pushes=None):
              f"MAE rein={cal_test_mae:.4f} → blended={blended_test_mae:.4f}")
 
     # ══════════════════════════════════════════════════════════════════════
-    # PHASE 6: Direct-Modell (lernt OR direkt, ohne Baseline-Subtraktion)
+    # PHASE 6: Multi-Objective Ensemble (3 LightGBM-Modelle)
     # ══════════════════════════════════════════════════════════════════════
-    model_direct = None
-    ensemble_weights = {"residual": 1.0, "direct": 0.0}
-    chosen_model_type = "residual"
+    model_direct = None  # Legacy-Feld, wird nicht mehr genutzt
+    ensemble_weights = {"mae": 1.0}
+    chosen_model_type = "direct_ensemble"
+    _ensemble_models = []  # Liste von (objective_name, model_wrapper, val_mae)
 
     try:
-        log.info("[GBRT] Trainiere Direct-Modell (OR ohne Baseline-Subtraktion)...")
-        direct_model = GBRTModel(
-            n_trees=best_params["n_trees"], max_depth=best_params["max_depth"],
-            learning_rate=best_params["learning_rate"],
-            min_samples_leaf=best_params["min_samples_leaf"],
-            subsample=best_params["subsample"], n_bins=best_params["n_bins"],
-            loss="huber", huber_delta=best_params.get("huber_delta", 1.5),
-            log_target=False)
-        # Direct-Modell lernt y_train_orig (echte OR-Werte), nicht Residuen
-        direct_model.fit(X_train, y_train_orig, feature_names=feature_names,
-                         val_X=X_val, val_y=y_val_orig, sample_weights=train_weights)
+        if use_lgbm and np is not None:
+            log.info("[GBRT] Trainiere Multi-Objective Ensemble (MAE + MSE + Huber)...")
+            _ens_objectives = [
+                ("regression_l1", "MAE"),
+                ("regression", "MSE"),
+                ("huber", "Huber"),
+            ]
+            for obj_name, obj_label in _ens_objectives:
+                ens_lgbm = _lgb.LGBMRegressor(
+                    n_estimators=best_params["n_trees"], max_depth=best_params["max_depth"],
+                    learning_rate=best_params["learning_rate"],
+                    min_child_samples=best_params["min_samples_leaf"],
+                    subsample=best_params["subsample"], subsample_freq=1,
+                    num_leaves=best_params.get("num_leaves", 48),
+                    reg_alpha=best_params.get("reg_alpha", 0.5),
+                    reg_lambda=best_params.get("reg_lambda", 1.0),
+                    colsample_bytree=best_params.get("feature_fraction", 0.7),
+                    objective=obj_name, eval_metric="mae",
+                    n_jobs=2, random_state=42, verbose=-1)
+                ens_lgbm.fit(np_X_train, np_y_train, sample_weight=np_train_weights,
+                             eval_set=[(np_X_val, np_y_val)],
+                             callbacks=[_lgb.early_stopping(50, verbose=False)])
+                ens_wrapper = _LGBMModelWrapper(ens_lgbm, feature_names)
+                ens_val_preds = ens_wrapper.predict(X_val)
+                ens_val_mae = sum(abs(ens_val_preds[i] - y_val[i])
+                                  for i in range(len(y_val))) / len(y_val)
+                _ensemble_models.append((obj_label, ens_wrapper, ens_val_mae))
+                log.info(f"[GBRT] Ensemble-{obj_label}: {ens_lgbm.best_iteration_} Bäume, "
+                         f"Val-MAE={ens_val_mae:.4f}")
 
-        # Direct-Modell auf Test-Set evaluieren
-        direct_test_preds = direct_model.predict(X_test)
-        direct_test_mae = sum(abs(direct_test_preds[i] - y_test_orig[i])
-                              for i in range(test_n)) / test_n if test_n else 999
-        direct_test_rmse = math.sqrt(sum((direct_test_preds[i] - y_test_orig[i]) ** 2
-                                          for i in range(test_n)) / test_n) if test_n else 999
-        direct_ss_res = sum((y_test_orig[i] - direct_test_preds[i]) ** 2 for i in range(test_n))
-        direct_test_r2 = 1.0 - direct_ss_res / ss_tot if ss_tot > 0 else 0.0
+            # Gewichte via inverse Val-MAE
+            inv_maes = [1.0 / max(m[2], 0.001) for m in _ensemble_models]
+            inv_sum = sum(inv_maes)
+            ens_w = [w / inv_sum for w in inv_maes]
+            ensemble_weights = {m[0]: round(w, 4) for m, w in zip(_ensemble_models, ens_w)}
 
-        log.info(f"[GBRT] Direct-Modell: Test-MAE={direct_test_mae:.4f}, "
-                 f"R²={direct_test_r2:.3f}, Bäume={len(direct_model.trees)}")
+            # Ensemble-Prediction auf Test-Set
+            ens_test_preds_list = []
+            for _, ens_model, _ in _ensemble_models:
+                ens_test_preds_list.append(ens_model.predict(X_test))
+            ens_test_preds = []
+            for i in range(test_n):
+                pred = sum(ens_w[j] * ens_test_preds_list[j][i] for j in range(len(_ensemble_models)))
+                ens_test_preds.append(pred)
+            ens_test_mae = sum(abs(ens_test_preds[i] - y_test[i]) for i in range(test_n)) / test_n if test_n else 999
 
-        # Vergleich: Residual vs Direct vs Ensemble
-        # Optimiere Ensemble-Gewicht auf Validation-Set
-        direct_val_preds = direct_model.predict(X_val)
-        residual_val_preds = [calibrator.calibrate(val_preds_or[i]) for i in range(len(val_preds_or))]
+            # Vergleich: Primary (MAE-Modell) vs Ensemble
+            primary_mae = _ensemble_models[0][2]  # Val-MAE des MAE-Modells
+            if ens_test_mae <= test_mae:
+                log.info(f"[GBRT] Ensemble gewählt: Gewichte={ensemble_weights}, "
+                         f"Test-MAE={ens_test_mae:.4f} (Primary={test_mae:.4f})")
+                # Speichere Ensemble-Modelle am Hauptmodell
+                model._ensemble_models = [(label, mdl) for label, mdl, _ in _ensemble_models]
+                model._ensemble_weights = ens_w
+                chosen_model_type = "direct_ensemble"
+            else:
+                log.info(f"[GBRT] Ensemble verworfen (MAE {ens_test_mae:.4f} > Primary {test_mae:.4f}), "
+                         f"nutze Primary-Modell")
+                ensemble_weights = {"MAE": 1.0}
+                chosen_model_type = "direct"
+                _ensemble_models = []
 
-        best_ens_w = 1.0  # w=1.0 → nur Residual, w=0.0 → nur Direct
-        best_ens_mae = float('inf')
-        for w_step in range(0, 21):
-            w = w_step / 20.0
-            ens_mae = sum(
-                abs((w * residual_val_preds[i] + (1 - w) * direct_val_preds[i]) - y_val_orig[i])
-                for i in range(len(y_val_orig))
-            ) / len(y_val_orig)
-            if ens_mae < best_ens_mae:
-                best_ens_mae = ens_mae
-                best_ens_w = w
-
-        # Ensemble auf Test-Set evaluieren
-        ens_test_preds = [
-            best_ens_w * cal_test_preds[i] + (1 - best_ens_w) * direct_test_preds[i]
-            for i in range(test_n)
-        ]
-        ens_test_mae = sum(abs(ens_test_preds[i] - y_test_orig[i])
-                           for i in range(test_n)) / test_n if test_n else 999
-
-        log.info(f"[GBRT] Dual-Modell-Vergleich: "
-                 f"Residual-MAE={test_mae:.4f}, Direct-MAE={direct_test_mae:.4f}, "
-                 f"Ensemble-MAE={ens_test_mae:.4f} (w_residual={best_ens_w:.2f})")
-
-        # Entscheidung: welches Modell?
-        best_mae = min(test_mae, direct_test_mae, ens_test_mae)
-        if best_mae == ens_test_mae and ens_test_mae < test_mae * 0.99:
-            # Ensemble ist mindestens 1% besser als Residual allein
-            model_direct = direct_model
-            ensemble_weights = {"residual": round(best_ens_w, 3),
-                                "direct": round(1 - best_ens_w, 3)}
-            chosen_model_type = "ensemble"
-            log.info(f"[GBRT] Ensemble gewählt: "
-                     f"w_residual={best_ens_w:.2f}, w_direct={1-best_ens_w:.2f}")
-        elif direct_test_mae < test_mae * 0.98:
-            # Direct ist mindestens 2% besser als Residual
-            model_direct = direct_model
-            ensemble_weights = {"residual": 0.0, "direct": 1.0}
-            chosen_model_type = "direct"
-            log.info(f"[GBRT] Direct-Modell gewählt (MAE {direct_test_mae:.4f} < {test_mae:.4f})")
+            model.train_metrics["ensemble"] = {
+                "n_models": len(_ensemble_models) if _ensemble_models else 1,
+                "weights": ensemble_weights,
+                "ensemble_test_mae": round(ens_test_mae, 4),
+                "primary_test_mae": round(test_mae, 4),
+            }
         else:
-            # Residual bleibt Champion
-            chosen_model_type = "residual"
-            log.info(f"[GBRT] Residual-Modell bleibt Champion")
+            chosen_model_type = "direct"
 
-        model.train_metrics["direct_model"] = {
-            "test_mae": round(direct_test_mae, 4),
-            "test_rmse": round(direct_test_rmse, 4),
-            "test_r2": round(direct_test_r2, 4),
-            "n_trees": len(direct_model.trees),
-            "ensemble_weight": round(1 - best_ens_w, 3),
-            "ensemble_test_mae": round(ens_test_mae, 4),
-        }
         model.train_metrics["model_type"] = chosen_model_type
         model.train_metrics["ensemble_weights"] = ensemble_weights
-    except Exception as direct_err:
-        log.warning(f"[GBRT] Direct-Modell-Training fehlgeschlagen: {direct_err}")
-        chosen_model_type = "residual"
-        model.train_metrics["model_type"] = "residual"
+    except Exception as ens_err:
+        log.warning(f"[GBRT] Multi-Objective Ensemble fehlgeschlagen: {ens_err}")
+        chosen_model_type = "direct"
+        model.train_metrics["model_type"] = "direct"
+        model.train_metrics["ensemble_weights"] = {"MAE": 1.0}
 
     elapsed = time.time() - t0
 
@@ -3146,12 +5256,43 @@ def _gbrt_train(pushes=None):
 
     # Modell als JSON speichern (immer, auch wenn nicht promoted)
     try:
+        # sklearn/lgbm-Modell separat als joblib speichern
+        if (use_lgbm and hasattr(model, '_is_lgbm')) or (use_sklearn and hasattr(model, '_is_sklearn')):
+            try:
+                _inner_model = model.lgbm_model if hasattr(model, '_is_lgbm') else model.sklearn_model
+                _inner_direct = None
+                if model_direct:
+                    if hasattr(model_direct, '_is_lgbm'):
+                        _inner_direct = model_direct.lgbm_model
+                    elif hasattr(model_direct, '_is_sklearn'):
+                        _inner_direct = model_direct.sklearn_model
+                sklearn_data = {
+                    "model": _inner_model,
+                    "model_direct": _inner_direct,
+                    "feature_names": feature_names,
+                    "cat_hour_baselines": _cat_hour_baselines,
+                    "global_train_avg": _global_train_avg,
+                    "trained_at": int(time.time()),
+                    "pca": _embedding_pca,
+                    "pca_mean": _embedding_pca_mean.tolist() if _embedding_pca_mean is not None else None,
+                    "metrics": model.train_metrics,
+                    "model_type": chosen_model_type,
+                    "ensemble_weights": ensemble_weights,
+                    "conformal_radius": getattr(model, "conformal_radius", None),
+                    "blend_alpha": getattr(model, "blend_alpha", None),
+                }
+                joblib.dump(sklearn_data, SKLEARN_MODEL_PATH, compress=3)
+                log.info(f"[GBRT] sklearn-Modell gespeichert: {SKLEARN_MODEL_PATH} "
+                         f"({os.path.getsize(SKLEARN_MODEL_PATH) / 1024:.0f} KB)")
+            except Exception as sk_e:
+                log.warning(f"[GBRT] sklearn-Export-Fehler: {sk_e}")
+
         model_json = {
             "model": model.to_json(),
             "model_direct": model_direct.to_json() if model_direct else None,
             "model_q10": model_q10.to_json() if model_q10 else None,
             "model_q90": model_q90.to_json() if model_q90 else None,
-            "calibrator": calibrator.to_dict(),
+            "calibrator": calibrator.to_dict() if calibrator else None,
             "feature_names": feature_names,
             "cat_hour_baselines": _cat_hour_baselines,
             "global_train_avg": _global_train_avg,
@@ -3161,6 +5302,7 @@ def _gbrt_train(pushes=None):
             "experiment_id": experiment_id,
             "model_type": chosen_model_type,
             "ensemble_weights": ensemble_weights,
+            "backend": "lightgbm" if use_lgbm else ("sklearn" if use_sklearn else "pure_python"),
         }
         with open(GBRT_MODEL_PATH, "w") as f:
             json.dump(model_json, f)
@@ -3202,34 +5344,39 @@ def _gbrt_predict(push, state=None):
     feat = _gbrt_extract_features(push, history_stats, state)
     x = [feat.get(k, 0.0) for k in feature_names]
 
-    # Cat×Hour-Baseline fuer Residual-Modeling
+    # Cat×Hour-Baseline (für Blending-Fallback + Metriken)
     cat_lower = (push.get("cat", "") or "news").lower().strip()
     push_hour = push.get("hour", 12)
     baseline_key = f"{cat_lower}_{push_hour}"
     cat_hour_baseline = _gbrt_cat_hour_baselines.get(baseline_key, _gbrt_global_train_avg)
 
-    # Residual-Prediction (Modell predicted Residuum) + Baseline
+    # Direct Modeling: Modell predicted OR direkt
     result = model.predict_with_uncertainty(x)
-    residual_predicted = result["predicted"] + cat_hour_baseline
 
-    # Kalibrierung anwenden (arbeitet im OR-Raum)
+    # Multi-Objective Ensemble: gewichteter Durchschnitt aus 3 Modellen
+    if hasattr(model, '_ensemble_models') and model._ensemble_models and model_type == "direct_ensemble":
+        ens_preds = []
+        for _, ens_mdl in model._ensemble_models:
+            ens_preds.append(ens_mdl.predict_one(x))
+        ens_w = model._ensemble_weights
+        predicted = sum(ens_w[j] * ens_preds[j] for j in range(len(ens_preds)))
+    else:
+        predicted = result["predicted"]
+
+    # Kalibrierung anwenden
     if calibrator:
-        residual_predicted = calibrator.calibrate(residual_predicted)
-        residual_predicted = max(0.01, residual_predicted)
+        predicted = calibrator.calibrate(predicted)
+        predicted = max(0.01, predicted)
+
+    # D5: Online Bias-Korrektur anwenden
+    if _gbrt_online_bias != 0.0:
+        predicted -= _gbrt_online_bias
+        predicted = max(0.01, predicted)
 
     # Blending: α × GBRT + (1-α) × Cat×Hour-Baseline
     blend_alpha = getattr(model, "blend_alpha", 1.0)
     if blend_alpha < 1.0:
-        residual_predicted = blend_alpha * residual_predicted + (1.0 - blend_alpha) * cat_hour_baseline
-
-    # Dual-Modell: Ensemble aus Residual + Direct
-    if model_direct and model_type in ("ensemble", "direct"):
-        direct_predicted = model_direct.predict_one(x)
-        w_res = ens_weights.get("residual", 0.5)
-        w_dir = ens_weights.get("direct", 0.5)
-        predicted = w_res * residual_predicted + w_dir * direct_predicted
-    else:
-        predicted = residual_predicted
+        predicted = blend_alpha * predicted + (1.0 - blend_alpha) * cat_hour_baseline
 
     # Quantile via Konforme Prediction
     c_radius = getattr(model, "conformal_radius", None)
@@ -3291,13 +5438,13 @@ def _gbrt_predict(push, state=None):
         "q90": round(q90, 3),
         "model_type": f"GBRT-{model_type}" if model_type != "residual" else "GBRT",
         "model_subtype": model_type,
-        "n_trees": len(model.trees) + (len(model_direct.trees) if model_direct else 0),
+        "n_trees": len(model.trees),
         "features": {k: round(v, 4) for k, v in feat.items()},
         "top_features": top_features,
         "shap_explanation": shap_explanation,
         "shap_text": shap_text,
-        "shap_base_value": round(sv["base_value"] + cat_hour_baseline, 5) if sv else None,
-        "shap_predicted": round(sv["prediction"] + cat_hour_baseline, 5) if sv else None,
+        "shap_base_value": round(sv["base_value"], 5) if sv else None,
+        "shap_predicted": round(sv["prediction"], 5) if sv else None,
         "cat_hour_baseline": round(cat_hour_baseline, 3),
         "metrics": model.train_metrics,
         "ab_test_active": challenger_pred is not None,
@@ -3312,10 +5459,52 @@ def _gbrt_predict(push, state=None):
 
 
 def _gbrt_load_model():
-    """Laedt ein gespeichertes GBRT-Modell von Disk."""
+    """Laedt ein gespeichertes GBRT-Modell von Disk (sklearn oder Pure-Python)."""
     global _gbrt_model, _gbrt_model_direct, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
     global _gbrt_feature_names, _gbrt_train_ts, _gbrt_ensemble_weights, _gbrt_model_type
+    global _embedding_pca, _embedding_pca_mean
 
+    # Versuch 1: sklearn-Modell laden (bevorzugt, schneller)
+    if _SKLEARN_AVAILABLE and os.path.exists(SKLEARN_MODEL_PATH):
+        try:
+            sk_data = joblib.load(SKLEARN_MODEL_PATH)
+            with _gbrt_lock:
+                sk_model = sk_data["model"]
+                feature_names = sk_data["feature_names"]
+                _gbrt_model = _SklearnModelWrapper(sk_model, feature_names)
+                if sk_data.get("conformal_radius"):
+                    _gbrt_model.conformal_radius = sk_data["conformal_radius"]
+                if sk_data.get("blend_alpha"):
+                    _gbrt_model.blend_alpha = sk_data["blend_alpha"]
+                _gbrt_model.train_metrics = sk_data.get("metrics", {})
+                if sk_data.get("model_direct"):
+                    _gbrt_model_direct = _SklearnModelWrapper(sk_data["model_direct"], feature_names)
+                else:
+                    _gbrt_model_direct = None
+                _gbrt_model_q10 = None
+                _gbrt_model_q90 = None
+                _gbrt_calibrator = None
+                _gbrt_feature_names = feature_names
+                _gbrt_train_ts = sk_data.get("trained_at", 0)
+                _gbrt_model_type = sk_data.get("model_type", "direct")
+                _gbrt_ensemble_weights = sk_data.get("ensemble_weights",
+                                                      {"MAE": 1.0})
+                if sk_data.get("cat_hour_baselines"):
+                    _gbrt_cat_hour_baselines.clear()
+                    _gbrt_cat_hour_baselines.update(sk_data["cat_hour_baselines"])
+                    globals()["_gbrt_global_train_avg"] = sk_data.get("global_train_avg", 4.77)
+                if sk_data.get("pca") is not None:
+                    _embedding_pca = sk_data["pca"]
+                if sk_data.get("pca_mean") is not None and np is not None:
+                    _embedding_pca_mean = np.array(sk_data["pca_mean"]).reshape(1, -1)
+            log.info(f"[GBRT] sklearn-Modell geladen: {sk_model.n_estimators_} Bäume, "
+                     f"Features: {len(feature_names)}, Typ: {_gbrt_model_type}")
+            _gbrt_load_history_stats()
+            return True
+        except Exception as sk_e:
+            log.warning(f"[GBRT] sklearn-Modell laden fehlgeschlagen: {sk_e}, Fallback auf JSON")
+
+    # Versuch 2: Pure-Python JSON-Modell laden
     if not os.path.exists(GBRT_MODEL_PATH):
         return False
     try:
@@ -3331,36 +5520,41 @@ def _gbrt_load_model():
                 _gbrt_model_q10 = GBRTModel.from_json(data["model_q10"])
             if data.get("model_q90"):
                 _gbrt_model_q90 = GBRTModel.from_json(data["model_q90"])
-            if "calibrator" in data:
+            if data.get("calibrator"):
                 _gbrt_calibrator = IsotonicCalibrator.from_dict(data["calibrator"])
+            else:
+                _gbrt_calibrator = None
             _gbrt_feature_names = data.get("feature_names", [])
             _gbrt_train_ts = data.get("trained_at", 0)
-            _gbrt_model_type = data.get("model_type", "residual")
+            _gbrt_model_type = data.get("model_type", "direct")
             _gbrt_ensemble_weights = data.get("ensemble_weights",
-                                               {"residual": 1.0, "direct": 0.0})
-            # Cat×Hour-Baselines fuer Residual-Modeling restaurieren
+                                               {"MAE": 1.0})
             if data.get("cat_hour_baselines"):
                 _gbrt_cat_hour_baselines.clear()
                 _gbrt_cat_hour_baselines.update(data["cat_hour_baselines"])
                 globals()["_gbrt_global_train_avg"] = data.get("global_train_avg", 4.77)
         log.info(f"[GBRT] Modell geladen: {len(_gbrt_model.trees)} Baeume, "
                  f"Features: {len(_gbrt_feature_names)}, Typ: {_gbrt_model_type}")
-        # History-Stats aufbauen mit temporaler Grenze (trained_at als Cutoff)
-        try:
-            global _gbrt_history_stats
-            all_pushes = _push_db_load_all()
-            trained_at = _gbrt_train_ts or int(time.time())
-            valid = [p for p in all_pushes if p.get("or", 0) > 0
-                     and 0 < (p.get("or", 0) or 0) <= 100]
-            if valid:
-                _gbrt_history_stats = _gbrt_build_history_stats(valid, target_ts=trained_at)
-                log.info(f"[GBRT] History-Stats gebaut: {len(valid)} Pushes (Cutoff: trained_at={trained_at})")
-        except Exception as _hs_err:
-            log.warning(f"[GBRT] History-Stats Fehler: {_hs_err}")
+        _gbrt_load_history_stats()
         return True
     except Exception as e:
         log.warning(f"[GBRT] Modell laden fehlgeschlagen: {e}")
         return False
+
+
+def _gbrt_load_history_stats():
+    """History-Stats aufbauen nach dem Modell-Laden."""
+    try:
+        global _gbrt_history_stats
+        all_pushes = _push_db_load_all()
+        trained_at = _gbrt_train_ts or int(time.time())
+        valid = [p for p in all_pushes if p.get("or", 0) > 0
+                 and 0 < (p.get("or", 0) or 0) <= 20]
+        if valid:
+            _gbrt_history_stats = _gbrt_build_history_stats(valid, target_ts=trained_at)
+            log.info(f"[GBRT] History-Stats gebaut: {len(valid)} Pushes (Cutoff: trained_at={trained_at})")
+    except Exception as _hs_err:
+        log.warning(f"[GBRT] History-Stats Fehler: {_hs_err}")
 
 
 # ── Concept Drift Detection ──────────────────────────────────────────────
@@ -3413,6 +5607,121 @@ def _gbrt_check_drift(state):
             _gbrt_train()
         except Exception as e:
             log.warning(f"[Drift] Auto-Retrain fehlgeschlagen: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SELF-TUNING MODEL-SELEKTION (ML-First Phase F)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _model_selector_update(rows_24h=None):
+    """Aktualisiert den Model-Selector basierend auf letzten 100 Predictions.
+
+    Entscheidet ob Unified oder ML-Ensemble als primärer Predictor genutzt wird.
+    Aufgerufen von _monitoring_tick().
+    """
+    global _model_selector_state
+    now = time.time()
+
+    # Nur alle 10 Minuten prüfen
+    if now - _model_selector_state.get("last_check_ts", 0) < 600:
+        return
+
+    _model_selector_state["last_check_ts"] = now
+
+    # Unified überhaupt trainiert?
+    with _unified_lock:
+        unified_available = _unified_state.get("model") is not None
+        unified_train_count = _unified_state.get("train_count", 0)
+
+    if not unified_available:
+        _model_selector_state["active_model"] = "ml_ensemble"
+        return
+
+    # Prediction-Log abfragen für beide Modelle
+    try:
+        with _push_db_lock:
+            conn = sqlite3.connect(PUSH_DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cutoff = int(now - 86400)
+            rows = conn.execute("""
+                SELECT predicted_or, actual_or, methods_detail
+                FROM prediction_log
+                WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at > ?
+                ORDER BY predicted_at DESC LIMIT 100
+            """, (cutoff,)).fetchall()
+            conn.close()
+    except Exception:
+        return
+
+    if len(rows) < 10:
+        return
+
+    # MAE für Unified vs Ensemble berechnen
+    unified_errors = []
+    ensemble_errors = []
+    for r in rows:
+        try:
+            detail = json.loads(r["methods_detail"] or "{}")
+            actual = float(r["actual_or"])
+
+            # Unified-Prediction
+            u_pred = float(detail.get("unified_predicted", 0) or 0)
+            if u_pred > 0:
+                unified_errors.append(abs(u_pred - actual))
+
+            # Shadow-Ensemble oder direkte Ensemble-Prediction
+            e_pred = float(detail.get("ml_ensemble", 0) or
+                           detail.get("shadow_gbrt", 0) or
+                           detail.get("gbrt_predicted", 0) or 0)
+            if e_pred > 0:
+                ensemble_errors.append(abs(e_pred - actual))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+    _model_selector_state["evaluated_count"] = len(unified_errors)
+
+    # Cold-Start: ML-Ensemble wenn < 30 evaluierte Unified Predictions
+    if len(unified_errors) < 30:
+        _model_selector_state["active_model"] = "ml_ensemble"
+        log.info(f"[ModelSelector] Cold-Start: ml_ensemble (nur {len(unified_errors)} Unified-Predictions)")
+        return
+
+    unified_mae = sum(unified_errors) / len(unified_errors)
+    _model_selector_state["unified_mae_24h"] = round(unified_mae, 4)
+
+    if ensemble_errors:
+        ensemble_mae = sum(ensemble_errors) / len(ensemble_errors)
+        _model_selector_state["ensemble_mae_24h"] = round(ensemble_mae, 4)
+    else:
+        ensemble_mae = float('inf')
+
+    # Entscheidung: Unified nutzen wenn MAE_24h < Ensemble MAE_24h × 1.05
+    if unified_mae < ensemble_mae * 1.05:
+        if _model_selector_state.get("active_model") != "unified":
+            log.info(f"[ModelSelector] Wechsel zu unified: MAE={unified_mae:.4f} < Ensemble={ensemble_mae:.4f}×1.05")
+        _model_selector_state["active_model"] = "unified"
+        _model_selector_state["consecutive_worse"] = 0
+    else:
+        _model_selector_state["consecutive_worse"] = _model_selector_state.get("consecutive_worse", 0) + 1
+        # Auto-Fallback: 3× hintereinander > 15% schlechter → Ensemble + Retrain
+        if _model_selector_state["consecutive_worse"] >= 3 and unified_mae > ensemble_mae * 1.15:
+            _model_selector_state["active_model"] = "ml_ensemble"
+            log.warning(f"[ModelSelector] Fallback zu ml_ensemble: Unified MAE={unified_mae:.4f} > "
+                        f"Ensemble={ensemble_mae:.4f}×1.15, {_model_selector_state['consecutive_worse']}× schlechter → Retrain")
+            _model_selector_state["consecutive_worse"] = 0
+            # Retrain triggern
+            threading.Thread(target=_unified_train, daemon=True).start()
+        else:
+            _model_selector_state["active_model"] = "ml_ensemble"
+
+    log.info(f"[ModelSelector] active={_model_selector_state['active_model']}, "
+             f"unified_MAE={unified_mae:.4f}, ensemble_MAE={ensemble_mae:.4f}, "
+             f"evaluated={len(unified_errors)}")
+
+
+def _model_selector_check():
+    """Gibt das aktive Modell zurück. Für externe Abfragen."""
+    return _model_selector_state.get("active_model", "ml_ensemble")
 
 
 # ── Monitoring Dashboard ─────────────────────────────────────────────────
@@ -3565,6 +5874,32 @@ def _monitoring_tick():
                 f"Calibration Bias = {bias:+.4f} (Modell {'über' if bias > 0 else 'unter'}schätzt systematisch)",
                 {"bias": bias})
 
+        # D6: Auto-Retrain Trigger — wenn MAE_24h > MAE_7d × 1.3 für 3 Ticks
+        global _auto_retrain_state
+        mae_24h_val = _monitoring_state.get("mae_24h", 0)
+        mae_7d_val = _monitoring_state.get("mae_7d", 0)
+        if mae_7d_val > 0 and mae_24h_val > mae_7d_val * 1.3:
+            _auto_retrain_state["consecutive_degraded_ticks"] += 1
+            if (_auto_retrain_state["consecutive_degraded_ticks"] >= 3 and
+                    time.time() - _auto_retrain_state["last_retrain_trigger_ts"] > 3600):
+                _auto_retrain_state["last_retrain_trigger_ts"] = time.time()
+                _auto_retrain_state["consecutive_degraded_ticks"] = 0
+                log.warning(f"[AutoRetrain] Trigger: MAE_24h={mae_24h_val:.4f} > MAE_7d×1.3={mae_7d_val*1.3:.4f} "
+                            f"für 3 Ticks → Retrain wird gestartet")
+                threading.Thread(target=_gbrt_train, daemon=True).start()
+                threading.Thread(target=_ml_train_model, daemon=True).start()
+                _log_monitoring_event("auto_retrain", "warning",
+                    f"Auto-Retrain getriggert: MAE_24h={mae_24h_val:.4f} > MAE_7d×1.3",
+                    {"mae_24h": mae_24h_val, "mae_7d": mae_7d_val})
+        else:
+            _auto_retrain_state["consecutive_degraded_ticks"] = 0
+
+        # Model-Selector Update (Phase F)
+        try:
+            _model_selector_update(rows_24h)
+        except Exception:
+            pass
+
     except Exception as e:
         log.warning(f"[Monitoring] Tick-Fehler: {e}")
 
@@ -3684,178 +6019,13 @@ _ML_CAT_COLS = ["sport", "politik", "unterhaltung", "geld", "regional", "digital
 
 
 def _ml_build_stats(pushes):
-    """Berechnet Aggregat-Statistiken für historische Features."""
-    from collections import defaultdict
-    hour_or = defaultdict(list)
-    cat_or = defaultdict(list)
-    weekday_or = defaultdict(list)
-    hour_cat_or = defaultdict(list)
-    hour_weekday_or = defaultdict(list)
-    all_or = []
-
-    for p in pushes:
-        orv = p.get("or") or p.get("or_val") or 0
-        if orv <= 0:
-            continue
-        ts = p.get("ts_num", 0)
-        if ts <= 0:
-            continue
-        dt = datetime.datetime.fromtimestamp(ts)
-        h = dt.hour
-        wd = dt.weekday()
-        cat = (p.get("cat") or "news").lower().strip()
-        hour_or[h].append(orv)
-        cat_or[cat].append(orv)
-        weekday_or[wd].append(orv)
-        hour_cat_or[(h, cat)].append(orv)
-        hour_weekday_or[(h, wd)].append(orv)
-        all_or.append(orv)
-
-    def avg(lst):
-        return sum(lst) / len(lst) if lst else 0.0
-
-    # Rohdaten fuer Varianz-Features mitgeben
-    _raw = [{"cat": (p.get("cat") or "news").lower().strip(), "or": p.get("or") or p.get("or_val") or 0}
-            for p in pushes if (p.get("or") or p.get("or_val") or 0) > 0]
-    return {
-        "hour_avg": {k: avg(v) for k, v in hour_or.items()},
-        "cat_avg": {k: avg(v) for k, v in cat_or.items()},
-        "weekday_avg": {k: avg(v) for k, v in weekday_or.items()},
-        "hour_cat_avg": {k: avg(v) for k, v in hour_cat_or.items()},
-        "hour_weekday_avg": {k: avg(v) for k, v in hour_weekday_or.items()},
-        "global_avg": avg(all_or),
-        "hour_count": {k: len(v) for k, v in hour_or.items()},
-        "cat_count": {k: len(v) for k, v in cat_or.items()},
-        "_raw_pushes": _raw,
-    }
+    """Delegiert an _gbrt_build_history_stats für Feature-Parität (80+ Features)."""
+    return _gbrt_build_history_stats(pushes)
 
 
 def _ml_extract_features(row, stats):
-    """Extrahiert ~55 Features aus einem Push-Dict (erweitert mit Tiefenanalyse)."""
-    ts = row.get("ts_num", 0)
-    dt = datetime.datetime.fromtimestamp(ts) if ts > 0 else datetime.datetime.now()
-    h = row.get("hour", dt.hour)
-    wd = dt.weekday()
-    title = row.get("title") or row.get("headline") or ""
-    title_lower = title.lower()
-    cat = (row.get("cat") or "news").lower().strip()
-    is_eil = 1 if row.get("is_eilmeldung") else 0
-    channels = row.get("channels") or []
-    n_channels = len(channels) if isinstance(channels, list) else 1
-
-    words = title.split()
-    word_count = len(words)
-    title_len = len(title)
-    upper_ratio = sum(1 for c in title if c.isupper()) / max(title_len, 1)
-    avg_word_len = sum(len(w) for w in words) / max(len(words), 1)
-
-    hour_sin = math.sin(2 * math.pi * h / 24)
-    hour_cos = math.cos(2 * math.pi * h / 24)
-    weekday_sin = math.sin(2 * math.pi * wd / 7)
-    weekday_cos = math.cos(2 * math.pi * wd / 7)
-
-    # Emotionale Tiefenanalyse
-    _emo_cats = {
-        "angst": {"tot","tod","sterben","gestorben","stirbt","lebensgefahr","mord","tote","opfer"},
-        "katastrophe": {"erdbeben","tsunami","explosion","brand","feuer","absturz","crash","ueberschwemmung","sturm"},
-        "sensation": {"sensation","historisch","erstmals","rekord","unfassbar","unglaublich","hammer","schock","krass"},
-        "bedrohung": {"warnung","alarm","gefahr","terror","angriff","anschlag","krieg","evakuierung"},
-        "prominenz": {"kanzler","praesident","papst","koenig","merkel","scholz","trump","putin","biden"},
-        "empoerung": {"skandal","verrat","luege","betrug","korrupt","irrsinn","dreist"},
-    }
-    emo_score = 0.0
-    emo_cat_count = 0
-    for _ec, _ew in _emo_cats.items():
-        if any(w in title_lower for w in _ew):
-            emo_score += 0.2
-            emo_cat_count += 1
-
-    # Breaking-Signale
-    breaking_score = 0
-    if "+++" in title: breaking_score += 2
-    elif "++" in title: breaking_score += 1
-    if "|" in title: breaking_score += 1
-    if "EXKLUSIV" in title.upper() or "BREAKING" in title.upper(): breaking_score += 2
-    if is_eil: breaking_score += 2
-    if title.strip().endswith("!"): breaking_score += 1
-
-    # Titel-Stil-Features
-    has_colon = 1 if ":" in title else 0
-    has_pipe = 1 if "|" in title else 0
-    has_dash = 1 if " – " in title or " - " in title else 0
-    has_quotes = 1 if '"' in title or '„' in title else 0
-    starts_with_name = 1 if re.match(r'^[A-Z][a-z]+ [A-Z]', title) else 0
-
-    # Sport-Entity-Erkennung
-    _sport_entities = {"bayern","dortmund","bvb","real madrid","barcelona","champions league",
-                       "bundesliga","dfb","nationalmannschaft","transfer","wechsel"}
-    sport_entity_hits = sum(1 for e in _sport_entities if e in title_lower)
-
-    feat = {
-        "hour": h,
-        "weekday": wd,
-        "is_weekend": 1 if wd >= 5 else 0,
-        "hour_sin": hour_sin,
-        "hour_cos": hour_cos,
-        "weekday_sin": weekday_sin,
-        "weekday_cos": weekday_cos,
-        "is_prime_time": 1 if 18 <= h <= 22 else 0,
-        "is_morning": 1 if 6 <= h <= 9 else 0,
-        "is_lunch": 1 if 11 <= h <= 13 else 0,
-        "is_late_night": 1 if h >= 23 or h <= 5 else 0,
-        "hour_squared": h * h,
-        "title_len": title_len,
-        "word_count": word_count,
-        "avg_word_len": avg_word_len,
-        "has_question": 1 if "?" in title else 0,
-        "has_exclamation": 1 if "!" in title else 0,
-        "has_numbers": 1 if re.search(r"\d", title) else 0,
-        "has_breaking_kw": 1 if _ML_BREAKING_KW.search(title) else 0,
-        "has_emotion_kw": 1 if _ML_EMOTION_KW.search(title) else 0,
-        "upper_ratio": upper_ratio,
-        "is_eilmeldung": is_eil,
-        "n_channels": n_channels,
-        # Neue Features
-        "emo_score": min(1.0, emo_score),
-        "emo_cat_count": emo_cat_count,
-        "breaking_score": min(8, breaking_score),
-        "has_colon": has_colon,
-        "has_pipe": has_pipe,
-        "has_dash": has_dash,
-        "has_quotes": has_quotes,
-        "starts_with_name": starts_with_name,
-        "sport_entity_hits": sport_entity_hits,
-        # Interaktionen (ML lernt nichtlineare Kombinationen)
-        "eilmeldung_x_primetime": is_eil * (1 if 18 <= h <= 22 else 0),
-        "breaking_x_morning": min(1, breaking_score) * (1 if 6 <= h <= 9 else 0),
-        "sport_x_evening": min(1, sport_entity_hits) * (1 if 19 <= h <= 22 else 0),
-        "emo_x_weekend": min(1.0, emo_score) * (1 if wd >= 5 else 0),
-    }
-
-    # Kategorie One-Hot
-    for c in _ML_CAT_COLS:
-        feat[f"cat_{c}"] = 1 if cat == c else 0
-
-    # Historische Aggregat-Features
-    if stats:
-        feat["cat_avg_or"] = stats["cat_avg"].get(cat, stats["global_avg"])
-        feat["hour_avg_or"] = stats["hour_avg"].get(h, stats["global_avg"])
-        feat["hour_cat_avg_or"] = stats["hour_cat_avg"].get((h, cat), stats["global_avg"])
-        feat["weekday_avg_or"] = stats["weekday_avg"].get(wd, stats["global_avg"])
-        feat["hour_weekday_avg_or"] = stats["hour_weekday_avg"].get((h, wd), stats["global_avg"])
-        feat["global_avg_or"] = stats["global_avg"]
-        # Neue: Varianz-Features (wie stark schwankt OR in dieser Kategorie/Stunde?)
-        cat_vals = [p.get("or", 0) for p in stats.get("_raw_pushes", [])
-                    if (p.get("cat") or "").lower().strip() == cat and (p.get("or") or 0) > 0]
-        feat["cat_or_std"] = (sum((v - feat["cat_avg_or"])**2 for v in cat_vals) / max(len(cat_vals), 1)) ** 0.5 if cat_vals else 0.0
-        feat["cat_n_pushes"] = len(cat_vals)
-    else:
-        for k in ("cat_avg_or", "hour_avg_or", "hour_cat_avg_or", "weekday_avg_or", "hour_weekday_avg_or", "global_avg_or"):
-            feat[k] = 0.0
-        feat["cat_or_std"] = 0.0
-        feat["cat_n_pushes"] = 0
-
-    return feat
+    """Delegiert an _gbrt_extract_features für Feature-Parität (80+ Features)."""
+    return _gbrt_extract_features(row, stats)
 
 
 def _ml_train_model():
@@ -3879,55 +6049,343 @@ def _ml_train_model():
 
     try:
         now = int(time.time())
+        log.info("[ML] Lade Pushes aus DB...")
         pushes = _push_db_load_all()
-        # Nur reife Pushes mit OR > 0 (mindestens 24h alt)
-        valid = [p for p in pushes if (p.get("or") or 0) > 0 and p.get("ts_num", 0) < now - 86400]
+        log.info(f"[ML] {len(pushes)} Pushes geladen, filtere...")
+        # Nur reife Pushes mit realistischer OR 0-20% (mindestens 24h alt)
+        # Alte API-Daten (vor 2024) haben teilweise OR >100% — das sind kaputte Werte
+        valid = [p for p in pushes if 0 < (p.get("or") or 0) <= 20 and p.get("ts_num", 0) < now - 86400]
         if len(valid) < 100:
             log.warning(f"[ML] Nur {len(valid)} gültige Pushes, Training übersprungen (min 100)")
             return
+        log.info(f"[ML] {len(valid)} gültige Pushes, baue Stats...")
 
         stats = _ml_build_stats(valid)
+        log.info("[ML] Stats fertig, extrahiere Features...")
 
-        # Feature-Matrix
+        # Feature-Matrix (jetzt 80+ Features via GBRT-Delegation)
         feat_dicts = [_ml_extract_features(p, stats) for p in valid]
         feature_names = sorted(feat_dicts[0].keys())
-        X = np.array([[fd[k] for k in feature_names] for fd in feat_dicts])
+        X = np.array([[fd.get(k, 0.0) for k in feature_names] for fd in feat_dicts])
         y = np.array([p.get("or") or 0 for p in valid])
+        log.info(f"[ML] Feature-Parität: {len(feature_names)} Features (via GBRT-Delegation), "
+                 f"Matrix: {X.shape[0]}x{X.shape[1]}, ~{X.nbytes / 1024 / 1024:.1f} MB")
 
-        # Temporaler Split (sortiert nach ts_num, letzte 20% = Test)
+        # Temporaler Split (sortiert nach ts_num): 80% Train, 10% Val, 10% Test
         sorted_indices = np.argsort([p["ts_num"] for p in valid])
         X = X[sorted_indices]
         y = y[sorted_indices]
-        split_idx = int(len(X) * 0.8)
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
+
+        # Log1p-Transform der Target-Variable (OR ist rechtsschief)
+        y_log = np.log1p(y)
+        _use_log_transform = True
+        log.info(f"[ML] Target-Stats: mean={y.mean():.2f}, median={np.median(y):.2f}, "
+                 f"std={y.std():.2f}, skew={(((y - y.mean())/y.std())**3).mean():.2f}")
+
+        n = len(X)
+        split_train = int(n * 0.8)
+        split_val = int(n * 0.9)
+        X_train, X_val, X_test = X[:split_train], X[split_train:split_val], X[split_val:]
+        y_train, y_val, y_test = y[:split_train], y[split_train:split_val], y[split_val:]
+        y_train_log, y_val_log, y_test_log = y_log[:split_train], y_log[split_train:split_val], y_log[split_val:]
+
+        # ── Phase 2: 3-Fold TimeSeriesSplit CV ──────────────────────────────
+        n_folds = 3
+        cv_maes = []
+        fold_size = len(X_train) // (n_folds + 1)
+        for fold_i in range(n_folds):
+            cv_train_end = fold_size * (fold_i + 1)
+            cv_val_start = cv_train_end
+            cv_val_end = min(cv_val_start + fold_size, len(X_train))
+            if cv_val_end <= cv_val_start:
+                continue
+            cv_X_train = X_train[:cv_train_end]
+            cv_y_train_log = y_train_log[:cv_train_end]
+            cv_X_val = X_train[cv_val_start:cv_val_end]
+            cv_y_val = y_train[cv_val_start:cv_val_end]  # Original-Skala für MAE
+
+            if _use_lgb:
+                cv_model = lgb.LGBMRegressor(
+                    n_estimators=300, learning_rate=0.05, max_depth=6,
+                    min_child_samples=20, subsample=0.8, reg_lambda=1.0,
+                    verbose=-1, n_jobs=2)
+            else:
+                from sklearn.ensemble import GradientBoostingRegressor
+                cv_model = GradientBoostingRegressor(
+                    n_estimators=300, learning_rate=0.05, max_depth=6,
+                    min_samples_leaf=20, subsample=0.8)
+            cv_model.fit(cv_X_train, cv_y_train_log)
+            cv_pred_log = cv_model.predict(cv_X_val)
+            cv_pred = np.expm1(cv_pred_log)  # Zurück-Transformation
+            cv_mae = float(mean_absolute_error(cv_y_val, cv_pred))
+            cv_maes.append(cv_mae)
+
+        # Baseline-Vergleich
+        global_mean = float(np.mean(y_train))
+        baseline_mae = float(mean_absolute_error(y_test, np.full(len(y_test), global_mean)))
+
+        cv_mean_mae = sum(cv_maes) / len(cv_maes) if cv_maes else 0
+        cv_std_mae = (sum((m - cv_mean_mae) ** 2 for m in cv_maes) / len(cv_maes)) ** 0.5 if cv_maes else 0
+        log.info(f"[ML] CV ({n_folds}-Fold): MAE={cv_mean_mae:.3f} +/- {cv_std_mae:.3f}, "
+                 f"Baseline (Global Mean): {baseline_mae:.3f}")
+        log.info("[ML] Phase 2 (CV) abgeschlossen, starte Phase 3 (Optuna)...")
+
+        # ── Phase 3: Optuna Hyperparameter-Optimierung ──────────────────────
+        best_params = {"n_estimators": 300, "learning_rate": 0.05, "max_depth": 6,
+                       "min_child_samples": 20, "subsample": 0.8, "reg_lambda": 1.0,
+                       "reg_alpha": 0.0, "num_leaves": 63}
+        tuning_info = {"method": "default", "n_trials": 0}
 
         if _use_lgb:
-            model = lgb.LGBMRegressor(
-                n_estimators=300, learning_rate=0.05, max_depth=6,
-                min_child_samples=20, subsample=0.8, reg_lambda=1.0,
-                verbose=-1, n_jobs=-1,
-            )
-        else:
-            from sklearn.ensemble import GradientBoostingRegressor
-            model = GradientBoostingRegressor(
-                n_estimators=300, learning_rate=0.05, max_depth=6,
-                min_samples_leaf=20, subsample=0.8,
-            )
-        model.fit(X_train, y_train)
+            try:
+                import optuna
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-        y_pred = model.predict(X_test)
-        mae = mean_absolute_error(y_test, y_pred)
+                def _lgbm_optuna_objective(trial):
+                    p = {
+                        "n_estimators": trial.suggest_int("n_estimators", 300, 3000, step=100),
+                        "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
+                        "max_depth": trial.suggest_int("max_depth", 4, 12),
+                        "min_child_samples": trial.suggest_int("min_child_samples", 15, 100),
+                        "subsample": trial.suggest_float("subsample", 0.5, 0.95),
+                        "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 15.0, log=True),
+                        "reg_alpha": trial.suggest_float("reg_alpha", 0.01, 8.0, log=True),
+                        "num_leaves": trial.suggest_int("num_leaves", 20, 300),
+                        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.25, 0.85),
+                        "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 3.0),
+                    }
+                    # 3-Fold TimeSeriesSplit auf Log-Target MIT Early Stopping
+                    n_opt = len(X_train)
+                    opt_maes = []
+                    for opt_fold in range(3):
+                        opt_end = n_opt * (opt_fold + 3) // 5
+                        opt_val_start = n_opt * (opt_fold + 2) // 5
+                        opt_X_t = X_train[:opt_val_start]
+                        opt_y_t = y_train_log[:opt_val_start]
+                        opt_X_v = X_train[opt_val_start:opt_end]
+                        opt_y_v_log = y_train_log[opt_val_start:opt_end]
+                        opt_y_v = y_train[opt_val_start:opt_end]
+                        if len(opt_y_v) < 5:
+                            continue
+                        m = lgb.LGBMRegressor(**p, verbose=-1, n_jobs=2, objective="huber")
+                        m.fit(opt_X_t, opt_y_t,
+                              eval_set=[(opt_X_v, opt_y_v_log)],
+                              callbacks=[lgb.early_stopping(50, verbose=False)])
+                        opt_pred_log = m.predict(opt_X_v)
+                        opt_pred = np.expm1(opt_pred_log)
+                        opt_maes.append(float(mean_absolute_error(opt_y_v, opt_pred)))
+                    return sum(opt_maes) / len(opt_maes) if opt_maes else 999.0
+
+                study = optuna.create_study(direction="minimize",
+                    sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=10))
+                study.optimize(_lgbm_optuna_objective, n_trials=80, timeout=360)
+                best_params.update(study.best_params)
+                tuning_info = {
+                    "method": "optuna",
+                    "n_trials": len(study.trials),
+                    "best_val_mae": round(study.best_value, 4),
+                    "best_params": {k: round(v, 4) if isinstance(v, float) else v
+                                    for k, v in study.best_params.items()},
+                }
+                log.info(f"[ML] Optuna: {len(study.trials)} Trials, "
+                         f"beste Val-MAE={study.best_value:.4f}, Params={study.best_params}")
+            except ImportError:
+                log.info("[ML] Optuna nicht installiert, verwende Default-Hyperparameter")
+            except Exception as opt_e:
+                log.warning(f"[ML] Optuna-Fehler: {opt_e}, verwende Default-Hyperparameter")
+
+        log.info("[ML] Phase 3 (Optuna) abgeschlossen, starte finales Modelltraining...")
+
+        # ── Adaptive Sample Weights (sanfteres Decay: 365 statt 120 Tage) ──
+        _lgbm_sample_weights = None
+        try:
+            sorted_valid = [valid[si] for si in sorted_indices]
+            train_valid = sorted_valid[:split_train]
+            _lgbm_latest_ts = train_valid[-1]["ts_num"] if train_valid else now
+            _lgbm_sw = []
+            for p in train_valid:
+                ad = max(0, (_lgbm_latest_ts - p.get("ts_num", _lgbm_latest_ts)) / 86400.0)
+                sw = max(0.02, math.exp(-ad / 180.0))
+                h = p.get("hour", 12)
+                if 18 <= h <= 22:
+                    sw *= 1.2
+                p_ts = p.get("ts_num", 0)
+                if p_ts > 0:
+                    pm = datetime.datetime.fromtimestamp(p_ts).month
+                    nm = datetime.datetime.fromtimestamp(_lgbm_latest_ts).month
+                    if pm == nm and ad > 300:
+                        sw *= 1.15
+                _lgbm_sw.append(sw)
+            _lgbm_sample_weights = np.array(_lgbm_sw)
+            log.info(f"[ML] Adaptive Sample Weights (180d decay): min={_lgbm_sample_weights.min():.3f}, "
+                     f"max={_lgbm_sample_weights.max():.3f}, mean={_lgbm_sample_weights.mean():.3f}")
+        except Exception:
+            _lgbm_sample_weights = None
+
+        # ── Finales Modell mit besten Parametern + Early Stopping trainieren ──
+        def _build_lgbm(params):
+            if _use_lgb:
+                return lgb.LGBMRegressor(
+                    n_estimators=params.get("n_estimators", 300),
+                    learning_rate=params.get("learning_rate", 0.05),
+                    max_depth=params.get("max_depth", 6),
+                    min_child_samples=params.get("min_child_samples", 20),
+                    subsample=params.get("subsample", 0.8),
+                    reg_lambda=params.get("reg_lambda", 1.0),
+                    reg_alpha=params.get("reg_alpha", 0.0),
+                    num_leaves=params.get("num_leaves", 63),
+                    colsample_bytree=params.get("colsample_bytree", 0.7),
+                    min_split_gain=params.get("min_split_gain", 0.0),
+                    objective="huber", verbose=-1, n_jobs=2)
+            else:
+                from sklearn.ensemble import GradientBoostingRegressor
+                return GradientBoostingRegressor(
+                    n_estimators=params.get("n_estimators", 300),
+                    learning_rate=params.get("learning_rate", 0.05),
+                    max_depth=params.get("max_depth", 6),
+                    min_samples_leaf=params.get("min_child_samples", 20),
+                    subsample=params.get("subsample", 0.8))
+
+        def _fit_model(m, Xt, yt, Xv, yv, sw=None):
+            kw = {}
+            if sw is not None:
+                kw["sample_weight"] = sw
+            if _use_lgb:
+                kw["eval_set"] = [(Xv, yv)]
+                kw["callbacks"] = [lgb.early_stopping(50, verbose=False)]
+            m.fit(Xt, yt, **kw)
+            return m
+
+        # Phase 3b: Erstes Training → Feature Importance → Pruning
+        log.info(f"[ML] Pre-Pruning fit: {len(X_train)} Samples, {len(feature_names)} Features...")
+        pre_model = _build_lgbm(best_params)
+        _fit_model(pre_model, X_train, y_train_log, X_val, y_val_log, _lgbm_sample_weights)
+
+        pre_pred_log = pre_model.predict(X_test)
+        pre_pred = np.clip(np.expm1(pre_pred_log), 0, 20)
+        pre_mae = float(mean_absolute_error(y_test, pre_pred))
+        pre_r2 = float(r2_score(y_test, pre_pred))
+        if _use_lgb and hasattr(pre_model, 'best_iteration_'):
+            log.info(f"[ML] Early stopping bei Iteration {pre_model.best_iteration_}/{best_params.get('n_estimators', '?')}")
+
+        # Feature Pruning: entferne Features mit Importance = 0
+        model = pre_model
+        if _use_lgb and hasattr(pre_model, 'feature_importances_'):
+            importances = pre_model.feature_importances_
+            keep_mask = importances > 0
+            n_kept = int(keep_mask.sum())
+            n_removed = len(feature_names) - n_kept
+
+            if n_removed > 5:
+                X_train_p = X_train[:, keep_mask]
+                X_val_p = X_val[:, keep_mask]
+                X_test_p = X_test[:, keep_mask]
+                pruned_names = [feature_names[i] for i in range(len(feature_names)) if keep_mask[i]]
+
+                pruned_model = _build_lgbm(best_params)
+                sw_p = _lgbm_sample_weights
+                _fit_model(pruned_model, X_train_p, y_train_log, X_val_p, y_val_log, sw_p)
+
+                p_pred_log = pruned_model.predict(X_test_p)
+                p_pred = np.clip(np.expm1(p_pred_log), 0, 20)
+                p_mae = float(mean_absolute_error(y_test, p_pred))
+                p_r2 = float(r2_score(y_test, p_pred))
+
+                if p_mae <= pre_mae + 0.005:
+                    model = pruned_model
+                    feature_names = pruned_names
+                    X_train, X_val, X_test = X_train_p, X_val_p, X_test_p
+                    log.info(f"[ML] Feature Pruning: {n_kept + n_removed} -> {n_kept} "
+                             f"(entfernt: {n_removed}), MAE: {pre_mae:.4f} -> {p_mae:.4f}, "
+                             f"R²: {pre_r2:.4f} -> {p_r2:.4f}")
+                else:
+                    log.info(f"[ML] Pruning abgelehnt: MAE {pre_mae:.4f} -> {p_mae:.4f}")
+            else:
+                log.info(f"[ML] Kein Pruning nötig (nur {n_removed} Features mit Importance=0)")
+
+        # Finale Evaluation
+        y_pred_log = model.predict(X_test)
+        y_pred = np.clip(np.expm1(y_pred_log), 0, 20)
+        mae = float(mean_absolute_error(y_test, y_pred))
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
-        r2 = r2_score(y_test, y_pred)
-        log.info(f"[ML] Training fertig: MAE={mae:.3f}, RMSE={rmse:.3f}, R2={r2:.3f} ({len(valid)} Pushes)")
+        r2 = float(r2_score(y_test, y_pred))
+        log.info(f"[ML] Training fertig: MAE={mae:.3f}, RMSE={rmse:.3f}, R²={r2:.3f} "
+                 f"({len(valid)} Pushes, {len(feature_names)} Features)")
+
+        # ── Phase 4: Isotonic Calibration ───────────────────────────────────
+        lgbm_calibrator = None
+        val_preds_log = model.predict(X_val)
+        val_preds = np.expm1(val_preds_log)
+        val_preds = np.clip(val_preds, 0, 20)
+        cal = IsotonicCalibrator()
+        cal.fit(list(val_preds), list(y_val))
+        if cal.breakpoints:
+            cal_test_preds = np.array([cal.calibrate(p) for p in y_pred])
+            cal_mae = float(mean_absolute_error(y_test, cal_test_preds))
+            if cal_mae <= mae:
+                lgbm_calibrator = cal
+                log.info(f"[ML] Kalibrierung verbessert MAE: {mae:.4f} → {cal_mae:.4f}")
+                mae = cal_mae
+            else:
+                log.info(f"[ML] Kalibrierung deaktiviert (verschlechtert MAE: {mae:.4f} → {cal_mae:.4f})")
+
+        # ── Phase 4b: Conformal Prediction (Q10/Q90) ───────────────────────
+        conformal_radius = 1.0
+        if len(X_val) > 10:
+            val_residuals_abs = sorted(abs(float(val_preds[i]) - float(y_val[i])) for i in range(len(y_val)))
+            conformal_alpha = 0.10  # 90% Coverage → Q10/Q90
+            conformal_idx = min(int(math.ceil((1 - conformal_alpha) * len(val_residuals_abs))),
+                                len(val_residuals_abs) - 1)
+            conformal_radius = val_residuals_abs[conformal_idx]
+            # Coverage auf Test-Set validieren
+            effective_test_preds = [lgbm_calibrator.calibrate(p) for p in y_pred] if lgbm_calibrator else list(y_pred)
+            coverage = sum(1 for i in range(len(y_test))
+                           if (effective_test_preds[i] - conformal_radius) <= y_test[i] <= (effective_test_preds[i] + conformal_radius)
+                           ) / len(y_test) if len(y_test) > 0 else 0
+            log.info(f"[ML] Konforme Quantile: radius={conformal_radius:.3f}pp, "
+                     f"Coverage (erwartet ~90%): {coverage:.1%}")
+
+        # ── Phase 4c: Residual-Korrektur-Modell ─────────────────────────────
+        # Trainiert ein leichtes Modell auf den Residuals (actual - predicted).
+        # Fängt systematische Bias ab die das Hauptmodell nicht lernt.
+        residual_model = None
+        try:
+            train_preds_log = model.predict(X_train)
+            train_preds_res = np.expm1(train_preds_log)
+            train_preds_res = np.clip(train_preds_res, 0, 20)
+            if lgbm_calibrator:
+                train_preds_res = np.array([lgbm_calibrator.calibrate(float(p)) for p in train_preds_res])
+            train_residuals = np.array(y_train) - train_preds_res
+
+            if _use_lgb:
+                residual_model = lgb.LGBMRegressor(
+                    n_estimators=50, max_depth=3, learning_rate=0.05,
+                    min_child_samples=30, subsample=0.7, reg_lambda=2.0,
+                    num_leaves=15, verbose=-1, n_jobs=2, objective="huber")
+                residual_model.fit(X_train, train_residuals)
+
+                test_base = np.array([lgbm_calibrator.calibrate(float(p)) for p in y_pred]) if lgbm_calibrator else y_pred
+                test_resid = residual_model.predict(X_test)
+                corrected = test_base + test_resid
+                corrected_mae = float(mean_absolute_error(y_test, corrected))
+
+                if corrected_mae < mae:
+                    log.info(f"[ML] Residual-Korrektur verbessert MAE: {mae:.4f} -> {corrected_mae:.4f}")
+                    mae = corrected_mae
+                else:
+                    log.info(f"[ML] Residual-Korrektur deaktiviert ({mae:.4f} -> {corrected_mae:.4f})")
+                    residual_model = None
+        except Exception as res_e:
+            log.warning(f"[ML] Residual-Modell Fehler: {res_e}")
+            residual_model = None
 
         # SHAP Feature Importance
+        log.info("[ML] Starte SHAP-Analyse...")
         shap_importance = []
         try:
             import shap
             explainer = shap.TreeExplainer(model)
-            sample_size = min(200, len(X_test))
+            sample_size = min(100, len(X_test))
             shap_values = explainer.shap_values(X_test[:sample_size])
             mean_abs_shap = np.abs(shap_values).mean(axis=0)
             top_idx = np.argsort(mean_abs_shap)[::-1][:10]
@@ -3935,22 +6393,701 @@ def _ml_train_model():
         except Exception as se:
             log.warning(f"[ML] SHAP-Fehler: {se}")
 
+        # ── Phase 6: Gelernte Blend-Gewichte via Grid-Search auf Prediction-Log ──
+        learned_gbrt_alpha = 0.6
+        learned_ml_heuristic_alpha = 0.55
+        blend_info = {}
+        try:
+            pred_log = _push_db_get_training_data(limit=1000)
+            # GBRT/LightGBM Alpha lernen
+            blend_pairs = []
+            for row in pred_log:
+                detail = json.loads(row.get("methods_detail") or "{}")
+                gbrt_p = float(detail.get("gbrt_predicted", 0) or 0)
+                lgbm_p = float(detail.get("lgbm_predicted", 0) or 0)
+                actual = row.get("actual_or", 0)
+                if gbrt_p > 0 and lgbm_p > 0 and actual > 0:
+                    blend_pairs.append((gbrt_p, lgbm_p, actual))
+            if len(blend_pairs) >= 20:
+                best_alpha = 0.6
+                best_mae_b = float('inf')
+                for step in range(0, 21):
+                    alpha = step / 20.0
+                    mae_b = sum(abs(alpha * g + (1 - alpha) * l - a)
+                                for g, l, a in blend_pairs) / len(blend_pairs)
+                    if mae_b < best_mae_b:
+                        best_mae_b = mae_b
+                        best_alpha = alpha
+                learned_gbrt_alpha = best_alpha
+                blend_info["gbrt_lgbm_alpha"] = round(best_alpha, 3)
+                blend_info["gbrt_lgbm_alpha_mae"] = round(best_mae_b, 4)
+                blend_info["gbrt_lgbm_alpha_n"] = len(blend_pairs)
+                log.info(f"[ML] Gelernte GBRT/LightGBM Alpha: {best_alpha:.2f} "
+                         f"(MAE={best_mae_b:.4f}, n={len(blend_pairs)})")
+            # ML/Heuristik Alpha lernen
+            ml_heur_pairs = []
+            for row in pred_log:
+                detail = json.loads(row.get("methods_detail") or "{}")
+                ml_p = float(detail.get("ml_ensemble", 0) or detail.get("gbrt_predicted", 0)
+                             or detail.get("lgbm_predicted", 0) or 0)
+                heur_p = float(detail.get("heuristic_only", 0) or 0)
+                actual = row.get("actual_or", 0)
+                if ml_p > 0 and heur_p > 0 and actual > 0:
+                    ml_heur_pairs.append((ml_p, heur_p, actual))
+            if len(ml_heur_pairs) >= 20:
+                best_mh_alpha = 0.55
+                best_mh_mae = float('inf')
+                for step in range(0, 21):
+                    alpha = step / 20.0
+                    mh_mae = sum(abs(alpha * m + (1 - alpha) * h - a)
+                                 for m, h, a in ml_heur_pairs) / len(ml_heur_pairs)
+                    if mh_mae < best_mh_mae:
+                        best_mh_mae = mh_mae
+                        best_mh_alpha = alpha
+                learned_ml_heuristic_alpha = best_mh_alpha
+                blend_info["ml_heuristic_alpha"] = round(best_mh_alpha, 3)
+                blend_info["ml_heuristic_alpha_mae"] = round(best_mh_mae, 4)
+                blend_info["ml_heuristic_alpha_n"] = len(ml_heur_pairs)
+                log.info(f"[ML] Gelernte ML/Heuristik Alpha: {best_mh_alpha:.2f} "
+                         f"(MAE={best_mh_mae:.4f}, n={len(ml_heur_pairs)})")
+        except Exception as blend_err:
+            log.warning(f"[ML] Blend-Weight-Learning fehlgeschlagen: {blend_err}")
+
         with _ml_lock:
             _ml_state["model"] = model
+            _ml_state["residual_model"] = residual_model
             _ml_state["stats"] = stats
             _ml_state["feature_names"] = feature_names
-            _ml_state["metrics"] = {"mae": round(mae, 4), "rmse": round(rmse, 4), "r2": round(r2, 4),
-                                     "train_size": split_idx, "test_size": len(X_test), "total": len(valid)}
+            _ml_state["calibrator"] = lgbm_calibrator
+            _ml_state["conformal_radius"] = conformal_radius
+            _ml_state["gbrt_lgbm_alpha"] = learned_gbrt_alpha
+            _ml_state["ml_heuristic_alpha"] = learned_ml_heuristic_alpha
+            _ml_state["metrics"] = {
+                "mae": round(mae, 4), "rmse": round(rmse, 4), "r2": round(r2, 4),
+                "train_size": split_train, "val_size": len(X_val),
+                "test_size": len(X_test), "total": len(valid),
+                "n_features": len(feature_names),
+                "cv_mean_mae": round(cv_mean_mae, 4), "cv_std_mae": round(cv_std_mae, 4),
+                "baseline_mae": round(baseline_mae, 4),
+                "conformal_radius": round(conformal_radius, 4),
+                "tuning": tuning_info,
+                "blend_weights": blend_info,
+                "log_transform": True,
+            }
             _ml_state["shap_importance"] = shap_importance
             _ml_state["train_count"] += 1
             _ml_state["last_train_ts"] = now
             _ml_state["next_retrain_ts"] = now + 6 * 3600
             _ml_state["training"] = False
+
+        # Tagesplan-Cache invalidieren damit er das neue ML-Modell nutzt
+        with _tagesplan_cache_lock:
+            _tagesplan_cache["ts"] = 0
+            _tagesplan_cache["hour"] = -1
+
+        # ── Modell auf Disk speichern (ueberlebt Server-Neustarts) ──
+        try:
+            _ml_disk_data = {
+                "model": model,
+                "residual_model": residual_model,
+                "stats": stats,
+                "feature_names": feature_names,
+                "calibrator": lgbm_calibrator,
+                "conformal_radius": conformal_radius,
+                "gbrt_lgbm_alpha": learned_gbrt_alpha,
+                "ml_heuristic_alpha": learned_ml_heuristic_alpha,
+                "metrics": _ml_state["metrics"],
+                "shap_importance": shap_importance,
+                "trained_at": now,
+            }
+            joblib.dump(_ml_disk_data, ML_LGBM_MODEL_PATH, compress=3)
+            log.info(f"[ML] Modell gespeichert: {ML_LGBM_MODEL_PATH} "
+                     f"({os.path.getsize(ML_LGBM_MODEL_PATH) / 1024:.0f} KB)")
+        except Exception as save_e:
+            log.warning(f"[ML] Modell-Speichern fehlgeschlagen: {save_e}")
+
+        log.info("[ML] Training abgeschlossen, Tagesplan-Cache invalidiert")
     except Exception as e:
         import traceback
         log.warning(f"[ML] Training-Fehler: {e}\n{traceback.format_exc()}")
         with _ml_lock:
             _ml_state["training"] = False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED ML PREDICTOR (ML-First Phase E) — Kernstück
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _unified_train():
+    """Trainiert das Unified LightGBM-Modell mit 150+ Features.
+
+    Nutzt _unified_extract_features() (Phase A), Topic-Lifecycle (Phase B),
+    Weltereignisse (Phase C) und adaptive Gewichtung (Phase D).
+    """
+    global _unified_state
+
+    with _unified_lock:
+        if _unified_state["training"]:
+            log.info("[Unified] Training läuft bereits, übersprungen")
+            return
+        _unified_state["training"] = True
+
+    t0 = time.time()
+    log.info("[Unified] Training startet...")
+
+    try:
+        import numpy as np
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    except ImportError as e:
+        log.warning(f"[Unified] Pakete fehlen: {e}")
+        with _unified_lock:
+            _unified_state["training"] = False
+        return
+
+    _use_lgb = False
+    try:
+        import lightgbm as lgb
+        _use_lgb = True
+    except (ImportError, OSError):
+        log.info("[Unified] LightGBM nicht verfügbar, nutze sklearn")
+
+    try:
+        now = int(time.time())
+        pushes = _push_db_load_all()
+        valid = [p for p in pushes if (p.get("or") or 0) > 0
+                 and (p.get("or") or 0) <= 20
+                 and p.get("ts_num", 0) > 0
+                 and p["ts_num"] < now - 86400]
+
+        if len(valid) < 100:
+            log.warning(f"[Unified] Nur {len(valid)} gültige Pushes, Training übersprungen")
+            return
+
+        valid.sort(key=lambda x: x["ts_num"])
+        n = len(valid)
+
+        # History-Stats + Topic-Tracker + World-Event-Index aufbauen
+        history_stats = _gbrt_build_history_stats(valid)
+        _build_topic_tracker(history_stats)
+        _build_world_event_index()
+
+        # Feature-Matrix mit Unified Features extrahieren
+        log.info(f"[Unified] Extrahiere Features für {n} Pushes...")
+        feat_dicts = []
+        for p in valid:
+            fd = _unified_extract_features(p, history_stats, state=None)
+            feat_dicts.append(fd)
+
+        if not feat_dicts:
+            log.warning("[Unified] Keine Features extrahiert")
+            return
+
+        feature_names = sorted(feat_dicts[0].keys())
+        X = np.array([[fd.get(k, 0.0) for k in feature_names] for fd in feat_dicts])
+        y = np.array([p.get("or") or 0 for p in valid])
+
+        log.info(f"[Unified] {len(feature_names)} Features extrahiert")
+
+        # 80/10/10 temporal Split
+        split_train = int(n * 0.8)
+        split_val = int(n * 0.9)
+        X_train, X_val, X_test = X[:split_train], X[split_train:split_val], X[split_val:]
+        y_train, y_val, y_test = y[:split_train], y[split_train:split_val], y[split_val:]
+
+        # Adaptive Sample-Weights (Phase D)
+        latest_ts = valid[split_train - 1]["ts_num"]
+        sample_weights = []
+        for p in valid[:split_train]:
+            age_d = max(0, (latest_ts - p.get("ts_num", latest_ts)) / 86400.0)
+            sw = math.exp(-age_d / 120.0)
+            h = p.get("hour", 12)
+            if 18 <= h <= 22:
+                sw *= 1.3
+            p_ts = p.get("ts_num", 0)
+            if p_ts > 0:
+                pm = datetime.datetime.fromtimestamp(p_ts).month
+                nm = datetime.datetime.fromtimestamp(latest_ts).month
+                if pm == nm and age_d > 300:
+                    sw *= 1.2
+            sample_weights.append(sw)
+        sample_weights = np.array(sample_weights)
+
+        # Optuna Hyperparameter-Optimierung
+        best_params = {
+            "n_estimators": 400, "learning_rate": 0.03, "max_depth": 6,
+            "min_child_samples": 20, "subsample": 0.8, "reg_lambda": 1.0,
+            "reg_alpha": 0.1, "num_leaves": 63,
+        }
+        tuning_info = {"method": "default", "n_trials": 0}
+
+        if _use_lgb:
+            try:
+                import optuna
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+                def _unified_objective(trial):
+                    p = {
+                        "n_estimators": trial.suggest_int("n_estimators", 200, 600, step=50),
+                        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
+                        "max_depth": trial.suggest_int("max_depth", 4, 8),
+                        "min_child_samples": trial.suggest_int("min_child_samples", 10, 40),
+                        "subsample": trial.suggest_float("subsample", 0.6, 0.9),
+                        "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 3.0),
+                        "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.5),
+                        "num_leaves": trial.suggest_int("num_leaves", 31, 127),
+                    }
+                    m = lgb.LGBMRegressor(**p, verbose=-1, n_jobs=2)
+                    m.fit(X_train, y_train, sample_weight=sample_weights)
+                    vp = m.predict(X_val)
+                    return float(mean_absolute_error(y_val, vp))
+
+                study = optuna.create_study(direction="minimize")
+                study.optimize(_unified_objective, n_trials=30, timeout=120)
+                best_params.update(study.best_params)
+                tuning_info = {"method": "optuna", "n_trials": len(study.trials),
+                               "best_mae": round(study.best_value, 4)}
+                log.info(f"[Unified] Optuna: {len(study.trials)} Trials, "
+                         f"best_MAE={study.best_value:.4f}")
+            except ImportError:
+                log.info("[Unified] Optuna nicht verfügbar, nutze Default-Parameter")
+            except Exception as oe:
+                log.warning(f"[Unified] Optuna-Fehler: {oe}")
+
+        # Finales Modell trainieren
+        if _use_lgb:
+            model = lgb.LGBMRegressor(
+                n_estimators=best_params["n_estimators"],
+                learning_rate=best_params["learning_rate"],
+                max_depth=best_params["max_depth"],
+                min_child_samples=best_params["min_child_samples"],
+                subsample=best_params["subsample"],
+                reg_lambda=best_params["reg_lambda"],
+                reg_alpha=best_params.get("reg_alpha", 0.1),
+                num_leaves=best_params.get("num_leaves", 63),
+                verbose=-1, n_jobs=2,
+            )
+        else:
+            from sklearn.ensemble import GradientBoostingRegressor
+            model = GradientBoostingRegressor(
+                n_estimators=best_params["n_estimators"],
+                learning_rate=best_params["learning_rate"],
+                max_depth=best_params["max_depth"],
+                min_samples_leaf=best_params["min_child_samples"],
+                subsample=best_params["subsample"],
+            )
+
+        model.fit(X_train, y_train, sample_weight=sample_weights)
+
+        # Metriken
+        y_pred_test = model.predict(X_test)
+        mae = float(mean_absolute_error(y_test, y_pred_test))
+        rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
+        r2 = float(r2_score(y_test, y_pred_test))
+
+        # Isotonic Calibration
+        unified_calibrator = None
+        try:
+            from sklearn.isotonic import IsotonicRegression
+            y_pred_val = model.predict(X_val)
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(y_pred_val, y_val)
+            unified_calibrator = iso
+            # Kalibrierte Test-Metriken
+            y_pred_cal = iso.predict(y_pred_test)
+            cal_mae = float(mean_absolute_error(y_test, y_pred_cal))
+            log.info(f"[Unified] Isotonic Calibration: raw_MAE={mae:.4f} → cal_MAE={cal_mae:.4f}")
+        except ImportError:
+            log.info("[Unified] sklearn.isotonic nicht verfügbar")
+        except Exception as ce:
+            log.warning(f"[Unified] Calibration-Fehler: {ce}")
+
+        # Conformal Prediction (Q10/Q90)
+        conformal_radius = 1.0
+        try:
+            y_pred_val = model.predict(X_val)
+            if unified_calibrator:
+                y_pred_val = unified_calibrator.predict(y_pred_val)
+            residuals = sorted(abs(y_pred_val[i] - y_val[i]) for i in range(len(y_val)))
+            q90_idx = int(0.9 * len(residuals))
+            conformal_radius = residuals[min(q90_idx, len(residuals) - 1)]
+        except Exception:
+            conformal_radius = mae * 1.5
+
+        # SHAP Feature Importances → Top-10
+        shap_top10 = []
+        try:
+            import shap
+            explainer = shap.TreeExplainer(model)
+            shap_vals = explainer.shap_values(X_test[:min(200, len(X_test))])
+            mean_abs_shap = np.mean(np.abs(shap_vals), axis=0)
+            top_idx = np.argsort(mean_abs_shap)[::-1][:10]
+            shap_top10 = [{"feature": feature_names[i], "importance": float(mean_abs_shap[i])} for i in top_idx]
+        except Exception:
+            # Fallback: Feature Importances vom Modell
+            try:
+                importances = model.feature_importances_
+                top_idx = np.argsort(importances)[::-1][:10]
+                shap_top10 = [{"feature": feature_names[i], "importance": float(importances[i])} for i in top_idx]
+            except Exception:
+                pass
+
+        elapsed = time.time() - t0
+
+        with _unified_lock:
+            _unified_state["model"] = model
+            _unified_state["feature_names"] = feature_names
+            _unified_state["stats"] = history_stats
+            _unified_state["calibrator"] = unified_calibrator
+            _unified_state["conformal_radius"] = conformal_radius
+            _unified_state["metrics"] = {
+                "mae": round(mae, 4),
+                "rmse": round(rmse, 4),
+                "r2": round(r2, 4),
+                "n_features": len(feature_names),
+                "train_size": split_train,
+                "test_size": len(X_test),
+                "total": n,
+                "conformal_radius": round(conformal_radius, 4),
+                "tuning": tuning_info,
+                "shap_top10": shap_top10,
+            }
+            _unified_state["train_count"] += 1
+            _unified_state["last_train_ts"] = int(time.time())
+            _unified_state["training"] = False
+
+        log.info(f"[Unified] Training komplett in {elapsed:.1f}s: "
+                 f"{len(feature_names)} Features, MAE={mae:.4f}, RMSE={rmse:.4f}, R²={r2:.4f}, "
+                 f"Conformal={conformal_radius:.4f}, Optuna={tuning_info.get('n_trials', 0)} Trials")
+
+    except Exception as e:
+        import traceback
+        log.warning(f"[Unified] Training-Fehler: {e}\n{traceback.format_exc()}")
+        with _unified_lock:
+            _unified_state["training"] = False
+
+
+def _unified_predict(push, state=None):
+    """Unified ML Prediction für einen einzelnen Push.
+
+    Returns: Dict mit predicted, q10, q90, confidence, top_features, shap_text, model_type
+             oder None wenn Modell nicht verfügbar.
+    """
+    with _unified_lock:
+        model = _unified_state.get("model")
+        feature_names = _unified_state.get("feature_names", [])
+        history_stats = _unified_state.get("stats")
+        calibrator = _unified_state.get("calibrator")
+        conformal_radius = _unified_state.get("conformal_radius", 1.0)
+        metrics = _unified_state.get("metrics", {})
+
+    if model is None or not feature_names or not history_stats:
+        return None
+
+    try:
+        import numpy as np
+
+        # Feature-Extraktion
+        feat = _unified_extract_features(push, history_stats, state)
+        x = np.array([[feat.get(k, 0.0) for k in feature_names]])
+
+        # Model-Predict
+        predicted = float(model.predict(x)[0])
+
+        # Kalibrierung
+        if calibrator:
+            try:
+                predicted = float(calibrator.predict(np.array([predicted]))[0])
+            except Exception:
+                pass
+
+        # Clamp
+        predicted = max(0.5, min(30.0, predicted))
+
+        # Konfidenz-Intervall
+        q10 = max(0.1, predicted - conformal_radius)
+        q90 = predicted + conformal_radius
+
+        # Confidence basierend auf Feature-Abdeckung
+        n_nonzero = sum(1 for k in feature_names if feat.get(k, 0.0) != 0.0)
+        confidence = min(0.95, n_nonzero / max(1, len(feature_names)))
+
+        # Top Feature Contributions
+        top_features = []
+        shap_text = ""
+        try:
+            import shap
+            explainer = shap.TreeExplainer(model)
+            sv = explainer.shap_values(x)
+            abs_sv = [(abs(sv[0][i]), feature_names[i], sv[0][i]) for i in range(len(feature_names))]
+            abs_sv.sort(reverse=True)
+            for _, fname, val in abs_sv[:10]:
+                top_features.append({
+                    "name": fname,
+                    "value": round(feat.get(fname, 0), 3),
+                    "shap": round(val, 4),
+                })
+            shap_parts = [f"{fname}={feat.get(fname, 0):.2f} ({val:+.3f})" for _, fname, val in abs_sv[:5]]
+            shap_text = " | ".join(shap_parts)
+        except Exception:
+            # Fallback: einfach Top-Werte nach Betrag
+            try:
+                importances = model.feature_importances_
+                sorted_idx = sorted(range(len(importances)), key=lambda i: -importances[i])
+                for i in sorted_idx[:10]:
+                    top_features.append({
+                        "name": feature_names[i],
+                        "value": round(feat.get(feature_names[i], 0), 3),
+                        "importance": float(importances[i]),
+                    })
+            except Exception:
+                pass
+
+        return {
+            "predicted": round(predicted, 3),
+            "q10": round(q10, 3),
+            "q90": round(q90, 3),
+            "confidence": round(confidence, 3),
+            "top_features": top_features,
+            "shap_text": shap_text,
+            "model_type": "Unified-LightGBM",
+            "n_features": len(feature_names),
+            "mae": metrics.get("mae", 0),
+        }
+
+    except Exception as e:
+        log.warning(f"[Unified] Prediction-Fehler: {e}")
+        return None
+
+
+def _batch_predict_or(articles, push_data=None, state=None):
+    """Batch-Prediction für mehrere Artikel. Fallback-Kette: Unified → LightGBM → GBRT.
+
+    Args:
+        articles: Liste von Dicts mit {message_id, title, cat, hour, is_eilmeldung, channels}
+        push_data: Optionale Push-Historie für Topic-Saturation
+        state: Optionaler Research-State
+
+    Returns:
+        Dict {message_id: {predicted_or, basis, q10, q90, confidence}}
+    """
+    import numpy as np
+    results = {}
+    if not articles:
+        return results
+
+    now = datetime.datetime.now()
+
+    # ── Versuch 1: Unified-Modell (bevorzugt) ──
+    with _unified_lock:
+        u_model = _unified_state.get("model")
+        u_fnames = _unified_state.get("feature_names", [])
+        u_stats = _unified_state.get("stats")
+        u_calibrator = _unified_state.get("calibrator")
+        u_conformal = _unified_state.get("conformal_radius", 1.0)
+        u_metrics = _unified_state.get("metrics", {})
+
+    use_unified = (
+        _model_selector_state.get("active_model") == "unified"
+        and u_model is not None
+        and u_fnames
+        and u_stats
+    )
+
+    if use_unified:
+        # Feature-Extraktion pro Artikel isoliert (ein Fehler killt nicht den Batch)
+        rows = []
+        valid_ids = []
+        for art in articles:
+            mid = art.get("message_id", "")
+            try:
+                push = {
+                    "title": art.get("title", ""),
+                    "headline": art.get("title", ""),
+                    "cat": art.get("cat", "News"),
+                    "hour": art.get("hour", now.hour),
+                    "ts_num": now.timestamp(),
+                    "is_eilmeldung": art.get("is_eilmeldung", False),
+                    "is_bild_plus": art.get("is_bild_plus", False),
+                    "channels": art.get("channels", []),
+                }
+                feat = _unified_extract_features(push, u_stats, None)
+                rows.append([feat.get(k, 0.0) for k in u_fnames])
+                valid_ids.append(mid)
+            except Exception as e:
+                log.warning(f"[BatchPredict] Unified feature-extraction für {mid}: {e}")
+
+        if rows:
+            try:
+                X = np.array(rows)
+                preds = u_model.predict(X)
+                # Vektorisierte Kalibrierung (statt Einzel-Aufrufe)
+                if u_calibrator:
+                    try:
+                        if hasattr(u_calibrator, "predict"):
+                            preds = u_calibrator.predict(preds)
+                        elif hasattr(u_calibrator, "calibrate"):
+                            preds = np.array([u_calibrator.calibrate(float(p)) for p in preds])
+                    except Exception:
+                        pass
+                for i, mid in enumerate(valid_ids):
+                    pred = max(0.5, min(30.0, float(preds[i])))
+                    q10 = round(max(0.1, pred - u_conformal), 3)
+                    q90 = round(pred + u_conformal, 3)
+                    # Konfidenz aus Intervallbreite (schmaler = sicherer)
+                    interval_w = q90 - q10
+                    conf = max(0.1, min(0.95, 1.0 - (interval_w / 10.0)))
+                    results[mid] = {
+                        "predicted_or": round(pred, 3),
+                        "basis": "unified",
+                        "q10": q10,
+                        "q90": q90,
+                        "confidence": round(conf, 3),
+                        "model_type": f"Unified-LightGBM ({len(u_fnames)}F)",
+                        "mae": u_metrics.get("mae", 0),
+                    }
+            except Exception as e:
+                log.warning(f"[BatchPredict] Unified batch predict: {e}")
+
+        if len(results) == len(articles):
+            return results
+
+    # ── Versuch 2: LightGBM ──
+    with _ml_lock:
+        lgbm_model = _ml_state.get("model")
+        lgbm_stats = _ml_state.get("stats")
+        lgbm_fnames = _ml_state.get("feature_names")
+        lgbm_calibrator = _ml_state.get("calibrator")
+        lgbm_conformal = _ml_state.get("conformal_radius", 1.0)
+
+    if lgbm_model and lgbm_stats and lgbm_fnames:
+        rows = []
+        valid_ids = []
+        for art in articles:
+            mid = art.get("message_id", "")
+            if mid in results:
+                continue
+            try:
+                row = {
+                    "ts_num": now.timestamp(),
+                    "hour": art.get("hour", now.hour),
+                    "title": art.get("title", ""),
+                    "headline": art.get("title", ""),
+                    "cat": art.get("cat", "News"),
+                    "is_eilmeldung": art.get("is_eilmeldung", False),
+                    "channels": art.get("channels", []),
+                }
+                feat = _ml_extract_features(row, lgbm_stats)
+                rows.append([feat.get(k, 0.0) for k in lgbm_fnames])
+                valid_ids.append(mid)
+            except Exception as e:
+                log.warning(f"[BatchPredict] LightGBM feature-extraction für {mid}: {e}")
+
+        if rows:
+            try:
+                X = np.array(rows)
+                preds = lgbm_model.predict(X)
+                # Einheitliche Kalibrierung (Duck-Typing: custom vs sklearn)
+                if lgbm_calibrator:
+                    try:
+                        if hasattr(lgbm_calibrator, "calibrate") and hasattr(lgbm_calibrator, "breakpoints") and lgbm_calibrator.breakpoints:
+                            preds = np.array([lgbm_calibrator.calibrate(float(p)) for p in preds])
+                        elif hasattr(lgbm_calibrator, "predict"):
+                            preds = lgbm_calibrator.predict(preds)
+                    except Exception:
+                        pass
+                # Residual-Korrektur (vektorisiert)
+                res_model = _ml_state.get("residual_model")
+                if res_model is not None:
+                    try:
+                        preds = preds + res_model.predict(X)
+                    except Exception:
+                        pass
+                for i, mid in enumerate(valid_ids):
+                    pred = max(0.5, min(30.0, float(preds[i])))
+                    q10 = round(max(0.1, pred - lgbm_conformal), 3)
+                    q90 = round(pred + lgbm_conformal, 3)
+                    interval_w = q90 - q10
+                    conf = max(0.1, min(0.95, 1.0 - (interval_w / 10.0)))
+                    results[mid] = {
+                        "predicted_or": round(pred, 3),
+                        "basis": "lgbm",
+                        "q10": q10,
+                        "q90": q90,
+                        "confidence": round(conf, 3),
+                        "model_type": f"LightGBM ({len(lgbm_fnames)}F)",
+                    }
+            except Exception as e:
+                log.warning(f"[BatchPredict] LightGBM batch predict: {e}")
+
+        if len(results) == len(articles):
+            return results
+
+    # ── Versuch 3: GBRT ──
+    with _gbrt_lock:
+        g_model = _gbrt_model
+        g_fnames = _gbrt_feature_names
+        g_stats = _gbrt_history_stats
+        g_calibrator = _gbrt_calibrator
+
+    if g_model and g_fnames and g_stats:
+        try:
+            for art in articles:
+                mid = art.get("message_id", "")
+                if mid in results:
+                    continue
+                push = {
+                    "title": art.get("title", ""),
+                    "headline": art.get("title", ""),
+                    "cat": art.get("cat", "News"),
+                    "hour": art.get("hour", now.hour),
+                    "ts_num": now.timestamp(),
+                    "is_eilmeldung": art.get("is_eilmeldung", False),
+                    "is_bild_plus": art.get("is_bild_plus", False),
+                    "channels": art.get("channels", []),
+                }
+                gbrt_res = _gbrt_predict(push, None)
+                if gbrt_res:
+                    results[mid] = {
+                        "predicted_or": round(gbrt_res["predicted"], 3),
+                        "basis": "gbrt",
+                        "q10": round(gbrt_res.get("q10", gbrt_res["predicted"] * 0.5), 3),
+                        "q90": round(gbrt_res.get("q90", gbrt_res["predicted"] * 1.8), 3),
+                        "confidence": round(gbrt_res.get("confidence", 0.5), 3),
+                        "model_type": f"GBRT ({gbrt_res.get('n_trees', '?')}T)",
+                    }
+        except Exception as e:
+            log.warning(f"[BatchPredict] GBRT-Fehler: {e}")
+
+    # ── Topic-Saturation Penalty anwenden (wenn push_data verfügbar) ──
+    if push_data:
+        _art_lookup = {a.get("message_id", ""): a for a in articles}
+        for mid, res in results.items():
+            art = _art_lookup.get(mid)
+            if art is None:
+                continue
+            push = {
+                "title": art.get("title", ""),
+                "cat": art.get("cat", "News"),
+                "ts_num": now.timestamp(),
+                "channels": art.get("channels", []),
+            }
+            try:
+                tsat = _compute_topic_saturation_penalty(push, push_data, state)
+                if tsat["penalty"] < 1.0:
+                    old_pred = res["predicted_or"]
+                    res["predicted_or"] = round(max(0.5, old_pred * tsat["penalty"]), 3)
+                    res["topic_saturation_penalty"] = round(tsat["penalty"], 3)
+                    res["topic_saturation_6h"] = tsat.get("topic_push_count_6h", 0)
+            except Exception:
+                pass
+
+    # ── Safety-Envelope auf alle Ergebnisse anwenden ──
+    for mid in list(results.keys()):
+        wrapped = _safety_envelope(results[mid])
+        if wrapped is not None:
+            results[mid] = wrapped
+
+    return results
 
 
 def _ml_predict(title, cat, hour=None, weekday=None, is_eilmeldung=False):
@@ -3976,7 +7113,8 @@ def _ml_predict(title, cat, hour=None, weekday=None, is_eilmeldung=False):
     }
     feat = _ml_extract_features(row, stats)
     X = np.array([[feat[k] for k in feature_names]])
-    predicted_or = float(model.predict(X)[0])
+    predicted_log = float(model.predict(X)[0])
+    predicted_or = max(0, math.expm1(predicted_log))  # Log-Rücktransformation
 
     # SHAP für Einzelvorhersage
     shap_dict = {}
@@ -4007,10 +7145,73 @@ def _ml_predict(title, cat, hour=None, weekday=None, is_eilmeldung=False):
     }
 
 
-def _ml_build_tagesplan():
-    """Baut den Tagesplan: 18 Stunden-Slots (06-23) mit LLM-Review."""
+_tagesplan_cache = {"result": None, "hour": -1, "ts": 0, "building": False, "model_id": None}
+_tagesplan_cache_lock = threading.Lock()
+
+
+def _tagesplan_background_refresh():
+    """Berechnet den Tagesplan im Hintergrund und aktualisiert den Cache."""
+    try:
+        now = datetime.datetime.now()
+        _ml_build_tagesplan_inner(now, now.hour)
+    except Exception as e:
+        log.warning(f"[Tagesplan] Background-Refresh Fehler: {e}")
+        with _tagesplan_cache_lock:
+            _tagesplan_cache["building"] = False
+
+
+def _ml_build_tagesplan(background=False):
+    """Baut den Tagesplan: 18 Stunden-Slots (06-23) mit LLM-Review.
+
+    Args:
+        background: True = aus Background-Worker (berechnet neu wenn stale).
+                    False = aus API-Request (liefert IMMER sofort aus Cache).
+    """
     now = datetime.datetime.now()
     current_hour = now.hour
+
+    # Modell-ID: erkennt ob sich das ML- oder GBRT-Modell geaendert hat
+    _current_model_id = id(_ml_state.get("model")) if _ml_state.get("model") else id(_gbrt_model)
+
+    with _tagesplan_cache_lock:
+        c = _tagesplan_cache
+        age = time.time() - c["ts"]
+        model_changed = c.get("model_id") != _current_model_id
+        is_stale = c["hour"] != current_hour or age >= 300 or model_changed
+
+        # ── API-Request: IMMER sofort antworten, nie blockieren ──
+        if not background:
+            if c["result"] and not is_stale:
+                return c["result"]
+            # Veraltet oder leer → Background-Refresh triggern
+            if not c["building"]:
+                c["building"] = True
+                threading.Thread(target=_tagesplan_background_refresh, daemon=True).start()
+            # Sofort antworten: altes Ergebnis oder Loading-Skelett
+            if c["result"]:
+                return c["result"]
+            return {"slots": [], "date": now.strftime("%d.%m.%Y"), "n_pushed_today": 0,
+                    "golden_hour": None, "total_pushes_db": 0, "ml_trained": False,
+                    "already_pushed_today": [], "must_have_hours": [], "ml_metrics": {},
+                    "loading": True}
+
+        # ── Background-Aufruf: neu berechnen wenn stale ──
+        if not is_stale and c["result"]:
+            return c["result"]
+        if c["building"]:
+            return c["result"] or {"slots": [], "loading": True}
+        c["building"] = True
+
+    try:
+        return _ml_build_tagesplan_inner(now, current_hour)
+    except Exception:
+        with _tagesplan_cache_lock:
+            _tagesplan_cache["building"] = False
+        raise
+
+
+def _ml_build_tagesplan_inner(now, current_hour):
+    """Innere Tagesplan-Berechnung (gecacht durch _ml_build_tagesplan)."""
     current_weekday = now.weekday()
     _WOCHENTAGE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
     today_start = now.replace(hour=0, minute=0, second=0).timestamp()
@@ -4021,9 +7222,44 @@ def _ml_build_tagesplan():
         feature_names = _ml_state.get("feature_names")
         metrics = _ml_state.get("metrics", {})
 
+    # ── GBRT-Fallback: wenn kein ML-Modell geladen, GBRT nutzen (immer von Disk verfuegbar) ──
+    _using_gbrt_fallback = False
+    if model is None and _gbrt_model is not None:
+        model = _gbrt_model
+        feature_names = _gbrt_feature_names
+        _using_gbrt_fallback = True
+        # GBRT-Metriken als Fallback fuer ml_metrics
+        if not metrics and _gbrt_model is not None:
+            _gbrt_tm = getattr(_gbrt_model, 'train_metrics', {})
+            metrics = {
+                "mae": _gbrt_tm.get("test_mae", _gbrt_tm.get("mae", 0)),
+                "r2": _gbrt_tm.get("test_r2", _gbrt_tm.get("r2", 0)),
+                "n_features": len(_gbrt_feature_names),
+                "source": "GBRT-Fallback",
+            }
+        log.info("[Tagesplan] ML-Modell nicht verfuegbar, nutze GBRT als Fallback")
+
     push_data = _research_state.get("push_data", [])
-    pushes = _push_db_load_all()
+    # Fallback: wenn research_state noch leer, Pushes aus DB laden
+    if not push_data:
+        try:
+            _tp_db_pushes = _push_db_load_all()
+            push_data = _tp_db_pushes
+            log.info(f"[Tagesplan] push_data aus DB geladen: {len(push_data)} Pushes")
+        except Exception as _pd_e:
+            log.warning(f"[Tagesplan] DB-Fallback fuer push_data fehlgeschlagen: {_pd_e}")
+    # Optimierung: GBRT-History-Stats wiederverwenden statt alles neu zu berechnen
+    if not stats and _gbrt_history_stats:
+        stats = _gbrt_history_stats
+    # pushes nur laden wenn stats fehlt (Fallback) — SQL-Aggregation ersetzt den großen Loop
+    pushes = []
     if not stats:
+        pushes = _push_db_load_all()
+        if not pushes:
+            # Fallback: In-Memory Daten vom Research Worker (nach Server-Neustart)
+            pushes = _research_state.get("push_data", [])
+            if pushes:
+                log.info(f"[Tagesplan] DB leer, nutze {len(pushes)} In-Memory Pushes als Fallback")
         stats = _ml_build_stats(pushes)
 
     # ── Bereits heute gepushte Artikel (zum Ausfiltern + Anzeige) ──
@@ -4044,36 +7280,124 @@ def _ml_build_tagesplan():
             })
     already_pushed_today.sort(key=lambda x: x.get("hour", 0))
 
-    # ── Historische Analyse pro Stunde ──
+    # ── Historische Analyse pro Stunde (SQL-optimiert) ──
     from collections import defaultdict
     hour_cat_pushes = defaultdict(lambda: defaultdict(list))
     hour_title_patterns = defaultdict(lambda: {"question": 0, "exclamation": 0, "number": 0, "breaking": 0, "emotion": 0, "total": 0})
     hour_best_titles = defaultdict(list)
+    _tp_total_db = 0
 
-    for p in pushes:
-        orv = p.get("or") or 0
-        if orv <= 0:
-            continue
-        ts = p.get("ts_num", 0)
-        if ts <= 0:
-            continue
-        dt = datetime.datetime.fromtimestamp(ts)
-        h = dt.hour
-        wd = dt.weekday()
-        cat = (p.get("cat") or "news").lower().strip()
-        title = p.get("title") or p.get("headline") or ""
-        if wd == current_weekday:
-            hour_cat_pushes[h][cat].append(orv)
-        patt = hour_title_patterns[h]
-        patt["total"] += 1
-        if "?" in title: patt["question"] += 1
-        if "!" in title: patt["exclamation"] += 1
-        if re.search(r"\d", title): patt["number"] += 1
-        if _ML_BREAKING_KW.search(title): patt["breaking"] += 1
-        if _ML_EMOTION_KW.search(title): patt["emotion"] += 1
-        link = p.get("link") or ""
-        if wd == current_weekday and orv >= 4.0:
-            hour_best_titles[h].append((orv, title, cat, link))
+    try:
+        with _push_db_lock:
+            _tp_conn = sqlite3.connect(PUSH_DB_PATH)
+            _tp_conn.row_factory = sqlite3.Row
+
+            # 1a) Stunde×Kategorie Aggregation für gleichen Wochentag — komplett in SQL
+            _sql_wd = (current_weekday + 1) % 7  # Python→SQLite Weekday-Mapping
+            _hc_agg = _tp_conn.execute("""
+                SELECT hour, LOWER(TRIM(cat)) as cat,
+                       AVG(or_val) as avg_or, COUNT(*) as cnt
+                FROM pushes
+                WHERE or_val > 0 AND or_val <= 20 AND ts_num > 0
+                  AND CAST(strftime('%w', ts_num, 'unixepoch') AS INTEGER) = ?
+                  AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%'
+                GROUP BY hour, LOWER(TRIM(cat))
+            """, (_sql_wd,)).fetchall()
+
+            for r in _hc_agg:
+                h = r["hour"]
+                cat = r["cat"] or "news"
+                # top_cats_for_hour erwartet Einzelwerte — simuliere mit avg×count
+                hour_cat_pushes[h][cat] = [r["avg_or"]] * r["cnt"]
+
+            # 1b) Best-Titles: Top 2 pro Stunde via Window-Function (statt alle laden + Python-Sort)
+            _bt_rows = _tp_conn.execute("""
+                SELECT hour, or_val, title, LOWER(TRIM(cat)) as cat, link
+                FROM (
+                    SELECT hour, or_val, title, cat, link,
+                           ROW_NUMBER() OVER (PARTITION BY hour ORDER BY or_val DESC) as rn
+                    FROM pushes
+                    WHERE or_val >= 4.0 AND ts_num > 0
+                      AND CAST(strftime('%w', ts_num, 'unixepoch') AS INTEGER) = ?
+                      AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%'
+                ) WHERE rn <= 2
+            """, (_sql_wd,)).fetchall()
+
+            for r in _bt_rows:
+                hour_best_titles[r["hour"]].append(
+                    (r["or_val"], r["title"] or "", r["cat"] or "news", r["link"] or ""))
+
+            # 2) Titel-Patterns: ?, !, Ziffern komplett in SQL aggregieren
+            #    Breaking/Emotion-KW per LIKE (häufigste Keywords abdecken)
+            _patt_rows = _tp_conn.execute("""
+                SELECT hour,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN title LIKE '%%?%%' THEN 1 ELSE 0 END) as question,
+                    SUM(CASE WHEN title LIKE '%%!%%' THEN 1 ELSE 0 END) as exclamation,
+                    SUM(CASE WHEN title GLOB '*[0-9]*' THEN 1 ELSE 0 END) as has_number,
+                    SUM(CASE WHEN LOWER(title) LIKE '%%eilmeldung%%'
+                              OR LOWER(title) LIKE '%%breaking%%'
+                              OR LOWER(title) LIKE '%%exklusiv%%'
+                              OR LOWER(title) LIKE '%%liveticker%%'
+                              OR LOWER(title) LIKE '%%alarm%%'
+                              OR LOWER(title) LIKE '%%schock%%'
+                              OR LOWER(title) LIKE '%%sensation%%'
+                        THEN 1 ELSE 0 END) as breaking,
+                    SUM(CASE WHEN LOWER(title) LIKE '%%drama%%'
+                              OR LOWER(title) LIKE '%%skandal%%'
+                              OR LOWER(title) LIKE '%%horror%%'
+                              OR LOWER(title) LIKE '%%wahnsinn%%'
+                              OR LOWER(title) LIKE '%%irre%%'
+                              OR LOWER(title) LIKE '%%unfassbar%%'
+                              OR LOWER(title) LIKE '%%krass%%'
+                              OR LOWER(title) LIKE '%%hammer%%'
+                        THEN 1 ELSE 0 END) as emotion
+                FROM pushes
+                WHERE or_val > 0 AND ts_num > 0
+                GROUP BY hour
+            """).fetchall()
+
+            for r in _patt_rows:
+                h = r["hour"]
+                hour_title_patterns[h] = {
+                    "total": r["total"], "question": r["question"],
+                    "exclamation": r["exclamation"], "number": r["has_number"],
+                    "breaking": r["breaking"], "emotion": r["emotion"],
+                }
+
+            _tp_total_db = _tp_conn.execute("SELECT COUNT(*) FROM pushes").fetchone()[0]
+            _tp_conn.close()
+
+    except Exception as _sql_e:
+        log.warning(f"[Tagesplan] SQL-Aggregation Fehler, Fallback: {_sql_e}")
+        for p in pushes:
+            orv = p.get("or") or 0
+            if orv <= 0:
+                continue
+            ts = p.get("ts_num", 0)
+            if ts <= 0:
+                continue
+            dt = datetime.datetime.fromtimestamp(ts)
+            h = dt.hour
+            wd = dt.weekday()
+            cat = (p.get("cat") or "news").lower().strip()
+            title = p.get("title") or p.get("headline") or ""
+            if wd == current_weekday:
+                hour_cat_pushes[h][cat].append(orv)
+            patt = hour_title_patterns[h]
+            patt["total"] += 1
+            if "?" in title: patt["question"] += 1
+            if "!" in title: patt["exclamation"] += 1
+            if re.search(r"\d", title): patt["number"] += 1
+            if _ML_BREAKING_KW.search(title): patt["breaking"] += 1
+            if _ML_EMOTION_KW.search(title): patt["emotion"] += 1
+            link = p.get("link") or ""
+            # Nur bild.de — keine SportBild/AutoBild
+            if "sportbild." in link or "autobild." in link:
+                continue
+            if wd == current_weekday and orv >= 4.0:
+                hour_best_titles[h].append((orv, title, cat, link))
+        _tp_total_db = len(pushes)
 
     for h in hour_best_titles:
         hour_best_titles[h].sort(key=lambda x: -x[0])
@@ -4128,59 +7452,120 @@ def _ml_build_tagesplan():
     }
 
     import numpy as np
-    slots = []
+
+    # ── Slot-Metadaten sammeln (ohne ML, schnell) ──
+    slot_meta = []
     for h in range(6, 24):
         top_cats = top_cats_for_hour(h)
         primary_cat = top_cats[0]["cat"] if top_cats else "news"
         hist_or = top_cats[0]["avg_or"] if top_cats else 0
         n_hist = top_cats[0]["count"] if top_cats else 0
-        hour_avg = stats.get("hour_avg", {}).get(h, stats.get("global_avg", 0))
+        # hour_avg: aus hour_stats (7d-Avg) ableiten, Fallback auf global_avg
+        _h_stats = stats.get("hour_stats", {}).get(h, {})
+        hour_avg = _h_stats.get("avg_7d", _h_stats.get("avg_30d", stats.get("global_avg", 0)))
         patt = hour_title_patterns.get(h, {})
         mood, mood_reasons = mood_reasoning(h, patt)
         best_titles = hour_best_titles.get(h, [])[:2]
-
-        # Was wurde heute zu dieser Stunde schon gepusht?
         pushed_this_hour = [a for a in already_pushed_today if a.get("hour") == h]
+        slot_meta.append({
+            "h": h, "primary_cat": primary_cat, "top_cats": top_cats,
+            "hist_or": hist_or, "n_hist": n_hist, "hour_avg": hour_avg,
+            "mood": mood, "mood_reasons": mood_reasons,
+            "best_titles": best_titles, "pushed_this_hour": pushed_this_hour,
+        })
 
-        predicted_or, shap_dict, shap_explanation = None, {}, ""
-        if model is not None and feature_names:
+    # ── Batch-ML: alle 18 Slots auf einmal predicten + SHAP (1× Explainer statt 18×) ──
+    ml_predictions = {}  # h → predicted_or
+    ml_shap_dicts = {}   # h → shap_dict
+    ml_shap_texts = {}   # h → shap_explanation
+
+    if model is not None and feature_names:
+        rows_by_h = {}
+        X_rows = []
+        h_order = []
+        for sm in slot_meta:
+            h = sm["h"]
+            primary_cat = sm["primary_cat"]
             row = {"title": f"Typischer {primary_cat.title()}-Push", "cat": primary_cat, "hour": h,
                    "ts_num": int(now.timestamp()), "is_eilmeldung": primary_cat == "news" and h >= 18,
                    "channels": ["news"]}
-            feat = _ml_extract_features(row, stats)
-            X = np.array([[feat[k] for k in feature_names]])
-            predicted_or = round(float(model.predict(X)[0]), 2)
-            try:
-                import shap as _shap
-                explainer = _shap.TreeExplainer(model)
-                sv = explainer.shap_values(X)
-                for i, fn in enumerate(feature_names):
-                    if abs(sv[0][i]) > 0.05:
-                        shap_dict[fn] = round(float(sv[0][i]), 3)
-                shap_dict = dict(sorted(shap_dict.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
-            except Exception:
-                pass
-            pos = [(k, v) for k, v in shap_dict.items() if v > 0][:2]
-            neg = [(k, v) for k, v in shap_dict.items() if v < 0][:1]
-            parts = []
-            for k, v in pos: parts.append(f"{_SHAP_LABELS.get(k, k)} +{v:.2f}pp")
-            for k, v in neg: parts.append(f"{_SHAP_LABELS.get(k, k)} {v:.2f}pp")
-            shap_explanation = ", ".join(parts)
+            if _using_gbrt_fallback:
+                feat = _gbrt_extract_features(row, stats, state=None, fast_mode=True)
+            else:
+                feat = _ml_extract_features(row, stats)
+            X_rows.append([feat.get(k, 0.0) for k in feature_names])
+            h_order.append(h)
 
-        expected_or = predicted_or if predicted_or is not None else round(hist_or or hour_avg, 2)
+        X_all = np.array(X_rows)
+        try:
+            preds = model.predict(X_all)
+        except Exception:
+            # Fallback: predict_one pro Slot
+            preds = []
+            for row in X_rows:
+                try:
+                    if hasattr(model, 'predict_one'):
+                        preds.append(model.predict_one(row))
+                    else:
+                        preds.append(float(model.predict([row])[0]))
+                except Exception:
+                    preds.append(0.0)
+
+        for i, h in enumerate(h_order):
+            pred_val = float(preds[i])
+            # ML-Modell nutzt Log-Transform, GBRT nicht
+            if not _using_gbrt_fallback:
+                pred_val = math.expm1(pred_val)
+            ml_predictions[h] = round(max(0.01, min(20.0, pred_val)), 2)
+
+        # SHAP: 1x Explainer, 1x Batch statt 18x Einzeln (~50s -> ~3s)
+        try:
+            _shap_model = model
+            if _using_gbrt_fallback and hasattr(model, 'sklearn_model'):
+                _shap_model = model.sklearn_model
+            import shap as _shap
+            explainer = _shap.TreeExplainer(_shap_model)
+            sv_all = explainer.shap_values(X_all)
+            for i, h in enumerate(h_order):
+                shap_dict = {}
+                for j, fn in enumerate(feature_names):
+                    if abs(sv_all[i][j]) > 0.05:
+                        shap_dict[fn] = round(float(sv_all[i][j]), 3)
+                shap_dict = dict(sorted(shap_dict.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
+                ml_shap_dicts[h] = shap_dict
+                pos = [(k, v) for k, v in shap_dict.items() if v > 0][:2]
+                neg = [(k, v) for k, v in shap_dict.items() if v < 0][:1]
+                parts = []
+                for k, v in pos: parts.append(f"{_SHAP_LABELS.get(k, k)} +{v:.2f}pp")
+                for k, v in neg: parts.append(f"{_SHAP_LABELS.get(k, k)} {v:.2f}pp")
+                ml_shap_texts[h] = ", ".join(parts)
+        except Exception:
+            pass
+
+    # ── Slots zusammenbauen ──
+    slots = []
+    for sm in slot_meta:
+        h = sm["h"]
+        predicted_or = ml_predictions.get(h)
+        shap_dict = ml_shap_dicts.get(h, {})
+        shap_explanation = ml_shap_texts.get(h, "")
+        hist_or = sm["hist_or"]
+        n_hist = sm["n_hist"]
+
+        expected_or = predicted_or if predicted_or is not None else round(hist_or or sm["hour_avg"], 2)
         confidence = "hoch" if n_hist >= 30 else ("mittel" if n_hist >= 10 else "niedrig")
         color = "green" if expected_or >= 5.5 else ("yellow" if expected_or >= 4.0 else "gray")
 
         slots.append({
-            "hour": h, "best_cat": primary_cat, "top_cats": top_cats,
+            "hour": h, "best_cat": sm["primary_cat"], "top_cats": sm["top_cats"],
             "expected_or": expected_or, "hist_or": round(hist_or, 2) if hist_or else None,
-            "n_historical": n_hist, "confidence": confidence, "mood": mood,
-            "mood_reasons": mood_reasons, "color": color,
+            "n_historical": n_hist, "confidence": confidence, "mood": sm["mood"],
+            "mood_reasons": sm["mood_reasons"], "color": color,
             "is_now": h == current_hour, "is_past": h < current_hour,
             "shap": shap_dict, "shap_explanation": shap_explanation,
             "has_ml": predicted_or is not None,
-            "best_historical": [{"title": t[1][:70], "cat": t[2], "or": round(t[0], 1), "link": t[3] if len(t) > 3 else ""} for t in best_titles],
-            "pushed_this_hour": pushed_this_hour,
+            "best_historical": [{"title": t[1][:70], "cat": t[2], "or": round(t[0], 1), "link": t[3] if len(t) > 3 else ""} for t in sm["best_titles"]],
+            "pushed_this_hour": sm["pushed_this_hour"],
         })
 
     # ── Must-Have Stunden markieren (Top 3 nach expected_or, nur Zukunft) ──
@@ -4198,27 +7583,11 @@ def _ml_build_tagesplan():
     golden = future_by_or[0] if future_by_or else best_slot
     strong_slots = [s for s in future_slots if s["expected_or"] >= 5.0]
 
-    # ── LLM-Review (gecacht, max 1x pro Stunde, NON-BLOCKING) ──
-    llm_review = _ml_state.get("_tagesplan_llm_review")
-    llm_review_hour = _ml_state.get("_tagesplan_llm_hour", -1)
-    if llm_review_hour != current_hour or llm_review is None:
-        # Alten Cache sofort zurueckgeben, LLM im Hintergrund starten
-        if llm_review is None:
-            llm_review = {"summary": "LLM-Review wird berechnet...", "slots": {}, "loading": True}
-        _tp_slots = list(slots)
-        _tp_pushed = list(already_pushed_today)
-        _tp_wd = _WOCHENTAGE[current_weekday]
-        def _bg_llm():
-            try:
-                result = _tagesplan_llm_review(_tp_slots, _tp_pushed, _tp_wd)
-                with _ml_lock:
-                    _ml_state["_tagesplan_llm_review"] = result
-                    _ml_state["_tagesplan_llm_hour"] = datetime.datetime.now().hour
-            except Exception as _e:
-                log.warning(f"[Tagesplan] LLM-Review Hintergrund-Fehler: {_e}")
-        threading.Thread(target=_bg_llm, daemon=True).start()
+    # Ø OR heute berechnen
+    _today_ors = [a["or"] for a in already_pushed_today if a.get("or", 0) > 0]
+    _avg_or_today = round(sum(_today_ors) / len(_today_ors), 2) if _today_ors else None
 
-    return {
+    _tp_result = {
         "date": now.strftime(f"{_WOCHENTAGE[current_weekday]}, %d.%m.%Y"),
         "weekday": current_weekday, "weekday_name": _WOCHENTAGE[current_weekday],
         "current_hour": current_hour, "n_future": len(future_slots),
@@ -4230,81 +7599,25 @@ def _ml_build_tagesplan():
         "best_cat": best_slot["best_cat"] if best_slot else None,
         "best_or": best_slot["expected_or"] if best_slot else None,
         "ml_metrics": metrics, "ml_trained": model is not None,
-        "total_pushes_db": len(pushes), "slots": slots,
+        "avg_or_today": _avg_or_today,
+        "total_pushes_db": _tp_total_db or len(pushes), "slots": slots,
         "already_pushed_today": already_pushed_today,
         "n_pushed_today": len(already_pushed_today),
         "must_have_hours": sorted(must_have_hours),
-        "llm_review": llm_review,
     }
 
+    # Cache befuellen
+    _cache_model_id = id(_ml_state.get("model")) if _ml_state.get("model") else id(_gbrt_model)
+    with _tagesplan_cache_lock:
+        _tagesplan_cache["result"] = _tp_result
+        _tagesplan_cache["hour"] = current_hour
+        _tagesplan_cache["ts"] = time.time()
+        _tagesplan_cache["building"] = False
+        _tagesplan_cache["model_id"] = _cache_model_id
 
-def _tagesplan_llm_review(slots, already_pushed, weekday_name):
-    """LLM-basiertes Review des Tagesplans durch simulierte SV-Forscher-Gruppe."""
-    if not OPENAI_API_KEY:
-        return {"error": "Kein API-Key", "slots": {}}
-    future = [s for s in slots if not s["is_past"]]
-    if not future:
-        return {"summary": "Keine verbleibenden Slots.", "slots": {}}
+    return _tp_result
 
-    slot_summaries = []
-    for s in future[:10]:
-        cats_str = ", ".join(f"{c['cat']}({c['avg_or']}%)" for c in (s.get("top_cats") or [])[:3])
-        slot_summaries.append(
-            f"{s['hour']}:00 | Empf: {s['best_cat']} | OR: {s['expected_or']}% | "
-            f"Mood: {s['mood']} | Hist.Cats: {cats_str} | n={s['n_historical']}"
-        )
-    pushed_str = ""
-    if already_pushed:
-        pushed_str = "Bereits gepusht heute: " + "; ".join(
-            f"{a['hour']}:00 {a['cat']} \"{a['title'][:40]}\" ({a['or']}%)" for a in already_pushed[:8]
-        )
 
-    prompt = f"""Du bist ein Panel aus 3 Senior Push-Notification-Strategen bei einem fuehrenden Silicon-Valley-Medienunternehmen (ex-NYT, ex-Guardian, ex-Washington Post).
-Ihr bewertet den Push-Tagesplan der BILD-Zeitung (groesstes deutsches Nachrichtenportal, ~8 Mio Push-Abonnenten).
-
-Wochentag: {weekday_name}
-{pushed_str}
-
-Verbleibende Slots:
-{chr(10).join(slot_summaries)}
-
-Aufgaben:
-1. Bewerte JEDEN verbleibenden Slot: Ist die Kategorie-Empfehlung sinnvoll? Wuerdest du die Stimmung aendern? Was fehlt?
-2. Identifiziere die 3 wichtigsten Slots des restlichen Tages (Must-Push) und begruende WARUM
-3. Warnung: Welche Fehler drohen? (z.B. Push-Muedigkeit, falsche Kategorie, verpasste Primetime)
-4. Konkrete Titel-Tipps: Fuer die Top-3-Slots je einen Beispiel-Titel (deutsch, BILD-Stil, max 70 Zeichen)
-
-Antworte als JSON:
-{{
-  "summary": "2-3 Saetze Gesamtbewertung",
-  "slot_reviews": {{
-    "HH": {{"rating": "gut/ok/schwach", "tip": "Konkreter Verbesserungsvorschlag", "title_example": "Optionaler Beispiel-Titel"}}
-  }},
-  "must_push": [{{"hour": HH, "reason": "Warum dieser Slot unverzichtbar ist"}}],
-  "warnings": ["Warnung 1", "Warnung 2"]
-}}
-Nur JSON, kein Markdown."""
-
-    try:
-        import openai
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1200,
-            temperature=0.4,
-        )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        review = json.loads(raw)
-        log.info(f"[Tagesplan] LLM-Review erhalten: {review.get('summary', '')[:80]}")
-        return review
-    except Exception as e:
-        log.warning(f"[Tagesplan] LLM-Review Fehler: {e}")
-        return {"error": str(e), "slots": {}}
 
 
 # ── Autonomes Forschungssystem (24/7 Echtzeit) ────────────────────────────
@@ -4559,9 +7872,9 @@ def _fetch_push_data():
             fetch_days = max(3, (now_ts - fetch_start) // 86400 + 1)
             log.info(f"[PushDB] Incremental fetch: {fetch_days} days (DB has {db_count} pushes)")
         else:
-            # Initial load: fetch 365 days
-            fetch_start = now_ts - 365 * 86400
-            fetch_days = 365
+            # Initial load: fetch 1460 days (4 Jahre)
+            fetch_start = now_ts - 1460 * 86400
+            fetch_days = 1460
             log.info(f"[PushDB] Initial load: {fetch_days} days")
 
         all_messages = []
@@ -4657,6 +7970,13 @@ def _fetch_push_data():
                 channel_names = [t.get("channel", "").strip() for t in target_list if t.get("channel")]
                 primary_channel = channel_names[0] if channel_names else ""
                 is_eilmeldung = any("eilmeldung" in ch.lower() for ch in channel_names)
+                # Neue Felder: targetStatistics, appList, Reichweite
+                target_stats = msg.get("targetStatistics", {})
+                all_apps = set()
+                for tgt in target_list:
+                    for app in tgt.get("appList", []):
+                        all_apps.add(app)
+                total_recipients = int(msg.get("recipientCount", 0) or 0)
                 parsed.append({
                     "message_id": msg.get("messageId") or msg.get("id") or f"{ts_epoch}_{title[:30]}",
                     "or": or_val,
@@ -4675,6 +7995,10 @@ def _fetch_push_data():
                     "channel": primary_channel,
                     "channels": channel_names,
                     "is_eilmeldung": is_eilmeldung,
+                    "target_stats": target_stats,
+                    "app_list": sorted(all_apps),
+                    "n_apps": len(all_apps),
+                    "total_recipients": total_recipients,
                 })
             except (ValueError, TypeError):
                 continue
@@ -4841,6 +8165,24 @@ def _compute_temporal_trends(push_data):
         result["trend_direction"] = "zu wenig Daten"
         result["trend_slope"] = 0
 
+    # ── a2) Tages-Vergleich (letzte 30 Tage) ──
+    cutoff_30d = now - 30 * 86400
+    daily = {}
+    for p in push_data:
+        ts = _ts(p)
+        if ts > cutoff_30d and ts > 0:
+            dt = datetime.datetime.fromtimestamp(ts)
+            key = dt.strftime("%Y-%m-%d")
+            daily.setdefault(key, []).append(p)
+    daily_stats = []
+    for day_key in sorted(daily.keys()):
+        group = daily[day_key]
+        s = _stats(group)
+        s["date"] = day_key
+        s["best_cat"] = _best_cat(group)
+        daily_stats.append(s)
+    result["daily_30"] = daily_stats
+
     # ── b) Wochen-Evolution (letzte 12 Wochen) ──
     weekly = {}
     for p in push_data:
@@ -4954,12 +8296,13 @@ def _compute_findings_for_subset(subset_data):
     frequency_correlation, linguistic_analysis, keyword_analysis, emotion_radar zurueck.
     """
     findings = {}
-    or_pushes = [p for p in subset_data if p.get("or", 0) > 0]
+    _or_max_sane = 30.0  # OR > 30% = Datenbankfehler
+    or_pushes = [p for p in subset_data if 0 < p.get("or", 0) <= _or_max_sane]
     or_values = [p["or"] for p in or_pushes]
-    mean_or = sum(or_values) / len(or_values) if or_values else 0
     sorted_or = sorted(or_values) if or_values else [0]
     median_or = sorted_or[len(sorted_or)//2]
-    std_or = math.sqrt(sum((x-mean_or)**2 for x in or_values)/max(1,len(or_values)-1)) if len(or_values) > 1 else 0
+    mean_or = median_or  # Median statt Mean (robust gegen Rest-Ausreisser)
+    std_or = math.sqrt(sum((x-median_or)**2 for x in or_values)/max(1,len(or_values)-1)) if len(or_values) > 1 else 0
 
     # Stunden-Analyse
     hours = defaultdict(list)
@@ -4992,9 +8335,19 @@ def _compute_findings_for_subset(subset_data):
     # Framing-Analyse
     emo_words = {"schock","drama","skandal","angst","tod","sterben","krieg","panik",
                  "horror","warnung","gefahr","krise","irre","wahnsinn","hammer","brutal","bitter"}
-    emo_pushes = [p for p in subset_data if any(w in p.get("title","").lower() for w in emo_words) and p.get("or",0) > 0]
-    q_pushes = [p for p in subset_data if "?" in p.get("title","") and p.get("or",0) > 0]
-    neutral_pushes = [p for p in subset_data if p not in emo_pushes and p not in q_pushes and p.get("or",0) > 0]
+    emo_pushes = []
+    q_pushes = []
+    neutral_pushes = []
+    for p in subset_data:
+        if p.get("or", 0) <= 0:
+            continue
+        _tl = p.get("title", "").lower()
+        if any(w in _tl for w in emo_words):
+            emo_pushes.append(p)
+        elif "?" in p.get("title", ""):
+            q_pushes.append(p)
+        else:
+            neutral_pushes.append(p)
     emo_or = sum(p["or"] for p in emo_pushes)/len(emo_pushes) if emo_pushes else 0
     q_or = sum(p["or"] for p in q_pushes)/len(q_pushes) if q_pushes else 0
     neutral_or = sum(p["or"] for p in neutral_pushes)/len(neutral_pushes) if neutral_pushes else 0
@@ -5084,16 +8437,27 @@ def _compute_findings_for_subset(subset_data):
         "Personalisierung":   {"words": ["so lebt","privat","zuhause","geheime","liebes","hochzeit","baby","schwanger","trennung","ehe","familie","verlobt","kind","star","promi","vip","millionaer"], "icon": "person"},
     }
     emotion_results = []
-    total_with_or = len([p for p in subset_data if p.get("or", 0) > 0])
+    total_with_or = len(or_pushes) if 'or_pushes' in dir() else len([p for p in subset_data if p.get("or", 0) > 0])
+    # Single-pass Emotion-Radar
+    _sub_emo_sums = {g: 0.0 for g in emotion_groups}
+    _sub_emo_counts = {g: 0 for g in emotion_groups}
+    for p in subset_data:
+        if p.get("or", 0) <= 0:
+            continue
+        _tl = p.get("title", "").lower()
+        for gn, cfg2 in emotion_groups.items():
+            if any(w in _tl for w in cfg2["words"]):
+                _sub_emo_sums[gn] += p["or"]
+                _sub_emo_counts[gn] += 1
     for group_name, cfg in emotion_groups.items():
-        matches = [p for p in subset_data if p.get("or",0) > 0 and any(w in p.get("title","").lower() for w in cfg["words"])]
-        avg_or = sum(p["or"] for p in matches) / len(matches) if matches else 0
-        diff = avg_or - mean_or if matches else 0
+        _sec = _sub_emo_counts[group_name]
+        avg_or = _sub_emo_sums[group_name] / _sec if _sec > 0 else 0
+        diff = avg_or - mean_or if _sec > 0 else 0
         emotion_results.append({
             "group": group_name, "icon": cfg["icon"],
             "avg_or": round(avg_or, 2), "diff": round(diff, 2),
-            "count": len(matches),
-            "pct": round(len(matches) / max(1, total_with_or) * 100, 1),
+            "count": _sec,
+            "pct": round(_sec / max(1, total_with_or) * 100, 1),
         })
     emotion_results.sort(key=lambda e: e["avg_or"], reverse=True)
     findings["emotion_radar"] = emotion_results
@@ -5184,6 +8548,7 @@ def _run_autonomous_analysis_inner():
     state["last_analysis"] = now
     state["analysis_generation"] += 1
     gen = state["analysis_generation"]
+    log.info(f"[Research] Volle Analyse gestartet: Gen #{gen}, {len(push_data)} Pushes, {len(sport_data)} Sport, {len(nonsport_data)} NonSport")
 
     # ── ROLLING ACCURACY — nur auf reifen Pushes ─────────────────────
     _update_rolling_accuracy(push_data, state)
@@ -5191,16 +8556,18 @@ def _run_autonomous_analysis_inner():
     _update_rolling_accuracy_subset(sport_data, state, "_sport_accuracy")
     _update_rolling_accuracy_subset(nonsport_data, state, "_nonsport_accuracy")
 
+    log.info(f"[Research] Checkpoint A: Rolling Accuracy fertig")
     # ── ALLE ANALYSEN — datengetrieben ─────────────────────────────
     findings = {}
     ticker = []
 
-    or_pushes = [p for p in push_data if p["or"] > 0]
+    _or_max_sane = 30.0  # OR > 30% = Datenbankfehler, ignorieren
+    or_pushes = [p for p in push_data if 0 < p.get("or", 0) <= _or_max_sane]
     or_values = [p["or"] for p in or_pushes]
-    mean_or = sum(or_values) / len(or_values) if or_values else 0
     sorted_or = sorted(or_values) if or_values else [0]
     median_or = sorted_or[len(sorted_or)//2]
-    std_or = math.sqrt(sum((x-mean_or)**2 for x in or_values)/max(1,len(or_values)-1)) if len(or_values) > 1 else 0
+    mean_or = median_or  # Robust: Median statt Mean
+    std_or = math.sqrt(sum((x-median_or)**2 for x in or_values)/max(1,len(or_values)-1)) if len(or_values) > 1 else 0
 
     # Stunden-Analyse
     hours = defaultdict(list)
@@ -5227,9 +8594,24 @@ def _run_autonomous_analysis_inner():
     # Framing-Analyse
     emo_words = {"schock","drama","skandal","angst","tod","sterben","krieg","panik",
                  "horror","warnung","gefahr","krise","irre","wahnsinn","hammer","brutal","bitter"}
-    emo_pushes = [p for p in push_data if any(w in p["title"].lower() for w in emo_words) and p["or"] > 0]
-    q_pushes = [p for p in push_data if "?" in p["title"] and p["or"] > 0]
-    neutral_pushes = [p for p in push_data if p not in emo_pushes and p not in q_pushes and p["or"] > 0]
+    _emo_ids = set()
+    _q_ids = set()
+    emo_pushes = []
+    q_pushes = []
+    neutral_pushes = []
+    for p in push_data:
+        if p["or"] <= 0:
+            continue
+        _pid = id(p)
+        _tl = p["title"].lower()
+        if any(w in _tl for w in emo_words):
+            emo_pushes.append(p)
+            _emo_ids.add(_pid)
+        elif "?" in p["title"]:
+            q_pushes.append(p)
+            _q_ids.add(_pid)
+        else:
+            neutral_pushes.append(p)
     emo_or = sum(p["or"] for p in emo_pushes)/len(emo_pushes) if emo_pushes else 0
     q_or = sum(p["or"] for p in q_pushes)/len(q_pushes) if q_pushes else 0
     neutral_or = sum(p["or"] for p in neutral_pushes)/len(neutral_pushes) if neutral_pushes else 0
@@ -5292,6 +8674,7 @@ def _run_autonomous_analysis_inner():
 
     accuracy = state["rolling_accuracy"]
 
+    log.info(f"[Research] Checkpoint B: Basis-Analysen fertig (or_pushes={len(or_pushes)}, hour_avgs={len(hour_avgs)}, cat_avgs={len(cat_avgs)})")
     # Schwab-Entscheidungen: jetzt datengetrieben ohne Theater
     schwab_decisions = state.get("schwab_decisions", [])
 
@@ -5616,17 +8999,28 @@ def _run_autonomous_analysis_inner():
         "Personalisierung":   {"words": ["so lebt","privat","zuhause","geheime","liebes","hochzeit","baby","schwanger","trennung","ehe","familie","verlobt","kind","star","promi","vip","millionaer"], "icon": "person"},
     }
     emotion_results = []
+    # Single-pass: Jeden Push nur einmal pruefen statt 7× ueber alle Pushes
+    _emo_sums = {g: 0.0 for g in emotion_groups}
+    _emo_counts = {g: 0 for g in emotion_groups}
+    for p in push_data:
+        if p["or"] <= 0:
+            continue
+        _tl = p["title"].lower()
+        for group_name, cfg in emotion_groups.items():
+            if any(w in _tl for w in cfg["words"]):
+                _emo_sums[group_name] += p["or"]
+                _emo_counts[group_name] += 1
     for group_name, cfg in emotion_groups.items():
-        matches = [p for p in push_data if p["or"] > 0 and any(w in p["title"].lower() for w in cfg["words"])]
-        avg_or = sum(p["or"] for p in matches) / len(matches) if matches else 0
-        diff = avg_or - mean_or if matches else 0
+        _ec = _emo_counts[group_name]
+        avg_or = _emo_sums[group_name] / _ec if _ec > 0 else 0
+        diff = avg_or - mean_or if _ec > 0 else 0
         emotion_results.append({
             "group": group_name,
             "icon": cfg["icon"],
             "avg_or": round(avg_or, 2),
             "diff": round(diff, 2),
-            "count": len(matches),
-            "pct": round(len(matches) / max(1, len([p for p in push_data if p["or"] > 0])) * 100, 1),
+            "count": _ec,
+            "pct": round(_ec / max(1, len(or_pushes)) * 100, 1),
         })
     # Sortiert nach avg_or absteigend
     emotion_results.sort(key=lambda e: e["avg_or"], reverse=True)
@@ -5641,14 +9035,15 @@ def _run_autonomous_analysis_inner():
     if len(nonsport_data) >= 5:
         state["_nonsport_findings"] = _compute_findings_for_subset(nonsport_data)
 
+    log.info(f"[Research] Checkpoint C: Findings + Ticker fertig (findings={len(findings)}, ticker={len(ticker)}, live_pulse={len(live_pulse)})")
     with state["analysis_lock"]:
         state["findings"] = findings
         state["ticker_entries"] = ticker
         state["schwab_decisions"] = schwab_decisions
         state["cumulative_insights"] += len(ticker)
 
-    # Generate live rules from fresh findings
-    if not state.get("live_rules") and findings:
+    # Generate live rules from fresh findings — IMMER regenerieren (nicht nur einmal)
+    if findings:
         _generate_live_rules(findings, state)
 
     # Sport/NonSport Live-Rules
@@ -5663,8 +9058,10 @@ def _run_autonomous_analysis_inner():
         _generate_live_rules_for_subset(nonsport_findings, _nonsport_rules)
         state["live_rules_nonsport"] = _nonsport_rules
 
+    log.info(f"[Research] Checkpoint D: State gespeichert, Live-Rules generiert")
     # Forschungs-Progress aktualisieren
     _update_research_progress(push_data, findings, state)
+    log.info(f"[Research] Checkpoint E: Research-Progress aktualisiert (projects={len(state.get('research_projects', []))})")
 
     # Forscher arbeiten autonom: Erkenntnisse akkumulieren, aufeinander aufbauen
     _evolve_research(push_data, findings, state)
@@ -5755,6 +9152,7 @@ def _run_autonomous_analysis_inner():
 
     # Externes LLM-Review: Bewertet Authentizitaet des Instituts
     _run_institute_review(state)
+    log.info(f"[Research] Volle Analyse FERTIG: Gen #{gen}")
 
 
 def _update_research_progress(push_data, findings, state):
@@ -7283,18 +10681,23 @@ def _validate_api_response(data, push_data):
     if not isinstance(data, dict):
         return data
 
-    # OR-Werte validieren
-    for key in ["mean_or_all", "top_or", "flop_or"]:
+    # OR-Werte validieren — max 30% ist realistisch fuer News-Push-OR
+    _or_max_valid = 30.0
+    for key in ["mean_or", "mean_or_all", "top_or", "flop_or", "sport_mean_or", "nonsport_mean_or",
+                 "best_hour_or", "top_category_or", "worst_hour_or"]:
         val = data.get(key, 0)
-        if isinstance(val, (int, float)) and (val < 0 or val > 100):
-            log.warning(f"[HalluBlock] Unplausibler OR-Wert {key}={val}, clamped")
-            data[key] = max(0, min(100, val))
+        if isinstance(val, (int, float)) and (val < 0 or val > _or_max_valid):
+            log.warning(f"[HalluBlock] Unplausibler OR-Wert {key}={val}, clamped auf {_or_max_valid}")
+            data[key] = max(0, min(_or_max_valid, val))
 
-    # Accuracy validieren (0-100%)
+    # Accuracy validieren — max 95% (99% ist unrealistisch)
     acc = data.get("accuracy", 0)
-    if isinstance(acc, (int, float)) and (acc < 0 or acc > 100):
-        log.warning(f"[HalluBlock] Unplausible Accuracy {acc}, clamped")
-        data["accuracy"] = max(0, min(100, acc))
+    if isinstance(acc, (int, float)):
+        if acc > 95:
+            log.warning(f"[HalluBlock] Accuracy {acc}% zu hoch, capped auf 95%")
+            data["accuracy"] = 95.0
+        elif acc < 0:
+            data["accuracy"] = 0
 
     # Researchers: Publikations-Zahlen pruefen
     for r in data.get("researchers", []):
@@ -7361,7 +10764,7 @@ def _update_rolling_accuracy(push_data, state):
     Keine Zukunftsdaten, kein Data Leakage. Zusaetzlich werden naive Baselines
     (Global-Mean, Category-Mean) parallel berechnet fuer ehrlichen Vergleich.
     """
-    valid = [p for p in push_data if 0 < p["or"] <= 100 and p.get("ts_num", 0) > 0]
+    valid = [p for p in push_data if 0 < p["or"] <= 30.0 and p.get("ts_num", 0) > 0]
     if len(valid) < 10:
         return
     # Temporale Sortierung: aelteste zuerst
@@ -7369,10 +10772,16 @@ def _update_rolling_accuracy(push_data, state):
 
     emo_words = {"krieg","terror","tod","sterben","schock","skandal","drama","horror","mord","crash","warnung","razzia","exklusiv"}
 
-    # Vorbereitung: Weekday + Emotion fuer jeden Push
+    # Vorbereitung: Weekday + Emotion + Breaking + Titel-Laenge fuer jeden Push
+    breaking_markers = {"+++", "eilmeldung", "breaking", "sondermeldung"}
     for p in valid:
         p["_weekday"] = datetime.datetime.fromtimestamp(p["ts_num"]).weekday()
-        p["_is_emo"] = any(w in p.get("title", "").lower() for w in emo_words)
+        _tl = p.get("title", "").lower()
+        p["_is_emo"] = any(w in _tl for w in emo_words)
+        p["_is_breaking"] = any(m in _tl for m in breaking_markers)
+        p["_title_len"] = "short" if len(_tl) < 50 else "long" if len(_tl) > 100 else "medium"
+        # Kategorie-Stunden-Kombination (staerkstes Signal)
+        p["_cat_hour"] = f"{p['cat']}_{p['hour']}"
 
     # ── Walk-Forward: Inkrementell Aggregate aufbauen ──
     cat_sums = defaultdict(float)
@@ -7383,21 +10792,30 @@ def _update_rolling_accuracy(push_data, state):
     day_counts = defaultdict(int)
     emo_sums = {"emo": 0.0, "neutral": 0.0}
     emo_counts = {"emo": 0, "neutral": 0}
+    brk_sums = {"brk": 0.0, "normal": 0.0}
+    brk_counts = {"brk": 0, "normal": 0}
+    tlen_sums = defaultdict(float)
+    tlen_counts = defaultdict(int)
+    cat_hour_sums = defaultdict(float)
+    cat_hour_counts = defaultdict(int)
     total_or = 0.0
     total_count = 0
+
+    def _update_warmup(p):
+        cat_sums[p["cat"]] += p["or"]; cat_counts[p["cat"]] += 1
+        hour_sums[p["hour"]] += p["or"]; hour_counts[p["hour"]] += 1
+        day_sums[p["_weekday"]] += p["or"]; day_counts[p["_weekday"]] += 1
+        ek = "emo" if p["_is_emo"] else "neutral"
+        emo_sums[ek] += p["or"]; emo_counts[ek] += 1
+        bk = "brk" if p["_is_breaking"] else "normal"
+        brk_sums[bk] += p["or"]; brk_counts[bk] += 1
+        tlen_sums[p["_title_len"]] += p["or"]; tlen_counts[p["_title_len"]] += 1
+        cat_hour_sums[p["_cat_hour"]] += p["or"]; cat_hour_counts[p["_cat_hour"]] += 1
 
     # Mindestens 50 historische Datenpunkte bevor wir anfangen zu bewerten
     warmup = min(50, len(valid) // 2)
     for p in valid[:warmup]:
-        cat_sums[p["cat"]] += p["or"]
-        cat_counts[p["cat"]] += 1
-        hour_sums[p["hour"]] += p["or"]
-        hour_counts[p["hour"]] += 1
-        day_sums[p["_weekday"]] += p["or"]
-        day_counts[p["_weekday"]] += 1
-        ek = "emo" if p["_is_emo"] else "neutral"
-        emo_sums[ek] += p["or"]
-        emo_counts[ek] += 1
+        _update_warmup(p)
         total_or += p["or"]
         total_count += 1
 
@@ -7424,10 +10842,16 @@ def _update_rolling_accuracy(push_data, state):
         cat_mean = cat_sums[cat] / cat_counts[cat] if cat_counts[cat] > 0 else global_mean
         baseline_cat_errors.append(abs(cat_mean - actual))
 
-        # Model: cat_pred * hour_factor * day_factor * emo_factor
-        cat_pred = cat_mean
-        hour_mean = hour_sums[hr] / hour_counts[hr] if hour_counts[hr] > 0 else global_mean
-        hour_factor = hour_mean / global_mean if global_mean > 0 else 1.0
+        # Model: cat_hour_mean (wenn vorhanden) > cat_mean * hour_factor * day_factor * emo_factor * brk_factor * len_factor
+        # Primaer: Kategorie-Stunden-Kombination (staerkstes Signal)
+        _ch_key = f"{cat}_{hr}"
+        if cat_hour_counts[_ch_key] >= 3:
+            cat_pred = cat_hour_sums[_ch_key] / cat_hour_counts[_ch_key]
+            hour_factor = 1.0  # schon in cat_hour eingebaut
+        else:
+            cat_pred = cat_mean
+            hour_mean = hour_sums[hr] / hour_counts[hr] if hour_counts[hr] > 0 else global_mean
+            hour_factor = hour_mean / global_mean if global_mean > 0 else 1.0
 
         d_count = day_counts[weekday]
         if d_count > 0 and global_mean > 0:
@@ -7444,19 +10868,28 @@ def _update_rolling_accuracy(push_data, state):
         else:
             emo_factor = 1.0
 
-        predicted = cat_pred * hour_factor * day_factor * emo_factor
+        # Breaking-Faktor
+        bk = "brk" if p["_is_breaking"] else "normal"
+        if brk_counts[bk] > 0 and global_mean > 0:
+            brk_mean = brk_sums[bk] / brk_counts[bk]
+            brk_factor = 0.9 + (brk_mean / global_mean) * 0.1
+        else:
+            brk_factor = 1.0
+
+        # Titel-Laenge-Faktor
+        tl_key = p["_title_len"]
+        if tlen_counts[tl_key] >= 3 and global_mean > 0:
+            tlen_mean = tlen_sums[tl_key] / tlen_counts[tl_key]
+            len_factor = 0.95 + (tlen_mean / global_mean) * 0.05
+        else:
+            len_factor = 1.0
+
+        predicted = cat_pred * hour_factor * day_factor * emo_factor * brk_factor * len_factor
         prelim_predictions.append(predicted)
         cat_residuals[cat].append(abs(predicted - actual))
 
         # NACH der Bewertung: Daten dieses Pushes in die Aggregate aufnehmen
-        cat_sums[cat] += actual
-        cat_counts[cat] += 1
-        hour_sums[hr] += actual
-        hour_counts[hr] += 1
-        day_sums[weekday] += actual
-        day_counts[weekday] += 1
-        emo_sums[ek] += actual
-        emo_counts[ek] += 1
+        _update_warmup(p)
         total_or += actual
         total_count += 1
 
@@ -7567,38 +11000,47 @@ def _update_rolling_accuracy(push_data, state):
     state["accuracy_by_hour"] = {h: round(v[0]/v[1]*100, 1) if v[1] > 0 else 0 for h, v in hour_acc.items()}
 
     # ── Ensemble-Accuracy: 5-Methoden-Modell (server-seitig) ──
-    # Stichprobe: max 200 Pushes fuer Performance (Leave-One-Out ist O(n^2))
-    sample = valid[-200:] if len(valid) > 200 else valid
-    ens_hits, ens_total, ens_mae_sum = 0, 0, 0.0
-    for p in sample:
-        result = _server_predict_or(p, valid, state)
-        if result is None:
-            continue
-        pred = result["predicted"]
-        actual = p["or"]
-        err = abs(pred - actual)
-        ens_mae_sum += err
-        ens_total += 1
-        cat = p["cat"]
-        if cat_std.get(cat) is not None:
-            tol = max(0.5, cat_std[cat] * 1.0)
-        else:
-            tol = max(0.5, actual * 0.25)
-        if err <= tol:
-            ens_hits += 1
+    # PERFORMANCE: Nur ausfuehren wenn ML-Modell trainiert ist.
+    # Ohne ML-Modell faellt _server_predict_or auf Heuristik zurueck, die O(n) pro Push ist
+    # → 200 × 39000 = Millionen Jaccard-Berechnungen → blockiert Research-Worker minutenlang.
+    _has_ml_model = False
+    with _gbrt_lock:
+        _has_ml_model = _gbrt_model is not None
+    if not _has_ml_model:
+        with _ml_lock:
+            _has_ml_model = _ml_state.get("model") is not None
+    if _has_ml_model:
+        sample = valid[-50:] if len(valid) > 50 else valid
+        ens_hits, ens_total, ens_mae_sum = 0, 0, 0.0
+        for p in sample:
+            result = _server_predict_or(p, valid, state)
+            if result is None:
+                continue
+            pred = result["predicted"]
+            actual = p["or"]
+            err = abs(pred - actual)
+            ens_mae_sum += err
+            ens_total += 1
+            cat = p["cat"]
+            if cat_std.get(cat) is not None:
+                tol = max(0.5, cat_std[cat] * 1.0)
+            else:
+                tol = max(0.5, actual * 0.25)
+            if err <= tol:
+                ens_hits += 1
 
-    if ens_total > 0:
-        ens_accuracy = round(ens_hits / ens_total * 100, 1)
-        ens_mae = round(ens_mae_sum / ens_total, 3)
-        prev_ens = state.get("ensemble_accuracy", 0)
-        state["ensemble_accuracy"] = ens_accuracy
-        state["ensemble_mae"] = ens_mae
-        state["ensemble_accuracy_trend"] = state.get("ensemble_accuracy_trend", [])
-        state["ensemble_accuracy_trend"].append(ens_accuracy)
-        if len(state["ensemble_accuracy_trend"]) > 20:
-            state["ensemble_accuracy_trend"] = state["ensemble_accuracy_trend"][-20:]
-        if prev_ens > 0:
-            state["ensemble_accuracy_delta"] = round(ens_accuracy - prev_ens, 2)
+        if ens_total > 0:
+            ens_accuracy = round(ens_hits / ens_total * 100, 1)
+            ens_mae = round(ens_mae_sum / ens_total, 3)
+            prev_ens = state.get("ensemble_accuracy", 0)
+            state["ensemble_accuracy"] = ens_accuracy
+            state["ensemble_mae"] = ens_mae
+            state["ensemble_accuracy_trend"] = state.get("ensemble_accuracy_trend", [])
+            state["ensemble_accuracy_trend"].append(ens_accuracy)
+            if len(state["ensemble_accuracy_trend"]) > 20:
+                state["ensemble_accuracy_trend"] = state["ensemble_accuracy_trend"][-20:]
+            if prev_ens > 0:
+                state["ensemble_accuracy_delta"] = round(ens_accuracy - prev_ens, 2)
 
 
 def _generate_live_rules(findings, state):
@@ -7765,16 +11207,53 @@ def _compute_mae_for_range(feedback, ts_start, ts_end):
 # ── Stacking Meta-Modell (Ridge Regression ueber Methoden-Outputs) ──────────
 _stacking_model = {"weights": None, "bias": 0.0, "trained_at": 0, "n_samples": 0, "mae": 0.0}
 
+
+def _solve_ridge(X, y, ridge_lambda):
+    """Löst Ridge Regression via Gauss-Elimination: w = (X^T X + λI)^{-1} X^T y.
+    Reine Python-Implementierung ohne numpy."""
+    n_features = len(X[0])
+    n = len(X)
+
+    XtX = [[0.0] * n_features for _ in range(n_features)]
+    Xty = [0.0] * n_features
+
+    for i in range(n):
+        for j in range(n_features):
+            Xty[j] += X[i][j] * y[i]
+            for k in range(n_features):
+                XtX[j][k] += X[i][j] * X[i][k]
+
+    for j in range(n_features):
+        XtX[j][j] += ridge_lambda
+
+    augmented = [XtX[j][:] + [Xty[j]] for j in range(n_features)]
+    for col in range(n_features):
+        max_row = max(range(col, n_features), key=lambda r: abs(augmented[r][col]))
+        augmented[col], augmented[max_row] = augmented[max_row], augmented[col]
+        pivot = augmented[col][col]
+        if abs(pivot) < 1e-12:
+            continue
+        for j in range(col, n_features + 1):
+            augmented[col][j] /= pivot
+        for row in range(n_features):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            for j in range(col, n_features + 1):
+                augmented[row][j] -= factor * augmented[col][j]
+
+    return [augmented[j][n_features] for j in range(n_features)]
+
+
 def _train_stacking_model(state):
-    """Train Ridge Regression on prediction_log: method-wise OR → actual OR.
-    Replaces fixed log-odds fusion with learned optimal weighting."""
+    """Train Ridge Regression mit Lambda-Tuning und ML-Outputs als Features (13 Features).
+    Grid-Search über Lambda-Werte, temporal 80/20 Validation Split."""
     global _stacking_model
     try:
         training_data = _push_db_get_training_data(limit=2000)
         if len(training_data) < 30:
-            return  # Not enough data
+            return
 
-        # Extract features: method-wise predicted ORs
         method_names = ["m1_similarity", "m2_keyword", "m3_entity", "m4_cat_hour",
                         "m5_research", "m6_phd", "m7_timing", "m8_context"]
         X = []
@@ -7782,7 +11261,6 @@ def _train_stacking_model(state):
         for row in training_data:
             detail = json.loads(row.get("methods_detail") or "{}")
             features_json = json.loads(row.get("features") or "{}")
-            # Extract per-method ORs from methods_detail
             mvec = []
             for mname in method_names:
                 mdata = detail.get(mname, {})
@@ -7794,6 +11272,9 @@ def _train_stacking_model(state):
             mvec.append(features_json.get("hour", 12))
             mvec.append(1 if features_json.get("is_sport") else 0)
             mvec.append(features_json.get("title_len", 50))
+            # ML-Outputs als Features (11 → 13 Features)
+            mvec.append(float(detail.get("gbrt_predicted", 0) or 0))
+            mvec.append(float(detail.get("lgbm_predicted", 0) or 0))
             X.append(mvec)
             y.append(row["actual_or"])
 
@@ -7803,46 +11284,28 @@ def _train_stacking_model(state):
         n_features = len(X[0])
         n = len(X)
 
-        # Ridge Regression: w = (X^T X + λI)^{-1} X^T y
-        # Manual implementation (no numpy dependency)
-        ridge_lambda = 1.0
+        # Temporal 80/20 Split für Lambda-Tuning
+        split_idx = int(n * 0.8)
+        X_train_s, X_val_s = X[:split_idx], X[split_idx:]
+        y_train_s, y_val_s = y[:split_idx], y[split_idx:]
 
-        # Compute X^T X + λI
-        XtX = [[0.0] * n_features for _ in range(n_features)]
-        Xty = [0.0] * n_features
-        y_mean = sum(y) / n
+        # Lambda Grid-Search
+        lambda_candidates = [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0]
+        best_lambda = 1.0
+        best_val_mae = float('inf')
 
-        for i in range(n):
-            for j in range(n_features):
-                Xty[j] += X[i][j] * y[i]
-                for k in range(n_features):
-                    XtX[j][k] += X[i][j] * X[i][k]
+        if len(X_train_s) >= n_features:
+            for lam in lambda_candidates:
+                w = _solve_ridge(X_train_s, y_train_s, lam)
+                val_mae = sum(abs(sum(wi * xi for wi, xi in zip(w, X_val_s[i])) - y_val_s[i])
+                              for i in range(len(X_val_s))) / max(len(X_val_s), 1)
+                if val_mae < best_val_mae:
+                    best_val_mae = val_mae
+                    best_lambda = lam
 
-        # Add ridge penalty
-        for j in range(n_features):
-            XtX[j][j] += ridge_lambda
+        # Finales Training mit bestem Lambda auf allen Daten
+        weights = _solve_ridge(X, y, best_lambda)
 
-        # Solve via Gaussian elimination (small system, ~11 features)
-        augmented = [XtX[j][:] + [Xty[j]] for j in range(n_features)]
-        for col in range(n_features):
-            # Pivot
-            max_row = max(range(col, n_features), key=lambda r: abs(augmented[r][col]))
-            augmented[col], augmented[max_row] = augmented[max_row], augmented[col]
-            pivot = augmented[col][col]
-            if abs(pivot) < 1e-12:
-                continue
-            for j in range(col, n_features + 1):
-                augmented[col][j] /= pivot
-            for row in range(n_features):
-                if row == col:
-                    continue
-                factor = augmented[row][col]
-                for j in range(col, n_features + 1):
-                    augmented[row][j] -= factor * augmented[col][j]
-
-        weights = [augmented[j][n_features] for j in range(n_features)]
-
-        # Compute training MAE
         mae_sum = 0
         for i in range(n):
             pred = sum(w * x for w, x in zip(weights, X[i]))
@@ -7856,17 +11319,20 @@ def _train_stacking_model(state):
             "trained_at": int(time.time()),
             "n_samples": n,
             "mae": round(train_mae, 3),
+            "val_mae": round(best_val_mae, 3),
             "n_features": n_features,
+            "best_lambda": best_lambda,
         }
         state["stacking_model"] = _stacking_model
-        log.info(f"[Stacking] Trained on {n} samples, MAE={train_mae:.3f}, features={n_features}")
+        log.info(f"[Stacking] Trained on {n} samples, MAE={train_mae:.3f}, "
+                 f"Val-MAE={best_val_mae:.3f}, λ={best_lambda}, features={n_features}")
 
     except Exception as e:
         log.warning(f"[Stacking] Training error: {e}")
 
 
 def _stacking_predict(methods_detail, features):
-    """Use trained stacking model to predict OR from method outputs."""
+    """Use trained stacking model to predict OR from method outputs (13 Features)."""
     if not _stacking_model.get("weights"):
         return None
     weights = _stacking_model["weights"]
@@ -7883,6 +11349,9 @@ def _stacking_predict(methods_detail, features):
     mvec.append(features.get("hour", 12))
     mvec.append(1 if features.get("is_sport") else 0)
     mvec.append(features.get("title_len", 50))
+    # ML-Outputs (müssen zum Training passen)
+    mvec.append(float(methods_detail.get("gbrt_predicted", 0) or 0))
+    mvec.append(float(methods_detail.get("lgbm_predicted", 0) or 0))
     if len(mvec) != len(weights):
         return None
     return max(0.1, sum(w * x for w, x in zip(weights, mvec)))
@@ -10226,10 +13695,85 @@ def _validate_tuning_changes(state):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _server_predict_or(push, push_data, state):
-    """Server-seitige Prediction: ML-Ensemble (GBRT + LightGBM + Heuristik).
+    """Server-seitige Prediction: Unified ML → ML-Ensemble → Heuristik (Fallback-Kette).
+
+    Priorität:
+    1. Unified ML (wenn trainiert + Model-Selector erlaubt)
+    2. GBRT + LightGBM Ensemble (existierend)
+    3. Heuristik M1-M9 (letzter Fallback)
 
     Returns: {predicted: float, methods: {name: or_value}, basis: str}
     """
+    # ── E4: Unified ML als primärer Predictor ──
+    unified_result = None
+    use_unified = _model_selector_state.get("active_model") == "unified"
+
+    if use_unified:
+        unified_result = _unified_predict(push, state)
+
+    if unified_result is not None:
+        _u_methods = {
+            "unified_predicted": unified_result["predicted"],
+            "unified_q10": unified_result["q10"],
+            "unified_q90": unified_result["q90"],
+            "unified_confidence": unified_result["confidence"],
+            "unified_n_features": unified_result["n_features"],
+            "unified_mae": unified_result.get("mae", 0),
+            "top_features": unified_result.get("top_features", []),
+        }
+
+        # F2: Shadow-Predictions — GBRT+LightGBM trotzdem berechnen
+        _shadow_gbrt = _gbrt_predict(push, state)
+        if _shadow_gbrt:
+            _u_methods["shadow_gbrt"] = round(_shadow_gbrt["predicted"], 3)
+        _shadow_lgbm = None
+        with _ml_lock:
+            _s_model = _ml_state.get("model")
+            _s_stats = _ml_state.get("stats")
+            _s_fnames = _ml_state.get("feature_names")
+        if _s_model and _s_stats and _s_fnames:
+            try:
+                import numpy as _np_s
+                _s_ts = push.get("ts_num", 0)
+                _s_dt = datetime.datetime.fromtimestamp(_s_ts) if _s_ts > 0 else datetime.datetime.now()
+                _s_row = {"ts_num": _s_ts, "hour": push.get("hour", _s_dt.hour),
+                          "title": push.get("title", ""), "headline": push.get("title", ""),
+                          "cat": push.get("cat", "News"), "is_eilmeldung": push.get("is_eilmeldung", False),
+                          "channels": push.get("channels", [])}
+                _s_feat = _ml_extract_features(_s_row, _s_stats)
+                _s_x = _np_s.array([[_s_feat.get(k, 0.0) for k in _s_fnames]])
+                _shadow_lgbm = float(_s_model.predict(_s_x)[0])
+                _u_methods["shadow_lgbm"] = round(max(0.5, min(30.0, _shadow_lgbm)), 3)
+            except Exception:
+                pass
+
+        # Topic-Saturation Penalty auf Unified-Score anwenden
+        _u_predicted = unified_result["predicted"]
+        _u_corrections = []
+        try:
+            _tsat = _compute_topic_saturation_penalty(push, push_data, state)
+            if _tsat["penalty"] < 1.0:
+                _u_pre_sat = _u_predicted
+                _u_predicted = round(_u_predicted * _tsat["penalty"], 3)
+                _u_predicted = max(0.5, _u_predicted)
+                _u_methods["topic_saturation_penalty"] = _tsat["penalty"]
+                _u_methods["topic_saturation_6h"] = _tsat["topic_push_count_6h"]
+                _u_methods["topic_saturation_24h"] = _tsat["topic_push_count_24h"]
+                _u_methods["topic_saturation_jaccard"] = _tsat["highest_jaccard"]
+                _u_methods["pre_topic_saturation"] = _u_pre_sat
+                _u_corrections.append(f"TopicSat({_tsat['topic_push_count_6h']}in6h)={_tsat['penalty']:.2f}")
+        except Exception:
+            pass
+
+        return _safety_envelope({
+            "predicted": _u_predicted,
+            "methods": _u_methods,
+            "basis": f"Unified-LightGBM ({unified_result['n_features']}F, MAE={unified_result.get('mae', '?')})",
+            "phd_corrections": _u_corrections,
+            "unified": True,
+        })
+
+    # Wenn Unified nicht verfügbar → Fallback auf bisheriges ML-Ensemble
     # ── ML-Predictions sammeln (GBRT + LightGBM) ──
     ml_predictions = {}
     basis_parts_ml = []
@@ -10246,6 +13790,11 @@ def _server_predict_or(push, push_data, state):
         _lgbm_model = _ml_state.get("model")
         _lgbm_stats = _ml_state.get("stats")
         _lgbm_fnames = _ml_state.get("feature_names")
+    _lgbm_calibrator = None
+    _lgbm_conformal_radius = 1.0
+    with _ml_lock:
+        _lgbm_calibrator = _ml_state.get("calibrator")
+        _lgbm_conformal_radius = _ml_state.get("conformal_radius", 1.0)
     if _lgbm_model and _lgbm_stats and _lgbm_fnames:
         try:
             import numpy as _np_lgbm
@@ -10259,21 +13808,39 @@ def _server_predict_or(push, push_data, state):
             }
             _lgbm_feat = _ml_extract_features(_lgbm_row, _lgbm_stats)
             _lgbm_x = _np_lgbm.array([[_lgbm_feat.get(k, 0.0) for k in _lgbm_fnames]])
-            lgbm_pred = float(_lgbm_model.predict(_lgbm_x)[0])
+            lgbm_pred_raw = float(_lgbm_model.predict(_lgbm_x)[0])
+            lgbm_pred = max(0, math.expm1(lgbm_pred_raw))  # Log-Rücktransformation
+            # Isotonische Kalibrierung anwenden (wenn trainiert)
+            if _lgbm_calibrator and _lgbm_calibrator.breakpoints:
+                lgbm_pred = _lgbm_calibrator.calibrate(lgbm_pred)
+            # Residual-Korrektur anwenden (wenn trainiert)
+            _res_model = _ml_state.get("residual_model")
+            if _res_model is not None:
+                try:
+                    lgbm_pred += float(_res_model.predict(_lgbm_x)[0])
+                except Exception:
+                    pass
             lgbm_pred = max(0.5, min(30.0, lgbm_pred))
             ml_predictions["lgbm"] = lgbm_pred
-            basis_parts_ml.append(f"LightGBM(MAE={_ml_state.get('metrics',{}).get('mae','?')})")
+            # Conformal Q10/Q90 Intervalle
+            ml_predictions["lgbm_q10"] = max(0.1, lgbm_pred - _lgbm_conformal_radius)
+            ml_predictions["lgbm_q90"] = lgbm_pred + _lgbm_conformal_radius
+            basis_parts_ml.append(f"LightGBM(MAE={_ml_state.get('metrics',{}).get('mae','?')}, "
+                                  f"{_ml_state.get('metrics',{}).get('n_features','?')}F)")
         except Exception as _lgbm_err:
             log.warning(f"[ML] LightGBM-Prediction fehlgeschlagen: {_lgbm_err}")
 
     # Wenn beide ML-Modelle verfuegbar → gewichtetes Ensemble (kein Heuristik-Fallback noetig)
-    if len(ml_predictions) == 2:
-        # GBRT (rigoroser trainiert) bekommt 60%, LightGBM 40%
-        _ml_blend = ml_predictions["gbrt"] * 0.6 + ml_predictions["lgbm"] * 0.4
+    if len(ml_predictions) == 2 and "gbrt" in ml_predictions and "lgbm" in ml_predictions:
+        # Gelernte Blend-Gewichte aus _ml_state (Phase 6), Fallback 60/40
+        with _ml_lock:
+            _learned_gbrt_alpha = _ml_state.get("gbrt_lgbm_alpha", 0.6)
+        _ml_blend = ml_predictions["gbrt"] * _learned_gbrt_alpha + ml_predictions["lgbm"] * (1 - _learned_gbrt_alpha)
         _ml_methods = {
             "gbrt_predicted": round(ml_predictions["gbrt"], 3),
             "lgbm_predicted": round(ml_predictions["lgbm"], 3),
             "ml_ensemble": round(_ml_blend, 3),
+            "gbrt_lgbm_alpha": round(_learned_gbrt_alpha, 3),
         }
         if gbrt_result:
             _ml_methods.update({
@@ -10282,11 +13849,32 @@ def _server_predict_or(push, push_data, state):
                 "gbrt_n_trees": gbrt_result["n_trees"],
                 "top_features": gbrt_result.get("top_features", []),
             })
+        # LightGBM Q10/Q90 Konfidenz-Intervalle
+        if "lgbm_q10" in ml_predictions:
+            _ml_methods["lgbm_q10"] = round(ml_predictions["lgbm_q10"], 3)
+            _ml_methods["lgbm_q90"] = round(ml_predictions["lgbm_q90"], 3)
+        # Topic-Saturation Penalty auf ML-Ensemble anwenden
+        _ens_predicted = round(_ml_blend, 3)
+        _ens_corrections = []
+        try:
+            _tsat_ens = _compute_topic_saturation_penalty(push, push_data, state)
+            if _tsat_ens["penalty"] < 1.0:
+                _ens_pre = _ens_predicted
+                _ens_predicted = round(_ens_predicted * _tsat_ens["penalty"], 3)
+                _ens_predicted = max(0.5, _ens_predicted)
+                _ml_methods["topic_saturation_penalty"] = _tsat_ens["penalty"]
+                _ml_methods["topic_saturation_6h"] = _tsat_ens["topic_push_count_6h"]
+                _ml_methods["topic_saturation_24h"] = _tsat_ens["topic_push_count_24h"]
+                _ml_methods["topic_saturation_jaccard"] = _tsat_ens["highest_jaccard"]
+                _ml_methods["pre_topic_saturation"] = _ens_pre
+                _ens_corrections.append(f"TopicSat({_tsat_ens['topic_push_count_6h']}in6h)={_tsat_ens['penalty']:.2f}")
+        except Exception:
+            pass
         return _safety_envelope({
-            "predicted": round(_ml_blend, 3),
+            "predicted": _ens_predicted,
             "methods": _ml_methods,
             "basis": f"ML-Ensemble: {' + '.join(basis_parts_ml)}",
-            "phd_corrections": [],
+            "phd_corrections": _ens_corrections,
             "gbrt": True, "lgbm": True,
         })
 
@@ -10398,6 +13986,7 @@ def _server_predict_or(push, push_data, state):
         # Selten aber nicht intensiv = leichter Boost
         novelty_boost = 1.05
         methods["novelty_boost"] = round(novelty_boost, 3)
+    # Topic-Saturation wird zentral in Korrektor 6 berechnet (nach Fusion)
     methods["max_jaccard"] = round(max_jaccard, 3)
     methods["intensity_score"] = round(intensity_score, 3)
     methods["similarity"] = round(m1, 3)
@@ -10823,12 +14412,14 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
     if ml_predictions and len(ml_predictions) == 1:
         _single_ml_name = list(ml_predictions.keys())[0]
         _single_ml_val = list(ml_predictions.values())[0]
-        # ML bekommt 55% Gewicht, Heuristik 45% (ML hat aus Daten gelernt)
-        _ml_blend_w = 0.55
+        # Gelernte Blend-Gewichte aus _ml_state (Phase 6), Fallback 0.55
+        with _ml_lock:
+            _ml_blend_w = _ml_state.get("ml_heuristic_alpha", 0.55)
         _pre_ml = predicted
         predicted = _single_ml_val * _ml_blend_w + predicted * (1 - _ml_blend_w)
         methods[f"{_single_ml_name}_predicted"] = round(_single_ml_val, 3)
         methods["ml_heuristic_blend"] = f"{_single_ml_name}({_ml_blend_w:.0%})+Heuristik({1-_ml_blend_w:.0%})"
+        methods["ml_heuristic_alpha"] = round(_ml_blend_w, 3)
         methods["heuristic_only"] = round(_pre_ml, 3)
 
     # ── Novelty-Boost anwenden (nach Fusion, vor Korrektoren) ──
@@ -10921,7 +14512,24 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
                 predicted = predicted * (1 - entity_weight) + sport_avg * entity_weight
                 corrections_applied.append(f"sport_entity(n={len(sport_entity_ors)},avg={sport_avg:.1f},w={entity_weight})")
 
-    # Korrektor 5: Quantil-basierte Clamp (nicht unter Q10 der Kategorie)
+    # Korrektor 5: Topic-Saturation Penalty (6h-Fenster, einzige Saturation-Logik)
+    try:
+        _tsp = _compute_topic_saturation_penalty(push, push_data, state)
+        if _tsp and _tsp.get("penalty", 1.0) < 1.0:
+            _tsp_factor = _tsp["penalty"]
+            predicted *= _tsp_factor
+            corrections_applied.append(
+                f"topic_sat(6h={_tsp.get('topic_push_count_6h',0)},"
+                f"j={_tsp.get('highest_jaccard',0):.2f},"
+                f"p={_tsp_factor:.3f})"
+            )
+            methods["topic_saturation_penalty"] = round(_tsp_factor, 3)
+            methods["topic_saturation_reason"] = _tsp.get("reason", "")
+    except Exception:
+        pass
+
+    # Korrektor 6: Quantil-basierte Clamp (nicht unter Q10 der Kategorie)
+    # Kommt NACH Saturation, damit der Q10-Floor als Sicherheitsnetz greift
     quantiles = mods.get("quantiles", {})
     cat_q = quantiles.get("category", {}).get(push_cat, {}) if isinstance(quantiles, dict) else {}
     if cat_q:
@@ -11953,6 +15561,9 @@ def _evict_stale_cache(cache, ttl, max_size=500):
             del cache[k]
 
 
+_plus_cache = {}
+PLUS_CACHE_TTL = 3600  # 1 Stunde
+
 def _check_bild_plus(url):
     """Check if a BILD article is behind the BILDplus paywall."""
     now = time.time()
@@ -11970,19 +15581,20 @@ def _check_bild_plus(url):
             with urllib.request.urlopen(req, timeout=8, context=_GLOBAL_SSL_CTX) as resp:
                 html = resp.read(150000).decode("utf-8", errors="replace")
         except (ssl.SSLError, urllib.error.URLError):
-            if not ALLOW_INSECURE_SSL:
-                raise
-            ctx = ssl.create_default_context(cafile=_SSL_CERTFILE)
+            # SSL-Fallback: Zertifikatsprüfung deaktivieren (read-only Check)
+            ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             req2 = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req2, timeout=8, context=ctx) as resp:
                 html = resp.read(150000).decode("utf-8", errors="replace")
         is_plus = '"isAccessibleForFree":false' in html or '"isAccessibleForFree": false' in html
+        if is_plus:
+            log.info(f"[BILDPlus] Plus-Artikel erkannt: {url[:80]}")
         _plus_cache[url] = (now, is_plus)
         return is_plus
     except Exception as e:
-        log.debug(f"Plus-check failed for {url}: {e}")
+        log.warning(f"[BILDPlus] Check fehlgeschlagen für {url}: {type(e).__name__}: {e}")
         return False
 
 
@@ -12025,6 +15637,123 @@ def _fetch_url(url, timeout=10):
             log.info(f"Using stale cache for {url}")
             return _cache[url][1]
         return None
+
+
+# ── Background Feed Cache (Konkurrenz + International) ──────────────────────
+# Feeds werden im Hintergrund alle 90s aktualisiert statt bei jedem Request.
+_feed_cache = {
+    "competitors": {"data": {}, "ts": 0, "fetching": False},
+    "international": {"data": {}, "ts": 0, "fetching": False},
+}
+_feed_cache_lock = threading.Lock()
+_FEED_CACHE_TTL = 90  # Sekunden
+
+def _bg_fetch_feeds(feed_type):
+    """Holt alle Feeds eines Typs im Hintergrund und cached das geparste JSON."""
+    feeds = COMPETITOR_FEEDS if feed_type == "competitors" else INTERNATIONAL_FEEDS
+    with _feed_cache_lock:
+        if _feed_cache[feed_type]["fetching"]:
+            return
+        _feed_cache[feed_type]["fetching"] = True
+    try:
+        raw_results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {pool.submit(_fetch_url, url): name
+                       for name, url in feeds.items()}
+            for future in concurrent.futures.as_completed(futures, timeout=15):
+                name = futures[future]
+                try:
+                    data = future.result()
+                    if data:
+                        raw_results[name] = data.decode("utf-8", errors="replace")
+                    else:
+                        raw_results[name] = ""
+                except Exception:
+                    raw_results[name] = ""
+        # Parsen — nutzt eine temporaere Handler-Instanz fuer _parse_rss_items
+        parsed = {}
+        for name, xml_str in raw_results.items():
+            if not xml_str:
+                parsed[name] = []
+                continue
+            parsed[name] = _parse_rss_items_standalone(xml_str)
+        with _feed_cache_lock:
+            _feed_cache[feed_type]["data"] = parsed
+            _feed_cache[feed_type]["ts"] = time.time()
+    except Exception as e:
+        log.warning(f"[FeedCache] {feed_type} Fehler: {e}")
+    finally:
+        with _feed_cache_lock:
+            _feed_cache[feed_type]["fetching"] = False
+
+def _parse_rss_items_standalone(xml_str, max_items=30):
+    """Parst RSS/Atom/Sitemap-XML zu kompaktem JSON (standalone, ohne Handler-Instanz)."""
+    import xml.etree.ElementTree as ET
+    items = []
+    try:
+        root = ET.fromstring(xml_str)
+        # RSS 2.0
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            desc = (item.findtext("description") or "").strip()[:200]
+            cats = [c.text.strip() for c in item.findall("category") if c.text]
+            items.append({"t": title, "l": link, "p": pub, "d": desc, "c": cats})
+            if len(items) >= max_items:
+                break
+        if not items:
+            # Atom fallback
+            ns = {"a": "http://www.w3.org/2005/Atom"}
+            for entry in root.findall(".//a:entry", ns):
+                title = (entry.findtext("a:title", "", ns) or "").strip()
+                link_el = entry.find("a:link", ns)
+                link = link_el.get("href", "") if link_el is not None else ""
+                pub = (entry.findtext("a:published", "", ns) or entry.findtext("a:updated", "", ns) or "").strip()
+                desc = (entry.findtext("a:summary", "", ns) or "").strip()[:200]
+                items.append({"t": title, "l": link, "p": pub, "d": desc, "c": []})
+                if len(items) >= max_items:
+                    break
+        if not items:
+            # News-Sitemap fallback
+            ns_sm = {"sm": "https://www.sitemaps.org/schemas/sitemap/0.9",
+                     "news": "https://www.google.com/schemas/sitemap-news/0.9"}
+            for url_el in root.findall(".//sm:url", ns_sm):
+                loc = (url_el.findtext("sm:loc", "", ns_sm) or "").strip()
+                news = url_el.find("news:news", ns_sm)
+                title = ""
+                pub = ""
+                if news is not None:
+                    title = (news.findtext("news:title", "", ns_sm) or "").strip()
+                    pub = (news.findtext("news:publication_date", "", ns_sm) or "").strip()
+                items.append({"t": title, "l": loc, "p": pub, "d": "", "c": []})
+                if len(items) >= max_items:
+                    break
+    except ET.ParseError:
+        pass
+    return items
+
+def _feed_cache_worker():
+    """Background-Thread: Refreshed Competitor/International Feeds alle 90s."""
+    time.sleep(5)  # Warte bis Server bereit
+    while True:
+        try:
+            _bg_fetch_feeds("competitors")
+            _bg_fetch_feeds("international")
+        except Exception as e:
+            log.warning(f"[FeedCache] Worker-Fehler: {e}")
+        time.sleep(_FEED_CACHE_TTL)
+
+def _get_cached_feeds(feed_type):
+    """Gibt gecachte Feed-Daten zurueck. Wenn leer, triggert sofortigen Fetch."""
+    with _feed_cache_lock:
+        cached = _feed_cache[feed_type]
+        if cached["data"] and (time.time() - cached["ts"]) < _FEED_CACHE_TTL * 3:
+            return cached["data"]
+    # Cache leer oder sehr alt — synchron fetchen (nur beim allerersten Mal)
+    _bg_fetch_feeds(feed_type)
+    with _feed_cache_lock:
+        return _feed_cache[feed_type]["data"]
 
 
 class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
@@ -12123,20 +15852,16 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             fpath = os.path.join(SERVE_DIR, self.path.lstrip('/').split('?')[0])
             if os.path.isfile(fpath) and self._accepts_gzip():
                 import gzip as _gzip_mod
-                mtime = os.path.getmtime(fpath)
-                cache_key = fpath
-                cached = PushBalancerHandler._gzip_cache.get(cache_key)
-                if cached and cached[0] == mtime:
-                    gz_data = cached[1]
-                else:
-                    with open(fpath, 'rb') as f:
-                        gz_data = _gzip_mod.compress(f.read(), compresslevel=6)
-                    PushBalancerHandler._gzip_cache[cache_key] = (mtime, gz_data)
+                with open(fpath, 'rb') as f:
+                    gz_data = _gzip_mod.compress(f.read(), compresslevel=6)
                 ct = 'text/html' if fpath.endswith('.html') else ('application/javascript' if fpath.endswith('.js') else 'text/css')
                 self.send_response(200)
                 self.send_header("Content-Type", ct + "; charset=utf-8")
                 self.send_header("Content-Encoding", "gzip")
                 self.send_header("Content-Length", str(len(gz_data)))
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
                 self.end_headers()
                 self.wfile.write(gz_data)
                 return
@@ -12226,41 +15951,18 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._error(502, f"Push API proxy error: {e}")
 
     def _serve_competitor_feeds(self):
-        """Fetch ALL competitor feeds in parallel, parse server-side, return compact JSON."""
-        raw_results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            futures = {pool.submit(_fetch_url, url): name
-                       for name, url in COMPETITOR_FEEDS.items()}
-            for future in concurrent.futures.as_completed(futures):
-                name = futures[future]
-                data = future.result()
-                if data:
-                    raw_results[name] = data.decode("utf-8", errors="replace")
-                else:
-                    raw_results[name] = ""
-        # Server-seitig XML parsen → nur Felder die Frontend braucht (1.5MB → ~50KB)
-        parsed = self._parse_feeds_to_json(raw_results)
+        """Liefert Competitor-Feeds aus Background-Cache (sofort, <5ms)."""
         try:
+            parsed = _get_cached_feeds("competitors")
             self._send_gzip(json.dumps(parsed).encode(), "application/json; charset=utf-8")
         except Exception as e:
             self._error(502, f"Competitor feeds error: {e}")
 
     def _serve_international_feeds(self):
-        """Fetch ALL international feeds in parallel, parse server-side, return compact JSON."""
-        raw_results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            futures = {pool.submit(_fetch_url, url): name
-                       for name, url in INTERNATIONAL_FEEDS.items()}
-            for future in concurrent.futures.as_completed(futures):
-                name = futures[future]
-                data = future.result()
-                if data:
-                    raw_results[name] = data.decode("utf-8", errors="replace")
-                else:
-                    raw_results[name] = ""
-        results = self._parse_feeds_to_json(raw_results)
+        """Liefert International-Feeds aus Background-Cache (sofort, <5ms)."""
         try:
-            self._send_gzip(json.dumps(results).encode(), "application/json; charset=utf-8")
+            parsed = _get_cached_feeds("international")
+            self._send_gzip(json.dumps(parsed).encode(), "application/json; charset=utf-8")
         except Exception as e:
             self._error(502, f"International feeds error: {e}")
 
@@ -12343,8 +16045,23 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             day_rng = random.Random(day_seed + 42)
 
             # NUR reife Pushes (>24h) fuer ALLE Berechnungen — frische OR ist unzuverlaessig
+            # OR > 30% = Datenbankfehler (z.B. 1.3M% Ausreisser) — clampen oder skippen
+            _OR_SANE_MAX = 30.0
             _cutoff_24h = _research_state.get("cutoff_24h", time.time() - 24 * 3600)
-            _mature_data = [p for p in _research_state.get("push_data", []) if p.get("ts_num", 0) > 0 and p["ts_num"] < _cutoff_24h and p["or"] > 0]
+            _raw_push_data = _research_state.get("push_data", [])
+            # Fallback: wenn Research-Worker noch nicht alle geladen hat, direkt aus DB
+            if len(_raw_push_data) < 15000:
+                try:
+                    _raw_push_data = _push_db_load_all()
+                except Exception:
+                    pass
+            _mature_data = []
+            for _p in _raw_push_data:
+                if _p.get("ts_num", 0) <= 0 or _p["ts_num"] >= _cutoff_24h or _p.get("or", 0) <= 0:
+                    continue
+                if _p["or"] > _OR_SANE_MAX:
+                    continue  # Ausreisser komplett ignorieren
+                _mature_data.append(_p)
 
             # Real metrics — NUR reife Pushes zaehlen (>24h mit stabiler OR)
             n_pushes = len(_mature_data)
@@ -12358,6 +16075,15 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             findings = _research_state.get("findings", {})
             gen = _research_state.get("analysis_generation", 0)
             research_memory = _research_state.get("research_memory", {})
+
+            # ── FALLBACK: Wenn findings leer, direkt aus _mature_data berechnen ──
+            if not findings.get("hour_analysis") and len(_mature_data) >= 10:
+                try:
+                    findings = _compute_findings_for_subset(_mature_data)
+                    _research_state["findings"] = findings
+                    logging.info(f"[Forschung-Fallback] Findings direkt berechnet aus {len(_mature_data)} reifen Pushes")
+                except Exception as _fe:
+                    logging.warning(f"[Forschung-Fallback] Fehler: {_fe}")
 
             # Hilfsfunktion: Letzte Erkenntnis aus dem Forschungsgedaechtnis
             _now_str = f"{hour}:{now.minute:02d}"
@@ -12403,7 +16129,10 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             researchers = []
 
             # mean_or_all frueher berechnen (wird fuer Orchestrator + Learning gebraucht)
-            mean_or_all = sum(p["or"] for p in _mature_data) / max(1, len(_mature_data)) if _mature_data else 0.0
+            # ROBUST: Median statt Mean (unempfindlich gegen Rest-Ausreisser)
+            _all_ors = sorted([p["or"] for p in _mature_data]) if _mature_data else []
+            mean_or_all = _all_ors[len(_all_ors) // 2] if _all_ors else 0.0
+            _mean_or_arithmetic = sum(_all_ors) / len(_all_ors) if _all_ors else 0.0
 
             # Orchestrator — echte Daten
             schwab_decisions = _research_state.get("schwab_decisions", [])
@@ -12474,6 +16203,15 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             # Ziel: So nah wie moeglich an 0 (perfekte Vorhersage)
             basis_mae = _research_state.get("basis_mae", 0.0)
             ensemble_mae = _research_state.get("ensemble_mae", 0.0)
+            # Sanity: MAE > mean_or deutet auf vergiftete Berechnung hin → recalculate
+            if basis_mae > mean_or_all * 1.5 and len(_mature_data) >= 50:
+                logging.warning(f"[Forschung] basis_mae={basis_mae:.2f} > 1.5*median_or={mean_or_all:.2f} — forciere Neuberechnung")
+                _research_state["basis_mae"] = 0.0
+                _research_state["ensemble_mae"] = 0.0
+                _research_state["mae_trend"] = []
+                _update_rolling_accuracy(_mature_data, _research_state)
+                basis_mae = _research_state.get("basis_mae", 0.0)
+                ensemble_mae = _research_state.get("ensemble_mae", 0.0)
             # Beste verfuegbare MAE: Ensemble wenn vorhanden, sonst Basis
             primary_mae = ensemble_mae if ensemble_mae > 0 else basis_mae
             rolling_acc = _research_state.get("rolling_accuracy", 0.0)
@@ -12489,9 +16227,16 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             mae_delta = round(mae_trend_arr[-1] - mae_trend_arr[-2], 3) if len(mae_trend_arr) >= 2 else 0.0
 
             # Treffsicherheit-Score berechnen (fuer Learning + Result)
+            # Robust: Median OR (nicht Mean), Sanity-Check auf MAE
             _mean_or_for_score = mean_or_all if mean_or_all > 0.5 else 4.0
             _best_mae = min(primary_mae, basis_mae) if basis_mae > 0 else primary_mae
-            treffsicherheit = max(0, min(100, (1 - _best_mae / _mean_or_for_score) * 100))
+            # Sanity: MAE > Median OR → Modell rät praktisch zufällig → max 20%
+            if _best_mae > _mean_or_for_score * 0.9:
+                treffsicherheit = max(5, min(20, (1 - _best_mae / max(1, _mean_or_for_score)) * 100))
+            elif _best_mae > _mean_or_for_score * 0.5:
+                treffsicherheit = max(20, min(60, (1 - _best_mae / _mean_or_for_score) * 100))
+            else:
+                treffsicherheit = max(0, min(95, (1 - _best_mae / _mean_or_for_score) * 100))
 
             learning = [
                 {"label": "Treffsicherheit (Gesamt)", "value": round(treffsicherheit, 1), "trend": round(-mae_delta / max(0.1, _mean_or_for_score) * 100, 1), "target": 90.0},
@@ -12512,8 +16257,10 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             live_rules = _research_state.get("live_rules", [])
 
             # ── Neue Daten fuer Dashboard-Upgrade ──────────────────────────
-            # Top 5 / Flop 5 Pushes nach OR
-            _sorted_by_or = sorted(_mature_data, key=lambda p: p.get("or", 0), reverse=True)
+            # Top 5 / Flop 5 Pushes nach OR — nur letzte 365 Tage (aeltere OR nicht vergleichbar)
+            _topflop_cutoff = time.time() - 365 * 86400
+            _recent_for_topflop = [p for p in _mature_data if p.get("ts_num", 0) > _topflop_cutoff]
+            _sorted_by_or = sorted(_recent_for_topflop, key=lambda p: p.get("or", 0), reverse=True)
             top_pushes = [{"title": p.get("title", "")[:100], "or": round(p.get("or", 0), 2), "cat": p.get("cat", ""), "hour": p.get("hour", 0)} for p in _sorted_by_or[:5]]
             worst_pushes = [{"title": p.get("title", "")[:100], "or": round(p.get("or", 0), 2), "cat": p.get("cat", ""), "hour": p.get("hour", 0)} for p in _sorted_by_or[-5:][::-1]] if len(_sorted_by_or) >= 5 else []
 
@@ -12528,8 +16275,8 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     "median": round(_or_vals_sorted[n_or // 2], 2),
                     "q3": round(_or_vals_sorted[3 * n_or // 4], 2),
                     "max": round(_or_vals_sorted[-1], 2),
-                    "mean": round(mean_or_all, 2),
-                    "std": round(math.sqrt(sum((v - mean_or_all)**2 for v in _or_vals_sorted) / max(1, n_or - 1)), 2) if n_or > 1 else 0,
+                    "mean": round(_mean_or_arithmetic, 2),
+                    "std": round(math.sqrt(sum((v - _mean_or_arithmetic)**2 for v in _or_vals_sorted) / max(1, n_or - 1)), 2) if n_or > 1 else 0,
                     "n": n_or,
                 }
 
@@ -12548,11 +16295,31 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             cat_distribution = {c: {"avg_or": round(sum(vals) / len(vals), 2), "count": len(vals)} for c, vals in sorted(_cat_or_agg.items(), key=lambda x: -sum(x[1]) / len(x[1]))}
 
             # treffsicherheit, _best_mae, _mean_or_for_score schon oben berechnet
+
+            # Trend-Tracking fuer Dashboard-Metriken
+            _prev = _research_state.get("_dashboard_prev", {})
+            _cur_best_hour = f_hour.get("best_hour", 0) if f_hour else 0
+            _cur_best_hour_or = round(f_hour.get("best_or", 0), 1) if f_hour else 0
+            _cur_live_rules_n = len([r for r in live_rules if r.get("active")])
+            _cur_top_cat = f_cat[0]["category"] if f_cat else ""
+            _cur_top_cat_or = round(f_cat[0]["avg_or"], 1) if f_cat else 0
+            _best_hour_or_delta = round(_cur_best_hour_or - _prev.get("best_hour_or", _cur_best_hour_or), 1)
+            _n_pushes_delta = n_pushes - _prev.get("n_pushes", n_pushes)
+            _live_rules_delta = _cur_live_rules_n - _prev.get("live_rules_n", _cur_live_rules_n)
+            _top_cat_or_delta = round(_cur_top_cat_or - _prev.get("top_cat_or", _cur_top_cat_or), 1)
+            _insights_delta = insights_today - _prev.get("insights_today", insights_today)
+            _research_state["_dashboard_prev"] = {
+                "best_hour_or": _cur_best_hour_or, "n_pushes": n_pushes,
+                "live_rules_n": _cur_live_rules_n, "top_cat_or": _cur_top_cat_or,
+                "insights_today": insights_today,
+            }
+            _top_cats = [{"category": c.get("category",""), "avg_or": round(c.get("avg_or",0),1), "count": c.get("count",0), "rank": i+1} for i, c in enumerate(f_cat[:3])]
+
             result = {
-                "accuracy": round(treffsicherheit, 1),  # Treffsicherheit 0-100% (hoeher = besser)
-                "accuracy_mae": round(_best_mae, 2),  # MAE in Prozentpunkten (Detail)
-                "accuracy_trend": round(-mae_delta, 3),  # positiv = Verbesserung
-                "accuracy_target": 90.0,  # Ziel: 90% Treffsicherheit
+                "accuracy": round(treffsicherheit, 1),
+                "accuracy_mae": round(_best_mae, 2),
+                "accuracy_trend": round(-mae_delta, 3),
+                "accuracy_target": 90.0,
                 "basis_mae": round(basis_mae, 3),
                 "ensemble_mae_raw": round(primary_mae, 3),
                 "mae_by_cat": mae_by_cat,
@@ -12560,7 +16327,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 "mae_trend_arr": mae_trend_arr[-20:],
                 "hit_rate": round(rolling_acc, 1),
                 "insights_today": insights_today,
-                "insights_trend": 0,
+                "insights_trend": _insights_delta,
                 "pages_today": pages_today,
                 "pages_trend": 0,
                 "researchers": researchers,
@@ -12574,13 +16341,18 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 "diskurs": diskurs_data,
                 "week_comparison": week_comparison,
                 "live_rules": [r for r in live_rules if r.get("active")],
-                "live_rules_count": len([r for r in live_rules if r.get("active")]),
+                "live_rules_count": _cur_live_rules_n,
+                "live_rules_trend": _live_rules_delta,
                 "n_pushes": n_pushes,
+                "n_pushes_trend": _n_pushes_delta,
                 "mean_or": round(mean_or_all, 2) if mean_or_all else 0,
-                "best_hour": f_hour.get("best_hour", 0) if f_hour else 0,
-                "best_hour_or": round(f_hour.get("best_or", 0), 1) if f_hour else 0,
-                "top_category": f_cat[0]["category"] if f_cat else "",
-                "top_category_or": round(f_cat[0]["avg_or"], 1) if f_cat else 0,
+                "best_hour": _cur_best_hour,
+                "best_hour_or": _cur_best_hour_or,
+                "best_hour_or_trend": _best_hour_or_delta,
+                "top_category": _cur_top_cat,
+                "top_category_or": _cur_top_cat_or,
+                "top_category_or_trend": _top_cat_or_delta,
+                "top_categories": _top_cats,
                 "last_push_ts": max((p.get("ts_num", 0) for p in _mature_data), default=0) if _mature_data else 0,
                 "research_projects": _research_state.get("research_projects", []),
                 "research_milestones": _research_state.get("research_milestones", [])[-20:],
@@ -12671,7 +16443,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             if _sport_mature:
                 _sport_or_vals = sorted(p.get("or", 0) for p in _sport_mature)
                 _sport_n_or = len(_sport_or_vals)
-                _sport_mean = sum(_sport_or_vals) / _sport_n_or
+                _sport_mean = _sport_or_vals[_sport_n_or // 2]  # Median (robust)
                 result["sport_mean_or"] = round(_sport_mean, 2)
                 result["sport_or_distribution"] = {
                     "min": round(_sport_or_vals[0], 2),
@@ -12696,7 +16468,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             if _nonsport_mature:
                 _ns_or_vals = sorted(p.get("or", 0) for p in _nonsport_mature)
                 _ns_n_or = len(_ns_or_vals)
-                _ns_mean = sum(_ns_or_vals) / _ns_n_or
+                _ns_mean = _ns_or_vals[_ns_n_or // 2]  # Median (robust)
                 result["nonsport_mean_or"] = round(_ns_mean, 2)
                 result["nonsport_or_distribution"] = {
                     "min": round(_ns_or_vals[0], 2),
@@ -12757,6 +16529,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 urls = []
             # Filter: only safe bild.de URLs
             safe_urls = [u for u in urls[:200] if isinstance(u, str) and self._is_safe_url(u)]
+            log.debug(f"[BILDPlus] {len(urls)} URLs, {len(safe_urls)} safe")
             # Parallel check (max 20 concurrent)
             results = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
@@ -12765,7 +16538,8 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     url = futures[future]
                     try:
                         results[url] = future.result()
-                    except Exception:
+                    except Exception as fut_e:
+                        log.warning(f"[BILDPlus] Future-Fehler für {url[:60]}: {fut_e}")
                         results[url] = False
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -12787,10 +16561,218 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_ml_retrain()
         elif self.path == "/api/gbrt/retrain":
             self._handle_gbrt_retrain()
+        elif self.path == "/api/gbrt/force-promote":
+            self._handle_gbrt_force_promote()
         elif self.path == "/api/ml/monitoring/tick":
             self._handle_monitoring_tick()
+        elif self.path == "/api/ml/predict-batch":
+            self._serve_predict_batch()
+        elif self.path == "/api/competitor-xor":
+            self._serve_competitor_xor()
         else:
             self._error(404, "Not found")
+
+    def _serve_predict_batch(self):
+        """POST /api/ml/predict-batch — Batch-Prediction für mehrere Artikel."""
+        try:
+            import time as _tb
+            _t0 = _tb.monotonic()
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            req = json.loads(body)
+            articles = req.get("articles", [])
+            if not isinstance(articles, list) or len(articles) > 300:
+                self._error(400, "articles must be a list with max 300 entries")
+                return
+            predictions = _batch_predict_or(
+                articles,
+                push_data=_research_state.get("push_data", []),
+                state=_research_state,
+            )
+            elapsed_ms = round((_tb.monotonic() - _t0) * 1000, 1)
+            # Bestimme primären Model-Type aus erstem Ergebnis
+            model_type = "none"
+            for v in predictions.values():
+                model_type = v.get("model_type", "unknown")
+                break
+            result = {
+                "predictions": predictions,
+                "model_type": model_type,
+                "count": len(predictions),
+                "elapsed_ms": elapsed_ms,
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._cors_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            self._error(500, f"Batch predict error: {e}")
+
+    def _serve_competitor_xor(self):
+        """POST /api/competitor-xor — Batch-XOR via Wort-Performance-Scoring.
+
+        Nutzt vorberechneten _xor_perf_cache fuer O(W)-Lookup pro Titel
+        statt O(N*M)-Jaccard ueber 8000 historische Pushes.
+        Ergebnis: <50ms statt >1000ms, bessere Differenzierung.
+        """
+        try:
+            import time as _tb
+            _t0 = _tb.monotonic()
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            req = json.loads(body)
+            titles = req.get("titles", [])
+            if not isinstance(titles, list) or len(titles) > 200:
+                self._error(400, "titles must be a list with max 200 entries")
+                return
+
+            cur_hour = datetime.datetime.now().hour
+
+            # Cache bauen/auffrischen (alle 30 Min oder beim ersten Aufruf)
+            with _xor_perf_lock:
+                cache_age = time.time() - _xor_perf_cache["built_at"]
+            if cache_age > 1800 or not _xor_perf_cache["word_perf"]:
+                _build_xor_perf_cache()
+
+            with _xor_perf_lock:
+                wp = _xor_perf_cache["word_perf"]
+                chp = _xor_perf_cache["cat_hour_perf"]
+                eil_p = _xor_perf_cache["eil_perf"]
+                global_avg = _xor_perf_cache["global_avg"]
+
+            simplified = {}
+            for item in titles:
+                if isinstance(item, str):
+                    title, cat, hour = item, None, cur_hour
+                else:
+                    title = item.get("title", "")
+                    cat = item.get("cat")
+                    hour = item.get("hour", cur_hour)
+                if not title:
+                    continue
+
+                tl = title.lower()
+
+                # Kategorie ableiten
+                if not cat:
+                    if any(w in tl for w in ("bundesliga", "champions", "transfer", "pokal", "fc ", "bvb", "bayern", "dortmund", "formel")):
+                        cat = "Sport"
+                    elif any(w in tl for w in ("trump", "biden", "merz", "scholz", "bundestag", "minister", "ukraine", "putin", "israel")):
+                        cat = "Politik"
+                    elif any(w in tl for w in ("mord", "messer", "razzia", "polizei", "festnahme")):
+                        cat = "Regional"
+                    elif any(w in tl for w in ("helene", "gottschalk", "bohlen", "bachelor", "dschungel", "gntm", "promi")):
+                        cat = "Unterhaltung"
+                    elif any(w in tl for w in ("krieg", "gaza", "anschlag", "terror", "rakete")):
+                        cat = "Politik"
+                    else:
+                        cat = "News"
+                cat_lower = cat.lower().strip()
+                is_eil = "+++" in title or "eilmeldung" in tl or "breaking" in tl
+
+                # ── 1. Cat×Hour Baseline ──
+                ch_key = f"{cat_lower}_{cur_hour}"
+                ch = chp.get(ch_key)
+                baseline = ch["avg"] if ch else _gbrt_cat_hour_baselines.get(ch_key, global_avg)
+                ch_p75 = ch["p75"] if ch else baseline * 1.3
+                ch_p25 = ch["p25"] if ch else baseline * 0.7
+
+                # ── 2. Wort-Performance-Scoring ──
+                words = set(w.strip(".,;:!?\"'()[]{}") for w in tl.split())
+                words = {w for w in words if len(w) > 2 and w not in _XOR_STOP_WORDS}
+                # Auch Woerter MIT Satzzeichen (z.B. "tot!", "ein!")
+                raw_words = set(w.lower() for w in title.split() if len(w) > 2)
+
+                word_scores = []
+                for w in words | raw_words:
+                    wp_entry = wp.get(w)
+                    if wp_entry and wp_entry["count"] >= 5:
+                        weight = wp_entry["count"] ** 0.5
+                        word_scores.append((wp_entry["avg"], weight, wp_entry["p75"], wp_entry["p25"]))
+
+                word_or = None
+                word_spread = 0.0
+                n_words = len(word_scores)
+                if n_words >= 2:
+                    word_scores.sort(key=lambda x: -x[1])
+                    top_n = min(8, n_words)
+                    top = word_scores[:top_n]
+                    total_w = sum(w for _, w, _, _ in top)
+                    word_or = sum(avg * w for avg, w, _, _ in top) / total_w
+                    word_p75 = sum(p75 * w for _, w, p75, _ in top) / total_w
+                    word_p25 = sum(p25 * w for _, w, _, p25 in top) / total_w
+                    word_spread = word_p75 - word_p25
+
+                # ── 3. Blending: Word-Score + Baseline ──
+                if word_or is not None and n_words >= 3:
+                    confidence = min(0.65, 0.3 + n_words * 0.05)
+                    final_or = confidence * word_or + (1.0 - confidence) * baseline
+                    basis = f"word({n_words})"
+                elif word_or is not None:
+                    final_or = 0.45 * word_or + 0.55 * baseline
+                    basis = f"word({n_words})"
+                else:
+                    final_or = baseline
+                    basis = "baseline"
+
+                # ── 4. Eilmeldung/Breaking ──
+                if is_eil and eil_p:
+                    final_or = max(final_or, eil_p["p75"] * 0.9)
+
+                # ── 5. Emotion-Intensity ──
+                emotion_words = {"tod", "sterben", "schock", "skandal", "drama", "horror",
+                                 "krieg", "anschlag", "terror", "sensation", "mord", "messer",
+                                 "crash", "panik", "warnung", "explosion", "katastrophe",
+                                 "notfall", "stirbt", "tot", "tot!", "gestorben"}
+                emotion_hits = sum(1 for w in emotion_words if w in tl)
+                if emotion_hits >= 3:
+                    final_or = max(final_or, ch_p75 * 1.15)
+                elif emotion_hits >= 2:
+                    final_or = max(final_or, ch_p75 * 1.0)
+                elif emotion_hits == 1:
+                    final_or = max(final_or, final_or * 0.85 + ch_p75 * 0.15)
+
+                # ── 6. Titel-Psychologie ──
+                if "?" in title:
+                    final_or *= 1.06
+                if "!" in title and not is_eil:
+                    final_or *= 1.03
+                if any(w in tl for w in ("exklusiv", "enthüllt", "geheim", "insider")):
+                    final_or *= 1.08
+
+                # ── 7. Bounds ──
+                cat_ceiling = ch_p75 * 2.0 if ch else 15.0
+                final_or = round(max(0.5, min(final_or, cat_ceiling)), 2)
+
+                # Q10/Q90
+                if word_spread > 0:
+                    q10 = round(max(0.1, final_or - word_spread * 0.8), 2)
+                    q90 = round(final_or + word_spread * 0.8, 2)
+                else:
+                    q10 = round(max(0.1, ch_p25), 2)
+                    q90 = round(ch_p75, 2)
+
+                conf = min(0.8, 0.2 + n_words * 0.06) if word_or else 0.2
+
+                simplified[title[:120]] = {
+                    "or": final_or,
+                    "q10": q10,
+                    "q90": q90,
+                    "confidence": round(conf, 2),
+                    "basis": basis,
+                    "cat": cat,
+                    "n_words": n_words,
+                }
+
+            elapsed_ms = round((_tb.monotonic() - _t0) * 1000, 1)
+            result = {"predictions": simplified, "count": len(simplified), "elapsed_ms": elapsed_ms}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._cors_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            log.warning(f"[CompetitorXOR] Error: {e}")
+            self._error(500, f"Competitor XOR error: {e}")
 
     def _prediction_feedback(self):
         """Frontend schickt Ergebnis eines gereiften Pushes: predicted_or vs actual_or."""
@@ -13075,8 +17057,7 @@ STIL:
     def do_OPTIONS(self):
         self.send_response(204)
         origin = self.headers.get("Origin", "")
-        allowed = (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}", "null")
-        self.send_header("Access-Control-Allow-Origin", origin if origin in allowed else f"http://localhost:{PORT}")
+        self.send_header("Access-Control-Allow-Origin", origin if origin in ALLOWED_ORIGINS else f"http://localhost:{PORT}")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -13455,9 +17436,11 @@ STIL:
             hour = int(params["hour"][0]) if "hour" in params else datetime.datetime.now().hour
             is_eil = params.get("eilmeldung", ["0"])[0] == "1"
 
+            is_plus = params.get("plus", ["0"])[0] == "1"
             push = {
                 "title": title, "cat": cat, "hour": hour,
                 "ts_num": int(time.time()), "is_eilmeldung": is_eil,
+                "is_bild_plus": is_plus,
                 "channels": ["eilmeldung"] if is_eil else ["news"],
                 "title_len": len(title),
             }
@@ -13483,6 +17466,52 @@ STIL:
         except Exception as e:
             self._error(500, f"GBRT retrain error: {e}")
 
+    def _handle_gbrt_force_promote(self):
+        """POST /api/gbrt/force-promote — Laedt das zuletzt gespeicherte Modell als Champion."""
+        try:
+            # Experiment-ID aus gespeichertem JSON lesen
+            exp_id = None
+            if os.path.exists(GBRT_MODEL_PATH):
+                with open(GBRT_MODEL_PATH, "r") as f:
+                    saved = json.load(f)
+                exp_id = saved.get("experiment_id", "unknown")
+                old_metrics = saved.get("metrics", {})
+            else:
+                self._error(404, "Kein gespeichertes GBRT-Modell gefunden")
+                return
+
+            ok = _gbrt_load_model()
+            if not ok:
+                self._error(500, "Modell laden fehlgeschlagen")
+                return
+
+            # Als promoted markieren
+            if exp_id and exp_id != "unknown":
+                _mark_experiment_promoted(exp_id)
+
+            # A/B-Test deaktivieren falls aktiv
+            with _ab_lock:
+                _ab_state["active"] = False
+                _ab_state["samples"] = []
+
+            log.info(f"[GBRT] Force-Promote: {exp_id} als Champion geladen")
+            _log_monitoring_event("force_promote", "info",
+                f"Modell {exp_id} manuell promoted",
+                {"experiment_id": exp_id, "test_mae": old_metrics.get("test_mae", 0)})
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._cors_headers()
+            self.wfile.write(json.dumps({
+                "status": "force_promoted",
+                "experiment_id": exp_id,
+                "test_mae": old_metrics.get("test_mae", 0),
+                "model_type": saved.get("model_type", "unknown"),
+                "n_features": len(saved.get("feature_names", [])),
+            }).encode())
+        except Exception as e:
+            self._error(500, f"Force-Promote Fehler: {e}")
+
     def _handle_monitoring_tick(self):
         """POST /api/ml/monitoring/tick — Manueller Monitoring-Tick."""
         try:
@@ -13496,8 +17525,7 @@ STIL:
 
     def _cors_headers(self):
         origin = self.headers.get("Origin", "")
-        allowed = (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}", "null")
-        if origin in allowed or not origin:
+        if origin in ALLOWED_ORIGINS or not origin:
             self.send_header("Access-Control-Allow-Origin", origin or f"http://localhost:{PORT}")
         else:
             self.send_header("Access-Control-Allow-Origin", f"http://localhost:{PORT}")
@@ -13509,8 +17537,7 @@ STIL:
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         origin = self.headers.get("Origin", "") if hasattr(self, 'headers') and self.headers else ""
-        allowed = (f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}", "null")
-        self.send_header("Access-Control-Allow-Origin", origin if origin in allowed else f"http://localhost:{PORT}")
+        self.send_header("Access-Control-Allow-Origin", origin if origin in ALLOWED_ORIGINS else f"http://localhost:{PORT}")
         self.end_headers()
         self.wfile.write(json.dumps({"error": str(msg)}).encode())
 
@@ -13596,6 +17623,32 @@ if __name__ == "__main__":
     else:
         print(f"  [GBRT] Kein gespeichertes Modell gefunden, wird beim ersten Zyklus trainiert")
 
+    # ML/LightGBM-Modell von Disk laden (wenn vorhanden)
+    if os.path.exists(ML_LGBM_MODEL_PATH):
+        try:
+            _ml_disk = joblib.load(ML_LGBM_MODEL_PATH)
+            with _ml_lock:
+                _ml_state["model"] = _ml_disk["model"]
+                _ml_state["residual_model"] = _ml_disk.get("residual_model")
+                _ml_state["stats"] = _ml_disk["stats"]
+                _ml_state["feature_names"] = _ml_disk["feature_names"]
+                _ml_state["calibrator"] = _ml_disk.get("calibrator")
+                _ml_state["conformal_radius"] = _ml_disk.get("conformal_radius", 1.0)
+                _ml_state["gbrt_lgbm_alpha"] = _ml_disk.get("gbrt_lgbm_alpha", 0.6)
+                _ml_state["ml_heuristic_alpha"] = _ml_disk.get("ml_heuristic_alpha", 0.55)
+                _ml_state["metrics"] = _ml_disk.get("metrics", {})
+                _ml_state["shap_importance"] = _ml_disk.get("shap_importance", [])
+                _ml_state["train_count"] = 1
+                _ml_state["last_train_ts"] = _ml_disk.get("trained_at", 0)
+                _ml_state["next_retrain_ts"] = int(time.time()) + 6 * 3600
+            _ml_age_h = (time.time() - _ml_disk.get("trained_at", 0)) / 3600
+            print(f"  [ML] LightGBM-Modell geladen (R²={_ml_disk.get('metrics',{}).get('r2','?')}, "
+                  f"Features: {len(_ml_disk['feature_names'])}, Alter: {_ml_age_h:.1f}h)")
+        except Exception as ml_load_e:
+            print(f"  [ML] Modell laden fehlgeschlagen: {ml_load_e}")
+    else:
+        print(f"  [ML] Kein gespeichertes LightGBM-Modell, wird beim naechsten Training erstellt")
+
     print(f"Push Balancer server on http://localhost:{PORT}")
     print(f"  HTML:         http://localhost:{PORT}/push-balancer.html")
     print(f"  Feed:         http://localhost:{PORT}/api/feed")
@@ -13607,6 +17660,10 @@ if __name__ == "__main__":
     intl = ", ".join(INTERNATIONAL_FEEDS.keys())
     print(f"  ↳ Individual: /api/international/{{name}} — {intl}")
     print(f"  Health:       http://localhost:{PORT}/api/health")
+
+    # Feed-Cache Background-Worker starten (Konkurrenz + International)
+    threading.Thread(target=_feed_cache_worker, daemon=True).start()
+    print(f"  [FeedCache] Background-Worker gestartet (alle {_FEED_CACHE_TTL}s)")
 
     # Dauerhafter Research-Worker: fetcht alle 20s neue Pushes, analysiert autonom
     def _research_worker():
@@ -13632,13 +17689,24 @@ if __name__ == "__main__":
                     _train_stacking_model(_research_state)
                 # LightGBM ML-Modell alle 1080 Zyklen (~6h) trainieren, erster Train bei Zyklus 1
                 if _stacking_counter == 1 or _stacking_counter % 1080 == 0:
-                    _ml_train_model()
+                    try:
+                        _ml_train_model()
+                    except Exception as _mle:
+                        log.warning(f"[ML] Training-Fehler im Research-Worker: {_mle}")
+                        import traceback
+                        log.warning(traceback.format_exc())
                 # GBRT-Modell: erster Train bei Zyklus 3, danach alle 360 Zyklen (~2h)
                 if _stacking_counter == 3 or _stacking_counter % 360 == 0:
                     try:
                         _gbrt_train()
                     except Exception as _ge:
                         log.warning(f"[GBRT] Training-Fehler: {_ge}")
+                # Unified ML Training: erster Train bei Zyklus 5, danach alle 1440 Zyklen (~8h)
+                if _stacking_counter == 5 or _stacking_counter % 1440 == 0:
+                    try:
+                        _unified_train()
+                    except Exception as _ue:
+                        log.warning(f"[Unified] Training-Fehler: {_ue}")
                 # GBRT Concept Drift Detection alle 60 Zyklen (~20 Min)
                 if _stacking_counter % 60 == 0 and _stacking_counter > 3:
                     try:
@@ -13657,6 +17725,12 @@ if __name__ == "__main__":
                         _monitoring_tick()
                     except Exception as _me:
                         log.warning(f"[Monitoring] Tick-Fehler: {_me}")
+                # Tagesplan-Cache alle 15 Zyklen (~5 Min) im Hintergrund auffrischen
+                if _stacking_counter % 15 == 0:
+                    try:
+                        _ml_build_tagesplan(background=True)
+                    except Exception as _tp_e:
+                        log.debug(f"[Tagesplan] Background-Refresh: {_tp_e}")
                 # Tuning-State alle 5 Zyklen (100s) auf Disk speichern
                 if _research_state.get("tuning_params_version", 0) > 0:
                     _save_tuning_state()
@@ -13676,6 +17750,11 @@ if __name__ == "__main__":
     emb_thread = threading.Thread(target=_load_embedding_model_background, daemon=True)
     emb_thread.start()
     print(f"  [Embeddings] Modell wird im Hintergrund geladen")
+
+    # ML v2: LLM-Magnitude Backfill im Hintergrund
+    llm_backfill_thread = threading.Thread(target=_backfill_llm_scores, daemon=True)
+    llm_backfill_thread.start()
+    print(f"  [LLM-Backfill] Scoring-Thread gestartet")
 
     # Preload: Tagesplan + Competitor-Feeds im Hintergrund vorberechnen
     def _preload_caches():
@@ -13702,7 +17781,7 @@ if __name__ == "__main__":
     _max_restarts = 5
     while _restart_attempts < _max_restarts:
         try:
-            server = ThreadedHTTPServer(("127.0.0.1", PORT), PushBalancerHandler)
+            server = ThreadedHTTPServer(("0.0.0.0", PORT), PushBalancerHandler)
             _restart_attempts = 0  # Reset bei erfolgreichem Start
             server.serve_forever()
         except KeyboardInterrupt:

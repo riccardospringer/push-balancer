@@ -33,3 +33,12 @@ __pycache__/
 *.jpg
 *.png
 *.pptx
+
+# ML-Modelle & Temp
+*.joblib
+*.json.tmp
+.gbrt_model.json
+.sklearn_gbrt.joblib
+.ml_lgbm.joblib
+.tuning_state.json
+.push_history.db
