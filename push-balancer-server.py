@@ -4611,7 +4611,7 @@ def _gbrt_train_inner(pushes=None):
         "is_late_night", "is_lunch", "is_weekend",
         # LLM Scores (semantisches Signal)
         "llm_magnitude", "llm_clickability", "llm_relevanz",
-        "llm_dringlichkeit", "llm_emotionalitaet", "llm_composite", "llm_has_score",
+        "llm_dringlichkeit", "llm_emotionalitaet", "llm_composite",
         # Recipients (staerkstes Feature)
         "log_recipients", "ios_android_ratio",
         # Text-Features
@@ -16647,7 +16647,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 # Micro-Variation für Live-Ticker
                 _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                 _seed = int.from_bytes(_h[:4], "little")
-                _var = ((_seed % 1000) - 500) / 16000.0  # ±3% Micro-Variation
+                _var = ((_seed % 1000) - 500) / 5000.0
                 _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                 _out[_art_id] = {
                     "or": _live_or, "predicted_or": _live_or,
@@ -16656,54 +16656,41 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     "model_type": cached["basis"],
                 }
 
-            # 2. Fehlende: schneller LightGBM-Fallback SOFORT, volle Pipeline im Hintergrund
-            if _need_predict:
-                _fast_arts = [{"message_id": aid, **a} for aid, a in _need_predict]
+            # 2. Fehlende Predictions: volle Pipeline (nur für neue Artikel)
+            for _art_id, _a in _need_predict:
+                _push = {
+                    "title": _a.get("title", ""), "headline": _a.get("title", ""),
+                    "cat": _a.get("cat", "News"), "hour": _a.get("hour", now.hour),
+                    "ts_num": now.timestamp(),
+                    "is_eilmeldung": _a.get("is_eilmeldung", _a.get("isBreaking", False)),
+                    "is_bild_plus": _a.get("is_bild_plus", False),
+                    "channels": _a.get("channels", []),
+                }
                 try:
-                    _fast = _batch_predict_or(_fast_arts, push_data=_push_data, state=_research_state)
-                except Exception:
-                    _fast = {}
-                for _art_id, _a in _need_predict:
-                    _fp = _fast.get(_art_id, {})
-                    _raw_or = _fp.get("predicted_or", 1.0)
-                    # LightGBM zu niedrig (0.5-1.5) → auf realistischen Bereich (2-8%) skalieren
-                    if _raw_or < 2.5:
-                        _base_or = round(2.0 + max(0, _raw_or - 0.5) * 6.0, 2)
-                    else:
-                        _base_or = _raw_or
+                    _result = _server_predict_or(_push, _push_data, _research_state)
+                    _base_or = _result.get("predicted", 5.0)
+                    _basis = _result.get("basis", "unknown")
+                    # In Cache speichern
                     _cache[_art_id] = {
-                        "base_or": _base_or, "basis": _fp.get("basis", "lgbm"),
-                        "confidence": _fp.get("confidence", 0.5),
-                        "q10": _fp.get("q10", max(0.1, _base_or - 1.5)),
-                        "q90": _fp.get("q90", _base_or + 1.5),
-                        "ts": _tb.time() - 240,  # 60s bis Ablauf → volle Pipeline übernimmt
+                        "base_or": _base_or, "basis": _basis,
+                        "confidence": _result.get("confidence", 0.5),
+                        "q10": _result.get("q10", max(0.1, _base_or - 1.5)),
+                        "q90": _result.get("q90", _base_or + 1.5),
+                        "ts": _tb.time(),
                     }
+                    # Micro-Variation
                     _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                     _seed = int.from_bytes(_h[:4], "little")
-                    _var = ((_seed % 1000) - 500) / 16000.0  # ±3% Micro-Variation
+                    _var = ((_seed % 1000) - 500) / 5000.0
                     _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                     _out[_art_id] = {
                         "or": _live_or, "predicted_or": _live_or,
-                        "basis": _cache[_art_id]["basis"], "confidence": _cache[_art_id]["confidence"],
+                        "basis": _basis, "confidence": _result.get("confidence", 0.5),
                         "q10": _cache[_art_id]["q10"], "q90": _cache[_art_id]["q90"],
-                        "model_type": _cache[_art_id]["basis"],
+                        "model_type": _basis,
                     }
-                # Volle Pipeline im Hintergrund (GPT-Scoring etc.)
-                def _bg(_arts, _pd, _st, _c):
-                    for _aid, _art in _arts:
-                        try:
-                            _p = {"title": _art.get("title",""), "headline": _art.get("title",""),
-                                  "cat": _art.get("cat","News"), "hour": datetime.datetime.now().hour,
-                                  "ts_num": datetime.datetime.now().timestamp(),
-                                  "is_eilmeldung": _art.get("isBreaking", False), "channels": []}
-                            _r = _server_predict_or(_p, _pd, _st)
-                            _c[_aid] = {"base_or": _r.get("predicted",5.0), "basis": _r.get("basis","ml"),
-                                        "confidence": _r.get("confidence",0.5),
-                                        "q10": _r.get("q10", max(0.1, _r.get("predicted",5.0)-1.5)),
-                                        "q90": _r.get("q90", _r.get("predicted",5.0)+1.5), "ts": time.time()}
-                        except Exception:
-                            pass
-                threading.Thread(target=_bg, args=(_need_predict, _push_data, _research_state, _cache), daemon=True).start()
+                except Exception as _e:
+                    log.warning(f"[PredictBatch] Fehler für {_art_id}: {_e}")
 
             elapsed_ms = round((_tb.monotonic() - _t0) * 1000, 1)
             model_type = "none"

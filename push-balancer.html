@@ -1209,7 +1209,7 @@ setInterval(function() {
   .ml-engine-wrap {
     background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; padding: 24px; overflow: hidden; position: relative; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   }
-  .ml-flow-svg { width: 100%; height: 280px; display: block; }
+  .ml-flow-svg { width: 100%; max-width: 800px; height: 280px; display: block; margin: 0 auto; }
   .ml-gauge-row { display: flex; gap: 12px; margin-top: 16px; padding: 0; }
   .ml-gauge-card {
     flex: 1; background: #f8f9fa; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 8px; text-align: center;
@@ -2621,18 +2621,31 @@ setInterval(function() {
 
   <!-- ML Rekuperations-Engine -->
   <div class="ml-engine-wrap" id="mlEnginePanel">
-    <div class="ml-gauge-row" id="mlGaugeRow"></div>
-    <div id="mlGaugeTrained">--</div>
-    <div id="mlGaugeDrift">--</div>
-    <div id="mlGaugeConf">--</div>
-    <div id="mlGaugeMethods">--</div>
-    <div id="mlDeptGrid"></div>
-    <div id="mlTopFindings"></div>
     <svg id="mlFlowSvg" class="ml-flow-svg"></svg>
-    <svg id="mlArcTrain" class="ml-gauge-arc" width="100" height="60"></svg>
-    <svg id="mlArcDrift" class="ml-gauge-arc" width="100" height="60"></svg>
-    <svg id="mlArcConf" class="ml-gauge-arc" width="100" height="60"></svg>
-    <svg id="mlArcMeth" class="ml-gauge-arc" width="100" height="60"></svg>
+    <div class="ml-gauge-row" id="mlGaugeRow">
+      <div class="ml-gauge-card">
+        <svg id="mlArcTrain" class="ml-gauge-arc" width="64" height="40" viewBox="0 0 64 40"></svg>
+        <div class="ml-gauge-value" id="mlGaugeTrained">--</div>
+        <div class="ml-gauge-label">Trainiert</div>
+      </div>
+      <div class="ml-gauge-card">
+        <svg id="mlArcDrift" class="ml-gauge-arc" width="64" height="40" viewBox="0 0 64 40"></svg>
+        <div class="ml-gauge-value" id="mlGaugeDrift">--</div>
+        <div class="ml-gauge-label">Drift</div>
+      </div>
+      <div class="ml-gauge-card">
+        <svg id="mlArcConf" class="ml-gauge-arc" width="64" height="40" viewBox="0 0 64 40"></svg>
+        <div class="ml-gauge-value" id="mlGaugeConf">--</div>
+        <div class="ml-gauge-label">Konfidenz</div>
+      </div>
+      <div class="ml-gauge-card">
+        <svg id="mlArcMeth" class="ml-gauge-arc" width="64" height="40" viewBox="0 0 64 40"></svg>
+        <div class="ml-gauge-value" id="mlGaugeMethods">--</div>
+        <div class="ml-gauge-label">Methoden</div>
+      </div>
+    </div>
+    <div class="ml-dept-grid" id="mlDeptGrid"></div>
+    <div class="ml-findings" id="mlTopFindings"></div>
   </div>
 
   <!-- KERN-ANALYTIK: Accuracy Cockpit -->
@@ -15268,6 +15281,8 @@ function renderMLEngine() {
       svgContent += `<circle id="mlPOut${i}" r="3" fill="#22c55e" opacity="0" filter="url(#mlGlow)"/>`;
     }
 
+    svg.setAttribute('viewBox', '0 0 800 280');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.innerHTML = svgContent;
 
     // ── Event-getriebene Partikel-Animation ──
@@ -15368,7 +15383,7 @@ function renderMLEngine() {
   function drawGaugeArc(svgId, value01, color) {
     const el = document.getElementById(svgId);
     if (!el) return;
-    const cx = 32, cy = 34, r = 28;
+    const cx = 32, cy = 36, r = 24;
     const startAngle = Math.PI;
     const endAngle = Math.PI + Math.PI * Math.min(1, Math.max(0, value01));
     const bgEnd = Math.PI * 2;
