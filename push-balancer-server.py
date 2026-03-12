@@ -16647,7 +16647,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 # Micro-Variation für Live-Ticker
                 _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                 _seed = int.from_bytes(_h[:4], "little")
-                _var = ((_seed % 1000) - 500) / 2500.0
+                _var = ((_seed % 1000) - 500) / 16000.0  # ±3% Micro-Variation
                 _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                 _out[_art_id] = {
                     "or": _live_or, "predicted_or": _live_or,
@@ -16680,7 +16680,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     }
                     _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                     _seed = int.from_bytes(_h[:4], "little")
-                    _var = ((_seed % 1000) - 500) / 2500.0
+                    _var = ((_seed % 1000) - 500) / 16000.0  # ±3% Micro-Variation
                     _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                     _out[_art_id] = {
                         "or": _live_or, "predicted_or": _live_or,
