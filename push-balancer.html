@@ -3040,8 +3040,8 @@ let _prevHeroValue = 0;
 
 // ── API Base ──
 // Live Server (Port 5500) → API-Calls an Python-Server (Port 8050)
-// Python-Server direkt → relative URLs
-const API_BASE = window.location.port === '8050' ? '' : 'http://' + window.location.hostname + ':8050';
+// Python-Server direkt oder Railway/Cloud (Port 443/80) → relative URLs
+const API_BASE = (!window.location.port || window.location.port === '8050' || window.location.port === '443' || window.location.port === '80') ? '' : 'http://' + window.location.hostname + ':8050';
 
 // ── Resilient Fetch — automatischer Retry bei Netzwerkfehlern ──
 async function resilientFetch(url, options = {}, retries = 3) {
