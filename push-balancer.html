@@ -470,13 +470,35 @@ setInterval(function() {
     font-weight: 800;
     letter-spacing: -0.5px;
     color: inherit;
+    font-variant-numeric: tabular-nums;
+    display: inline-block;
+    min-width: 48px;
+    text-align: right;
+  }
+  .or-value.or-up {
+    animation: orSlideUp 2s ease-out;
+  }
+  .or-value.or-down {
+    animation: orSlideDown 2s ease-out;
+  }
+  @keyframes orSlideUp {
+    0%   { transform: translateY(6px); opacity: 0.3; }
+    20%  { transform: translateY(-1px); opacity: 1; text-shadow: 0 0 10px rgba(5,150,105,0.7); }
+    60%  { text-shadow: 0 0 4px rgba(5,150,105,0.3); }
+    100% { transform: translateY(0); opacity: 1; text-shadow: none; }
+  }
+  @keyframes orSlideDown {
+    0%   { transform: translateY(-6px); opacity: 0.3; }
+    20%  { transform: translateY(1px); opacity: 1; text-shadow: 0 0 10px rgba(220,38,38,0.7); }
+    60%  { text-shadow: 0 0 4px rgba(220,38,38,0.3); }
+    100% { transform: translateY(0); opacity: 1; text-shadow: none; }
   }
   .or-label {
     font-size: 9px;
     font-weight: 600;
     text-transform: uppercase;
     opacity: 0.6;
-    margin-top: 1px;
+    margin-left: 2px;
   }
 
   .status-badge {
@@ -2575,13 +2597,16 @@ setInterval(function() {
         <div class="metric-label">Top-Kategorie</div>
       </div>
       <div class="header-metric-sm">
-        <div class="metric-big" id="fLiveRules">--</div>
-        <div class="metric-label">Live-Regeln</div>
+        <div class="metric-big" id="fORMedian">--</div>
+        <div class="metric-label">OR Median</div>
       </div>
       <div class="header-metric-sm">
-        <div class="metric-big" id="fTotalInsights">--</div>
-        <div class="metric-label">Erkenntnisse</div>
+        <div class="metric-big" id="fFeatureCount">--</div>
+        <div class="metric-label">Features</div>
       </div>
+      <!-- Hidden: IDs fuer JS-Kompatibilitaet -->
+      <div id="fLiveRules" style="display:none">0</div>
+      <div id="fTotalInsights" style="display:none">0</div>
     </div>
   </div>
 
@@ -5426,12 +5451,19 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
     }
     _prevScores.set(a.id, { score: a.score, refreshAge: 0 });
 
-    // OR-Pfeil: simpel — über Median = grün, unter Median = rot. IMMER sichtbar.
+    // OR-Pfeil + Animation bei Wertänderung
     const _med = orMedian > 0 ? orMedian : 4.5;
     const _orUp = _showOR != null && _showOR >= _med;
     const _orColor = _showOR != null ? (_orUp ? '#059669' : '#dc2626') : '#94a3af';
     const _orArrow = _orUp ? '&#9650;' : '&#9660;';
-    if (_showOR != null) _prevCandOR.set(a.id, { or: _showOR, refreshAge: 0 });
+    let _orAnim = '';
+    if (_showOR != null) {
+      const _prev = _prevCandOR.get(a.id);
+      if (_prev && Math.abs(_showOR - _prev.or) >= 0.01) {
+        _orAnim = _showOR > _prev.or ? ' or-up' : ' or-down';
+      }
+      _prevCandOR.set(a.id, { or: _showOR, refreshAge: 0 });
+    }
 
     return `
       <div class="article-row${stateClass}${selectedClass}${isFavorite ? ' article-favorite' : ''}" data-index="${idx}" data-id="${a.id}" onclick="openPushPreviewByIndex(${idx})" style="cursor:pointer">
@@ -5446,7 +5478,7 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
           </div>
         </div>
         <div class="cell-status">
-          ${_showOR != null ? `<span class="or-predict" style="color:${_orColor}" title="${escapeHtml(orTooltip)}"><span class="or-value">${_showOR.toFixed(2)}%</span><span style="font-size:11px;font-weight:700;margin-left:3px">${_orArrow}</span><span class="or-label">OR</span></span>` : '<span class="or-predict" style="color:#94a3af"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
+          ${_showOR != null ? `<span class="or-predict" style="color:${_orColor}" title="${escapeHtml(orTooltip)}"><span class="or-value${_orAnim}">${_showOR.toFixed(2)}%</span><span style="font-size:11px;font-weight:700;margin-left:3px">${_orArrow}</span><span class="or-label">OR</span></span>` : '<span class="or-predict" style="color:#94a3af"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
         </div>
         <div class="cell-time">${dateStr}<br>${timeStr}</div>
         <div class="cell-actions">
@@ -13957,15 +13989,17 @@ function renderForschung(data) {
   if (topCatEl && data.top_category) {
     topCatEl.innerHTML = `<span style="font-size:18px">${data.top_category}</span><div class="metric-sub">${data.top_category_or || 0}% OR</div>`;
   }
-  // Live-Regeln
-  if (liveRulesEl) {
-    liveRulesEl.innerHTML = `${data.live_rules_count || 0}<div class="metric-sub">aktiv</div>`;
+  // OR-Median (aus or_distribution)
+  const orMedianEl = document.getElementById('fORMedian');
+  if (orMedianEl && data.or_distribution && data.or_distribution.median) {
+    orMedianEl.innerHTML = `${data.or_distribution.median.toFixed(1)}%<div class="metric-sub">Q1: ${data.or_distribution.q1?.toFixed(1) || '--'}% | Q3: ${data.or_distribution.q3?.toFixed(1) || '--'}%</div>`;
   }
-  // Insights
-  const insExtra = data.insights_trend > 0 ? `<span style="color:#22c55e;font-size:11px;font-weight:700;margin-left:4px">+${data.insights_trend}</span>` : '';
-  if (insEl) {
-    animateValue(insEl, _prevMetrics.insights, data.insights_today, 0, 800, '', insExtra);
-    _prevMetrics.insights = data.insights_today;
+  // Feature Count (aus GBRT oder research_modifiers)
+  const featEl = document.getElementById('fFeatureCount');
+  if (featEl) {
+    const nMod = Object.keys(data.research_modifiers || {}).length;
+    const nFeat = data.gbrt_n_features || nMod || 0;
+    if (nFeat > 0) featEl.innerHTML = `${nFeat}<div class="metric-sub">ML-Features</div>`;
   }
   // Status-Zeile — mit Trend-Richtung und 365-Tage-Info
   if (statusEl) {
@@ -14967,73 +15001,18 @@ function renderForschung(data) {
       </div>`;
   }
 
-  // Autonomes Institut: Entscheidungsvorlagen, Cross-Referenzen, Meta-Research, Exploration
-  renderAutonomousInstitute(data);
-
-  // Learning metrics
-  renderLearningMetrics(data.learning, data.accuracy_trend_arr || []);
-
-  // Top learnings
-  renderTopLearnings(data.ticker.filter(t => t.type === 'learning').slice(0, 6));
-
-  // Ticker
-  renderTicker(data.ticker);
-
-  // Progress Ticker (Server-Autonomie)
-  renderProgressTicker(data.progress_ticker, data);
-
-  // Researcher statuses + autonome Aktivitäten
-  if (data.researchers) {
-    data.researchers.forEach(r => {
-      const el = document.getElementById('researcher-' + r.id);
-      if (el) {
-        const pubEl = el.querySelector('.pub-count');
-        const resEl = el.querySelector('.current-research');
-        if (pubEl) pubEl.textContent = r.publications + (r.memory_depth ? ' (' + r.memory_depth + ' kumuliert)' : '');
-        if (resEl) resEl.textContent = r.current_topic;
-        // Autonome Aktivität anzeigen
-        let actEl = el.querySelector('.auto-activity');
-        if (!actEl && r.auto_action) {
-          actEl = document.createElement('div');
-          actEl.className = 'auto-activity';
-          const focus = el.querySelector('.researcher-focus');
-          if (focus) focus.after(actEl);
-        }
-        if (actEl && r.auto_action) {
-          actEl.innerHTML = `<span class="activity-dot"></span>${escapeHtml(r.auto_action)}`;
-        }
-      }
-    });
-  }
-
-  // BILD Redaktionsteam — kompakt, inklappbar
-  if (data.bild_team) {
-    const countEl = document.getElementById('bildTeamCount');
-    if (countEl) countEl.textContent = `(${data.bild_team.length} Mitarbeiter)`;
-    const grid = document.getElementById('bildTeamGrid');
-    if (grid) {
-      grid.innerHTML = data.bild_team.map(m => `
-        <div class="bild-card">
-          <div class="card-accent"></div>
-          <div class="bild-name">${escapeHtml(m.name)}</div>
-          <div class="bild-role">${escapeHtml(m.role)} <span style="color:var(--text-tertiary);font-weight:400">/ ${escapeHtml(m.ressort)}</span></div>
-          <div class="bild-focus"><span class="current-action">${escapeHtml(m.current_focus)}</span></div>
-        </div>
-      `).join('');
-    }
-  }
-
-  // Dissertations
-  renderDissertations(data.dissertations);
-
-  // ── Emotion-Radar rendern ──
+  // ── ML-relevante Sektionen rendern ──
   renderEmotionRadar(data);
-
-  // ── Live-Pulse rendern ──
   renderLivePulse(data);
 
-  // ── Meilensteine + PhD-Insights rendern ──
-  renderMilestonesAndPhd(data);
+  // Instituts-Reste: nur aufrufen wenn Funktionen existieren UND Daten vorhanden
+  if (typeof renderAutonomousInstitute === 'function') try { renderAutonomousInstitute(data); } catch(e) {}
+  if (typeof renderProgressTicker === 'function' && data.progress_ticker) try { renderProgressTicker(data.progress_ticker, data); } catch(e) {}
+  if (typeof renderLearningMetrics === 'function' && data.learning) try { renderLearningMetrics(data.learning, data.accuracy_trend_arr || []); } catch(e) {}
+  if (typeof renderTopLearnings === 'function' && data.ticker && data.ticker.length) try { renderTopLearnings(data.ticker.filter(t => t.type === 'learning').slice(0, 6)); } catch(e) {}
+  if (typeof renderTicker === 'function' && data.ticker && data.ticker.length) try { renderTicker(data.ticker); } catch(e) {}
+  if (typeof renderDissertations === 'function' && data.dissertations && data.dissertations.length) try { renderDissertations(data.dissertations); } catch(e) {}
+  if (typeof renderMilestonesAndPhd === 'function') try { renderMilestonesAndPhd(data); } catch(e) {}
 
   // Start live animations on first render
   if (!window._forschungAnimStarted) {
