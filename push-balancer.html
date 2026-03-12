@@ -391,7 +391,7 @@ setInterval(function() {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 0;
     position: relative;
     cursor: help;
   }
@@ -401,6 +401,11 @@ setInterval(function() {
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1;
+    background: #f3f4f6;
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-width: 44px;
+    text-align: center;
   }
 
   .score-bar {
@@ -409,6 +414,7 @@ setInterval(function() {
     background: var(--border);
     border-radius: 2px;
     overflow: hidden;
+    margin-top: 4px;
   }
 
   .score-bar-fill {
@@ -1201,26 +1207,26 @@ setInterval(function() {
 
   /* ── ML Rekuperations-Engine ── */
   .ml-engine-wrap {
-    background: #0f172a; border-radius: 16px; padding: 24px; overflow: hidden; position: relative;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; padding: 24px; overflow: hidden; position: relative; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   }
   .ml-flow-svg { width: 100%; height: 280px; display: block; }
   .ml-gauge-row { display: flex; gap: 12px; margin-top: 16px; padding: 0; }
   .ml-gauge-card {
-    flex: 1; background: rgba(255,255,255,0.05); border-radius: 12px; padding: 14px 8px; text-align: center;
+    flex: 1; background: #f8f9fa; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 8px; text-align: center;
   }
   .ml-gauge-arc { display: block; margin: 0 auto 6px; }
-  .ml-gauge-value { font-size: 24px; font-weight: 800; color: #fff; line-height: 1; }
-  .ml-gauge-label { font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+  .ml-gauge-value { font-size: 24px; font-weight: 800; color: #1a1a1a; line-height: 1; }
+  .ml-gauge-label { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
   .ml-dept-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; margin-top: 16px; }
   .ml-dept-row { display: flex; align-items: center; gap: 8px; }
-  .ml-dept-name { font-size: 11px; color: rgba(255,255,255,0.6); width: 100px; flex-shrink: 0; }
-  .ml-dept-bar-bg { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
+  .ml-dept-name { font-size: 11px; color: #6b7280; width: 100px; flex-shrink: 0; }
+  .ml-dept-bar-bg { flex: 1; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; }
   .ml-dept-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-  .ml-dept-count { font-size: 10px; color: rgba(255,255,255,0.4); width: 32px; text-align: right; }
+  .ml-dept-count { font-size: 10px; color: #9ca3af; width: 32px; text-align: right; }
   .ml-findings { margin-top: 12px; }
   .ml-finding-item {
-    font-size: 11px; color: rgba(255,255,255,0.7); padding: 6px 10px; margin-top: 4px;
-    background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.2); border-radius: 6px;
+    font-size: 11px; color: #374151; padding: 6px 10px; margin-top: 4px;
+    background: #fffbeb; border: 1px solid rgba(234,179,8,0.3); border-radius: 6px;
   }
   @keyframes enginePulse {
     0%, 100% { transform: scale(0.95); opacity: 0.7; }
@@ -2613,20 +2619,20 @@ setInterval(function() {
   <!-- Orchestrator (Approvals + Schwab Status) -->
   <div id="orchestratorStatus"></div>
 
-  <!-- ML Rekuperations-Engine (ausgeblendet — redundant mit GBRT Modell) -->
-  <div class="ml-engine-wrap" id="mlEnginePanel" style="display:none">
+  <!-- ML Rekuperations-Engine -->
+  <div class="ml-engine-wrap" id="mlEnginePanel">
     <div class="ml-gauge-row" id="mlGaugeRow"></div>
-    <div id="mlGaugeTrained" style="display:none">--</div>
-    <div id="mlGaugeDrift" style="display:none">--</div>
-    <div id="mlGaugeConf" style="display:none">--</div>
-    <div id="mlGaugeMethods" style="display:none">--</div>
-    <div id="mlDeptGrid" style="display:none"></div>
-    <div id="mlTopFindings" style="display:none"></div>
-    <svg id="mlFlowSvg" style="display:none"></svg>
-    <svg id="mlArcTrain" style="display:none"></svg>
-    <svg id="mlArcDrift" style="display:none"></svg>
-    <svg id="mlArcConf" style="display:none"></svg>
-    <svg id="mlArcMeth" style="display:none"></svg>
+    <div id="mlGaugeTrained">--</div>
+    <div id="mlGaugeDrift">--</div>
+    <div id="mlGaugeConf">--</div>
+    <div id="mlGaugeMethods">--</div>
+    <div id="mlDeptGrid"></div>
+    <div id="mlTopFindings"></div>
+    <svg id="mlFlowSvg" class="ml-flow-svg"></svg>
+    <svg id="mlArcTrain" class="ml-gauge-arc" width="100" height="60"></svg>
+    <svg id="mlArcDrift" class="ml-gauge-arc" width="100" height="60"></svg>
+    <svg id="mlArcConf" class="ml-gauge-arc" width="100" height="60"></svg>
+    <svg id="mlArcMeth" class="ml-gauge-arc" width="100" height="60"></svg>
   </div>
 
   <!-- KERN-ANALYTIK: Accuracy Cockpit -->
@@ -14460,8 +14466,8 @@ function renderForschung(data) {
       </div>`).join('');
   }
 
-  // Orchestrator
-  // PENDING APPROVALS — rote Notification
+  // ── Orchestrator + Institute blocks (wrapped in try/catch to protect animations) ──
+  try {
   const pendingApprovals = data.pending_approvals || [];
 
   const orchEl = document.getElementById('orchestratorStatus');
@@ -14502,21 +14508,27 @@ function renderForschung(data) {
             <div style="font-size:11px;opacity:0.6;margin-top:2px">${liveRules.length} Live-Regeln | ${data.n_pushes || 0} Pushes analysiert</div>
           </div>
         </div>
-        ${weekComp.this_week ? `
+        ${weekComp.this_week && weekComp.last_week ? (() => {
+          const twP = weekComp.this_week.pushes || weekComp.this_week.count || 0;
+          const lwP = weekComp.last_week.pushes || weekComp.last_week.count || 0;
+          const orCh = weekComp.or_change != null ? weekComp.or_change : (weekComp.this_week.avg_or - weekComp.last_week.avg_or).toFixed(1);
+          const pCh = weekComp.push_change != null ? weekComp.push_change : (twP - lwP);
+          return `
         <div style="display:flex;gap:12px;padding:0 16px 10px;font-size:11px">
           <div style="flex:1;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px">
             <div style="opacity:0.5;margin-bottom:2px">Diese Woche</div>
-            <div><b>${weekComp.this_week.pushes}</b> Pushes | OR <b>${weekComp.this_week.avg_or}%</b></div>
+            <div><b>${twP}</b> Pushes | OR <b>${weekComp.this_week.avg_or}%</b></div>
           </div>
           <div style="flex:1;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px">
             <div style="opacity:0.5;margin-bottom:2px">Letzte Woche</div>
-            <div><b>${weekComp.last_week.pushes}</b> Pushes | OR <b>${weekComp.last_week.avg_or}%</b></div>
+            <div><b>${lwP}</b> Pushes | OR <b>${weekComp.last_week.avg_or}%</b></div>
           </div>
           <div style="flex:1;background:#f8f9fa;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px">
             <div style="opacity:0.5;margin-bottom:2px">Veraenderung</div>
-            <div style="color:${weekComp.or_change >= 0 ? '#22c55e' : '#ef4444'}">${weekComp.or_change >= 0 ? '+' : ''}${weekComp.or_change}% OR | ${weekComp.push_change >= 0 ? '+' : ''}${weekComp.push_change} Pushes</div>
+            <div style="color:${orCh >= 0 ? '#22c55e' : '#ef4444'}">${orCh >= 0 ? '+' : ''}${orCh}% OR | ${pCh >= 0 ? '+' : ''}${pCh} Pushes</div>
           </div>
-        </div>` : ''}
+        </div>`;
+        })() : ''}
         ${liveRules.length > 0 ? `
         <details style="border-top:1px solid #e5e7eb">
           <summary style="padding:10px 16px;font-size:12px;font-weight:600;cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;opacity:0.9">
@@ -15014,7 +15026,9 @@ function renderForschung(data) {
   if (typeof renderDissertations === 'function' && data.dissertations && data.dissertations.length) try { renderDissertations(data.dissertations); } catch(e) {}
   if (typeof renderMilestonesAndPhd === 'function') try { renderMilestonesAndPhd(data); } catch(e) {}
 
-  // Start live animations on first render
+  } catch(_renderErr) { console.warn('Forschung render block error (non-critical):', _renderErr); }
+
+  // Start live animations on first render — ALWAYS runs (outside try/catch)
   if (!window._forschungAnimStarted) {
     startForschungAnimations();
     window._forschungAnimStarted = true;
@@ -15212,9 +15226,9 @@ function renderMLEngine() {
       const sy = 50 + i * 60;
       const id = 'mlPathIn' + i;
       inputPaths.push(id);
-      svgContent += `<path id="${id}" d="M 30,${sy} C 160,${sy} 260,${cy} ${cx - r},${cy}" fill="none" stroke="rgba(6,182,212,0.15)" stroke-width="2" stroke-dasharray="4,4"/>`;
-      svgContent += `<text x="36" y="${sy - 8}" fill="rgba(255,255,255,0.45)" font-size="10" font-weight="600">${inputLabels[i]}</text>`;
-      svgContent += `<circle cx="30" cy="${sy}" r="4" fill="#06b6d4" opacity="0.6"/>`;
+      svgContent += `<path id="${id}" d="M 30,${sy} C 160,${sy} 260,${cy} ${cx - r},${cy}" fill="none" stroke="rgba(6,182,212,0.25)" stroke-width="2" stroke-dasharray="4,4"/>`;
+      svgContent += `<text x="36" y="${sy - 8}" fill="#374151" font-size="10" font-weight="600">${inputLabels[i]}</text>`;
+      svgContent += `<circle cx="30" cy="${sy}" r="4" fill="#06b6d4" opacity="0.8"/>`;
     }
 
     // Output-Pfade (Mitte → rechts)
@@ -15223,27 +15237,27 @@ function renderMLEngine() {
       const ey = 50 + i * 60;
       const id = 'mlPathOut' + i;
       outputPaths.push(id);
-      svgContent += `<path id="${id}" d="M ${cx + r},${cy} C 540,${cy} 640,${ey} 770,${ey}" fill="none" stroke="rgba(34,197,94,0.15)" stroke-width="2" stroke-dasharray="4,4"/>`;
-      svgContent += `<text x="680" y="${ey - 8}" fill="rgba(255,255,255,0.45)" font-size="10" font-weight="600">${outputLabels[i]}</text>`;
-      svgContent += `<circle cx="770" cy="${ey}" r="4" fill="#22c55e" opacity="0.6"/>`;
+      svgContent += `<path id="${id}" d="M ${cx + r},${cy} C 540,${cy} 640,${ey} 770,${ey}" fill="none" stroke="rgba(34,197,94,0.25)" stroke-width="2" stroke-dasharray="4,4"/>`;
+      svgContent += `<text x="680" y="${ey - 8}" fill="#374151" font-size="10" font-weight="600">${outputLabels[i]}</text>`;
+      svgContent += `<circle cx="770" cy="${ey}" r="4" fill="#22c55e" opacity="0.8"/>`;
     }
 
     // Engine-Kreis
     svgContent += `
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="rgba(6,182,212,0.08)" stroke="rgba(6,182,212,0.4)" stroke-width="2"/>
-      <circle cx="${cx}" cy="${cy}" r="${r + 12}" fill="none" stroke="rgba(6,182,212,0.2)" stroke-width="1.5" stroke-dasharray="8,6" style="transform-origin:${cx}px ${cy}px;animation:ringRotate 12s linear infinite"/>
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="rgba(6,182,212,0.08)" stroke="rgba(6,182,212,0.5)" stroke-width="2"/>
+      <circle cx="${cx}" cy="${cy}" r="${r + 12}" fill="none" stroke="rgba(6,182,212,0.3)" stroke-width="1.5" stroke-dasharray="8,6" style="transform-origin:${cx}px ${cy}px;animation:ringRotate 12s linear infinite"/>
       <circle cx="${cx}" cy="${cy}" r="8" fill="#06b6d4" style="animation:enginePulse 2s ease-in-out infinite"/>
-      <text x="${cx}" y="${cy - 12}" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11" font-weight="800">GBRT</text>
-      <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11" font-weight="800">ENGINE</text>
-      <text x="${cx}" y="${cy + 22}" text-anchor="middle" fill="rgba(6,182,212,0.5)" font-size="8">200 Trees · Live</text>
+      <text x="${cx}" y="${cy - 12}" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="800">GBRT</text>
+      <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="800">ENGINE</text>
+      <text x="${cx}" y="${cy + 22}" text-anchor="middle" fill="#6b7280" font-size="8">200 Trees · Live</text>
     `;
 
     // Sub-Labels unter Engine
     svgContent += `
-      <text x="${cx - 60}" y="${cy + r + 30}" fill="rgba(234,179,8,0.5)" font-size="9" font-weight="600">Concept Drift</text>
-      <text x="${cx + 10}" y="${cy + r + 30}" fill="rgba(139,92,246,0.5)" font-size="9" font-weight="600">Kalibrierung (PAVA)</text>
-      <line x1="${cx - 40}" y1="${cy + r + 8}" x2="${cx - 20}" y2="${cy + r + 20}" stroke="rgba(234,179,8,0.3)" stroke-width="1"/>
-      <line x1="${cx + 40}" y1="${cy + r + 8}" x2="${cx + 50}" y2="${cy + r + 20}" stroke="rgba(139,92,246,0.3)" stroke-width="1"/>
+      <text x="${cx - 60}" y="${cy + r + 30}" fill="#d97706" font-size="9" font-weight="600">Concept Drift</text>
+      <text x="${cx + 10}" y="${cy + r + 30}" fill="#7c3aed" font-size="9" font-weight="600">Kalibrierung (PAVA)</text>
+      <line x1="${cx - 40}" y1="${cy + r + 8}" x2="${cx - 20}" y2="${cy + r + 20}" stroke="rgba(234,179,8,0.4)" stroke-width="1"/>
+      <line x1="${cx + 40}" y1="${cy + r + 8}" x2="${cx + 50}" y2="${cy + r + 20}" stroke="rgba(139,92,246,0.4)" stroke-width="1"/>
     `;
 
     // Partikel-Container: 16 Input (cyan) + 16 Output (gruen), event-getrieben
@@ -15365,7 +15379,7 @@ function renderMLEngine() {
       return `M ${x1},${y1} A ${r},${r} 0 ${large} 1 ${x2},${y2}`;
     }
     el.innerHTML = `
-      <path d="${arc(startAngle, bgEnd)}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="4" stroke-linecap="round"/>
+      <path d="${arc(startAngle, bgEnd)}" fill="none" stroke="#e5e7eb" stroke-width="4" stroke-linecap="round"/>
       <path d="${arc(startAngle, endAngle)}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round"/>
     `;
   }
@@ -15459,7 +15473,7 @@ function renderMLEngine() {
         rows.push(`<div class="ml-dept-row">
           <div class="ml-dept-name">${disp.label}</div>
           <div class="ml-dept-bar-bg"><div class="ml-dept-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
-          <div class="ml-dept-count" style="color:${stats.critical > 0 ? '#ef4444' : 'rgba(255,255,255,0.4)'}">${stats.pass}/${stats.total}</div>
+          <div class="ml-dept-count" style="color:${stats.critical > 0 ? '#ef4444' : '#9ca3af'}">${stats.pass}/${stats.total}</div>
         </div>`);
       }
       deptGrid.innerHTML = rows.join('');
@@ -15473,12 +15487,12 @@ function renderMLEngine() {
         return `<div class="ml-dept-row">
           <div class="ml-dept-name">${escapeHtml((f.name || '').substring(0, 18))}</div>
           <div class="ml-dept-bar-bg"><div class="ml-dept-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
-          <div class="ml-dept-count" style="color:rgba(255,255,255,0.4)">${(f.importance * 100).toFixed(1)}%</div>
+          <div class="ml-dept-count" style="color:#9ca3af">${(f.importance * 100).toFixed(1)}%</div>
         </div>`;
       }).join('');
     } else {
       // Kein Review und kein GBRT verfuegbar
-      deptGrid.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.35);text-align:center;padding:12px 0;grid-column:1/-1">Feature-Gruppen noch nicht gelaufen — Daten werden beim naechsten Zyklus erhoben</div>';
+      deptGrid.innerHTML = '<div style="font-size:11px;color:#9ca3af;text-align:center;padding:12px 0;grid-column:1/-1">Feature-Gruppen noch nicht gelaufen — Daten werden beim naechsten Zyklus erhoben</div>';
     }
   }
 
@@ -15503,7 +15517,7 @@ function renderMLEngine() {
       findings = findings.slice(0, 3);
     }
     if (findings.length === 0) {
-      findingsEl.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3);padding:8px 0;text-align:center">Keine Findings — Review-Daten werden gesammelt</div>';
+      findingsEl.innerHTML = '<div style="font-size:11px;color:#9ca3af;padding:8px 0;text-align:center">Keine Findings — Review-Daten werden gesammelt</div>';
     } else {
       const sevColors = {warning: '#eab308', info: '#06b6d4', suggestion: '#8b5cf6', critical: '#ef4444'};
       findingsEl.innerHTML = findings.filter(f => f && f.finding).map(f => {
@@ -15513,9 +15527,9 @@ function renderMLEngine() {
         const deptName = f.dept || '';
         return `<div class="ml-finding-item" style="border-color:${col}40">
           <span style="color:${col};font-weight:700;margin-right:6px">${f.severity === 'critical' ? '!!' : f.severity === 'warning' ? '!' : '>'}</span>
-          ${agentName ? '<span style="color:rgba(255,255,255,0.5);font-size:10px">[' + agentName + ']</span> ' : ''}"${findingText}" ${deptName ? '<span style="opacity:0.5;margin-left:4px">(' + deptName + ')</span>' : ''}
+          ${agentName ? '<span style="color:#6b7280;font-size:10px">[' + agentName + ']</span> ' : ''}"${findingText}" ${deptName ? '<span style="opacity:0.5;margin-left:4px">(' + deptName + ')</span>' : ''}
         </div>`;
-      }).join('') || '<div style="font-size:11px;color:rgba(255,255,255,0.3);padding:8px 0;text-align:center">Alle Checks bestanden</div>';
+      }).join('') || '<div style="font-size:11px;color:#9ca3af;padding:8px 0;text-align:center">Alle Checks bestanden</div>';
     }
   }
 }
