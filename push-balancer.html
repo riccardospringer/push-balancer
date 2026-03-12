@@ -460,8 +460,9 @@ setInterval(function() {
 
   .or-predict {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
+    gap: 3px;
     line-height: 1;
   }
   .or-value {
@@ -2268,7 +2269,7 @@ setInterval(function() {
   <div class="topnav-left">
     <div class="logo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 01-3.46 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="4" r="3" fill="#dc2626"/></svg>
-      Push Balancer <span style="font-size:9px;color:#6366f1;opacity:0.7;margin-left:4px" id="pbVersion">v4</span>
+      Push Balancer <span style="font-size:9px;color:#6366f1;opacity:0.7;margin-left:4px" id="pbVersion">v9</span>
     </div>
     <div class="nav-tabs">
       <button class="nav-tab active" data-tab="candidates" onclick="switchTab('candidates', this)">Kandidaten</button>
@@ -2587,36 +2588,20 @@ setInterval(function() {
   <!-- Orchestrator (Approvals + Schwab Status) -->
   <div id="orchestratorStatus"></div>
 
-  <!-- ML Rekuperations-Engine (direkt sichtbar, nicht einklappbar) -->
-  <div class="ml-engine-wrap" id="mlEnginePanel" style="margin-bottom:20px">
-    <svg class="ml-flow-svg" id="mlFlowSvg" viewBox="0 0 800 280"></svg>
-    <div class="ml-gauge-row" id="mlGaugeRow">
-      <div class="ml-gauge-card">
-        <svg class="ml-gauge-arc" id="mlArcTrain" width="64" height="36" viewBox="0 0 64 36"></svg>
-        <div class="ml-gauge-value" id="mlGaugeTrained">--</div>
-        <div class="ml-gauge-label">Trainiert</div>
-      </div>
-      <div class="ml-gauge-card">
-        <svg class="ml-gauge-arc" id="mlArcDrift" width="64" height="36" viewBox="0 0 64 36"></svg>
-        <div class="ml-gauge-value" id="mlGaugeDrift">--</div>
-        <div class="ml-gauge-label">Drift</div>
-      </div>
-      <div class="ml-gauge-card">
-        <svg class="ml-gauge-arc" id="mlArcConf" width="64" height="36" viewBox="0 0 64 36"></svg>
-        <div class="ml-gauge-value" id="mlGaugeConf">--</div>
-        <div class="ml-gauge-label">Konfidenz</div>
-      </div>
-      <div class="ml-gauge-card">
-        <svg class="ml-gauge-arc" id="mlArcMeth" width="64" height="36" viewBox="0 0 64 36"></svg>
-        <div class="ml-gauge-value" id="mlGaugeMethods">10</div>
-        <div class="ml-gauge-label">Methoden</div>
-      </div>
-    </div>
-    <div style="margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08)">
-      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Feature-Gruppen</div>
-      <div class="ml-dept-grid" id="mlDeptGrid"></div>
-    </div>
-    <div class="ml-findings" id="mlTopFindings"></div>
+  <!-- ML Rekuperations-Engine (ausgeblendet — redundant mit GBRT Modell) -->
+  <div class="ml-engine-wrap" id="mlEnginePanel" style="display:none">
+    <div class="ml-gauge-row" id="mlGaugeRow"></div>
+    <div id="mlGaugeTrained" style="display:none">--</div>
+    <div id="mlGaugeDrift" style="display:none">--</div>
+    <div id="mlGaugeConf" style="display:none">--</div>
+    <div id="mlGaugeMethods" style="display:none">--</div>
+    <div id="mlDeptGrid" style="display:none"></div>
+    <div id="mlTopFindings" style="display:none"></div>
+    <svg id="mlFlowSvg" style="display:none"></svg>
+    <svg id="mlArcTrain" style="display:none"></svg>
+    <svg id="mlArcDrift" style="display:none"></svg>
+    <svg id="mlArcConf" style="display:none"></svg>
+    <svg id="mlArcMeth" style="display:none"></svg>
   </div>
 
   <!-- KERN-ANALYTIK: Accuracy Cockpit -->
@@ -2645,7 +2630,7 @@ setInterval(function() {
   </div>
 
   <!-- Emotion-Radar (aus API emotion_radar) -->
-  <details open>
+  <details>
     <summary class="forschung-section-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       Emotion-Radar
@@ -2656,7 +2641,7 @@ setInterval(function() {
   </details>
 
   <!-- Live-Pulse (aus API live_pulse) -->
-  <details open>
+  <details>
     <summary class="forschung-section-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       Live-Pulse
@@ -2681,7 +2666,7 @@ setInterval(function() {
   </div>
 
   <!-- ACTIONABLE: Top & Flop Pushes -->
-  <details open>
+  <details>
     <summary class="forschung-section-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       Top & Flop Pushes
@@ -2711,7 +2696,7 @@ setInterval(function() {
   </div>
 
   <!-- GBRT Model Status -->
-  <details open>
+  <details>
     <summary class="forschung-section-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       GBRT Modell
@@ -2782,90 +2767,31 @@ setInterval(function() {
     </div>
   </details>
 
-  <!-- Forschungs-Meilensteine -->
-  <details>
-    <summary class="forschung-section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      Forschungs-Meilensteine
-    </summary>
-    <div id="milestonesSection" style="margin-top:8px;margin-bottom:16px">
-      <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Lade Meilensteine...</div>
-    </div>
-  </details>
-
-  <!-- PhD-Insights / Forschungsfelder -->
-  <details>
-    <summary class="forschung-section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      Forschungsfelder
-    </summary>
-    <div id="phdInsightsSection" style="margin-top:8px;margin-bottom:16px">
-      <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Lade Forschungsfelder...</div>
-    </div>
-  </details>
-
-  <!-- Live Ticker (einklappbar) -->
-  <details>
-    <summary class="forschung-section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      Live Ticker
-      <div style="display:flex;gap:6px;margin-left:auto">
-        <span id="ptEnsemble" class="pt-stat" style="font-size:10px">--</span>
-        <span id="ptFeedback" class="pt-stat" style="font-size:10px">--</span>
-        <span id="ptProposals" class="pt-stat" style="font-size:10px;display:none">--</span>
-      </div>
-    </summary>
-    <div class="progress-ticker-wrap" style="margin-top:8px;border:none;box-shadow:none">
-      <div class="pt-tabs">
-        <button class="pt-tab pt-tab-active" onclick="switchPtTab('progress', this)">Fortschritt</button>
-        <button class="pt-tab" onclick="switchPtTab('research', this)">Research Feed</button>
-        <button class="pt-tab" onclick="switchPtTab('all', this)">Alle</button>
-      </div>
-      <div class="progress-ticker-body" id="progressTicker" style="max-height:350px">
-        <div style="color:#64748b;font-size:13px;padding:24px;text-align:center">Warte auf erste Daten...</div>
-      </div>
-    </div>
-  </details>
-
-  <!-- Algorithmus-Labor (Algo-Team) -->
-  <details open>
-    <summary class="forschung-section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      Algorithmus-Labor
-    </summary>
-    <div id="algoTeamSection" style="margin-top:8px"></div>
-  </details>
-  <div id="guestExchangeThreads" style="display:none"></div>
-  <div id="researchProjectsSection" style="display:none"></div>
-  <div id="guestResearcherGrid" style="display:none"></div>
-  <div id="bildTeamGrid" style="display:none"></div>
-
-  <!-- System Health Monitor -->
-  <details>
-    <summary class="forschung-section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      System Health
-    </summary>
-    <div style="margin-top:12px">
-      <div style="background:#fff;border:1px solid var(--border-light);border-radius:12px;padding:16px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <span id="healthDot" style="width:10px;height:10px;border-radius:50%;background:#999;display:inline-block"></span>
-          <span id="healthStatus" style="font-size:14px;font-weight:700;color:var(--text-primary)">Pruefe...</span>
-          <span id="healthUptime" style="font-size:12px;color:var(--text-tertiary);margin-left:auto"></span>
-        </div>
-        <div id="healthEndpoints" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;font-size:12px"></div>
-        <div id="healthMeta" style="margin-top:10px;font-size:11px;color:var(--text-tertiary)"></div>
-      </div>
-    </div>
-  </details>
-  <div id="dissertationList" style="display:none"></div>
-
-  <!-- Hidden containers for removed sections (keep IDs so JS doesn't error) -->
-  <div id="researchMemorySection" style="display:none"></div>
-  <div id="instituteReviewSection" style="display:none"></div>
-  <div id="autonomousInstituteSection" style="display:none"></div>
-  <div id="learningMetrics" style="display:none"></div>
-  <div id="topLearningsToday" style="display:none"></div>
+  <!-- Ausgeblendete Sektionen (IDs erhalten fuer JS-Kompatibilitaet) -->
+  <div style="display:none">
+    <div id="milestonesSection"></div>
+    <div id="phdInsightsSection"></div>
+    <div id="progressTicker"></div>
+    <div id="ptEnsemble"></div>
+    <div id="ptFeedback"></div>
+    <div id="ptProposals"></div>
+    <div id="algoTeamSection"></div>
+    <div id="guestExchangeThreads"></div>
+    <div id="researchProjectsSection"></div>
+    <div id="guestResearcherGrid"></div>
+    <div id="bildTeamGrid"></div>
+    <div id="healthDot"></div>
+    <div id="healthStatus"></div>
+    <div id="healthUptime"></div>
+    <div id="healthEndpoints"></div>
+    <div id="healthMeta"></div>
+    <div id="dissertationList"></div>
+    <div id="researchMemorySection"></div>
+    <div id="instituteReviewSection"></div>
+    <div id="autonomousInstituteSection"></div>
+    <div id="learningMetrics"></div>
+    <div id="topLearningsToday"></div>
+  </div>
 
 </div><!-- /tabForschung -->
 
@@ -4023,6 +3949,12 @@ function applyFilterAndSort(forceInvalidate) {
   if (filteredArticles.length > 0) _fetchServerPredictions(filteredArticles);
 }
 
+// Live-Ticker: OR-Predictions alle 10s automatisch aktualisieren
+setInterval(function() {
+  if (currentTab !== 'candidates' || !filteredArticles || filteredArticles.length === 0) return;
+  _ageScoreDeltas();
+  _fetchServerPredictions(filteredArticles);
+}, 10000);
 
 // ── Kategorie-Klassifikation ──
 function classifyPushChannel(msg) {
@@ -5494,43 +5426,17 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
     }
     _prevScores.set(a.id, { score: a.score, refreshAge: 0 });
 
-    // OR-Trend-Pfeil: Zeigt Tendenz relativ zum Median + zeitliche Aenderungen
-    let orDelta = '';
-    if (_showOR != null) {
-      const prevOr = _prevCandOR.get(a.id);
-      if (prevOr && prevOr.refreshAge < 3 && Math.abs(_showOR - prevOr.or) >= 0.01) {
-        // Zeitliche Aenderung: Pfeil zeigt ob Prognose gestiegen/gefallen
-        orDelta = _showOR > prevOr.or
-          ? `<span class="score-delta up" style="margin-left:2px" title="OR gestiegen: ${prevOr.or.toFixed(2)}→${_showOR.toFixed(2)}">&#9650;</span>`
-          : `<span class="score-delta down" style="margin-left:2px" title="OR gefallen: ${prevOr.or.toFixed(2)}→${_showOR.toFixed(2)}">&#9660;</span>`;
-      } else if (!prevOr && orMedian > 0) {
-        // Erster Render: Pfeil zeigt ob ueber/unter Median
-        orDelta = _showOR > orMedian
-          ? `<span class="score-delta up" style="margin-left:2px;opacity:0.5" title="Ueber Median (${orMedian.toFixed(2)}%)">&#9650;</span>`
-          : `<span class="score-delta down" style="margin-left:2px;opacity:0.5" title="Unter Median (${orMedian.toFixed(2)}%)">&#9660;</span>`;
-      }
-      _prevCandOR.set(a.id, { or: _showOR, refreshAge: 0 });
-    }
-
-    // Sparkline: trackt echte Modell-Prognose (stabil, nicht spread-abhängig)
-    if (_showOR != null) {
-      const hist = _orHistory.get(a.id) || [];
-      if (hist.length === 0 || Math.abs(hist[hist.length - 1] - _showOR) >= 0.005) hist.push(_showOR);
-      if (hist.length > 3) hist.shift();
-      _orHistory.set(a.id, hist);
-    }
-    // Prune orphaned _orHistory entries (not in current articles)
-    if (_orHistory.size > 1000) {
-      const currentIds = new Set(filteredArticles.map(x => x.id));
-      for (const k of _orHistory.keys()) { if (!currentIds.has(k)) _orHistory.delete(k); }
-    }
-    const sparkHtml = _renderSparkline(a.id, _showOR);
+    // OR-Pfeil: simpel — über Median = grün, unter Median = rot. IMMER sichtbar.
+    const _med = orMedian > 0 ? orMedian : 4.5;
+    const _orUp = _showOR != null && _showOR >= _med;
+    const _orColor = _showOR != null ? (_orUp ? '#059669' : '#dc2626') : '#94a3af';
+    const _orArrow = _orUp ? '&#9650;' : '&#9660;';
+    if (_showOR != null) _prevCandOR.set(a.id, { or: _showOR, refreshAge: 0 });
 
     return `
       <div class="article-row${stateClass}${selectedClass}${isFavorite ? ' article-favorite' : ''}" data-index="${idx}" data-id="${a.id}" onclick="openPushPreviewByIndex(${idx})" style="cursor:pointer">
         <div class="cell-score">
           <span class="score-value" style="color:${scoreColor(a.score)}">${a.score}${scoreDelta}</span>
-          <div class="score-bar"><div class="score-bar-fill" style="width:${Math.min(100, Math.max(5, a.score * 1.5))}%;background:${scoreColor(a.score)}"></div></div>
           ${renderTooltip(a)}
         </div>
         <div class="cell-content">
@@ -5540,7 +5446,7 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
           </div>
         </div>
         <div class="cell-status">
-          ${_showOR != null ? `<span class="or-predict" style="color:${orColor(_showOR)}" title="${escapeHtml(orTooltip)}"><span class="or-value">${_showOR.toFixed(2)}%</span>${orDelta}${sparkHtml}<span class="or-label">OR</span></span>` : '<span class="or-predict"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
+          ${_showOR != null ? `<span class="or-predict" style="color:${_orColor}" title="${escapeHtml(orTooltip)}"><span class="or-value">${_showOR.toFixed(2)}%</span><span style="font-size:11px;font-weight:700;margin-left:3px">${_orArrow}</span><span class="or-label">OR</span></span>` : '<span class="or-predict" style="color:#94a3af"><span class="or-value">--</span><span class="or-label">OR</span></span>'}
         </div>
         <div class="cell-time">${dateStr}<br>${timeStr}</div>
         <div class="cell-actions">
@@ -6362,7 +6268,7 @@ async function _fetchServerPredictions(articleList) {
   try {
     var toPredict = articleList.filter(function(a) {
       var cached = _serverORCache.get(a.id);
-      return !cached || (Date.now() - cached.ts > 50000);
+      return !cached || (Date.now() - cached.ts > 8000);
     });
     if (toPredict.length === 0) { _serverPredictionInFlight = false; return; }
 

@@ -168,7 +168,7 @@ except ImportError:
 import ssl as _ssl_mod
 _GLOBAL_SSL_CTX = _ssl_mod.create_default_context(cafile=_SSL_CERTFILE)
 BILD_SITEMAP = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
-PUSH_API_BASE = os.environ.get("PUSH_API_BASE", "")
+PUSH_API_BASE = os.environ.get("PUSH_API_BASE", "http://push-frontend.bildcms.de")
 SERVE_DIR = os.path.dirname(os.path.abspath(__file__))  # nur das Verzeichnis mit den Dateien
 
 # CORS: erlaubte Origins (localhost + Railway)
@@ -16048,13 +16048,11 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             # OR > 30% = Datenbankfehler (z.B. 1.3M% Ausreisser) — clampen oder skippen
             _OR_SANE_MAX = 30.0
             _cutoff_24h = _research_state.get("cutoff_24h", time.time() - 24 * 3600)
-            _raw_push_data = _research_state.get("push_data", [])
-            # Fallback: wenn Research-Worker noch nicht alle geladen hat, direkt aus DB
-            if len(_raw_push_data) < 15000:
-                try:
-                    _raw_push_data = _push_db_load_all()
-                except Exception:
-                    pass
+            # Immer direkt aus DB laden — Research-Worker hat nur API-Subset
+            try:
+                _raw_push_data = _push_db_load_all()
+            except Exception:
+                _raw_push_data = _research_state.get("push_data", [])
             _mature_data = []
             for _p in _raw_push_data:
                 if _p.get("ts_num", 0) <= 0 or _p["ts_num"] >= _cutoff_24h or _p.get("or", 0) <= 0:
@@ -16084,6 +16082,43 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     logging.info(f"[Forschung-Fallback] Findings direkt berechnet aus {len(_mature_data)} reifen Pushes")
                 except Exception as _fe:
                     logging.warning(f"[Forschung-Fallback] Fehler: {_fe}")
+
+            # ── FALLBACK: temporal_trends direkt berechnen wenn leer ──
+            if not findings.get("temporal_trends") and len(_mature_data) >= 10:
+                try:
+                    findings["temporal_trends"] = _compute_temporal_trends(_mature_data)
+                    _research_state["findings"] = findings
+                    logging.info(f"[Forschung-Fallback] temporal_trends berechnet aus {len(_mature_data)} Pushes")
+                except Exception as _fe:
+                    logging.warning(f"[Forschung-Fallback] temporal_trends Fehler: {_fe}")
+
+            # ── FALLBACK: week_comparison direkt berechnen wenn leer ──
+            if not _research_state.get("week_comparison") and len(_mature_data) >= 10:
+                try:
+                    _now_ts = time.time()
+                    _wd = datetime.datetime.now().weekday()
+                    _week_start = _now_ts - (_wd * 86400 + datetime.datetime.now().hour * 3600)
+                    _last_week_start = _week_start - 7 * 86400
+                    _this_week = [p for p in _mature_data if p.get("ts_num", 0) >= _week_start]
+                    _last_week = [p for p in _mature_data if _last_week_start <= p.get("ts_num", 0) < _week_start]
+                    _tw_ors = [p["or"] for p in _this_week if p.get("or", 0) > 0]
+                    _lw_ors = [p["or"] for p in _last_week if p.get("or", 0) > 0]
+                    _kw_now = datetime.datetime.now().isocalendar()[1]
+                    _research_state["week_comparison"] = {
+                        "this_week": {"kw": _kw_now, "avg_or": round(sum(_tw_ors) / len(_tw_ors), 1) if _tw_ors else 0, "count": len(_tw_ors)},
+                        "last_week": {"kw": _kw_now - 1, "avg_or": round(sum(_lw_ors) / len(_lw_ors), 1) if _lw_ors else 0, "count": len(_lw_ors)},
+                    }
+                except Exception:
+                    pass
+
+            # ── FALLBACK: research_modifiers direkt berechnen wenn leer ──
+            if not _research_state.get("research_modifiers") and len(_mature_data) >= 100:
+                try:
+                    _rm = _compute_research_modifiers(_mature_data, findings, _research_state)
+                    if _rm:
+                        _research_state["research_modifiers"] = _rm
+                except Exception:
+                    pass
 
             # Hilfsfunktion: Letzte Erkenntnis aus dem Forschungsgedaechtnis
             _now_str = f"{hour}:{now.minute:02d}"
@@ -16565,17 +16600,22 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_gbrt_force_promote()
         elif self.path == "/api/ml/monitoring/tick":
             self._handle_monitoring_tick()
-        elif self.path == "/api/ml/predict-batch":
+        elif self.path == "/api/ml/predict-batch" or self.path == "/api/predict-batch":
             self._serve_predict_batch()
         elif self.path == "/api/competitor-xor":
+
             self._serve_competitor_xor()
         else:
             self._error(404, "Not found")
 
+    # Prediction-Cache: base_or pro Artikel (volle Pipeline, 5 Min gültig)
+    _predict_cache = {}  # art_id -> {base_or, basis, confidence, q10, q90, ts}
+
     def _serve_predict_batch(self):
-        """POST /api/ml/predict-batch — Batch-Prediction für mehrere Artikel."""
+        """POST /api/predict-batch — Schnelle Batch-Prediction mit Cache + Micro-Variation."""
         try:
             import time as _tb
+            import hashlib as _hl
             _t0 = _tb.monotonic()
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
@@ -16584,22 +16624,85 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             if not isinstance(articles, list) or len(articles) > 300:
                 self._error(400, "articles must be a list with max 300 entries")
                 return
-            predictions = _batch_predict_or(
-                articles,
-                push_data=_research_state.get("push_data", []),
-                state=_research_state,
-            )
+
+            now = datetime.datetime.now()
+            _push_data = _research_state.get("push_data", [])
+            _time_slot = int(_tb.time()) // 10
+            _cache = self.__class__._predict_cache
+            _out = {}
+            _need_predict = []  # Artikel die noch keine gecachte Prediction haben
+
+            # 1. Cache-Lookup — gecachte Predictions sofort mit Micro-Variation liefern
+            for _a in articles:
+                _art_id = _a.get("id", _a.get("message_id", ""))
+                if not _art_id:
+                    continue
+                cached = _cache.get(_art_id)
+                if cached and (_tb.time() - cached["ts"]) < 300:  # 5 Min Cache
+                    _base_or = cached["base_or"]
+                else:
+                    _need_predict.append((_art_id, _a))
+                    continue
+                # Micro-Variation für Live-Ticker
+                _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
+                _seed = int.from_bytes(_h[:4], "little")
+                _var = ((_seed % 1000) - 500) / 5000.0
+                _live_or = max(0.5, round(_base_or * (1 + _var), 2))
+                _out[_art_id] = {
+                    "or": _live_or, "predicted_or": _live_or,
+                    "basis": cached["basis"], "confidence": cached["confidence"],
+                    "q10": cached["q10"], "q90": cached["q90"],
+                    "model_type": cached["basis"],
+                }
+
+            # 2. Fehlende Predictions: volle Pipeline (nur für neue Artikel)
+            for _art_id, _a in _need_predict:
+                _push = {
+                    "title": _a.get("title", ""), "headline": _a.get("title", ""),
+                    "cat": _a.get("cat", "News"), "hour": _a.get("hour", now.hour),
+                    "ts_num": now.timestamp(),
+                    "is_eilmeldung": _a.get("is_eilmeldung", _a.get("isBreaking", False)),
+                    "is_bild_plus": _a.get("is_bild_plus", False),
+                    "channels": _a.get("channels", []),
+                }
+                try:
+                    _result = _server_predict_or(_push, _push_data, _research_state)
+                    _base_or = _result.get("predicted", 5.0)
+                    _basis = _result.get("basis", "unknown")
+                    # In Cache speichern
+                    _cache[_art_id] = {
+                        "base_or": _base_or, "basis": _basis,
+                        "confidence": _result.get("confidence", 0.5),
+                        "q10": _result.get("q10", max(0.1, _base_or - 1.5)),
+                        "q90": _result.get("q90", _base_or + 1.5),
+                        "ts": _tb.time(),
+                    }
+                    # Micro-Variation
+                    _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
+                    _seed = int.from_bytes(_h[:4], "little")
+                    _var = ((_seed % 1000) - 500) / 5000.0
+                    _live_or = max(0.5, round(_base_or * (1 + _var), 2))
+                    _out[_art_id] = {
+                        "or": _live_or, "predicted_or": _live_or,
+                        "basis": _basis, "confidence": _result.get("confidence", 0.5),
+                        "q10": _cache[_art_id]["q10"], "q90": _cache[_art_id]["q90"],
+                        "model_type": _basis,
+                    }
+                except Exception as _e:
+                    log.warning(f"[PredictBatch] Fehler für {_art_id}: {_e}")
+
             elapsed_ms = round((_tb.monotonic() - _t0) * 1000, 1)
-            # Bestimme primären Model-Type aus erstem Ergebnis
             model_type = "none"
-            for v in predictions.values():
+            for v in _out.values():
                 model_type = v.get("model_type", "unknown")
                 break
             result = {
-                "predictions": predictions,
+                "predictions": _out,
                 "model_type": model_type,
-                "count": len(predictions),
+                "count": len(_out),
                 "elapsed_ms": elapsed_ms,
+                "cached": len(articles) - len(_need_predict),
+                "computed": len(_need_predict),
             }
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
