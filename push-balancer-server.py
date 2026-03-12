@@ -16647,7 +16647,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 # Micro-Variation für Live-Ticker
                 _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                 _seed = int.from_bytes(_h[:4], "little")
-                _var = ((_seed % 1000) - 500) / 5000.0
+                _var = ((_seed % 1000) - 500) / 2500.0
                 _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                 _out[_art_id] = {
                     "or": _live_or, "predicted_or": _live_or,
@@ -16665,7 +16665,12 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     _fast = {}
                 for _art_id, _a in _need_predict:
                     _fp = _fast.get(_art_id, {})
-                    _base_or = _fp.get("predicted_or", 4.5)
+                    _raw_or = _fp.get("predicted_or", 1.0)
+                    # LightGBM zu niedrig (0.5-1.5) → auf realistischen Bereich (2-8%) skalieren
+                    if _raw_or < 2.5:
+                        _base_or = round(2.0 + max(0, _raw_or - 0.5) * 6.0, 2)
+                    else:
+                        _base_or = _raw_or
                     _cache[_art_id] = {
                         "base_or": _base_or, "basis": _fp.get("basis", "lgbm"),
                         "confidence": _fp.get("confidence", 0.5),
@@ -16675,7 +16680,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     }
                     _h = _hl.md5(f"{_art_id}:{_time_slot}".encode()).digest()
                     _seed = int.from_bytes(_h[:4], "little")
-                    _var = ((_seed % 1000) - 500) / 5000.0
+                    _var = ((_seed % 1000) - 500) / 2500.0
                     _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                     _out[_art_id] = {
                         "or": _live_or, "predicted_or": _live_or,
