@@ -7277,6 +7277,7 @@ def _ml_build_tagesplan_inner(now, current_hour):
             already_pushed_today.append({
                 "title": title, "cat": cat, "or": round(orv, 2),
                 "hour": p.get("hour", -1), "is_eilmeldung": p.get("is_eilmeldung", False),
+                "link": p.get("link") or "",
             })
     already_pushed_today.sort(key=lambda x: x.get("hour", 0))
 
@@ -7317,7 +7318,8 @@ def _ml_build_tagesplan_inner(now, current_hour):
                     SELECT hour, or_val, title, cat, link,
                            ROW_NUMBER() OVER (PARTITION BY hour ORDER BY or_val DESC) as rn
                     FROM pushes
-                    WHERE or_val >= 4.0 AND ts_num > 0
+                    WHERE or_val >= 4.0 AND or_val <= 20 AND ts_num > 0
+                      AND received >= 10000
                       AND CAST(strftime('%w', ts_num, 'unixepoch') AS INTEGER) = ?
                       AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%'
                 ) WHERE rn <= 2
@@ -7395,7 +7397,8 @@ def _ml_build_tagesplan_inner(now, current_hour):
             # Nur bild.de — keine SportBild/AutoBild
             if "sportbild." in link or "autobild." in link:
                 continue
-            if wd == current_weekday and orv >= 4.0:
+            recv = p.get("received") or 0
+            if wd == current_weekday and 4.0 <= orv <= 20 and recv >= 10000:
                 hour_best_titles[h].append((orv, title, cat, link))
         _tp_total_db = len(pushes)
 
@@ -16656,7 +16659,8 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     "model_type": cached["basis"],
                 }
 
-            # 2. Fehlende Predictions: volle Pipeline (nur für neue Artikel)
+            # 2. Fehlende Predictions: schneller ML-only-Pfad (GBRT → LightGBM → Fallback)
+            #    Keine Heuristik, kein Topic-Saturation — Speed > Genauigkeit im Batch
             for _art_id, _a in _need_predict:
                 _push = {
                     "title": _a.get("title", ""), "headline": _a.get("title", ""),
@@ -16667,15 +16671,53 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     "channels": _a.get("channels", []),
                 }
                 try:
-                    _result = _server_predict_or(_push, _push_data, _research_state)
-                    _base_or = _result.get("predicted", 5.0)
-                    _basis = _result.get("basis", "unknown")
+                    _base_or = 5.0
+                    _basis = "fallback"
+                    _confidence = 0.3
+                    _q10 = 2.0
+                    _q90 = 8.0
+
+                    # Schneller Pfad 1: GBRT (ms-schnell)
+                    _gbrt_res = _gbrt_predict(_push, _research_state)
+                    if _gbrt_res is not None:
+                        _base_or = _gbrt_res["predicted"]
+                        _basis = "gbrt"
+                        _confidence = _gbrt_res.get("confidence", 0.5)
+                        _q10 = _gbrt_res.get("q10", max(0.1, _base_or - 1.5))
+                        _q90 = _gbrt_res.get("q90", _base_or + 1.5)
+
+                    # Schneller Pfad 2: LightGBM (ms-schnell, wenn Modell geladen)
+                    with _ml_lock:
+                        _bp_model = _ml_state.get("model")
+                        _bp_stats = _ml_state.get("stats")
+                        _bp_fnames = _ml_state.get("feature_names")
+                        _bp_cal = _ml_state.get("calibrator")
+                    if _bp_model and _bp_stats and _bp_fnames:
+                        try:
+                            import numpy as _np_bp
+                            _bp_feat = _ml_extract_features(_push, _bp_stats)
+                            _bp_x = _np_bp.array([[_bp_feat.get(k, 0.0) for k in _bp_fnames]])
+                            _bp_raw = float(_bp_model.predict(_bp_x)[0])
+                            _lgbm_or = max(0.5, min(30.0, math.expm1(_bp_raw)))
+                            if _bp_cal and _bp_cal.breakpoints:
+                                _lgbm_or = _bp_cal.calibrate(_lgbm_or)
+                            # Wenn GBRT auch da: Ensemble, sonst LightGBM allein
+                            if _basis == "gbrt":
+                                _alpha = _ml_state.get("gbrt_lgbm_alpha", 0.6)
+                                _base_or = _base_or * _alpha + _lgbm_or * (1 - _alpha)
+                                _basis = "ensemble"
+                            else:
+                                _base_or = _lgbm_or
+                                _basis = "lgbm"
+                        except Exception:
+                            pass
+
+                    _base_or = max(0.5, min(25.0, _base_or))
                     # In Cache speichern
                     _cache[_art_id] = {
                         "base_or": _base_or, "basis": _basis,
-                        "confidence": _result.get("confidence", 0.5),
-                        "q10": _result.get("q10", max(0.1, _base_or - 1.5)),
-                        "q90": _result.get("q90", _base_or + 1.5),
+                        "confidence": _confidence,
+                        "q10": _q10, "q90": _q90,
                         "ts": _tb.time(),
                     }
                     # Micro-Variation
@@ -16685,8 +16727,8 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                     _live_or = max(0.5, round(_base_or * (1 + _var), 2))
                     _out[_art_id] = {
                         "or": _live_or, "predicted_or": _live_or,
-                        "basis": _basis, "confidence": _result.get("confidence", 0.5),
-                        "q10": _cache[_art_id]["q10"], "q90": _cache[_art_id]["q90"],
+                        "basis": _basis, "confidence": _confidence,
+                        "q10": _q10, "q90": _q90,
                         "model_type": _basis,
                     }
                 except Exception as _e:

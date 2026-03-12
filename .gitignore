@@ -34,11 +34,8 @@ __pycache__/
 *.png
 *.pptx
 
-# ML-Modelle & Temp
-*.joblib
+# ML Temp
 *.json.tmp
-.gbrt_model.json
-.sklearn_gbrt.joblib
-.ml_lgbm.joblib
-.tuning_state.json
+
+# DB (wird auf Render ephemer neu aufgebaut)
 .push_history.db

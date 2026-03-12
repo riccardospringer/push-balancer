@@ -1748,8 +1748,19 @@ setInterval(function() {
   .tp-row.tp-row-must { border-color: #ff2d55; }
   .tp-row.tp-row-now.tp-row-must { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,122,255,0.12), inset 3px 0 0 #ff2d55; }
   .tp-row.tp-row-golden { border-color: #ffc107; }
-  .tp-row.tp-row-past { opacity: 0.7; grid-template-columns: 70px 1fr 90px 120px; margin-bottom: 4px; }
+  .tp-row.tp-row-past { opacity: 0.85; grid-template-columns: 70px 1fr 1fr 90px; margin-bottom: 4px; }
   .tp-row.tp-row-past .tp-row-sug2 { display: none; }
+  .tp-past-label { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .tp-past-label-ki { color: var(--accent); }
+  .tp-past-label-real { color: #34c759; }
+  .tp-past-delta { font-size: 10px; font-weight: 700; margin-top: 2px; }
+  .tp-past-delta.delta-pos { color: #34c759; }
+  .tp-past-delta.delta-neg { color: #ff3b30; }
+  .tp-past-delta.delta-neutral { color: #8e8e93; }
+  .tp-past-hit { background: rgba(52,199,89,0.08); border: 1px solid rgba(52,199,89,0.2); border-radius: 8px; }
+  .tp-past-miss { background: rgba(255,59,48,0.04); border: 1px solid rgba(255,59,48,0.12); border-radius: 8px; }
+  .tp-match-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.3px; }
+  .tp-match-yes { background: #d1fae5; color: #059669; }
   .tp-sug-or { display: inline; font-size: 12px; font-weight: 700; margin-left: 6px; padding: 1px 6px; border-radius: 4px; }
   .tp-sug-or.xor-high { color: #34c759; background: #d1fae5; }
   .tp-sug-or.xor-mid { color: #ff9f0a; background: #fff7ed; }
@@ -16256,6 +16267,23 @@ function renderTagesplan(data, mlStatus) {
       + '</div>';
   }
 
+  // Set aller Kandidaten-URLs + Titel fuer Artikel-Match
+  const _candidateUrls = new Set();
+  const _candidateTitles = new Set();
+  if (typeof articles !== 'undefined') {
+    for (const a of articles) {
+      if (a.link) _candidateUrls.add(a.link.replace(/\/$/, ''));
+      if (a.title) _candidateTitles.add(a.title.trim().toLowerCase().substring(0, 50));
+    }
+  }
+  function _isPushedFromCandidates(p) {
+    const pLink = (p.link || '').replace(/\/$/, '');
+    if (pLink && _candidateUrls.has(pLink)) return true;
+    const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
+    if (pTitle && _candidateTitles.has(pTitle)) return true;
+    return false;
+  }
+
   let html = '';
   for (const s of data.slots) {
     const hStr = String(s.hour).padStart(2,'0') + ':00';
@@ -16286,39 +16314,88 @@ function renderTagesplan(data, mlStatus) {
       const sug2 = _pick(s.best_cat);
       html += _sugCell(sug1, 1);
       html += _sugCell(sug2, 2);
-    } else {
-      // Past: show what was pushed with Ressort + OR
-      html += '<div class="tp-row-sug">';
+
+      // Meta: XOR + Category
+      html += '<div class="tp-row-meta">'
+        + '<div class="tp-row-or ' + orCls + '">' + orVal + '</div>'
+        + '<div class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</div>'
+        + '</div>';
+
+      // Status
+      html += '<div class="tp-row-status">';
       if (s.pushed_this_hour && s.pushed_this_hour.length > 0) {
-        html += s.pushed_this_hour.map(p => {
+        html += '<div class="tp-pushed-badge">' + s.pushed_this_hour.length + ' gepusht</div>';
+      }
+      html += '<div class="tp-mood-text">' + escapeHtml(s.mood || '') + '</div>';
+      html += '<div class="tp-conf-text">n=' + (s.n_historical || 0) + '</div>';
+      html += '</div>';
+    } else {
+      // ── Past: Side-by-side KI-Empfehlung vs Tatsächlich gepusht ──
+      const pushed = s.pushed_this_hour || [];
+      const bestHist = s.best_historical || [];
+      const hasPush = pushed.length > 0;
+      const actualAvgOr = hasPush ? pushed.reduce((s, p) => s + (p.or || 0), 0) / pushed.length : 0;
+      const kiCatMatch = hasPush && pushed.some(p => (p.cat || p.category || '').toLowerCase() === (s.best_cat || '').toLowerCase());
+
+      // Left: KI-Empfehlung
+      html += '<div class="tp-row-sug">';
+      html += '<div class="tp-past-label tp-past-label-ki">KI-Empfehlung</div>';
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+        + '<span class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</span>'
+        + '<span class="tp-sug-or ' + (s.expected_or >= 5 ? 'xor-high' : s.expected_or >= 3 ? 'xor-mid' : 'xor-low') + '">'
+        + (s.expected_or != null ? s.expected_or.toFixed(1) + '% erw.' : '--') + '</span>'
+        + '</div>';
+      if (bestHist.length > 0) {
+        html += bestHist.map(bh => {
+          const bhOrCls = bh.or >= 5 ? 'xor-high' : bh.or >= 3 ? 'xor-mid' : 'xor-low';
+          return '<div style="font-size:11px;line-height:1.35;color:var(--text-secondary);margin-top:2px">'
+            + escapeHtml((bh.title || '').substring(0, 55))
+            + (bh.or ? ' <span class="tp-sug-or ' + bhOrCls + '" style="font-size:10px">' + bh.or.toFixed(1) + '%</span>' : '')
+            + '</div>';
+        }).join('');
+        html += '<div style="font-size:9px;color:var(--text-tertiary);margin-top:3px;font-style:italic">Historische Top-Titel</div>';
+      }
+      html += '</div>';
+
+      // Right: Tatsächlich gepusht — mit Artikel-Match gegen Kandidatenliste
+      const pushedMatches = hasPush ? pushed.map(p => _isPushedFromCandidates(p)) : [];
+      const anyMatch = pushedMatches.some(Boolean);
+      const matchCls = hasPush && anyMatch ? 'tp-past-hit' : '';
+      html += '<div class="tp-row-sug ' + matchCls + '">';
+      html += '<div class="tp-past-label tp-past-label-real">Tatsächlich gepusht</div>';
+      if (hasPush) {
+        html += pushed.map((p, i) => {
           const pOr = p.or || 0;
           const pOrCls = pOr >= 5 ? 'xor-high' : pOr >= 3 ? 'xor-mid' : 'xor-low';
           const pOrBadge = pOr > 0 ? '<span class="tp-sug-or ' + pOrCls + '">' + pOr.toFixed(1) + '%</span>' : '';
-          const pCat = p.category ? '<span class="tp-sug-cat" style="margin-left:6px;font-size:10px">' + escapeHtml(p.category) + '</span>' : '';
-          return '<div style="padding:4px 10px;font-size:13px">' + escapeHtml((p.title||'').substring(0, 60)) + pOrBadge + pCat + '</div>';
+          const pCat = (p.cat || p.category) ? '<span class="tp-sug-cat" style="margin-left:4px;font-size:9px">' + escapeHtml(p.cat || p.category) + '</span>' : '';
+          const matchIcon = pushedMatches[i] ? '<span class="tp-match-badge tp-match-yes" style="margin-right:4px">Vorgeschlagen</span>' : '';
+          return '<div style="padding:2px 0;font-size:12px;line-height:1.35">' + matchIcon + escapeHtml((p.title||'').substring(0, 55)) + pOrBadge + pCat + '</div>';
         }).join('');
+        // Delta: actual vs predicted
+        if (actualAvgOr > 0 && s.expected_or > 0) {
+          const delta = actualAvgOr - s.expected_or;
+          const deltaCls = delta > 0.3 ? 'delta-pos' : delta < -0.3 ? 'delta-neg' : 'delta-neutral';
+          html += '<div class="tp-past-delta ' + deltaCls + '">'
+            + (delta >= 0 ? '+' : '') + delta.toFixed(1) + 'pp vs. Prognose'
+            + '</div>';
+        }
       } else {
         html += '<div class="tp-sug-empty" style="opacity:0.5">Kein Push</div>';
       }
       html += '</div>';
-    }
 
-    // Meta: XOR + Category (nach den Vorschlägen)
-    html += '<div class="tp-row-meta">'
-      + '<div class="tp-row-or ' + orCls + '">' + orVal + '</div>'
-      + '<div class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</div>'
-      + '</div>';
-
-    // Status
-    html += '<div class="tp-row-status">';
-    if (s.pushed_this_hour && s.pushed_this_hour.length > 0 && !s.is_past) {
-      html += '<div class="tp-pushed-badge">' + s.pushed_this_hour.length + ' gepusht</div>';
+      // Meta: OR + Kategorie
+      html += '<div class="tp-row-meta">';
+      if (hasPush && actualAvgOr > 0) {
+        const actOrCls = actualAvgOr >= 5.5 ? 'c-green' : actualAvgOr >= 4 ? 'c-yellow' : 'c-gray';
+        html += '<div class="tp-row-or ' + actOrCls + '">' + actualAvgOr.toFixed(1) + '%</div>';
+      } else {
+        html += '<div class="tp-row-or ' + orCls + '">' + orVal + '</div>';
+      }
+      html += '<div class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</div>';
+      html += '</div>';
     }
-    if (!s.is_past) {
-      html += '<div class="tp-mood-text">' + escapeHtml(s.mood || '') + '</div>';
-      html += '<div class="tp-conf-text">n=' + (s.n_historical || 0) + '</div>';
-    }
-    html += '</div>';
 
     html += '</div>'; // close row
   }
