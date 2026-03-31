@@ -3486,8 +3486,8 @@ function parseSitemapItem(urlEl, ns) {
   const pubDate = newsEl?.getElementsByTagNameNS(ns, 'publication_date')[0]?.textContent?.trim() || '';
   const keywords = newsEl?.getElementsByTagNameNS(ns, 'keywords')[0]?.textContent?.trim() || '';
 
-  const _parsedDate = pubDate ? new Date(pubDate) : new Date();
-  const date = isNaN(_parsedDate.getTime()) ? new Date() : _parsedDate;
+  const _parsedDate = pubDate ? new Date(pubDate) : null;
+  const date = (_parsedDate && !isNaN(_parsedDate.getTime())) ? _parsedDate : null;
   const id = btoa(unescape(encodeURIComponent(link || title || '_empty_' + Math.random()))).slice(0, 120);
   const category = extractCategory(link);
   const description = keywords; // use keywords as description for scoring
@@ -3798,28 +3798,52 @@ function calculatePushScore(article) {
 // Engagement-Prediction: Wie wahrscheinlich öffnet ein User diesen Push?
 // Kontinuierliche Berechnung für maximale Score-Differenzierung
 function calculateFallbackScore(article) {
-  // Sport-Artikel bekommen eigene Score-Formel (4 statt 9 Dimensionen, klarere Trennung)
-  if (isSportArticle(article)) {
-    return calculateSportScore(article);
-  }
   const title = article.title || '';
   const description = article.description || '';
   const category = article.category || '';
-  const date = article.date || new Date();
+  const date = article.date;
+  if (!date || isNaN(date.getTime())) {
+    return { total: 0, breakdown: { relevanz:0, dringlichkeit:0, neugier:0, aktualität:0, timing:0, breaking:0, individual:0, forschung:0 } };
+  }
   const breakdown = { relevanz:0, dringlichkeit:0, neugier:0, aktualität:0, timing:0, breaking:0 };
   const fullText = (title + ' ' + description).toUpperCase();
+  const _isSport = isSportArticle(article);
 
   // 1. RELEVANZ (max 30) — Trifft das Thema die breite Masse?
   const cl = (category||'').toLowerCase();
-  // Basis nach Kategorie (feinere Abstufung)
-  const catScores = {
-    'politik':22, 'unterhaltung':20, 'panorama':21, 'regional':18,
-    'sport':17, 'fussball':19, 'bundesliga':19, 'formel1':18, 'formel-1':18, 'tennis':16, 'boxen':17, 'motorsport':16,
-    'geld':14, 'auto':11, 'digital':12, 'lifestyle':10, 'ratgeber':9, 'reise':8
-  };
+  // Basis nach Kategorie — spezifische Kategorien ZUERST (fussball vor sport)
+  const catScores = [
+    ['bundesliga',20], ['fussball',20], ['formel1',19], ['formel-1',19],
+    ['tennis',17], ['boxen',18], ['motorsport',17],
+    ['politik',22], ['unterhaltung',20], ['panorama',21], ['sport',19], ['regional',18],
+    ['geld',14], ['auto',11], ['digital',12], ['lifestyle',10], ['ratgeber',9], ['reise',8]
+  ];
   let relBase = 13;
-  for (const [cat, pts] of Object.entries(catScores)) {
+  for (const [cat, pts] of catScores) {
     if (cl.includes(cat)) { relBase = pts; break; }
+  }
+
+  // Sport-Topic-Boost: spezifische Sport-Themen erhöhen Relevanz
+  if (_isSport) {
+    const SPORT_TOPIC_BOOSTS = [
+      { boost:6, patterns:['TOD','GESTORBEN','INTENSIVSTATION','ABBRUCH','ABSAGE','KOLLABIERT','NOTARZT'] },
+      { boost:5, patterns:['VERLÄSST','WECHSEL ZU','WECHSELT','TRANSFER','VERPFLICHTET','ABLÖSE','RAUSWURF','ENTLASSEN','GEFEUERT','FREIGESTELLT','NACHFOLGER','BEURLAUBT'] },
+      { boost:4, patterns:['DFB','NATIONALMANNSCHAFT','LÄNDERSPIEL','NOMINIERT',' WM ','WM-',' EM ','EM-','NAGELSMANN'] },
+      { boost:3, patterns:['FORMEL 1','F1 ','F1-','GRAND PRIX','VERSTAPPEN','HAMILTON','SCHUMACHER'] },
+      { boost:3, patterns:['WIMBLEDON','ROLAND GARROS','US OPEN','AUSTRALIAN OPEN','ZVEREV','DJOKOVIC','GRAND SLAM'] },
+      { boost:2, patterns:['CHAMPIONS LEAGUE','CL-','EUROPA LEAGUE','CONFERENCE'] },
+      { boost:2, patterns:['VERLETZT','KREUZBAND','AUSFALL','DIAGNOSE'] },
+      { boost:3, patterns:['SENSATION','GOLD','WELTREKORD','HISTORISCH','ERSTMALS','REKORD'] },
+    ];
+    let sportBoost = 0;
+    let sportMatches = 0;
+    for (const t of SPORT_TOPIC_BOOSTS) {
+      for (const p of t.patterns) {
+        if (fullText.includes(p)) { sportBoost = Math.max(sportBoost, t.boost); sportMatches++; break; }
+      }
+    }
+    if (sportMatches >= 2) sportBoost = Math.min(8, sportBoost + 2);
+    relBase += sportBoost;
   }
   // Prominente/Entitäten — Diminishing Returns pro Tier (1st=voll, 2nd=40%, 3rd+=0)
   const promiTiers = {
@@ -3853,19 +3877,23 @@ function calculateFallbackScore(article) {
   breakdown.relevanz = Math.min(30, Math.round((relBase + promiBoost + lenBonus) * 10) / 10);
 
   // 2. DRINGLICHKEIT (max 25) — Muss man das JETZT wissen?
-  // Cross-Dimension-Dämpfung: Keywords die schon Relevanz getriggert haben → halber Wert
-  const urgentWords = ['EILMELDUNG','BREAKING','GERADE EBEN','SOEBEN','JETZT LIVE','LIVE-TICKER','DRINGEND','ALARM','SOFORT'];
-  const crisisWords = ['TOD','GESTORBEN','ANSCHLAG','TERROR','KRIEG','EXPLOSION','ERDBEBEN','ABSTURZ','KATASTROPHE','NOTFALL','EVAKUIERUNG','AMOKLAUF','TOTE','OPFER'];
-  const warnWords = ['WARNUNG','RÜCKRUF','GEFAHR','UNWETTER','STURM','HOCHWASSER','FEUER','BRAND'];
+  // Word-Boundary-Check: vermeidet False Positives (SOFORT in "Sofort-Hilfe", ALARM in "Fehlalarm")
+  function _wordMatch(text, word) {
+    const re = new RegExp('(?:^|[\\s!?.,;:+|\\-])' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[\\s!?.,;:+|\\-])', 'i');
+    return re.test(text);
+  }
+  const urgentWords = ['EILMELDUNG','BREAKING','GERADE EBEN','SOEBEN','JETZT LIVE','LIVE-TICKER','DRINGEND'];
+  const crisisWords = ['GESTORBEN','ANSCHLAG','TERROR','EXPLOSION','ERDBEBEN','ABSTURZ','KATASTROPHE','NOTFALL','EVAKUIERUNG','AMOKLAUF','TOTE','OPFER'];
+  const warnWords = ['WARNUNG','RÜCKRUF','UNWETTER','STURM','HOCHWASSER'];
   let urgScore = 0;
-  let breakingSignals = 0; // Nur ECHTE Breaking-Signale (nicht Crisis-Keywords)
-  for (const w of urgentWords) { if (fullText.includes(w)) { urgScore += 7; breakingSignals += 7; } }
+  let breakingSignals = 0;
+  for (const w of urgentWords) { if (_wordMatch(fullText, w)) { urgScore += 7; breakingSignals += 7; } }
   for (const w of crisisWords) {
-    if (fullText.includes(w)) {
-      urgScore += relevanzWords.has(w) ? 2.5 : 5; // Halber Wert wenn bereits in Relevanz gezählt
+    if (_wordMatch(fullText, w)) {
+      urgScore += relevanzWords.has(w) ? 2.5 : 5;
     }
   }
-  for (const w of warnWords) { if (fullText.includes(w)) urgScore += 3; }
+  for (const w of warnWords) { if (_wordMatch(fullText, w)) urgScore += 3; }
   breakdown.dringlichkeit = Math.min(25, Math.round(urgScore * 10) / 10);
   // Breaking: Echte Breaking-Signale = voller Bonus, Crisis-Keywords = kleiner Bonus
   let breakingScore = breakingSignals * 2;
@@ -3886,7 +3914,7 @@ function calculateFallbackScore(article) {
   for (const w of neugierTiers.soft) { if (fullText.includes(w)) neugierScore += 2.5; }
   // Frage im Titel: Neugier-Trigger, kategorie-abhängig (Diss. IV)
   if (title.includes('?')) {
-    const _qBonus = {politik:6, panorama:5, unterhaltung:5, geld:4, lifestyle:4, digital:3, ratgeber:3, regional:3, sport:1, fussball:1, bundesliga:1, eilmeldung:0, breaking:0};
+    const _qBonus = {politik:6, panorama:5, unterhaltung:5, geld:4, lifestyle:4, digital:3, ratgeber:3, regional:3, sport:4, fussball:4, bundesliga:4, eilmeldung:0, breaking:0};
     neugierScore += (_qBonus[(category||'').toLowerCase()] != null ? _qBonus[(category||'').toLowerCase()] : 3);
   }
   // Zahlen erhöhen Klickrate leicht
@@ -3918,9 +3946,21 @@ function calculateFallbackScore(article) {
   breakdown.temporalOutdated = temporal.outdated;
   breakdown.temporalReason = temporal.reason;
 
-  // 5. TIMING (max 10) — Passt der Zeitpunkt historisch?
+  // 5. TIMING (max 15) — Passt der Zeitpunkt historisch?
   const timingData = calculateTimingScore();
-  breakdown.timing = Math.round(timingData.score * 10 / 15 * 10) / 10;
+  let timingScore = timingData.score * 10 / 15;
+  // Sport-Timing-Slots: Bundesliga Sa 15-18, So 15-19, Fr 20-22; F1 So 14-17; Tennis 14-20
+  if (_isSport) {
+    const _h = new Date().getHours();
+    const _wd = new Date().getDay();
+    const _isBuLiSlot = (_wd === 6 && _h >= 15 && _h <= 18) || (_wd === 0 && _h >= 15 && _h <= 19) || (_wd === 5 && _h >= 20 && _h <= 22);
+    const _isF1 = /FORMEL|F1|GRAND PRIX/.test(fullText) && _wd === 0 && _h >= 14 && _h <= 17;
+    const _isTennis = /WIMBLEDON|ROLAND GARROS|US OPEN|AUSTRALIAN OPEN|ZVEREV|DJOKOVIC/.test(fullText) && _h >= 14 && _h <= 20;
+    if (_isBuLiSlot) timingScore *= 1.25;
+    if (_isF1) timingScore *= 1.20;
+    if (_isTennis) timingScore *= 1.15;
+  }
+  breakdown.timing = Math.min(15, Math.round(timingScore * 10) / 10);
   breakdown.timingDetail = timingData.detail;
 
   // 6. INDIVIDUAL-BOOST — artikelspezifische Faktoren für mehr Varianz
@@ -4285,22 +4325,12 @@ function applyFilterAndSort(forceInvalidate) {
 
   filteredArticles.forEach(a => {
     if (!a.scoreBreakdown || !a.date) return;
-    // Sport-Artikel: Frische-Recalc statt generischem Aktualitaet-Recalc
-    if (isSportArticle(a)) {
-      const ageMin = (Date.now() - a.date.getTime()) / 60000;
-      if (!isFinite(ageMin) || ageMin < 0) return;
-      const isLive = /\d+\s*:\s*\d+|ABPFIFF|ENDSTAND|LIVE/.test((a.title||'').toUpperCase());
-      const swb = isLive ? {k:1.8, l:120} : {k:1.3, l:300};
-      a.scoreBreakdown.frische = Math.max(0, Math.round(10 * Math.exp(-Math.pow(ageMin / swb.l, swb.k)) * 10) / 10);
-      return;
-    }
-    // 1. Aktualitaet LIVE neu berechnen (nicht stale vom Parse-Zeitpunkt)
+    // Aktualitaet LIVE neu berechnen — einheitlich fuer alle Kategorien
     const ageMin = (Date.now() - a.date.getTime()) / 60000;
     if (!isFinite(ageMin) || ageMin < 0) return;
     const cl = (a.category || '').toLowerCase();
     const wb = _weibullParamsLive[cl] || {k:1.5, l:180};
     let aktualitätNeu = Math.max(0, 20 * Math.exp(-Math.pow(ageMin / wb.l, wb.k)));
-    // Temporal-Penalty beibehalten falls vorhanden
     if (a.scoreBreakdown.temporalOutdated) aktualitätNeu *= 0.1;
     a.scoreBreakdown.aktualität = Math.round(aktualitätNeu * 10) / 10;
   });
@@ -4325,34 +4355,18 @@ function applyFilterAndSort(forceInvalidate) {
     // Score aus allen Komponenten LIVE neu berechnen
     if (a.scoreBreakdown) {
       const bd = a.scoreBreakdown;
-      const _isSport = isSportArticle(a);
 
-      if (_isSport) {
-        // Sport: 4-Dimensionen-Score, gleicher Decay wie Redaktion
-        const rawTotal = (bd.sportRelevanz || 0) + (bd.timing || 0) + (bd.dramatik || 0) + (bd.frische || 0);
-        const ageH = a.date ? (Date.now() - a.date.getTime()) / 3600000 : 0;
-        let ageMult = 1.0;
-        if (ageH > 48) ageMult = 0.10;
-        else if (ageH > 24) ageMult = 0.20;
-        else if (ageH > 12) ageMult = 0.40;
-        else if (ageH > 6) ageMult = 0.65;
-        else if (ageH > 3) ageMult = 0.85;
-        a.score = Math.min(100, Math.max(0, Math.round(rawTotal * ageMult * 10) / 10));
-      } else {
-        const rawTotal = (bd.relevanz || 0) + (bd.dringlichkeit || 0) +
-          (bd.neugier || 0) + (bd.aktualität || 0) + (bd.timing || 0) +
-          (bd.breaking || 0) + (bd.individual || 0) + (bd.pushHistorie || 0) + (bd.forschung || 0);
+      // Einheitlicher Score fuer alle Kategorien (inkl. Sport)
+      const rawTotal = (bd.relevanz || 0) + (bd.dringlichkeit || 0) +
+        (bd.neugier || 0) + (bd.aktualität || 0) + (bd.timing || 0) +
+        (bd.breaking || 0) + (bd.individual || 0) + (bd.pushHistorie || 0) + (bd.forschung || 0);
 
-        // Aggressiver Alters-Multiplikator auf Gesamt-Score
-        const ageH = a.date ? (Date.now() - a.date.getTime()) / 3600000 : 0;
-        let ageMult = 1.0;
-        if (ageH > 48) ageMult = 0.10;       // >48h: fast wertlos
-        else if (ageH > 24) ageMult = 0.20;   // >24h: stark bestraft
-        else if (ageH > 12) ageMult = 0.40;   // >12h: deutlich reduziert
-        else if (ageH > 6) ageMult = 0.65;    // >6h: spuerbar reduziert
-        else if (ageH > 3) ageMult = 0.85;    // >3h: leicht reduziert
-        a.score = Math.min(100, Math.max(0, Math.round(rawTotal * ageMult * 10) / 10));
-      }
+      // Stale-Penalty: nur fuer alte Artikel (>24h), aktualität handelt 0-24h
+      const ageH = a.date ? (Date.now() - a.date.getTime()) / 3600000 : 0;
+      let ageMult = 1.0;
+      if (ageH > 48) ageMult = 0.25;
+      else if (ageH > 24) ageMult = 0.50;
+      a.score = Math.min(100, Math.max(0, Math.round(rawTotal * ageMult * 10) / 10));
     }
   });
 
