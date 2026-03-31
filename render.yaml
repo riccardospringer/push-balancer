@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: push-balancer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PUSH_API_BASE
+        value: http://push-frontend.bildcms.de
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: FOOTBALL_DATA_KEY
+        sync: false
+      - key: ODDS_API_KEY
+        sync: false
+      - key: ADOBE_CLIENT_ID
+        sync: false
+      - key: ADOBE_CLIENT_SECRET
+        sync: false
+      - key: ADOBE_GLOBAL_COMPANY_ID
+        value: axelsp2
