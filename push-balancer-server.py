@@ -128,6 +128,17 @@ _auto_retrain_state = {
     "last_retrain_trigger_ts": 0,
 }
 
+# ── Online Residual Corrector (Echtzeit-Bias-Korrektur) ─────────────────
+_residual_corrector = {
+    "global_bias": 0.0,           # Rolling Mean des globalen Bias (predicted - actual)
+    "cat_bias": {},               # {category: bias} pro Kategorie
+    "hourgroup_bias": {},         # {"morning": bias, ...} pro Tageszeit-Gruppe
+    "n_samples": 0,               # Anzahl eingeflossener Feedback-Paare
+    "last_update_ts": 0,
+    "recent_residuals": [],       # Letzte 50 Residuals fuer Debugging
+}
+_residual_corrector_lock = threading.Lock()
+
 # ── Safety Hardening: ADVISORY ONLY ─────────────────────────────────────
 # KRITISCH: Das System darf NIEMALS autonom Push-Benachrichtigungen senden.
 # Alle Vorhersagen sind NUR beratend.
@@ -5970,6 +5981,137 @@ def _gbrt_check_drift(state):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ONLINE RESIDUAL CORRECTOR — Echtzeit-Bias-Korrektur
+# ══════════════════════════════════════════════════════════════════════════════
+
+_RESIDUAL_HOURGROUPS = {
+    "morning": range(6, 12),     # 06:00 – 11:59
+    "afternoon": range(12, 18),  # 12:00 – 17:59
+    "evening": range(18, 23),    # 18:00 – 22:59
+    "night": list(range(23, 24)) + list(range(0, 6)),  # 23:00 – 05:59
+}
+
+def _hour_to_group(h):
+    """Stunde (0-23) → Tageszeit-Gruppe."""
+    for name, hours in _RESIDUAL_HOURGROUPS.items():
+        if h in hours:
+            return name
+    return "afternoon"
+
+
+def _update_residual_corrector(rows=None):
+    """Aktualisiert den Residual Corrector mit neuesten Prediction-Feedback-Daten.
+
+    Einfacher Rolling Mean der letzten 20 Residuals (predicted - actual).
+    Korrektur nur wenn |Bias| > 0.2 (Threshold), dann 50% Staerke.
+    Realitaet: Systematischer Bias ist nur ~5% des Gesamtfehlers (MAE 1.7).
+    Der Corrector ist ein Safety-Net, kein Game-Changer.
+    """
+    global _residual_corrector
+    WINDOW = 20
+    MAX_CORRECTION = 2.0
+    MIN_SAMPLES = 10
+
+    if rows is None:
+        try:
+            with _push_db_lock:
+                conn = sqlite3.connect(PUSH_DB_PATH)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT p.predicted_or, p.actual_or, p.predicted_at, "
+                    "       pu.cat, pu.hour "
+                    "FROM prediction_log p "
+                    "LEFT JOIN pushes pu ON p.push_id = pu.message_id "
+                    "WHERE p.actual_or > 0 AND p.predicted_or > 0 "
+                    "ORDER BY p.predicted_at DESC LIMIT 100"
+                ).fetchall()
+                conn.close()
+        except Exception as e:
+            log.warning(f"[ResidualCorrector] DB-Fehler: {e}")
+            return
+
+    if not rows or len(rows) < MIN_SAMPLES:
+        return
+
+    sorted_rows = sorted(rows, key=lambda r: r["predicted_at"] if hasattr(r, "__getitem__") else 0)
+
+    # Global Bias: Rolling Mean
+    all_residuals = [r["predicted_or"] - r["actual_or"] for r in sorted_rows]
+    recent_global = all_residuals[-WINDOW:]
+    global_bias = sum(recent_global) / len(recent_global)
+    global_bias = max(-MAX_CORRECTION, min(MAX_CORRECTION, global_bias))
+
+    # Kategorie-Bias
+    cat_residuals = {}
+    for r in sorted_rows:
+        cat = (r["cat"] or "News") if hasattr(r, "__getitem__") and "cat" in r.keys() else "News"
+        cat_residuals.setdefault(cat, []).append(r["predicted_or"] - r["actual_or"])
+    cat_bias = {}
+    for c, resids in cat_residuals.items():
+        if len(resids) >= MIN_SAMPLES:
+            recent = resids[-WINDOW:]
+            bias = sum(recent) / len(recent)
+            cat_bias[c] = max(-MAX_CORRECTION, min(MAX_CORRECTION, bias))
+
+    # Tageszeit-Gruppen-Bias
+    hg_residuals = {}
+    for r in sorted_rows:
+        h = int(r["hour"]) if hasattr(r, "__getitem__") and "hour" in r.keys() and r["hour"] is not None else 12
+        hg = _hour_to_group(h)
+        hg_residuals.setdefault(hg, []).append(r["predicted_or"] - r["actual_or"])
+    hourgroup_bias = {}
+    for g, resids in hg_residuals.items():
+        if len(resids) >= MIN_SAMPLES:
+            recent = resids[-WINDOW:]
+            bias = sum(recent) / len(recent)
+            hourgroup_bias[g] = max(-MAX_CORRECTION, min(MAX_CORRECTION, bias))
+
+    recent_debug = []
+    for r in sorted_rows[-50:]:
+        cat = r["cat"] if hasattr(r, "__getitem__") and "cat" in r.keys() else ""
+        h = int(r["hour"]) if hasattr(r, "__getitem__") and "hour" in r.keys() and r["hour"] is not None else -1
+        recent_debug.append({
+            "predicted": round(r["predicted_or"], 2),
+            "actual": round(r["actual_or"], 2),
+            "residual": round(r["predicted_or"] - r["actual_or"], 2),
+            "cat": cat, "hour": h,
+        })
+
+    with _residual_corrector_lock:
+        _residual_corrector["global_bias"] = round(global_bias, 4)
+        _residual_corrector["cat_bias"] = {k: round(v, 4) for k, v in cat_bias.items()}
+        _residual_corrector["hourgroup_bias"] = {k: round(v, 4) for k, v in hourgroup_bias.items()}
+        _residual_corrector["n_samples"] = len(sorted_rows)
+        _residual_corrector["last_update_ts"] = int(time.time())
+        _residual_corrector["recent_residuals"] = recent_debug
+
+    log.info(f"[ResidualCorrector] Update: global_bias={global_bias:+.3f}, "
+             f"cats={list(cat_bias.keys())}, n={len(sorted_rows)}")
+
+
+def _apply_residual_correction(predicted_or, cat="News", hour=12):
+    """Wendet die Residual-Korrektur an. Safety-Net fuer systematischen Bias.
+
+    50% global + 30% Kategorie + 20% Tageszeit. Nur bei |bias| > 0.2, 50% Staerke.
+    """
+    with _residual_corrector_lock:
+        if _residual_corrector["n_samples"] < 10:
+            return predicted_or, 0.0
+        gb = _residual_corrector["global_bias"]
+        cb = _residual_corrector["cat_bias"].get(cat, gb)
+        hg = _hour_to_group(hour)
+        hb = _residual_corrector["hourgroup_bias"].get(hg, gb)
+
+    raw = 0.5 * gb + 0.3 * cb + 0.2 * hb
+    if abs(raw) < 0.2:
+        return predicted_or, 0.0
+    correction = raw * 0.5
+    correction = max(-2.0, min(2.0, correction))
+    corrected = max(0.5, min(30.0, predicted_or - correction))
+    return corrected, round(correction, 3)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SELF-TUNING MODEL-SELEKTION (ML-First Phase F)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -6158,6 +6300,20 @@ def _monitoring_tick():
                 if block:
                     cal_trend.append(round(sum(block) / len(block), 4))
             _monitoring_state["calibration_trend"] = cal_trend
+
+        # 3b. Online Residual Corrector aktualisieren
+        try:
+            _update_residual_corrector()
+            with _residual_corrector_lock:
+                _monitoring_state["residual_corrector"] = {
+                    "global_bias": _residual_corrector["global_bias"],
+                    "cat_bias": dict(_residual_corrector["cat_bias"]),
+                    "hourgroup_bias": dict(_residual_corrector["hourgroup_bias"]),
+                    "n_samples": _residual_corrector["n_samples"],
+                    "last_update_ts": _residual_corrector["last_update_ts"],
+                }
+        except Exception as _rc_err:
+            log.warning(f"[ResidualCorrector] Update in Monitoring-Tick fehlgeschlagen: {_rc_err}")
 
         # 4. Feature Distribution Shifts
         with _gbrt_lock:
@@ -7453,6 +7609,11 @@ def _unified_predict(push, state=None):
         # Clamp
         predicted = max(0.5, min(30.0, predicted))
 
+        # ── Online Residual Correction ──────────────────────────────────
+        _rc_cat = push.get("cat", "News")
+        _rc_hour = int(push.get("hour", 12))
+        predicted, _rc_correction = _apply_residual_correction(predicted, _rc_cat, _rc_hour)
+
         # Konfidenz-Intervall
         q10 = max(0.1, predicted - conformal_radius)
         q90 = predicted + conformal_radius
@@ -7502,6 +7663,7 @@ def _unified_predict(push, state=None):
             "model_type": model_label,
             "n_features": len(feature_names),
             "mae": metrics.get("mae", 0),
+            "residual_correction": _rc_correction,
         }
 
     except Exception as e:
@@ -7612,8 +7774,14 @@ def _batch_predict_or(articles, push_data=None, state=None):
                         pass
 
                 model_label = f"Stacking({len(u_base_models)})" if u_stacking else "Unified-LightGBM"
+                # Lookup fuer cat/hour pro message_id
+                _art_lookup = {a.get("message_id", ""): a for a in articles}
                 for i, mid in enumerate(valid_ids):
                     pred = max(0.5, min(30.0, float(preds[i])))
+                    # Online Residual Correction
+                    _a = _art_lookup.get(mid, {})
+                    pred, _rc = _apply_residual_correction(
+                        pred, _a.get("cat", "News"), int(_a.get("hour", now.hour)))
                     q10 = round(max(0.1, pred - u_conformal), 3)
                     q90 = round(pred + u_conformal, 3)
                     interval_w = q90 - q10
@@ -7626,6 +7794,7 @@ def _batch_predict_or(articles, push_data=None, state=None):
                         "confidence": round(conf, 3),
                         "model_type": f"{model_label} ({len(u_fnames)}F)",
                         "mae": u_metrics.get("mae", 0),
+                        "residual_correction": _rc,
                     }
             except Exception as e:
                 log.warning(f"[BatchPredict] Unified batch predict: {e}")
@@ -7684,8 +7853,13 @@ def _batch_predict_or(articles, push_data=None, state=None):
                         preds = preds + res_model.predict(X)
                     except Exception:
                         pass
+                _art_lookup_lgbm = {a.get("message_id", ""): a for a in articles}
                 for i, mid in enumerate(valid_ids):
                     pred = max(0.5, min(30.0, float(preds[i])))
+                    # Online Residual Correction
+                    _a = _art_lookup_lgbm.get(mid, {})
+                    pred, _rc = _apply_residual_correction(
+                        pred, _a.get("cat", "News"), int(_a.get("hour", now.hour)))
                     q10 = round(max(0.1, pred - lgbm_conformal), 3)
                     q90 = round(pred + lgbm_conformal, 3)
                     interval_w = q90 - q10
@@ -7697,6 +7871,7 @@ def _batch_predict_or(articles, push_data=None, state=None):
                         "q90": q90,
                         "confidence": round(conf, 3),
                         "model_type": f"LightGBM ({len(lgbm_fnames)}F)",
+                        "residual_correction": _rc,
                     }
             except Exception as e:
                 log.warning(f"[BatchPredict] LightGBM batch predict: {e}")
@@ -7729,13 +7904,17 @@ def _batch_predict_or(articles, push_data=None, state=None):
                 }
                 gbrt_res = _gbrt_predict(push, None)
                 if gbrt_res:
+                    _gp = gbrt_res["predicted"]
+                    _gp, _rc = _apply_residual_correction(
+                        _gp, art.get("cat", "News"), int(art.get("hour", now.hour)))
                     results[mid] = {
-                        "predicted_or": round(gbrt_res["predicted"], 3),
+                        "predicted_or": round(_gp, 3),
                         "basis": "gbrt",
-                        "q10": round(gbrt_res.get("q10", gbrt_res["predicted"] * 0.5), 3),
-                        "q90": round(gbrt_res.get("q90", gbrt_res["predicted"] * 1.8), 3),
+                        "q10": round(gbrt_res.get("q10", _gp * 0.5), 3),
+                        "q90": round(gbrt_res.get("q90", _gp * 1.8), 3),
                         "confidence": round(gbrt_res.get("confidence", 0.5), 3),
                         "model_type": f"GBRT ({gbrt_res.get('n_trees', '?')}T)",
+                        "residual_correction": _rc,
                     }
         except Exception as e:
             log.warning(f"[BatchPredict] GBRT-Fehler: {e}")
@@ -14737,6 +14916,8 @@ def _server_predict_or(push, push_data, state):
         except Exception:
             pass
 
+        # Residual-Korrektur Info aus _unified_predict() in methods uebernehmen
+        _u_methods["residual_correction"] = unified_result.get("residual_correction", 0.0)
         return _safety_envelope({
             "predicted": _u_predicted,
             "methods": _u_methods,
@@ -14842,6 +15023,12 @@ def _server_predict_or(push, push_data, state):
                 _ens_corrections.append(f"TopicSat({_tsat_ens['topic_push_count_6h']}in6h)={_tsat_ens['penalty']:.2f}")
         except Exception:
             pass
+        # Online Residual Correction
+        _ens_predicted, _ens_rc = _apply_residual_correction(
+            _ens_predicted, push.get("cat", "News"), int(push.get("hour", 12)))
+        _ml_methods["residual_correction"] = _ens_rc
+        if abs(_ens_rc) > 0.01:
+            _ens_corrections.append(f"ResidualCorr={_ens_rc:+.2f}")
         return _safety_envelope({
             "predicted": _ens_predicted,
             "methods": _ml_methods,
@@ -15744,6 +15931,9 @@ def _generate_server_feedback(state):
     Fuer jeden reifen Push (>24h, OR>0, noch nicht bewertet):
     - Berechnet server-seitige Vorhersage mit Leave-One-Out
     - Speichert in prediction_feedback[] mit source: "server"
+
+    24h Maturity ist korrekt: OR waechst dynamisch (2h ~70%, 4h ~85%, 24h ~stabil).
+    Frueheres Matching passiert im Fast OR-Matcher mit Maturity-Korrektur.
     """
     push_data = state.get("push_data", [])
     if not push_data:
@@ -20282,6 +20472,13 @@ if __name__ == "__main__":
     def _research_worker():
         import time as _t
         _t.sleep(2)  # Wait for server to start
+        # Residual Corrector initial aus DB laden
+        try:
+            _update_residual_corrector()
+            log.info(f"[ResidualCorrector] Initial geladen: bias={_residual_corrector['global_bias']:+.3f}, "
+                     f"n={_residual_corrector['n_samples']}")
+        except Exception as _rc_e:
+            log.warning(f"[ResidualCorrector] Initial-Load fehlgeschlagen: {_rc_e}")
         log.info("[Research] Autonomer Research-Worker gestartet (20s Intervall)")
         while True:
             try:

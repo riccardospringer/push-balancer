@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRIME RADAR -- Echtzeit-Kriminalitätsradar Deutschland</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; }
+
+        .header {
+            background: linear-gradient(135deg, #1a0000 0%, #0a0a0a 100%);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+            border-bottom: 2px solid #c00;
+        }
+        .header h1 { font-size: 22px; font-weight: 800; color: #ff2222; letter-spacing: 2px; text-transform: uppercase; }
+        .header .subtitle { font-size: 13px; color: rgba(255,255,255,0.5); }
+        .header .live-badge {
+            background: #c00;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 12px;
+            animation: pulse-badge 2s infinite;
+        }
+        .header .refresh-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .header .refresh-countdown {
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+            font-variant-numeric: tabular-nums;
+        }
+        .header .refresh-spinner {
+            width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,0.2);
+            border-top-color: #c00;
+            border-radius: 50%;
+            display: none;
+        }
+        .header .refresh-spinner.active {
+            display: inline-block;
+            animation: spin-refresh 0.8s linear infinite;
+        }
+        @keyframes spin-refresh { to { transform: rotate(360deg); } }
+        @keyframes pulse-badge {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .sort-toggle {
+            font-size: 11px;
+            color: #aaa;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 3px 8px;
+            cursor: pointer;
+            margin-left: auto;
+            white-space: nowrap;
+        }
+        .sort-toggle:hover { color: #fff; background: rgba(255,255,255,0.15); }
+
+        /* Freshness pulse animation for HOT markers */
+        @keyframes pulse-hot {
+            0% { box-shadow: 0 0 6px 3px rgba(255, 50, 50, 0.7); }
+            50% { box-shadow: 0 0 24px 12px rgba(255, 50, 50, 0.35); }
+            100% { box-shadow: 0 0 6px 3px rgba(255, 50, 50, 0.7); }
+        }
+        @keyframes pulse-warm {
+            0% { box-shadow: 0 0 4px 2px rgba(255, 160, 50, 0.5); }
+            50% { box-shadow: 0 0 16px 8px rgba(255, 160, 50, 0.25); }
+            100% { box-shadow: 0 0 4px 2px rgba(255, 160, 50, 0.5); }
+        }
+        @keyframes pulse-threat {
+            0%, 100% { opacity: 1; text-shadow: 0 0 10px rgba(255,0,0,0.8); }
+            50% { opacity: 0.7; text-shadow: 0 0 20px rgba(255,0,0,0.5); }
+        }
+
+        /* Search bar */
+        .search-container {
+            padding: 10px 16px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #333;
+            position: sticky;
+            top: 0;
+            z-index: 20;
+        }
+        .search-bar {
+            display: flex;
+            align-items: center;
+            background: #222;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 0 12px;
+            transition: border-color 0.2s;
+        }
+        .search-bar:focus-within { border-color: #c00; }
+        .search-icon { color: #777; font-size: 14px; margin-right: 8px; flex-shrink: 0; }
+        .search-bar input {
+            flex: 1; background: none; border: none; color: #e0e0e0;
+            font-family: 'Inter', system-ui, sans-serif; font-size: 13px;
+            padding: 10px 0; outline: none;
+        }
+        .search-bar input::placeholder { color: #666; }
+        .search-actions { display: flex; gap: 6px; align-items: center; }
+        .search-btn {
+            background: none; border: none; color: #777; cursor: pointer;
+            font-size: 12px; padding: 4px 8px; border-radius: 4px;
+            transition: all 0.2s; font-family: 'Inter', system-ui, sans-serif;
+        }
+        .search-btn:hover { background: #333; color: #fff; }
+        .radius-select {
+            background: #333; border: 1px solid #555; color: #ccc;
+            font-size: 11px; font-family: 'Inter', system-ui, sans-serif;
+            padding: 4px 6px; border-radius: 4px; cursor: pointer;
+        }
+
+        .container { display: flex; height: calc(100vh - 52px); }
+        #map { width: 100%; height: 100%; }
+
+        .sidebar {
+            width: 420px; background: #111; overflow-y: auto;
+            border-left: 1px solid #333; display: flex; flex-direction: column;
+        }
+        .sidebar-header {
+            padding: 14px 16px; background: #1a1a1a; border-bottom: 1px solid #333;
+        }
+        .sidebar-header h2 { font-size: 15px; color: #fff; margin-bottom: 8px; }
+
+        .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+        .filter-btn {
+            background: #222; border: 1px solid #444; color: #ccc;
+            padding: 4px 10px; border-radius: 14px; font-size: 11px;
+            font-family: 'Inter', system-ui, sans-serif; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .filter-btn:hover, .filter-btn.active { background: #c00; border-color: #c00; color: #fff; }
+        .filter-btn.material-filter.active { background: #1a6ab0; border-color: #1a6ab0; color: #fff; }
+        .filter-btn.material-filter:hover { background: #1a6ab0; border-color: #1a6ab0; color: #fff; }
+
+        /* Event cards */
+        .event-card {
+            padding: 14px 16px; border-bottom: 1px solid #222;
+            cursor: pointer; transition: background 0.2s;
+        }
+        .event-card:hover { background: #1a1a1a; }
+        .event-card.tier-alarm {
+            background: linear-gradient(90deg, rgba(200,0,0,0.15) 0%, transparent 50%);
+            border-left: 5px solid #ff2222;
+            border-bottom-color: #331111;
+        }
+        .event-card.tier-alarm:hover { background: linear-gradient(90deg, rgba(200,0,0,0.22) 0%, #1a0a0a 50%); }
+        .event-card.tier-scoop {
+            background: linear-gradient(90deg, rgba(200,80,0,0.08) 0%, transparent 60%);
+            border-left: 3px solid #e05500;
+        }
+        .event-card.tier-scoop:hover { background: rgba(30,15,5,1); }
+        .event-card.tier-top {
+            border-left: 2px solid #cc8800;
+        }
+        .event-card.tier-meldung {
+            border-left: 2px solid #888;
+            opacity: 0.7;
+        }
+        .event-card.tier-monitor, .event-card.tier-routine {
+            opacity: 0.4;
+            border-left: none;
+        }
+        .event-card.tier-monitor:hover, .event-card.tier-routine:hover { opacity: 0.6; }
+
+        .event-card .meta {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+        }
+        .event-type-badge {
+            font-size: 10px; font-weight: 700; padding: 2px 8px;
+            border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .type-polizei { background: #1a3a8a; color: #6ab0ff; }
+        .type-feuer { background: #8a2a0a; color: #ff8a50; }
+        .type-unfall { background: #8a6a0a; color: #ffd050; }
+        .type-unwetter { background: #2a2a6a; color: #8080ff; }
+        .type-rettung { background: #2a5a3a; color: #60d080; }
+        .type-sonstiges { background: #3a3a3a; color: #aaa; }
+
+        .freshness-badge {
+            font-size: 9px; font-weight: 700; padding: 2px 6px;
+            border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .freshness-hot { background: #cc0000; color: #fff; }
+        .freshness-warm { background: #cc6600; color: #fff; }
+        .freshness-cooling { background: #aa8800; color: #fff; }
+        .freshness-cold { background: #444; color: #999; }
+
+        /* Score-Badge */
+        .event-card .score {
+            font-size: 13px; font-weight: 800; color: #fff;
+            padding: 2px 10px; border-radius: 10px;
+            min-width: 38px; text-align: center;
+        }
+        .score.alarm { background: #cc0000; font-size: 16px; box-shadow: 0 0 10px rgba(200,0,0,0.6); letter-spacing: 0.5px; }
+        .score.scoop { background: #d05500; font-size: 14px; }
+        .score.top { background: #aa7700; }
+        .score.meldung { background: #555; font-size: 11px; }
+        .score.monitor { background: #333; color: #888; font-size: 11px; }
+        .score.routine { background: #282828; color: #666; font-size: 11px; }
+
+        .exclusive-badge {
+            font-size: 10px; font-weight: 800; color: #fff;
+            background: linear-gradient(135deg, #c00, #ff3300);
+            padding: 2px 8px; border-radius: 10px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            animation: pulse-badge 2s infinite;
+        }
+
+        .event-card .time { font-size: 11px; color: #777; }
+        .event-card h3 { font-size: 14px; color: #fff; margin-bottom: 4px; line-height: 1.3; }
+        .event-card p { font-size: 12px; color: #999; line-height: 1.5; }
+        .event-card .sources { font-size: 10px; color: #666; margin-top: 4px; }
+        .event-card.tier-alarm h3 { font-size: 17px; color: #ffcccc; font-weight: 800; }
+        .event-card.tier-scoop h3 { font-size: 15px; color: #ffe0cc; }
+        .event-card.tier-top h3 { font-size: 14px; }
+
+        .media-badge {
+            display: inline-flex; align-items: center; gap: 3px;
+            font-size: 10px; font-weight: 700; padding: 2px 7px;
+            border-radius: 10px; margin-left: 4px;
+        }
+        .media-badge.has-video { background: rgba(100,50,255,0.25); color: #b090ff; border: 1px solid rgba(100,50,255,0.4); }
+        .media-badge.has-foto { background: rgba(50,180,255,0.2); color: #80ccff; border: 1px solid rgba(50,180,255,0.35); }
+        .media-badge.no-media { background: rgba(255,255,255,0.05); color: #555; border: 1px solid #333; }
+
+        .photo-gallery {
+            display: flex; gap: 6px; margin-top: 8px;
+            overflow-x: auto; scrollbar-width: thin; scrollbar-color: #333 transparent;
+        }
+        .photo-gallery img {
+            height: 120px; min-width: 100px; max-width: 200px;
+            object-fit: cover; border-radius: 6px; cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #333;
+        }
+        .photo-gallery img:hover { transform: scale(1.03); box-shadow: 0 2px 12px rgba(0,0,0,0.6); border-color: #666; }
+        .photo-gallery video { height: 120px; border-radius: 6px; border: 1px solid #333; }
+
+        .lightbox {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.92); z-index: 10000;
+            align-items: center; justify-content: center; cursor: zoom-out;
+        }
+        .lightbox.open { display: flex; }
+        .lightbox img { max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 8px; box-shadow: 0 4px 40px rgba(0,0,0,0.8); }
+
+        .event-card .reporter-tag {
+            display: inline-block; font-size: 10px; font-weight: 600;
+            color: #ff4444; background: rgba(255,50,50,0.15);
+            padding: 1px 6px; border-radius: 8px; margin-top: 4px;
+            border: 1px solid rgba(255,50,50,0.3);
+        }
+
+        .stats-bar {
+            display: flex; gap: 0; background: #111; border-bottom: 1px solid #333;
+        }
+        .stat-item {
+            flex: 1; text-align: center; padding: 10px 8px; border-right: 1px solid #222;
+        }
+        .stat-item:last-child { border-right: none; }
+        .stat-item .num { font-size: 22px; font-weight: 800; color: #fff; }
+        .stat-item .label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* Threat Level */
+        .threat-level {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 800;
+            text-align: center;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        .threat-level.critical {
+            background: linear-gradient(90deg, #400 0%, #800 50%, #400 100%);
+            color: #ff4444;
+            animation: pulse-threat 1.5s infinite;
+            border-bottom: 2px solid #c00;
+        }
+        .threat-level.elevated {
+            background: linear-gradient(90deg, #332200 0%, #553300 50%, #332200 100%);
+            color: #ff9900;
+            border-bottom: 2px solid #cc6600;
+        }
+        .threat-level.normal {
+            background: #0a1a0a;
+            color: #33aa33;
+            border-bottom: 1px solid #333;
+        }
+
+        .leaflet-popup-content-wrapper { background: #1a1a1a !important; color: #e0e0e0 !important; border-radius: 8px !important; box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }
+        .leaflet-popup-tip { background: #1a1a1a !important; }
+        .leaflet-popup-content { font-family: 'Inter', system-ui, sans-serif; }
+        .popup-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+        .popup-text { font-size: 12px; color: #aaa; line-height: 1.4; }
+
+        /* Map Legend — severity-basiert */
+        .map-legend {
+            position: absolute;
+            bottom: 28px;
+            left: 12px;
+            z-index: 1000;
+            background: rgba(15,15,15,0.92);
+            border: 1px solid #444;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 11px;
+            color: #ccc;
+            backdrop-filter: blur(8px);
+            min-width: 190px;
+        }
+        .map-legend h4 {
+            font-size: 11px; font-weight: 700; color: #fff;
+            margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .map-legend .legend-row {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
+        }
+        .map-legend .legend-dot {
+            width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+        }
+        .map-legend .legend-label { font-size: 11px; }
+        .map-legend .legend-score { color: #888; font-size: 10px; margin-left: auto; }
+
+        /* Map Score Threshold Slider */
+        .map-controls {
+            position: absolute;
+            top: 12px;
+            left: 56px;
+            z-index: 1000;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .map-threshold {
+            background: rgba(15,15,15,0.92);
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 6px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            backdrop-filter: blur(8px);
+        }
+        .map-threshold label {
+            font-size: 11px;
+            color: #aaa;
+            white-space: nowrap;
+        }
+        .map-threshold input[type="range"] {
+            width: 100px;
+            accent-color: #c00;
+        }
+        .map-threshold .threshold-val {
+            font-size: 13px;
+            font-weight: 700;
+            color: #fff;
+            min-width: 24px;
+            text-align: center;
+        }
+
+        /* Scoop Toast Notification — BIGGER, more dramatic */
+        .scoop-toast {
+            position: fixed; top: 70px; right: 20px; z-index: 9998;
+            background: linear-gradient(135deg, #1a0a0a 0%, #220808 100%);
+            border: 2px solid #c00; border-left: 5px solid #c00;
+            border-radius: 12px; padding: 16px 20px; width: 420px;
+            box-shadow: 0 8px 40px rgba(200, 0, 0, 0.4);
+            animation: toast-in 0.35s ease-out; cursor: pointer;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        .scoop-toast.alarm-toast {
+            border-color: #ff0000;
+            box-shadow: 0 8px 50px rgba(255, 0, 0, 0.5);
+            animation: toast-in 0.35s ease-out, pulse-threat 2s infinite;
+        }
+        .scoop-toast.closing { opacity: 0; transform: translateX(60px); }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateX(60px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .scoop-toast .toast-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .scoop-toast .toast-alert {
+            font-size: 12px; font-weight: 800; color: #fff;
+            background: #c00; padding: 3px 10px; border-radius: 8px;
+            text-transform: uppercase; letter-spacing: 1.5px;
+        }
+        .scoop-toast .toast-alert.breaking {
+            background: linear-gradient(135deg, #ff0000, #cc0000);
+            font-size: 14px;
+            animation: pulse-badge 1s infinite;
+        }
+        .scoop-toast .toast-crime-type {
+            font-size: 11px; font-weight: 800; color: #ff6666;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .scoop-toast .toast-countdown { font-size: 10px; color: #666; margin-left: auto; }
+        .scoop-toast .toast-countdown .cd-bar {
+            display: inline-block; height: 3px; background: #c00;
+            border-radius: 2px; transition: width 1s linear;
+        }
+        .scoop-toast .toast-title { font-size: 15px; font-weight: 700; color: #fff; line-height: 1.3; margin-bottom: 4px; }
+        .scoop-toast .toast-meta { font-size: 11px; color: #888; }
+        .scoop-toast .toast-score { font-size: 15px; font-weight: 800; color: #ff4444; }
+        .scoop-toast .toast-thumb { height: 70px; border-radius: 6px; object-fit: cover; margin-top: 6px; border: 1px solid #333; }
+
+        #loading-overlay {
+            position: fixed; inset: 0; background: rgba(10,10,10,0.9);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 9999; font-size: 16px; font-weight: 600; color: #999;
+            transition: opacity 0.3s;
+        }
+        #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="loading-overlay">Daten werden geladen ...</div>
+
+<div class="header">
+    <div>
+        <h1>CRIME RADAR</h1>
+        <span class="subtitle" id="last-update">Echtzeit-Kriminalitätsradar Deutschland</span>
+    </div>
+    <div class="refresh-info">
+        <span class="refresh-countdown" id="refresh-countdown">45s</span>
+        <span class="refresh-spinner" id="refresh-spinner"></span>
+        <span class="live-badge">LIVE</span>
+    </div>
+</div>
+
+<!-- Threat Level Indicator -->
+<div class="threat-level normal" id="threat-level">THREAT LEVEL: NORMAL</div>
+
+<div class="stats-bar">
+    <div class="stat-item">
+        <div class="num" id="stat-total">0</div>
+        <div class="label">Events</div>
+    </div>
+    <div class="stat-item">
+        <div class="num" id="stat-scoops" style="color:#c00">0</div>
+        <div class="label">Top Scoops</div>
+    </div>
+    <div class="stat-item">
+        <div class="num" id="stat-hot" style="color:#ff3232">0</div>
+        <div class="label">LIVE / HOT</div>
+    </div>
+    <div class="stat-item">
+        <div class="num" id="stat-material" style="color:#80ccff">0</div>
+        <div class="label">Mit Material</div>
+    </div>
+    <div class="stat-item">
+        <div class="num" id="stat-polizei" style="color:#6ab0ff">0</div>
+        <div class="label">Polizei</div>
+    </div>
+</div>
+
+<div class="container">
+    <div style="flex:1;min-width:0;position:relative">
+        <div id="map" style="width:100%;height:100%"></div>
+        <!-- Map controls overlay -->
+        <div class="map-controls">
+            <div class="map-threshold">
+                <label>Karte zeigt ab:</label>
+                <input type="range" id="map-threshold-slider" min="0" max="10" step="1" value="3">
+                <span class="threshold-val" id="map-threshold-val">3+</span>
+            </div>
+        </div>
+        <!-- Legend overlay — severity-basiert -->
+        <div class="map-legend">
+            <h4>Severity</h4>
+            <div class="legend-row">
+                <div class="legend-dot" style="width:22px;height:22px;background:#ff2222;box-shadow:0 0 12px rgba(255,30,30,0.5);border:2px solid #fff"></div>
+                <span class="legend-label" style="font-weight:700">Mord / Terror</span>
+                <span class="legend-score">9+</span>
+            </div>
+            <div class="legend-row">
+                <div class="legend-dot" style="width:18px;height:18px;background:#e05500;border:2px solid rgba(255,255,255,0.6)"></div>
+                <span class="legend-label">Messer / Schüsse</span>
+                <span class="legend-score">7-8</span>
+            </div>
+            <div class="legend-row">
+                <div class="legend-dot" style="width:14px;height:14px;background:#cc8800;border:1px solid rgba(255,255,255,0.4)"></div>
+                <span class="legend-label">Großeinsatz</span>
+                <span class="legend-score">5-6</span>
+            </div>
+            <div class="legend-row">
+                <div class="legend-dot" style="width:10px;height:10px;background:#888;border:1px solid rgba(255,255,255,0.25)"></div>
+                <span class="legend-label" style="color:#aaa">Überfall / Brand</span>
+                <span class="legend-score">3-4</span>
+            </div>
+            <div class="legend-row">
+                <div class="legend-dot" style="width:7px;height:7px;background:#555;border:1px solid rgba(255,255,255,0.15)"></div>
+                <span class="legend-label" style="color:#666">Unfall / Demo</span>
+                <span class="legend-score">0-2</span>
+            </div>
+            <div style="margin-top:8px;padding-top:6px;border-top:1px solid #333">
+                <div class="legend-row" style="margin-bottom:3px">
+                    <div style="width:12px;height:12px;border-radius:50%;background:#ff3232;animation:pulse-hot 2s infinite;flex-shrink:0"></div>
+                    <span class="legend-label">Gerade passiert</span>
+                </div>
+                <div class="legend-row" style="margin-bottom:0">
+                    <div style="width:12px;height:12px;border-radius:50%;background:#ff8c00;flex-shrink:0"></div>
+                    <span class="legend-label">Letzte Stunden</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="sidebar">
+        <div class="search-container">
+            <div class="search-bar">
+                <span class="search-icon">&#9906;</span>
+                <input type="text" id="search-input" placeholder="Stadt, PLZ oder Stadtteil suchen ..." autocomplete="off">
+                <div class="search-actions">
+                    <select class="radius-select" id="radius-select" title="Suchradius">
+                        <option value="5">5 km</option>
+                        <option value="10">10 km</option>
+                        <option value="25" selected>25 km</option>
+                        <option value="50">50 km</option>
+                        <option value="100">100 km</option>
+                    </select>
+                    <button class="search-btn" id="locate-btn" title="Mein Standort">GPS</button>
+                </div>
+            </div>
+        </div>
+        <div class="sidebar-header">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <h2 style="margin:0">Crime-Feed</h2>
+                <button class="sort-toggle" id="sort-toggle" title="Sortierung wechseln">Hot &#x25BC;</button>
+            </div>
+            <div class="filter-row">
+                <button class="filter-btn active" data-filter="alle">Alle</button>
+                <button class="filter-btn" data-filter="polizei">Polizei</button>
+                <button class="filter-btn" data-filter="feuer">Feuer</button>
+                <button class="filter-btn" data-filter="unfall">Unfall</button>
+                <button class="filter-btn" data-filter="unwetter">Unwetter</button>
+                <button class="filter-btn" data-filter="sonstiges">Sonstiges</button>
+                <button class="filter-btn material-filter" id="filter-material" data-filter="material">Mit Material</button>
+            </div>
+        </div>
+        <div id="event-list"></div>
+    </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('open')">
+    <img id="lightbox-img" src="" alt="">
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+function openLightbox(src) {
+    const lb = document.getElementById('lightbox');
+    document.getElementById('lightbox-img').src = src;
+    lb.classList.add('open');
+}
+
+// --- FRESHNESS DECAY ---
+function getFreshness(zeitpunkt) {
+    const now = new Date();
+    const eventTime = new Date(zeitpunkt);
+    const ageHours = (now - eventTime) / (1000 * 60 * 60);
+
+    if (ageHours <= 1) return { level: 'hot', label: 'HOT', color: '#ff3232', markerColor: '#ff3232', cssClass: 'freshness-hot', pulse: 'pulse-hot' };
+    if (ageHours <= 3) return { level: 'warm', label: 'WARM', color: '#ff8c00', markerColor: '#ff8c00', cssClass: 'freshness-warm', pulse: 'pulse-warm' };
+    if (ageHours <= 8) return { level: 'cooling', label: 'COOLING', color: '#ccaa00', markerColor: '#ccaa00', cssClass: 'freshness-cooling', pulse: null };
+    return { level: 'cold', label: 'COLD', color: '#666', markerColor: '#666', cssClass: 'freshness-cold', pulse: null };
+}
+
+function getRelativeTime(zeitpunkt) {
+    const now = new Date();
+    const eventTime = new Date(zeitpunkt);
+    const diffMin = Math.floor((now - eventTime) / (1000 * 60));
+    if (diffMin < 1) return 'gerade eben';
+    if (diffMin < 60) return 'vor ' + diffMin + ' Min.';
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return 'vor ' + diffH + ' Std.';
+    return 'vor ' + Math.floor(diffH / 24) + ' Tag(en)';
+}
+
+// Score-Tier bestimmen
+function getScoreTier(score) {
+    if (score >= 9) return 'alarm';
+    if (score >= 7) return 'scoop';
+    if (score >= 5) return 'top';
+    if (score >= 3) return 'meldung';
+    if (score >= 1) return 'monitor';
+    return 'routine';
+}
+
+// Severity-basierte Marker-Farben (NICHT Kategorie)
+function getSeverityColor(score) {
+    if (score >= 9) return '#ff2222';    // Rot — Mord/Terror
+    if (score >= 7) return '#e05500';    // Orange — Messer/Schüsse
+    if (score >= 5) return '#cc8800';    // Gelb — Großeinsatz
+    if (score >= 3) return '#888888';    // Grau — Überfall/Brand
+    return '#555555';                     // Dunkelgrau — Routine
+}
+
+const typeLabels = {
+    polizei: 'Polizei', feuer: 'Feuer', unfall: 'Unfall',
+    unwetter: 'Unwetter', rettung: 'Rettung', sonstiges: 'Sonstiges'
+};
+
+// Crime-Type für Toast-Anzeige
+function getCrimeTypeLabel(title) {
+    const t = title.toLowerCase();
+    if (t.includes('messer')) return 'MESSERANGRIFF';
+    if (t.includes('schüsse') || t.includes('schuss')) return 'SCHÜSSE';
+    if (t.includes('mord') || t.includes('getötet') || t.includes('tödlich')) return 'TÖTUNGSDELIKT';
+    if (t.includes('großbrand') || t.includes('vollbrand')) return 'GROSSBRAND';
+    if (t.includes('explosion') || t.includes('bombe')) return 'EXPLOSION';
+    if (t.includes('geisel')) return 'GEISELNAHME';
+    if (t.includes('terror') || t.includes('amok')) return 'TERRORLAGE';
+    if (t.includes('überfall') || t.includes('raub')) return 'ÜBERFALL';
+    if (t.includes('brand') || t.includes('feuer')) return 'BRAND';
+    if (t.includes('unfall')) return 'UNFALL';
+    if (t.includes('fahndung')) return 'FAHNDUNG';
+    if (t.includes('festnahme')) return 'FESTNAHME';
+    if (t.includes('razzia')) return 'RAZZIA';
+    return 'VORFALL';
+}
+
+// --- SVG Icons for markers ---
+const CRIME_ICONS = {
+    polizei: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>`,
+    feuer: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>`,
+    unfall: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
+    unwetter: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 17l1.6-3.5H4.4l3-5.5h4.8L10.6 13h4.2L7 21V17zm2-7l-1.2 2h3.2L9.4 16l4-6H9.8l1.2-2H7.2z"/></svg>`,
+    default: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/><circle cx="12" cy="12" r="3"/></svg>`
+};
+
+// --- MAP SETUP ---
+const map = L.map('map', { zoomControl: true }).setView([51.1657, 10.4515], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: 'CartoDB', maxZoom: 19
+}).addTo(map);
+
+// --- STATE ---
+let GEOJSON_DATA = null;
+let markers = [];
+let activeFilter = 'alle';
+let materialFilterActive = false;
+let mapThreshold = 3;
+
+// --- MARKER ICON — Severity-basierte Farbe + Crime-Type SVG ---
+function createMarkerIcon(typ, score, freshness) {
+    const tier = getScoreTier(score);
+    const sevColor = getSeverityColor(score);
+    const iconSvg = CRIME_ICONS[typ] || CRIME_ICONS.default;
+    let size, border, glowSize;
+
+    if (tier === 'alarm') {
+        size = 30; border = '3px solid #fff'; glowSize = 24;
+    } else if (tier === 'scoop') {
+        size = 22; border = '2px solid rgba(255,255,255,0.7)'; glowSize = 14;
+    } else if (tier === 'top') {
+        size = 16; border = '2px solid rgba(255,255,255,0.4)'; glowSize = 8;
+    } else if (tier === 'meldung') {
+        size = 11; border = '1px solid rgba(255,255,255,0.25)'; glowSize = 3;
+    } else {
+        size = 7; border = '1px solid rgba(255,255,255,0.15)'; glowSize = 1;
+    }
+
+    const pulseStyle = (freshness.pulse && score >= 5) ? `animation: ${freshness.pulse} 2s infinite;` : '';
+    const glowColor = freshness.level === 'hot' ? freshness.markerColor : (freshness.level === 'warm' ? freshness.markerColor : sevColor);
+
+    // SVG-Icon nur bei größeren Markern
+    const showIcon = size >= 16;
+    const iconSize = Math.floor(size * 0.55);
+
+    return L.divIcon({
+        className: '',
+        html: `<div style="
+            width:${size}px; height:${size}px;
+            background:${sevColor};
+            border:${border};
+            border-radius:50%;
+            box-shadow: 0 0 ${glowSize}px ${glowColor};
+            ${pulseStyle}
+            display:flex; align-items:center; justify-content:center;
+        ">${showIcon ? `<div style="width:${iconSize}px;height:${iconSize}px;color:#fff;opacity:0.9">${iconSvg}</div>` : ''}</div>`,
+        iconSize: [size, size],
+        iconAnchor: [size/2, size/2]
+    });
+}
+
+// --- SORT & REFRESH STATE ---
+let sortMode = 'hot';
+let refreshCountdown = 45;
+let refreshTimer = null;
+
+function startRefreshCountdown() {
+    refreshCountdown = 45;
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => {
+        refreshCountdown--;
+        const el = document.getElementById('refresh-countdown');
+        if (el) el.textContent = refreshCountdown + 's';
+        if (refreshCountdown <= 0) {
+            refreshCountdown = 45;
+            loadEvents();
+        }
+    }, 1000);
+}
+
+function sortFeatures(features) {
+    if (sortMode === 'zeit') {
+        return features.sort((a, b) => new Date(b.properties.zeitpunkt) - new Date(a.properties.zeitpunkt));
+    }
+    if (sortMode === 'hot') {
+        return features.sort((a, b) => {
+            const fa = getFreshness(a.properties.zeitpunkt);
+            const fb = getFreshness(b.properties.zeitpunkt);
+            const freshBoost = {hot: 3, warm: 1.5, cooling: 0.5, cold: 0};
+            const sa = a.properties.scoop_score + (freshBoost[fa.level] || 0);
+            const sb = b.properties.scoop_score + (freshBoost[fb.level] || 0);
+            return sb - sa;
+        });
+    }
+    return features.sort((a, b) => b.properties.scoop_score - a.properties.scoop_score);
+}
+
+// Sort toggle
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('sort-toggle');
+    if (btn) btn.addEventListener('click', () => {
+        const modes = ['score', 'hot', 'zeit'];
+        const labels = {'score': 'Score \u25BC', 'hot': 'Hot \u25BC', 'zeit': 'Neueste \u25BC'};
+        const idx = (modes.indexOf(sortMode) + 1) % modes.length;
+        sortMode = modes[idx];
+        btn.textContent = labels[sortMode];
+        if (GEOJSON_DATA) renderEvents(activeFilter);
+    });
+
+    // Map threshold slider
+    const slider = document.getElementById('map-threshold-slider');
+    const valEl = document.getElementById('map-threshold-val');
+    if (slider) {
+        slider.addEventListener('input', () => {
+            mapThreshold = parseInt(slider.value);
+            valEl.textContent = mapThreshold + '+';
+            if (GEOJSON_DATA) renderEvents(activeFilter);
+        });
+    }
+});
+
+// --- MEDIA HELPERS ---
+const _reVideo = /youtube\.com|youtu\.be|\.(mp4|webm)($|\?)/i;
+const _reFoto = /\.(jpg|jpeg|png|webp|gif)($|\?)/i;
+
+function hasMedia(p) {
+    const urls = p.media_urls;
+    if (!urls || urls.length === 0) return false;
+    return urls.some(u => u && (_reVideo.test(u) || _reFoto.test(u)));
+}
+function getMediaType(urls) {
+    if (!urls || urls.length === 0) return 'none';
+    if (urls.some(u => _reVideo.test(u))) return 'video';
+    if (urls.some(u => _reFoto.test(u))) return 'foto';
+    return 'none';
+}
+
+// --- THREAT LEVEL ---
+function updateThreatLevel(features) {
+    const el = document.getElementById('threat-level');
+    if (!el) return;
+    const now = new Date();
+    const oneHourAgo = new Date(now - 60 * 60 * 1000);
+
+    const recentFeatures = features.filter(f => new Date(f.properties.zeitpunkt) >= oneHourAgo);
+    const hasAlarm = recentFeatures.some(f => f.properties.scoop_score >= 9);
+    const hasScoop = recentFeatures.some(f => f.properties.scoop_score >= 7);
+
+    if (hasAlarm) {
+        el.className = 'threat-level critical';
+        el.textContent = 'THREAT LEVEL: CRITICAL';
+    } else if (hasScoop) {
+        el.className = 'threat-level elevated';
+        el.textContent = 'THREAT LEVEL: ELEVATED';
+    } else {
+        el.className = 'threat-level normal';
+        el.textContent = 'THREAT LEVEL: NORMAL';
+    }
+}
+
+// --- RENDER ---
+function renderEvents(filter) {
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    if (!GEOJSON_DATA) return;
+
+    let features = GEOJSON_DATA.features
+        .filter(f => filter === 'alle' || f.properties.typ === filter);
+
+    // Material-Filter
+    if (materialFilterActive) {
+        features = features.filter(f => hasMedia(f.properties));
+    }
+
+    sortFeatures(features);
+
+    // Unwetter Cap: Max 3 im Feed (nicht wenn direkt gefiltert)
+    if (filter !== 'unwetter') {
+        let uwCount = 0;
+        features = features.filter(f => {
+            if (f.properties.typ === 'unwetter') {
+                uwCount++;
+                return uwCount <= 3;
+            }
+            return true;
+        });
+    }
+
+    // Threat Level aktualisieren
+    updateThreatLevel(GEOJSON_DATA.features);
+
+    // Stats
+    const allFeatures = GEOJSON_DATA.features;
+    document.getElementById('stat-total').textContent = allFeatures.length;
+    document.getElementById('stat-scoops').textContent = allFeatures.filter(f => f.properties.scoop_score >= 7).length;
+    document.getElementById('stat-hot').textContent = allFeatures.filter(f => getFreshness(f.properties.zeitpunkt).level === 'hot').length;
+    document.getElementById('stat-material').textContent = allFeatures.filter(f => hasMedia(f.properties)).length;
+    document.getElementById('stat-polizei').textContent = allFeatures.filter(f => f.properties.typ === 'polizei').length;
+
+    // Map markers — nur ab threshold
+    const mapFeatures = features.filter(f => f.properties.scoop_score >= mapThreshold);
+
+    mapFeatures.forEach(f => {
+        const p = f.properties;
+        const freshness = getFreshness(p.zeitpunkt);
+        const coords = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+        const tier = getScoreTier(p.scoop_score);
+
+        const marker = L.marker(coords, { icon: createMarkerIcon(p.typ, p.scoop_score, freshness) })
+            .bindPopup(`
+                <div class="popup-title">${p.link ? '<a href="' + p.link + '" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px solid rgba(255,255,255,0.3)">' + p.titel + ' &#8599;</a>' : p.titel}</div>
+                <div style="margin:4px 0">
+                    <span class="event-type-badge type-${p.typ}" style="font-size:10px;padding:2px 6px;border-radius:8px;">${typeLabels[p.typ] || 'Sonstiges'}</span>
+                    <span class="${freshness.cssClass}" style="font-size:9px;padding:2px 6px;border-radius:8px;font-weight:700;">${freshness.label}</span>
+                    <strong style="font-size:14px;color:${tier === 'alarm' ? '#ff4444' : tier === 'scoop' ? '#e07700' : tier === 'top' ? '#ccaa00' : '#888'}">${p.scoop_score.toFixed(1)}</strong>
+                    ${tier === 'alarm' ? '<span style="font-size:10px;font-weight:800;color:#fff;background:linear-gradient(135deg,#c00,#f30);padding:1px 6px;border-radius:8px;margin-left:4px">BREAKING</span>' : tier === 'scoop' ? '<span style="font-size:10px;font-weight:700;color:#fff;background:#d05500;padding:1px 6px;border-radius:8px;margin-left:4px">SCOOP</span>' : ''}
+                </div>
+                <div class="popup-text">${p.zusammenfassung}</div>
+                ${(() => {
+                    const pu = p.media_urls || [];
+                    const fotos = pu.filter(u => u.match && u.match(/\.(jpg|jpeg|png|webp|gif)($|\?)/i));
+                    if (fotos.length > 0) {
+                        return '<div style="display:flex;gap:4px;margin-top:6px;overflow-x:auto">' +
+                            fotos.slice(0, 3).map(u => '<img src="' + u + '" style="height:80px;border-radius:4px;object-fit:cover;cursor:pointer;border:1px solid #444" onclick="openLightbox(\'' + u + '\')">').join('') +
+                            '</div>';
+                    }
+                    return '';
+                })()}
+                <div style="font-size:10px;color:#666;margin-top:4px;">Quellen: ${p.quellen.join(', ')}</div>
+                <div style="font-size:10px;color:#555;margin-top:2px;">${getRelativeTime(p.zeitpunkt)}</div>
+                ${p.link ? '<div style="margin-top:4px"><a href="' + p.link + '" target="_blank" style="font-size:11px;font-weight:700;color:#6ab0ff;text-decoration:none">Zur Meldung &#8599;</a></div>' : ''}
+            `, { maxWidth: 360 })
+            .addTo(map);
+        markers.push(marker);
+    });
+
+    // Sidebar cards
+    const list = document.getElementById('event-list');
+    list.innerHTML = '';
+    features.forEach((f, i) => {
+        const p = f.properties;
+        const freshness = getFreshness(p.zeitpunkt);
+        const tier = getScoreTier(p.scoop_score);
+        const time = new Date(p.zeitpunkt).toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'});
+        const scoreClass = tier;
+        const card = document.createElement('div');
+        card.className = 'event-card tier-' + tier;
+
+        if (freshness.level === 'cold') {
+            card.style.opacity = '0.35';
+        }
+
+        // Photo gallery
+        const urls = p.media_urls || [];
+        const mediaType = getMediaType(urls);
+        let mediaHtml = '';
+        if (urls.length > 0) {
+            const items = urls.map(u => {
+                if (u.match(/youtube\.com|youtu\.be/)) {
+                    const vid = u.match(/(?:v=|youtu\.be\/|embed\/)([\w-]+)/);
+                    return vid ? `<iframe width="200" height="120" src="https://www.youtube.com/embed/${vid[1]}" frameborder="0" allowfullscreen style="border-radius:6px;border:1px solid #333;flex-shrink:0"></iframe>` : '';
+                }
+                if (u.match(/\.(mp4|webm)($|\?)/i)) return `<video src="${u}" controls style="height:120px;border-radius:6px;border:1px solid #333;flex-shrink:0"></video>`;
+                if (u.match(/\.(jpg|jpeg|png|webp|gif)($|\?)/i)) return `<img src="${u}" onclick="event.stopPropagation();openLightbox('${u}')" style="height:120px;min-width:100px;max-width:200px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #333;flex-shrink:0;transition:transform 0.2s" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'">`;
+                return '';
+            }).filter(Boolean).join('');
+            if (items) mediaHtml = `<div class="photo-gallery">${items}</div>`;
+        }
+
+        // Media badge
+        let mediaBadge = '';
+        if (mediaType === 'video') mediaBadge = '<span class="media-badge has-video">&#9654; Video</span>';
+        else if (mediaType === 'foto') {
+            const fotoCount = urls.filter(u => u.match(/\.(jpg|jpeg|png|webp|gif)($|\?)/i)).length;
+            mediaBadge = `<span class="media-badge has-foto">&#128247; ${fotoCount} Foto${fotoCount > 1 ? 's' : ''}</span>`;
+        }
+        else if (tier !== 'routine' && tier !== 'monitor') mediaBadge = '<span class="media-badge no-media">Kein Material</span>';
+
+        const exclusiveBadge = tier === 'alarm' ? '<span class="exclusive-badge">BREAKING</span>' : tier === 'scoop' ? '<span style="font-size:10px;font-weight:700;color:#fff;background:#d05500;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.5px">SCOOP</span>' : '';
+
+        card.innerHTML = `
+            <div class="meta">
+                <span class="event-type-badge type-${p.typ}">${typeLabels[p.typ] || 'Sonstiges'}</span>
+                <span class="freshness-badge ${freshness.cssClass}">${freshness.label}</span>
+                ${exclusiveBadge}
+                ${mediaBadge}
+                <span class="score ${scoreClass}">${p.scoop_score.toFixed(1)}</span>
+                <span class="time">${time} | ${getRelativeTime(p.zeitpunkt)}</span>
+            </div>
+            <h3>${p.link ? '<a href="' + p.link + '" target="_blank" style="color:inherit;text-decoration:none">' + p.titel + ' &#8599;</a>' : p.titel}</h3>
+            ${(tier === 'alarm' || tier === 'scoop' || tier === 'top') ? '<p>' + p.zusammenfassung + '</p>' : ''}
+            ${(tier === 'alarm' || tier === 'scoop' || tier === 'top') ? mediaHtml : ''}
+            ${(tier === 'alarm' || tier === 'scoop' || tier === 'top') ? '<div class="sources">Quellen: ' + p.quellen.join(' | ') + '</div>' : ''}
+            ${p.link && tier !== 'routine' && tier !== 'monitor' ? '<a href="' + p.link + '" target="_blank" style="display:inline-block;margin-top:6px;font-size:11px;font-weight:700;color:#6ab0ff;text-decoration:none">Zur Meldung &#8599;</a>' : ''}
+            ${tier === 'alarm' ? '<span class="reporter-tag">REPORTER VOR ORT EMPFOHLEN</span>' : ''}
+        `;
+        card.addEventListener('click', (e) => {
+            if (e.target.tagName === 'A' || e.target.tagName === 'IFRAME') return;
+            const coords = [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+            map.flyTo(coords, 12, {duration: 1});
+            const markerIdx = mapFeatures.findIndex(mf => mf.properties.id === p.id);
+            if (markerIdx >= 0 && markers[markerIdx]) markers[markerIdx].openPopup();
+        });
+        list.appendChild(card);
+    });
+}
+
+// --- FILTER BUTTONS ---
+document.querySelectorAll('.filter-btn:not(.material-filter)').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn:not(.material-filter)').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.filter;
+        renderEvents(activeFilter);
+    });
+});
+
+document.getElementById('filter-material').addEventListener('click', () => {
+    const btn = document.getElementById('filter-material');
+    materialFilterActive = !materialFilterActive;
+    btn.classList.toggle('active', materialFilterActive);
+    renderEvents(activeFilter);
+});
+
+// --- SEARCH ---
+const searchInput = document.getElementById('search-input');
+const locateBtn = document.getElementById('locate-btn');
+
+searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        const query = searchInput.value.trim();
+        if (!query) return;
+        fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&countrycodes=de&limit=1`)
+            .then(r => r.json())
+            .then(results => {
+                if (results.length > 0) {
+                    map.flyTo([parseFloat(results[0].lat), parseFloat(results[0].lon)], 11, {duration: 1.2});
+                }
+            })
+            .catch(() => {});
+    }
+});
+
+locateBtn.addEventListener('click', () => {
+    if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => map.flyTo([pos.coords.latitude, pos.coords.longitude], 12, {duration: 1.2}),
+            () => {}
+        );
+    }
+});
+
+// --- SCOOP SOUND ---
+let _audioCtx = null;
+let _audioUnlocked = false;
+let _lastChimeTime = 0;
+
+document.addEventListener('click', function _unlockAudio() {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === 'suspended') _audioCtx.resume();
+    _audioUnlocked = true;
+    document.removeEventListener('click', _unlockAudio);
+}, {once: true});
+
+function playScoopChime(score) {
+    if (!_audioUnlocked) return;
+    const now = Date.now();
+    if (now - _lastChimeTime < 2000) return;
+    _lastChimeTime = now;
+
+    try {
+        if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = _audioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+
+        const t = ctx.currentTime;
+        const vol = ctx.createGain();
+        vol.connect(ctx.destination);
+
+        if (score >= 9) {
+            // ALARM: tiefer, bedrohlicher Ton
+            vol.gain.value = 0.25;
+            const freqs = [220, 277.18, 329.63, 220];
+            freqs.forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const env = ctx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.value = freq;
+                const start = t + i * 0.2;
+                env.gain.setValueAtTime(0, start);
+                env.gain.linearRampToValueAtTime(0.4, start + 0.05);
+                env.gain.exponentialRampToValueAtTime(0.001, start + 0.6);
+                osc.connect(env);
+                env.connect(vol);
+                osc.start(start);
+                osc.stop(start + 0.65);
+            });
+        } else {
+            // SCOOP: normaler Chime
+            vol.gain.value = 0.15;
+            const notes = [523.25, 659.25, 783.99];
+            if (score >= 7) notes.push(1046.50);
+            notes.forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const env = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                const start = t + i * 0.12;
+                env.gain.setValueAtTime(0, start);
+                env.gain.linearRampToValueAtTime(0.3, start + 0.03);
+                env.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
+                osc.connect(env);
+                env.connect(vol);
+                osc.start(start);
+                osc.stop(start + 0.45);
+            });
+        }
+    } catch(e) {}
+}
+
+// --- SCOOP TOAST ---
+let knownEventIds = new Set();
+
+function showScoopToast(event) {
+    const p = event.properties;
+    const isAlarm = p.scoop_score >= 9;
+    playScoopChime(p.scoop_score);
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = isAlarm ? 'scoop-toast alarm-toast' : 'scoop-toast';
+
+    const fotos = (p.media_urls || []).filter(u => _reFoto.test(u));
+    const thumbHtml = fotos.length > 0 ? `<img class="toast-thumb" src="${fotos[0]}" alt="">` : '';
+    const crimeType = getCrimeTypeLabel(p.titel);
+
+    const COUNTDOWN = 8;
+    toast.innerHTML = `
+        <div class="toast-header">
+            <span class="toast-alert ${isAlarm ? 'breaking' : ''}">${isAlarm ? 'BREAKING' : 'NEUER SCOOP'}</span>
+            <span class="toast-crime-type">${crimeType}</span>
+            <span class="toast-score">${p.scoop_score.toFixed(1)}</span>
+            <span class="toast-countdown"><span class="cd-num">${COUNTDOWN}</span>s <span class="cd-bar" style="width:100px"></span></span>
+        </div>
+        <div class="toast-title">${p.titel}</div>
+        <div class="toast-meta">${typeLabels[p.typ] || 'Sonstiges'} | ${getRelativeTime(p.zeitpunkt)}</div>
+        ${thumbHtml}
+    `;
+
+    toast.addEventListener('click', () => {
+        const coords = [event.geometry.coordinates[1], event.geometry.coordinates[0]];
+        map.flyTo(coords, 12, {duration: 1});
+        closeToast(toast);
+    });
+
+    container.appendChild(toast);
+
+    const cdBar = toast.querySelector('.cd-bar');
+    const cdNum = toast.querySelector('.cd-num');
+    let remaining = COUNTDOWN;
+    requestAnimationFrame(() => { cdBar.style.width = '0px'; });
+
+    const cdInterval = setInterval(() => {
+        remaining--;
+        if (cdNum) cdNum.textContent = remaining;
+        if (remaining <= 0) { clearInterval(cdInterval); closeToast(toast); }
+    }, 1000);
+
+    toast.addEventListener('mouseenter', () => clearInterval(cdInterval));
+    toast.addEventListener('mouseleave', () => {
+        const ri = setInterval(() => {
+            remaining--;
+            if (cdNum) cdNum.textContent = Math.max(0, remaining);
+            if (remaining <= 0) { clearInterval(ri); closeToast(toast); }
+        }, 1000);
+    });
+}
+
+function closeToast(toast) {
+    toast.classList.add('closing');
+    setTimeout(() => toast.remove(), 350);
+}
+
+function detectNewScoops(data) {
+    if (!data || !data.features) return;
+    const newScoops = [];
+    for (const f of data.features) {
+        const id = f.properties.id;
+        if (id && !knownEventIds.has(id) && f.properties.scoop_score >= 5) {
+            newScoops.push(f);
+        }
+    }
+    for (const f of data.features) {
+        if (f.properties.id) knownEventIds.add(f.properties.id);
+    }
+    newScoops
+        .sort((a, b) => b.properties.scoop_score - a.properties.scoop_score)
+        .slice(0, 3)
+        .forEach((f, i) => setTimeout(() => showScoopToast(f), i * 400));
+}
+
+// --- LOAD EVENTS ---
+let isFirstLoad = true;
+function loadEvents() {
+    const spinner = document.getElementById('refresh-spinner');
+    if (spinner) spinner.classList.add('active');
+
+    fetch('/api/events')
+        .then(response => {
+            if (!response.ok) throw new Error('API HTTP ' + response.status);
+            return response.json();
+        })
+        .then(data => {
+            if (isFirstLoad) {
+                if (data.features) data.features.forEach(f => { if (f.properties.id) knownEventIds.add(f.properties.id); });
+                isFirstLoad = false;
+            } else {
+                detectNewScoops(data);
+            }
+            GEOJSON_DATA = data;
+            renderEvents(activeFilter);
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.classList.add('hidden');
+
+            const now = new Date();
+            const el = document.getElementById('last-update');
+            if (el) el.textContent = 'Stand: ' + now.toLocaleString('de-DE', {day:'2-digit', month:'long', year:'numeric', hour:'2-digit', minute:'2-digit'}) + ' Uhr';
+
+            refreshCountdown = 45;
+        })
+        .catch(err => {
+            console.error('Fehler beim Laden der Events:', err);
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.textContent = 'Fehler beim Laden der Daten.';
+        })
+        .finally(() => {
+            if (spinner) spinner.classList.remove('active');
+        });
+}
+loadEvents();
+startRefreshCountdown();
+
+// Auto-refresh freshness every 20s
+setInterval(() => {
+    if (GEOJSON_DATA) renderEvents(activeFilter);
+}, 20000);
+</script>
+
+</body>
+</html>

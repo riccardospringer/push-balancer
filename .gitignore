@@ -1,41 +1,48 @@
-# Secrets — NIEMALS committen!
+# Credentials & Secrets
 .env
-*.env
-!.env.example
+*.key
+*.pem
 
-# Backups
-*.bak
-
-# Datenbanken
+# Datenbanken (lokal, nicht ins Repo)
 *.db
-
-# OS
-.DS_Store
-~$*
-Thumbs.db
+*.db-shm
+*.db-wal
+push_data.db
+push-balancer.db
+push_balancer.db
+pushes.db
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
+.pytest_cache/
 *.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Snapshots & Caches
+push-snapshot.json
+catboost_info/
+*.bak
+*.backup
 
-# Office Lock-Dateien
-~$*
+# Logs
+*.log
 
-# Screenshots & generierte Dateien
-*.jpg
-*.png
-*.pptx
+# macOS
+.DS_Store
 
-# ML Temp
-*.json.tmp
+# Claude AI Agent-Konfiguration (lokal, nicht ins Repo)
+.claude/
 
-# DB (wird auf Render ephemer neu aufgebaut)
-.push_history.db
+# Trainierte ML-Modelle (lokal generiert)
+*.joblib
+*.gbrt_model.json
+.tuning_state.json
+
+# Render/Railway Config (ggf. anpassen wenn gewuenscht)
+render.yaml

@@ -1,0 +1,567 @@
+{
+  "type": "FeatureCollection",
+  "generated": "2026-03-17T16:00:00+01:00",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [51.3890, 35.6892]},
+      "properties": {
+        "titel": "Iran-Krieg: Israel toetet Sicherheitschef Laridschani in Teheran",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T06:00:00+01:00",
+        "scoop_score": 8.9,
+        "quellen": ["IDF Pressestelle", "Reuters", "BBC News"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Israel meldet Toetung von Ali Laridschani (Sicherheitschef) und Basidsch-Chef Soleimani in naechtlichen Angriffen auf Teheran. Breite Angriffswelle auf iranische Hauptstadt. Ueber 1.300 Tote in Iran seit Kriegsbeginn am 28. Februar.",
+        "exklusivitaet": 4,
+        "relevanz": 10,
+        "dringlichkeit": 10,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [56.2500, 26.5650]},
+      "properties": {
+        "titel": "Strasse von Hormus: Oelpreis 106 USD -- Tanker passieren erstmals wieder",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-17T10:00:00+01:00",
+        "scoop_score": 8.5,
+        "quellen": ["IEA", "Bloomberg", "Reuters"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Erstmals seit Kriegsbeginn passieren Tanker die Strasse von Hormus. Brent-Oel bei 106 USD/Barrel (+40% seit Konfliktbeginn). EU lehnt Trumps Forderung nach militaerischer Sicherung ab. 16 Mio Barrel/Tag Oelfluss gefaehrdet.",
+        "exklusivitaet": 5,
+        "relevanz": 10,
+        "dringlichkeit": 10,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [4.9041, 52.3676]},
+      "properties": {
+        "titel": "Antisemitismus-Welle Europa: Anschlaege auf juedische Einrichtungen in NL und Belgien",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-14T08:00:00+01:00",
+        "scoop_score": 8.0,
+        "quellen": ["Amsterdams Buergermeisterin Halsema", "NL Polizei", "US-Botschaft Den Haag", "Europol"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Serie gezielter Anschlaege: Explosion juedische Schule Amsterdam (14.3.), Brandanschlag Synagoge Rotterdam (13.3.), Explosion Synagoge Luettich (9.3.). Frankreich auf hoechster Terrorwarnstufe. Europol warnt vor eskalierender Radikalisierung durch Iran-Krieg.",
+        "exklusivitaet": 5,
+        "relevanz": 10,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [35.5018, 33.8938]},
+      "properties": {
+        "titel": "Israel-Bodenoffensive Libanon: 886 Tote, 1 Million Vertriebene",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T08:00:00+01:00",
+        "scoop_score": 7.9,
+        "quellen": ["IDF", "Lebanese Ministry of Health", "UNHCR"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Israels 36. Panzerdivision verstaerkt Bodenoperationen in Suedlibanon gegen Hisbollah. 886 Tote seit 2. Maerz, darunter 111 Kinder. Fuenf libanesische Soldaten bei Luftangriff verletzt. EU-Laender verlegen Truppen zum Schutz Zyperns.",
+        "exklusivitaet": 4,
+        "relevanz": 10,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [37.6173, 55.7558]},
+      "properties": {
+        "titel": "Ukraine-Drohnenkrieg: 250 Drohnen auf Moskau in vier Tagen",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T05:00:00+01:00",
+        "scoop_score": 7.6,
+        "quellen": ["Moskaus Buergermeister Sobjanin", "Ukrainischer Generalstab", "AFP"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Ukraine greift Moskau den vierten Tag in Folge mit Drohnen an. 206 Drohnen in einer Nacht abgefangen, 40 auf Moskau. Ural-Region erstmals bedroht (Shoigu). Russland verbietet Soldaten Telegram. Ukraine hat 400 km2 in Oblast Dnipropetrowsk befreit.",
+        "exklusivitaet": 4,
+        "relevanz": 9,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [10.7522, 59.9139]},
+      "properties": {
+        "titel": "Kronprinzessin Mette-Marit braucht Lungentransplantation",
+        "typ": "promi",
+        "zeitpunkt": "2026-03-17T12:00:00+01:00",
+        "scoop_score": 7.5,
+        "quellen": ["Norwegisches Koenigshaus", "NRK", "VG"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Der norwegische Koenigspalast bestaetigt: Kronprinzessin Mette-Marit (52) wird auf eine Lungentransplantation vorbereitet. Ihre Lungenfibrose hat sich deutlich verschlechtert. Zeitpunkt der OP noch offen. Vorbereitungen seit Dezember 2025.",
+        "exklusivitaet": 3,
+        "relevanz": 9,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [10.4515, 51.1657]},
+      "properties": {
+        "titel": "Ifo-Bombe: 95% des 500-Mrd-Sonderfonds sind Mogelpackung",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T09:00:00+01:00",
+        "scoop_score": 7.8,
+        "quellen": ["Ifo Institut", "Bundesrechnungshof", "Handelsblatt"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Ifo-Forscher rechnen vor: Grossteil der 500 Mrd EUR Sonderfonds ersetzt bestehende Haushaltsposten statt echte Neuinvestitionen. Bundesrechnungshof teilt Kritik. Sozialausgaben steigen im Kernhaushalt, Investitionen werden in Schuldenfonds verschoben.",
+        "exklusivitaet": 6,
+        "relevanz": 9,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [10.6818, 59.4372]},
+      "properties": {
+        "titel": "Sprengsatz an US-Botschaft Oslo -- Terror-Warnstufe Europa erhoecht",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-08T22:00:00+01:00",
+        "scoop_score": 7.4,
+        "quellen": ["Norwegische Polizei", "US State Department", "Europol"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Sprengsatz in Eingangsbereich der US-Botschaft in Oslo geworfen (8. Maerz). Teil einer Serie: Synagogen-Anschlaege NL/BE, Schuesse auf Synagogen in Kanada, Auto-Ramme Michigan. Frankreich auf hoechster Stufe 'urgence attentat'.",
+        "exklusivitaet": 4,
+        "relevanz": 9,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [15.0, 36.0]},
+      "properties": {
+        "titel": "Ukrainischer Seedrohnenangriff: Russischer Gastanker treibt im Mittelmeer",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-16T20:00:00+01:00",
+        "scoop_score": 7.1,
+        "quellen": ["Reuters", "Ukrainischer Militaergeheimdienst", "Maritime Traffic"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Beschaedigter russischer Gastanker mit 700 Tonnen Treibstoff treibt nach ukrainischem Seedrohnenangriff im Mittelmeer. Umwelt- und Navigationsgefahr. Neue Dimension des Drohnenkriegs.",
+        "exklusivitaet": 6,
+        "relevanz": 8,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 7
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.4050, 52.5200]},
+      "properties": {
+        "titel": "Jugendliche Obdachlosigkeit in Deutschland verdreifacht: 137.000 Betroffene",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-17T08:00:00+01:00",
+        "scoop_score": 6.9,
+        "quellen": ["Bundesregierung", "BAG Wohnungslosenhilfe"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Bundesregierung meldet 137.000 obdachlose Jugendliche in Deutschland -- dreimal so viele wie 2022. Dramatischer Anstieg in Grossstaedten.",
+        "exklusivitaet": 5,
+        "relevanz": 8,
+        "dringlichkeit": 6,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [42.5000, 15.5527]},
+      "properties": {
+        "titel": "USS Gerald R. Ford: Brand im Roten Meer -- 600 Matrosen ohne Kojen",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-12T14:00:00+01:00",
+        "scoop_score": 6.8,
+        "quellen": ["US Navy", "Pentagon", "CNN"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Brand in der Waescherei des Flugzeugtraegers USS Gerald R. Ford im Roten Meer. 30 Stunden zum Loeschen, 600 Besatzungsmitglieder verloren Unterkuenfte. Schiff bei Operation Epic Fury weiter einsatzfaehig.",
+        "exklusivitaet": 5,
+        "relevanz": 7,
+        "dringlichkeit": 5,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [6.7735, 51.2277]},
+      "properties": {
+        "titel": "Verdi: Mega-Streik im Nahverkehr NRW und Bayern ab Donnerstag",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-17T11:00:00+01:00",
+        "scoop_score": 6.6,
+        "quellen": ["Verdi Bundesvorstand", "VDV"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Verdi kuendigt Streik im oeffentlichen Nahverkehr fuer Do 19.3. an. NRW und Bayern betroffen. Muenchen bereits ab Mi-Abend. 100.000 Beschaeftigte in 150 Unternehmen. Busse, Trams, U-Bahnen stehen still.",
+        "exklusivitaet": 3,
+        "relevanz": 9,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [-0.1276, 51.5074]},
+      "properties": {
+        "titel": "Royals: William plant Harry und Meghan Titel zu entziehen",
+        "typ": "promi",
+        "zeitpunkt": "2026-03-17T10:00:00+01:00",
+        "scoop_score": 5.9,
+        "quellen": ["The Times", "Daily Mail", "Tom Bower Buch"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Prinz William plant offenbar, Harry und Meghan die Sussex-Titel zu entziehen sobald er Koenig wird. Autor Tom Bower wirft Sussexes vor, Royal Family fuer Geld beschaedigt zu haben. Kate bei St. Patricks Day Parade.",
+        "exklusivitaet": 3,
+        "relevanz": 8,
+        "dringlichkeit": 4,
+        "verifizierbarkeit": 6
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.4522, 49.9934]},
+      "properties": {
+        "titel": "EILMELDUNG: Zwei Tote nach Schüssen in Raunheimer Bistro",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-17T03:45:00+01:00",
+        "scoop_score": 8.6,
+        "quellen": ["Polizei Südhessen", "Nachrichtenagenturen"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Bewaffneter Täter erschießt zwei Menschen in Bistro in Raunheim nahe Frankfurter Flughafen um 3:45 Uhr. Täter auf der Flucht, Großfahndung läuft. Motiv und Identität des Täters unbekannt. Bereich weiträumig abgesperrt.",
+        "exklusivitaet": 7,
+        "relevanz": 10,
+        "dringlichkeit": 10,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.5064, 52.3667]},
+      "properties": {
+        "titel": "BER-Totalstreik morgen: 57.000 Passagiere betroffen",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-17T08:00:00+01:00",
+        "scoop_score": 6.9,
+        "quellen": ["Verdi", "Flughafengesellschaft Berlin-Brandenburg"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Verdi ruft für 18. März ganztägigen Warnstreik am BER aus. Kompletter Stillstand des Passagierflugbetriebs erwartet. 445 Starts/Landungen betroffen, ca. 57.000 Passagiere. Arbeitgeber bieten nur 1% pro Jahr -- Verdi fordert 6%.",
+        "exklusivitaet": 3,
+        "relevanz": 10,
+        "dringlichkeit": 10,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.6821, 50.1109]},
+      "properties": {
+        "titel": "Unicredit startet feindliche Übernahme der Commerzbank",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-16T18:00:00+01:00",
+        "scoop_score": 7.5,
+        "quellen": ["Unicredit AG", "BaFin", "Commerzbank Pressestelle", "Bundesfinanzministerium"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Unicredit legt offizielles Übernahmeangebot für Commerzbank vor: 0,485 neue Unicredit-Aktien je Commerzbank-Aktie (ca. 30,80 EUR, 4% Prämie). Bundesregierung (12% Anteil), Commerzbank-Vorstand und Verdi lehnen feindliche Übernahme ab. Formelles Angebot Anfang Mai erwartet.",
+        "exklusivitaet": 4,
+        "relevanz": 9,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.6821, 50.1109]},
+      "properties": {
+        "titel": "Bundesregierung gibt Ölreserven frei -- Spritpreis-Notbremse",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T09:00:00+01:00",
+        "scoop_score": 7.9,
+        "quellen": ["Bundeswirtschaftsministerium", "IEA", "ADAC"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Größte Ölreserven-Freigabe der IEA-Geschichte wegen Iran-Krieg und 120$/Barrel Brent. Energieministerin Reiche kündigt zudem Tankstellen-Preisbremse nach österreichischem Vorbild an (nur eine Preiserhöhung/Tag). ADAC kritisiert: Deutsche Spritpreise doppelt so stark gestiegen wie in anderen EU-Ländern.",
+        "exklusivitaet": 5,
+        "relevanz": 10,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.6821, 50.1109]},
+      "properties": {
+        "titel": "Gesichtserkennungs-App der Polizei: Pilotprojekt im Bahnhofsviertel",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-12T17:00:00+01:00",
+        "scoop_score": 8.1,
+        "quellen": ["Polizei Frankfurt", "Hessisches Innenministerium", "Gesellschaft für Freiheitsrechte"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Bundesweit einzigartige GES-App ermöglicht Polizei die Identifizierung ausweisloser Personen via BKA-Gesichtserkennung. MP Rhein und IM Poseck stellten das System beim Großeinsatz vor. 414 Kontrollen, 36 Strafanzeigen. Seit Sommer 2025 zusätzlich Live-Gesichtserkennung über Kameras mit KI. GFF prüft Klage.",
+        "exklusivitaet": 7,
+        "relevanz": 9,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [10.0027, 53.5653]},
+      "properties": {
+        "titel": "Massenunfall auf Autobahn Richtung HafenCity Hamburg",
+        "typ": "unfall",
+        "zeitpunkt": "2026-03-15T14:00:00+01:00",
+        "scoop_score": 6.0,
+        "quellen": ["Notruf Hamburg", "Polizei Hamburg"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Schwerer Massenunfall mit mehreren Fahrzeugen auf der Autobahn Richtung HafenCity. Großeinsatz der Rettungskräfte. Polizei fordert Gebiet zu meiden. Details zu Verletzten noch unklar.",
+        "exklusivitaet": 4,
+        "relevanz": 8,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 7
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [11.6276, 52.1205]},
+      "properties": {
+        "titel": "Tragödie in Magdeburg: Mutter stirbt bei Rettung ihres Kindes vor Straßenbahn",
+        "typ": "unfall",
+        "zeitpunkt": "2026-03-12T19:30:00+01:00",
+        "scoop_score": 7.4,
+        "quellen": ["Polizei Magdeburg", "Volksstimme"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "45-jährige afghanische Mutter rettet ihr 3-jähriges Kind von Straßenbahngleisen an der Haltestelle Kastanienstraße, stürzt dabei selbst vor die einfahrende Bahn und stirbt. Kind unverletzt. Familie war auf dem Heimweg vom Einkaufen. Mutter hinterlässt drei Kinder und Ehemann.",
+        "exklusivitaet": 6,
+        "relevanz": 9,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.4050, 52.5200]},
+      "properties": {
+        "titel": "Infrastruktur-Zukunftsgesetz: Anhörung spaltet Experten",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-16T10:00:00+01:00",
+        "scoop_score": 5.6,
+        "quellen": ["Bundestag Dokumentation", "Deutsche Bahn AG", "Autobahn GmbH", "BUND"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Öffentliche Anhörung zum Infrastruktur-Zukunftsgesetz der Bundesregierung. Verkehrsinfrastruktur soll als 'überragendes öffentliches Interesse' eingestuft werden. Autobahn GmbH, DB und Bauindustrie dafür, Umweltverbände und Fachanwälte kritisieren Aushöhlung des Naturschutzes.",
+        "exklusivitaet": 3,
+        "relevanz": 7,
+        "dringlichkeit": 5,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.4050, 52.5200]},
+      "properties": {
+        "titel": "Adenauer-Ausstellung: Bundestagspräsidentin Klöckner eröffnet",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T11:00:00+01:00",
+        "scoop_score": 3.5,
+        "quellen": ["Bundestag Pressestelle"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Bundestagspräsidentin Julia Klöckner eröffnet Ausstellung zum 150. Geburtstag von Konrad Adenauer im Bundestag.",
+        "exklusivitaet": 2,
+        "relevanz": 5,
+        "dringlichkeit": 3,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [7.8476, 47.5596]},
+      "properties": {
+        "titel": "Tödlicher Unfall mit Feuerwehrfahrzeug in Laufenburg",
+        "typ": "unfall",
+        "zeitpunkt": "2026-03-13T07:30:00+01:00",
+        "scoop_score": 6.8,
+        "quellen": ["Polizei Freiburg", "DRK"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "80-jährige Frau stirbt bei Kollision ihres VW mit Feuerwehrfahrzeug in Laufenburg, Baden-Württemberg. Fragen zur Sicherheit von Einsatzfahrten.",
+        "exklusivitaet": 6,
+        "relevanz": 7,
+        "dringlichkeit": 9,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [10.4515, 51.1657]},
+      "properties": {
+        "titel": "Jeanette Biedermann: Schwanger mit 46 -- erstes Kind",
+        "typ": "promi",
+        "zeitpunkt": "2026-03-05T12:00:00+01:00",
+        "scoop_score": 5.6,
+        "quellen": ["Instagram Jeanette Biedermann", "Management-Bestätigung"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Sängerin und Schauspielerin Jeanette Biedermann verkündet erste Schwangerschaft mit 46 Jahren auf Instagram. Bezeichnete es als 'riesige Überraschung' und 'Weihnachtsgeschenk'. Vater des Kindes nicht bekannt gegeben.",
+        "exklusivitaet": 3,
+        "relevanz": 7,
+        "dringlichkeit": 3,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [6.0839, 50.9667]},
+      "properties": {
+        "titel": "Großübung EMREX in Gangelt: 630 Einsatzkräfte aus 3 Ländern",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-21T08:00:00+01:00",
+        "scoop_score": 4.5,
+        "quellen": ["Kreis Heinsberg", "Feuerwehr Gangelt"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Grenzüberschreitende Großübung am 21. März in Gangelt (Kreis Heinsberg). 630 Einsatzkräfte aus DE, NL, BE proben Massenunfall. 50 Verletztendarsteller.",
+        "exklusivitaet": 3,
+        "relevanz": 5,
+        "dringlichkeit": 4,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [6.1296, 49.6113]},
+      "properties": {
+        "titel": "EuGH-Urteil: Kirchenaustritt allein kein Kündigungsgrund bei Caritas",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T10:00:00+01:00",
+        "scoop_score": 8.4,
+        "quellen": ["EuGH Luxemburg", "Bundesarbeitsgericht"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "EuGH entscheidet heute: Caritas darf Sozialpädagogin aus Wiesbaden nicht allein wegen Kirchenaustritt kündigen. Kirchenmitgliedschaft muss für konkrete Tätigkeit 'wesentlich, legitim und gerechtfertigt' sein. Wegweisendes Urteil für 1,3 Mio. Beschäftigte kirchlicher Arbeitgeber in DE.",
+        "exklusivitaet": 6,
+        "relevanz": 10,
+        "dringlichkeit": 10,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.4037, 49.0069]},
+      "properties": {
+        "titel": "BGH prüft Klimaklagen gegen BMW und Mercedes -- Verbrenner-Stopp bis 2030?",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-02T09:00:00+01:00",
+        "scoop_score": 8.0,
+        "quellen": ["BGH Karlsruhe", "Deutsche Umwelthilfe"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "BGH verhandelt Klimaklagen der Deutschen Umwelthilfe gegen BMW und Mercedes-Benz. Forderung: Verkaufsstopp für Verbrenner bis 31.10.2030. DUH droht bei Niederlage mit Gang vors BVerfG. Kernfrage: zivilrechtliche Klimahaftung von Konzernen.",
+        "exklusivitaet": 5,
+        "relevanz": 10,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 10
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.4050, 52.5200]},
+      "properties": {
+        "titel": "Riester 2.0 unter Beschuss: Verbraucherschützer warnen vor zweitem Debakel",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-16T10:00:00+01:00",
+        "scoop_score": 7.6,
+        "quellen": ["Bundestag Finanzausschuss", "Drucksache 21/4088", "Verbraucherzentrale"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "Anhörung im Finanzausschuss offenbart breite Front gegen Riester-Reform: Kostenobergrenze von 1,5% sei 'Zugeständnis an Banken'. Selbst SPD räumt zu hohe Grenze ein. Verbraucherschützer fordern Staatsfonds statt Finanzindustrie-Produkte. Betrifft Millionen Sparer.",
+        "exklusivitaet": 5,
+        "relevanz": 10,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [13.4050, 52.5200]},
+      "properties": {
+        "titel": "GKV vor Milliarden-Defizit: Gesundheitskommission muss Ende März liefern",
+        "typ": "politik",
+        "zeitpunkt": "2026-03-17T08:00:00+01:00",
+        "scoop_score": 7.5,
+        "quellen": ["BMG", "DAK-Gesundheit", "IGES-Institut"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "GKV steuert auf zweistelliges Milliarden-Defizit ab 2027 zu (bis 15 Mrd. EUR). Beitragserhöhung um 0,6 Prozentpunkte droht. FinanzKommission Gesundheit muss Ende März Vorschläge liefern. DAK-Chef warnt: Sozialbeiträge könnten bis 2035 auf 50% steigen.",
+        "exklusivitaet": 6,
+        "relevanz": 10,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [8.5544, 49.8070]},
+      "properties": {
+        "titel": "Chlorpyrifos in Bockshornklee: EU-verbotenes Pestizid in 14 Bundesländern verkauft",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-12T12:00:00+01:00",
+        "scoop_score": 7.1,
+        "quellen": ["lebensmittelwarnung.de", "Global Foods Trading GmbH Biebesheim"],
+        "reporter_empfehlung": true,
+        "zusammenfassung": "MDH Peacook Kasoori Methi Bockshornkleeblätter mit Chlorpyrifos belastet -- Pestizid seit 2020 in EU verboten wegen Nervenschäden. Vertrieb in 14 von 16 Bundesländern. Chargen LOT 314-316, MHD 30.11.2026.",
+        "exklusivitaet": 4,
+        "relevanz": 9,
+        "dringlichkeit": 8,
+        "verifizierbarkeit": 9
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [7.0118, 51.4556]},
+      "properties": {
+        "titel": "Salmonellen-Cluster: Drei Wurstrückrufe in einer Woche",
+        "typ": "sonstiges",
+        "zeitpunkt": "2026-03-10T12:00:00+01:00",
+        "scoop_score": 6.3,
+        "quellen": ["lebensmittelwarnung.de", "OVO Vertrieb GmbH", "Fleischerei Zschammer"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Drei Wurstprodukte in einer Woche wegen Salmonellen zurückgerufen: Meisterklasse Schinken-Zwiebelmettwurst (Penny), Schinkenpolnische und Knoblauchbratwurst (Zschammer). Cluster-Frage: gemeinsame Ursache?",
+        "exklusivitaet": 5,
+        "relevanz": 7,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 8
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [11.5820, 48.1351]},
+      "properties": {
+        "titel": "Münchner Einbrecherbande: Zwei gefasst, dritter Täter flüchtig",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-16T14:00:00+01:00",
+        "scoop_score": 5.9,
+        "quellen": ["Polizei München"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Serie von Wohnungseinbrüchen in München. Zwei Tatverdächtige (24, 25 J.) ohne festen Wohnsitz in DE festgenommen. Dritter Verdächtiger (31) auf der Flucht. Hubschraubereinsatz bei Festnahme.",
+        "exklusivitaet": 4,
+        "relevanz": 6,
+        "dringlichkeit": 7,
+        "verifizierbarkeit": 7
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [12.3731, 51.3397]},
+      "properties": {
+        "titel": "Falsche Polizisten betrügen Rentner (86) in Leipzig-Connewitz",
+        "typ": "polizei",
+        "zeitpunkt": "2026-03-13T15:00:00+01:00",
+        "scoop_score": 4.5,
+        "quellen": ["Polizei Leipzig"],
+        "reporter_empfehlung": false,
+        "zusammenfassung": "Zwei Personen geben sich als Polizisten aus und versuchen 86-Jährigen in Connewitz zu betrügen. Opfer reagiert richtig und informiert echte Polizei. Warnung vor Enkeltrick-Variante.",
+        "exklusivitaet": 3,
+        "relevanz": 6,
+        "dringlichkeit": 4,
+        "verifizierbarkeit": 8
+      }
+    }
+  ]
+}
