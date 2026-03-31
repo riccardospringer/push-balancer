@@ -20397,6 +20397,65 @@ if __name__ == "__main__":
     else:
         print(f"  [Adobe] Deaktiviert (ADOBE_CLIENT_ID/SECRET nicht gesetzt)")
 
+    # ── Push-Auto-Fetch: Render holt Push-Daten direkt von bildcms.de ─────
+    def _push_auto_fetch_worker():
+        """Holt Push-Daten direkt von bildcms.de alle 120s (kein Mac noetig)."""
+        import time as _pf
+        _pf.sleep(5)  # Kurz warten bis Server bereit
+        log.info("[AutoFetch] Push-Daten-Worker gestartet (alle 120s)")
+        while True:
+            try:
+                end_ts = int(_pf.time())
+                start_ts = end_ts - 3 * 86400  # Letzte 3 Tage
+                url = f"{PUSH_API_BASE}/push/statistics/message?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL"
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                    "Accept": "application/json",
+                })
+                all_msgs = []
+                with urllib.request.urlopen(req, timeout=20, context=_GLOBAL_SSL_CTX) as resp:
+                    data = json.loads(resp.read())
+                    all_msgs = data.get("messages", [])
+                    next_params = data.get("next")
+                    page = 0
+                    while next_params and page < 10:
+                        url2 = f"{PUSH_API_BASE}/push/statistics/message?{next_params}"
+                        req2 = urllib.request.Request(url2, headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                            "Accept": "application/json",
+                        })
+                        with urllib.request.urlopen(req2, timeout=15, context=_GLOBAL_SSL_CTX) as resp2:
+                            d2 = json.loads(resp2.read())
+                            all_msgs.extend(d2.get("messages", []))
+                            next_params = d2.get("next")
+                        page += 1
+
+                # Channels holen
+                channels = []
+                try:
+                    ch_url = f"{PUSH_API_BASE}/push/statistics/message/channels?sourceTypes=EDITORIAL"
+                    ch_req = urllib.request.Request(ch_url, headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                        "Accept": "application/json",
+                    })
+                    with urllib.request.urlopen(ch_req, timeout=10, context=_GLOBAL_SSL_CTX) as ch_resp:
+                        channels = json.loads(ch_resp.read())
+                except Exception:
+                    pass
+
+                with _push_sync_lock:
+                    _push_sync_cache["messages"] = all_msgs
+                    _push_sync_cache["channels"] = channels
+                    _push_sync_cache["ts"] = _pf.time()
+
+                log.info(f"[AutoFetch] OK: {len(all_msgs)} Push-Messages geladen")
+            except Exception as e:
+                log.warning(f"[AutoFetch] Fehler: {e}")
+            _pf.sleep(120)  # Alle 2 Minuten
+
+    threading.Thread(target=_push_auto_fetch_worker, daemon=True).start()
+    print(f"  [AutoFetch] Push-Daten werden direkt von bildcms.de geholt (alle 120s)")
+
     # ── Push-Sync Worker: Synct Push-Daten zu Render ──────────────────────
     def _push_sync_worker():
         """Holt Push-Daten von bildcms.de und synct sie alle 60s zu Render."""
