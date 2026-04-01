@@ -25,7 +25,7 @@ venv/
 env/
 
 # Snapshots & Caches
-push-snapshot.json
+# push-snapshot.json  -- wird benoetigt als Render-Fallback (nicht ignorieren)
 catboost_info/
 *.bak
 *.backup

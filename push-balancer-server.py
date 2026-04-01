@@ -9162,6 +9162,21 @@ def _fetch_push_data():
         # Return full history from SQLite (includes previously cached data)
         all_from_db = _push_db_load_all()
         log.info(f"[PushDB] Returning {len(all_from_db)} pushes from SQLite (fetched {len(parsed)} new)")
+
+        # Fallback: wenn DB leer (z.B. frischer Render-Container), Snapshot laden
+        if len(all_from_db) == 0:
+            snap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push-snapshot.json")
+            if os.path.exists(snap_path):
+                try:
+                    with open(snap_path, "r", encoding="utf-8") as _f:
+                        snap_data = json.load(_f)
+                    log.info(f"[PushDB] API nicht erreichbar — lade Snapshot ({len(snap_data)} Pushes)")
+                    _push_db_upsert(snap_data)
+                    all_from_db = _push_db_load_all()
+                    log.info(f"[PushDB] Snapshot geladen: {len(all_from_db)} Pushes in DB")
+                except Exception as _se:
+                    log.warning(f"[PushDB] Snapshot-Laden fehlgeschlagen: {_se}")
+
         return all_from_db
     except Exception as e:
         log.warning(f"Push data fetch failed: {e}")

@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY push-balancer-server.py .
 COPY push-balancer.html .
 COPY push_title_agent.py .
+COPY push-snapshot.json .
 EXPOSE 8050
 CMD ["python", "push-balancer-server.py"]
