@@ -14988,89 +14988,69 @@ function renderLearnings(d) {
   const el = document.getElementById('learningsSection');
   if (!el) return;
   if (!d || !d.ready) {
-    el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Noch zu wenig Daten fuer Learnings (min. 50 Pushes benoetigt).</div>';
+    el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Noch zu wenig Daten (min. 50 Pushes benoetigt).</div>';
     return;
   }
 
-  const fmt = v => v != null ? v.toFixed(1) + '%' : '?';
-  const fmtPP = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + ' pp' : '?';
+  const pp = v => (v >= 0 ? '+' : '') + v.toFixed(1) + ' pp';
+  const pct = v => v.toFixed(1) + '%';
 
-  // ── Block 1: Was wir sicher wissen (data-driven) ──
+  // Nur Fakten mit aussagekraeftigem Delta (>= 0.3 pp) werden gezeigt
+  const cards = [];
+
+  // 1. Timing: Delta beste Stunde vs. Gesamtschnitt
+  if (d.best_hour != null && d.mean_or > 0) {
+    const bestOR = d.hour_stats?.[d.best_hour]?.mean;
+    const delta = bestOR - d.mean_or;
+    if (bestOR && Math.abs(delta) >= 0.3)
+      cards.push({ big: pp(delta), label: `${d.best_hour} Uhr`, text: `Pushes um ${d.best_hour} Uhr erzielen ${pct(bestOR)} OR — ${pp(delta)} gegenueber dem Gesamtschnitt von ${pct(d.mean_or)}.`, n: d.hour_stats[d.best_hour].n });
+  }
+
+  // 2. Kategorie: Delta beste Kategorie vs. Gesamtschnitt
   const catRanked = d.cat_ranked || [];
-  const topCat  = catRanked[0];
-  const flopCat = catRanked[catRanked.length - 1];
+  if (catRanked.length >= 2 && d.mean_or > 0) {
+    const [topName, topStats] = catRanked[0];
+    const delta = topStats.mean - d.mean_or;
+    if (Math.abs(delta) >= 0.3)
+      cards.push({ big: pp(delta), label: topName, text: `${topName}-Pushes erzielen ${pct(topStats.mean)} OR — ${pp(delta)} ueber dem Schnitt. Schlechteste Kategorie: ${catRanked[catRanked.length-1][0]} mit ${pct(catRanked[catRanked.length-1][1].mean)}.`, n: topStats.n });
+  }
+
+  // 3. Titellaenge: Delta beste vs. schlechteste Laenge
   const lenStats = d.len_stats || {};
   const lenRanked = Object.entries(lenStats).sort((a,b) => b[1].mean - a[1].mean);
-  const bestLen = lenRanked[0];
+  if (lenRanked.length >= 2) {
+    const delta = lenRanked[0][1].mean - lenRanked[lenRanked.length-1][1].mean;
+    if (delta >= 0.3)
+      cards.push({ big: pp(delta), label: `Titel ${lenRanked[0][0]}`, text: `Titel mit ${lenRanked[0][0]} Zeichen erzielen ${pct(lenRanked[0][1].mean)} OR — ${pp(delta)} mehr als Titel mit ${lenRanked[lenRanked.length-1][0]} Zeichen (${pct(lenRanked[lenRanked.length-1][1].mean)}).`, n: lenRanked[0][1].n });
+  }
 
-  let wissensItems = [];
-  if (d.best_hour != null)
-    wissensItems.push({ text: `Pushes um <b>${d.best_hour} Uhr</b> erzielen durchschnittlich <b>${fmt(d.hour_stats?.[d.best_hour]?.mean)}</b> OR — das ist die beste Stunde im Datensatz (n=${d.hour_stats?.[d.best_hour]?.n}).`, type: 'fact' });
-  if (topCat)
-    wissensItems.push({ text: `<b>${topCat[0]}</b>-Pushes performen am besten: <b>${fmt(topCat[1].mean)}</b> OR im Schnitt (${topCat[1].n} Pushes). Schlechteste Kategorie: ${flopCat?.[0] || '?'} mit ${fmt(flopCat?.[1]?.mean)} OR.`, type: 'fact' });
-  if (bestLen)
-    wissensItems.push({ text: `Titellange <b>${bestLen[0]}</b> erzielt die hoechste OR: <b>${fmt(bestLen[1].mean)}</b> (n=${bestLen[1].n}). ${lenRanked.length > 1 ? 'Kuerzeste Differenz zu ' + lenRanked[lenRanked.length-1][0] + ': ' + Math.abs(bestLen[1].mean - lenRanked[lenRanked.length-1][1].mean).toFixed(2) + ' pp.' : ''}`, type: 'fact' });
-  if (d.best_dow)
-    wissensItems.push({ text: `<b>${d.best_dow}</b> ist der starkste Wochentag (${fmt(d.dow_stats?.[d.best_dow]?.mean)} OR), <b>${d.worst_dow}</b> der schwaechste (${fmt(d.dow_stats?.[d.worst_dow]?.mean)} OR). Aber: Der Effekt ist oft kleiner als er aussieht.`, type: 'fact' });
-  if (d.n_breaking > 10 && d.breaking_or && d.nonbreaking_or)
-    wissensItems.push({ text: `Eilmeldungen erzielen <b>${fmt(d.breaking_or)}</b> OR — normale Pushes <b>${fmt(d.nonbreaking_or)}</b>. Das sind ${Math.abs(d.breaking_or - d.nonbreaking_or).toFixed(2)} pp Unterschied (n=${d.n_breaking} Eilmeldungen).`, type: 'fact' });
-  if (d.or_trend_pp != null)
-    wissensItems.push({ text: `Die durchschnittliche OR der letzten 90 Tage liegt bei <b>${fmt(d.mean_or_recent)}</b> — ${d.or_trend_pp >= 0 ? 'hoeher' : 'niedriger'} als die 90 Tage davor (${fmt(d.mean_or_older)}, Differenz: <b>${fmtPP(d.or_trend_pp)}</b>).`, type: d.or_trend_pp >= 0 ? 'good' : 'fact' });
+  // 4. Eilmeldungen: Delta vs. normale Pushes
+  if (d.n_breaking >= 10 && d.breaking_or && d.nonbreaking_or) {
+    const delta = d.breaking_or - d.nonbreaking_or;
+    if (Math.abs(delta) >= 0.3)
+      cards.push({ big: pp(delta), label: 'Eilmeldung', text: `Eilmeldungen erzielen ${pct(d.breaking_or)} OR — normale Pushes nur ${pct(d.nonbreaking_or)}. Das ist ein Unterschied von ${pp(delta)} (n=${d.n_breaking} Eilmeldungen).`, n: d.n_breaking });
+  }
 
-  // ── Render ──
-  const badge = (type) => {
-    if (type === 'fact') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dbeafe;color:#1d4ed8;margin-right:6px;flex-shrink:0">FAKT</span>';
-    if (type === 'good') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dcfce7;color:#15803d;margin-right:6px;flex-shrink:0">TREND</span>';
-    return '';
-  };
+  // 5. OR-Trend: nur wenn signifikant (>= 0.2 pp)
+  if (d.or_trend_pp != null && Math.abs(d.or_trend_pp) >= 0.2)
+    cards.push({ big: pp(d.or_trend_pp), label: 'Trend 90 Tage', text: `Die OR der letzten 90 Tage (${pct(d.mean_or_recent)}) ist gegenueber den 90 Tagen davor (${pct(d.mean_or_older)}) um ${pp(d.or_trend_pp)} ${d.or_trend_pp >= 0 ? 'gestiegen' : 'gesunken'}.`, n: d.n_recent_90d });
 
-  const renderItems = items => items.map(item =>
-    `<div style="display:flex;align-items:flex-start;gap:0;padding:10px 14px;border-bottom:1px solid #f0f0f0;font-size:13px;line-height:1.6;color:#374151">
-      ${badge(item.type)}<span>${item.text}</span>
-    </div>`
-  ).join('');
-
-  // Monats-Trend Mini-Chart
-  let trendChart = '';
-  if (d.monthly_trend && d.monthly_trend.length >= 3) {
-    const vals = d.monthly_trend.map(m => m.mean_or);
-    const minV = Math.min(...vals), maxV = Math.max(...vals);
-    const range = maxV - minV || 0.1;
-    const W = 320, H = 48, pad = 4;
-    const pts = vals.map((v, i) => {
-      const x = pad + (i / (vals.length - 1)) * (W - 2 * pad);
-      const y = H - pad - ((v - minV) / range) * (H - 2 * pad);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-    const last = d.monthly_trend[d.monthly_trend.length - 1];
-    trendChart = `<div style="margin:12px 0 4px;padding:12px 14px;background:#f8fafc;border-radius:8px">
-      <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">OR-Verlauf (${d.monthly_trend[0].month} — ${last.month})</div>
-      <svg width="${W}" height="${H}" style="display:block"><polyline fill="none" stroke="#0070d2" stroke-width="2" stroke-linejoin="round" points="${pts}"/>${vals.map((v, i) => {
-        const x = pad + (i / (vals.length - 1)) * (W - 2 * pad);
-        const y = H - pad - ((v - minV) / range) * (H - 2 * pad);
-        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#0070d2"/>`;
-      }).join('')}</svg>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:2px">
-        <span>${d.monthly_trend[0].month}</span><span>${fmt(last.mean_or)} (${last.month})</span>
-      </div>
-    </div>`;
+  if (!cards.length) {
+    el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Kein signifikanter Unterschied gefunden (alle Deltas unter 0.3 pp).</div>';
+    return;
   }
 
   el.innerHTML = `
-    <div style="background:#fff;border:1px solid var(--border-light);border-radius:12px;overflow:hidden">
-      <div style="padding:14px 16px 10px;border-bottom:1px solid #f0f0f0">
-        <div style="font-size:13px;font-weight:700;color:#111">Datenbasis: ${d.n_total?.toLocaleString()} reife Pushes (>24h, OR>0%) — davon ${d.n_recent_90d?.toLocaleString()} aus den letzten 90 Tagen</div>
-        <div style="font-size:11px;color:#9ca3af;margin-top:2px">Nur Pushes mit stabiler Opening Rate werden beruecksichtigt. Ausreisser (OR > 30%) sind ausgeschlossen.</div>
-      </div>
-      ${trendChart ? `<div style="padding:0 2px">${trendChart}</div>` : ''}
-      <div style="padding:10px 16px 4px">
-        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Was wir wissen</div>
-      </div>
-      ${renderItems(wissensItems)}
-      <div style="padding:10px 14px;font-size:11px;color:#9ca3af;border-top:1px solid #f0f0f0">
-        Letzte Berechnung: jetzt — direkt aus SQLite. Kein Caching.
-      </div>
-    </div>`;
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      ${cards.map(c => `
+        <div style="background:#fff;border:1px solid var(--border-light);border-radius:12px;padding:16px">
+          <div style="font-size:26px;font-weight:800;color:#0070d2;line-height:1;margin-bottom:4px">${c.big}</div>
+          <div style="font-size:11px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px">${c.label}</div>
+          <div style="font-size:12px;color:#6b7280;line-height:1.5">${c.text}</div>
+          <div style="font-size:10px;color:#d1d5db;margin-top:8px">n = ${c.n?.toLocaleString()}</div>
+        </div>`).join('')}
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:#d1d5db;text-align:right">Basis: ${d.n_total?.toLocaleString()} reife Pushes — direkt aus SQLite</div>`;
 }
 
 // ── GBRT Analytics ──────────────────────────────────────────────────────
