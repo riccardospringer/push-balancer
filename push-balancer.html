@@ -15015,31 +15015,12 @@ function renderLearnings(d) {
   if (d.n_breaking > 10 && d.breaking_or && d.nonbreaking_or)
     wissensItems.push({ text: `Eilmeldungen erzielen <b>${fmt(d.breaking_or)}</b> OR — normale Pushes <b>${fmt(d.nonbreaking_or)}</b>. Das sind ${Math.abs(d.breaking_or - d.nonbreaking_or).toFixed(2)} pp Unterschied (n=${d.n_breaking} Eilmeldungen).`, type: 'fact' });
   if (d.or_trend_pp != null)
-    wissensItems.push({ text: `Die durchschnittliche OR der letzten 90 Tage liegt bei <b>${fmt(d.mean_or_recent)}</b> — ${d.or_trend_pp >= 0 ? 'hoeher' : 'niedriger'} als die 90 Tage davor (${fmt(d.mean_or_older)}, Differenz: <b>${fmtPP(d.or_trend_pp)}</b>).`, type: d.or_trend_pp >= 0 ? 'good' : 'warn' });
-
-  // ── Block 2: Selbstkritik — Wo wir versagen ──
-  let kritikItems = [];
-  if (d.pred_accuracy_mae != null) {
-    kritikItems.push({ text: `Unser Modell liegt im Schnitt um <b>${d.pred_accuracy_mae.toFixed(2)} pp</b> daneben (MAE, letzte 90 Tage, n=${d.pred_n} Predictions). ${d.pred_within_2pp != null ? d.pred_within_2pp + '% der Vorhersagen lagen innerhalb von 2 pp.' : ''} ${d.pred_off_more_than_3pp != null ? '<b>' + d.pred_off_more_than_3pp + '%</b> lagen mehr als 3 pp daneben — das sind die Faelle, wo unsere Prognose wirklich falsch war.' : ''}`, type: 'bad' });
-  } else {
-    kritikItems.push({ text: `Wir haben noch keine Vorhersagen mit echten Ergebnissen verglichen — wir koennen unsere Genauigkeit deshalb <b>noch nicht beziffern</b>. Das ist ehrlich gesagt ein Problem.`, type: 'bad' });
-  }
-  kritikItems.push({ text: `Das Modell kennt <b>keinen Nachrichtenkontext</b>. Es weiss nicht, ob heute ein wichtiger Spieltag ist, ob eine Krise laeuft oder ob es bereits 3 Pushes zur gleichen Geschichte gab. Solche Effekte erklaeren viele unserer groessten Fehler.`, type: 'bad' });
-  kritikItems.push({ text: `<b>Kategorie ist zu grob</b>: "Sport" behandelt Bundesliga, F1 und Tennis identisch. In Wirklichkeit haben diese Themen sehr unterschiedliche Audiences und OR-Profile — wir mitteln das weg.`, type: 'bad' });
-  kritikItems.push({ text: `<b>Titelqualitaet koennen wir nicht messen.</b> Wir schauen nur auf Laenge und ob ein Doppelpunkt vorkommt. Ob der Titel gut geschrieben ist, ob er neugierig macht oder klar ist — das ist fuer unser Modell unsichtbar.`, type: 'bad' });
-  kritikItems.push({ text: `<b>Alte Daten koennten veraltet sein.</b> Wir trainieren auf ${d.n_total?.toLocaleString()} Pushes aus bis zu einem Jahr. Aber das Nutzerverhalten aendert sich. Ein Muster von vor 12 Monaten gilt heute vielleicht nicht mehr.`, type: 'warn' });
-  if (catRanked.length > 0) {
-    const smallCats = catRanked.filter(([,s]) => s.n < 30);
-    if (smallCats.length > 0)
-      kritikItems.push({ text: `${smallCats.length} Kategorien haben weniger als 30 Datenpunkte (${smallCats.map(([c]) => c).join(', ')}). Aussagen zu diesen Kategorien sind statistisch nicht belastbar — wir nennen trotzdem Zahlen, was irrefuehrend sein kann.`, type: 'warn' });
-  }
+    wissensItems.push({ text: `Die durchschnittliche OR der letzten 90 Tage liegt bei <b>${fmt(d.mean_or_recent)}</b> — ${d.or_trend_pp >= 0 ? 'hoeher' : 'niedriger'} als die 90 Tage davor (${fmt(d.mean_or_older)}, Differenz: <b>${fmtPP(d.or_trend_pp)}</b>).`, type: d.or_trend_pp >= 0 ? 'good' : 'fact' });
 
   // ── Render ──
   const badge = (type) => {
     if (type === 'fact') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dbeafe;color:#1d4ed8;margin-right:6px;flex-shrink:0">FAKT</span>';
     if (type === 'good') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dcfce7;color:#15803d;margin-right:6px;flex-shrink:0">TREND</span>';
-    if (type === 'warn') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#fef9c3;color:#a16207;margin-right:6px;flex-shrink:0">ACHTUNG</span>';
-    if (type === 'bad')  return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#fee2e2;color:#b91c1c;margin-right:6px;flex-shrink:0">SCHWAECHE</span>';
     return '';
   };
 
@@ -15086,10 +15067,6 @@ function renderLearnings(d) {
         <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Was wir wissen</div>
       </div>
       ${renderItems(wissensItems)}
-      <div style="padding:16px 16px 4px">
-        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Wo wir versagen — ehrliche Selbstkritik</div>
-      </div>
-      ${renderItems(kritikItems)}
       <div style="padding:10px 14px;font-size:11px;color:#9ca3af;border-top:1px solid #f0f0f0">
         Letzte Berechnung: jetzt — direkt aus SQLite. Kein Caching.
       </div>
