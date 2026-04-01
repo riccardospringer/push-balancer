@@ -18069,6 +18069,8 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._check_plus_urls()
         elif self.path == "/api/forschung":
             self._serve_forschung()
+        elif self.path == "/api/learnings":
+            self._serve_learnings()
         elif self.path == "/api/adobe/traffic":
             self._serve_adobe_traffic()
         elif self.path == "/api/health":
@@ -18849,6 +18851,148 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             log.error(f"[Forschung] API error: {e}\n{traceback.format_exc()}")
             self._error(500, f"Forschung API error: {e}")
+
+    def _serve_learnings(self):
+        """Ehrliche, datenbasierte Learnings aus den letzten Monaten."""
+        try:
+            import math
+
+            cutoff_24h = time.time() - 24 * 3600
+            cutoff_90d = time.time() - 90 * 86400
+            cutoff_180d = time.time() - 180 * 86400
+
+            raw = _push_db_load_all()
+            mature = [p for p in raw if p.get("ts_num", 0) < cutoff_24h and 0 < p.get("or", 0) <= 30]
+
+            if len(mature) < 50:
+                self._send_gzip(json.dumps({"ready": False, "n": len(mature)}, ensure_ascii=False).encode(),
+                                "application/json; charset=utf-8")
+                return
+
+            # ── Datenbasis: neuere vs aeltere Periode ──
+            recent = [p for p in mature if p["ts_num"] >= cutoff_90d]
+            older  = [p for p in mature if cutoff_180d <= p["ts_num"] < cutoff_90d]
+
+            def mean(lst): return sum(lst) / len(lst) if lst else 0
+            def median(lst):
+                if not lst: return 0
+                s = sorted(lst); n = len(s)
+                return (s[n//2-1]+s[n//2])/2 if n%2==0 else s[n//2]
+
+            mean_or_recent = mean([p["or"] for p in recent])
+            mean_or_older  = mean([p["or"] for p in older])
+            or_trend_pp    = round(mean_or_recent - mean_or_older, 2) if older else None
+
+            # ── Stunden-Analyse ──
+            from collections import defaultdict
+            by_hour = defaultdict(list)
+            for p in mature:
+                h = p.get("hour", -1)
+                if 0 <= h <= 23:
+                    by_hour[h].append(p["or"])
+            hour_stats = {h: {"mean": round(mean(v), 2), "n": len(v)} for h, v in by_hour.items() if len(v) >= 5}
+            best_hour  = max(hour_stats, key=lambda h: hour_stats[h]["mean"], default=None)
+            worst_hour = min(hour_stats, key=lambda h: hour_stats[h]["mean"], default=None)
+
+            # ── Kategorie-Analyse ──
+            by_cat = defaultdict(list)
+            for p in mature:
+                c = p.get("cat", "Unbekannt") or "Unbekannt"
+                by_cat[c].append(p["or"])
+            cat_stats = {c: {"mean": round(mean(v), 2), "n": len(v)} for c, v in by_cat.items() if len(v) >= 10}
+            cat_ranked = sorted(cat_stats.items(), key=lambda x: x[1]["mean"], reverse=True)
+
+            # ── Titellaenge-Analyse ──
+            buckets = {"kurz (1-40)": [], "mittel (41-65)": [], "lang (66+)": []}
+            for p in mature:
+                tl = p.get("title_len", 0) or 0
+                if tl <= 0: continue
+                if tl <= 40:   buckets["kurz (1-40)"].append(p["or"])
+                elif tl <= 65: buckets["mittel (41-65)"].append(p["or"])
+                else:          buckets["lang (66+)"].append(p["or"])
+            len_stats = {k: {"mean": round(mean(v), 2), "n": len(v)} for k, v in buckets.items() if v}
+
+            # ── Wochentag-Analyse ──
+            by_dow = defaultdict(list)
+            dow_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+            for p in mature:
+                ts = p.get("ts_num", 0)
+                if ts > 0:
+                    dow = datetime.datetime.fromtimestamp(ts).weekday()
+                    by_dow[dow].append(p["or"])
+            dow_stats = {dow_names[d]: {"mean": round(mean(v), 2), "n": len(v)} for d, v in by_dow.items() if len(v) >= 5}
+            best_dow  = max(dow_stats, key=lambda d: dow_stats[d]["mean"], default=None)
+            worst_dow = min(dow_stats, key=lambda d: dow_stats[d]["mean"], default=None)
+
+            # ── Vorhersage-Genauigkeit aus prediction_log ──
+            pred_accuracy = None
+            pred_n = 0
+            pred_within_2pp = 0
+            pred_off_more_than_3pp = 0
+            try:
+                with _push_db_lock:
+                    conn = sqlite3.connect(PUSH_DB_PATH)
+                    pred_rows = conn.execute("""
+                        SELECT predicted_or, actual_or FROM prediction_log
+                        WHERE actual_or > 0 AND actual_or < 30 AND predicted_or > 0
+                        AND logged_at > ?
+                    """, (int(time.time()) - 90 * 86400,)).fetchall()
+                    conn.close()
+                if pred_rows:
+                    errors = [abs(r[0] - r[1]) for r in pred_rows]
+                    pred_n = len(errors)
+                    pred_accuracy = round(mean(errors), 2)
+                    pred_within_2pp = round(100 * sum(1 for e in errors if e <= 2) / pred_n, 1)
+                    pred_off_more_than_3pp = round(100 * sum(1 for e in errors if e > 3) / pred_n, 1)
+            except Exception:
+                pass
+
+            # ── Eilmeldungs-Effekt ──
+            breaking_or    = mean([p["or"] for p in mature if p.get("is_eilmeldung")])
+            nonbreaking_or = mean([p["or"] for p in mature if not p.get("is_eilmeldung")])
+            n_breaking     = sum(1 for p in mature if p.get("is_eilmeldung"))
+
+            # ── Monats-Trend (letzte 6 Monate) ──
+            monthly = defaultdict(list)
+            for p in mature:
+                ts = p.get("ts_num", 0)
+                if ts > cutoff_180d:
+                    m = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m")
+                    monthly[m].append(p["or"])
+            monthly_trend = [{"month": m, "mean_or": round(mean(v), 2), "n": len(v)}
+                             for m, v in sorted(monthly.items()) if len(v) >= 5]
+
+            payload = {
+                "ready": True,
+                "n_total": len(mature),
+                "n_recent_90d": len(recent),
+                "mean_or": round(mean([p["or"] for p in mature]), 2),
+                "mean_or_recent": round(mean_or_recent, 2),
+                "mean_or_older": round(mean_or_older, 2),
+                "or_trend_pp": or_trend_pp,
+                "best_hour": best_hour,
+                "worst_hour": worst_hour,
+                "hour_stats": hour_stats,
+                "cat_ranked": [[c, s] for c, s in cat_ranked],
+                "len_stats": len_stats,
+                "dow_stats": dow_stats,
+                "best_dow": best_dow,
+                "worst_dow": worst_dow,
+                "pred_accuracy_mae": pred_accuracy,
+                "pred_n": pred_n,
+                "pred_within_2pp": pred_within_2pp,
+                "pred_off_more_than_3pp": pred_off_more_than_3pp,
+                "breaking_or": round(breaking_or, 2) if breaking_or else None,
+                "nonbreaking_or": round(nonbreaking_or, 2) if nonbreaking_or else None,
+                "n_breaking": n_breaking,
+                "monthly_trend": monthly_trend,
+            }
+            self._send_gzip(json.dumps(payload, ensure_ascii=False).encode(),
+                            "application/json; charset=utf-8")
+        except Exception as e:
+            import traceback
+            log.error(f"[Learnings] API error: {e}\n{traceback.format_exc()}")
+            self._error(500, f"Learnings API error: {e}")
 
     @staticmethod
     def _is_safe_url(url):

@@ -2854,6 +2854,12 @@ setInterval(function() {
     <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Lade Modifier-Daten...</div>
   </div>
 
+  <!-- Learnings: ehrlich + selbstkritisch -->
+  <div class="forschung-section-title">Was wir gelernt haben</div>
+  <div id="learningsSection" style="margin-bottom:20px">
+    <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Lade Learnings...</div>
+  </div>
+
   <!-- Emotion-Radar (aus API emotion_radar) -->
   <details>
     <summary class="forschung-section-title">
@@ -14945,8 +14951,9 @@ async function loadForschung() {
     showTabError('progressTicker', 'Forschungsdaten: ' + e.message, 'loadForschung()');
     if (_isNetworkError(e)) _markServerDown();
   }
-  // GBRT Modell-Status laden
+  // GBRT Modell-Status + Learnings laden
   loadGbrtStatus();
+  loadLearnings();
   if (forschungInterval) clearInterval(forschungInterval);
   forschungInterval = setInterval(async () => {
     try {
@@ -14965,6 +14972,128 @@ async function loadForschung() {
     loadGbrtStatus();
   }, 15000);
   fetchHealth();
+}
+
+// ── Learnings: ehrlich + selbstkritisch ─────────────────────────────────
+async function loadLearnings() {
+  try {
+    const resp = await resilientFetch(API_BASE + '/api/learnings', {_timeout: 20000});
+    if (!resp.ok) return;
+    const d = await resp.json();
+    renderLearnings(d);
+  } catch(e) { console.warn('Learnings fetch failed:', e); }
+}
+
+function renderLearnings(d) {
+  const el = document.getElementById('learningsSection');
+  if (!el) return;
+  if (!d || !d.ready) {
+    el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px 0">Noch zu wenig Daten fuer Learnings (min. 50 Pushes benoetigt).</div>';
+    return;
+  }
+
+  const fmt = v => v != null ? v.toFixed(1) + '%' : '?';
+  const fmtPP = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + ' pp' : '?';
+
+  // ── Block 1: Was wir sicher wissen (data-driven) ──
+  const catRanked = d.cat_ranked || [];
+  const topCat  = catRanked[0];
+  const flopCat = catRanked[catRanked.length - 1];
+  const lenStats = d.len_stats || {};
+  const lenRanked = Object.entries(lenStats).sort((a,b) => b[1].mean - a[1].mean);
+  const bestLen = lenRanked[0];
+
+  let wissensItems = [];
+  if (d.best_hour != null)
+    wissensItems.push({ text: `Pushes um <b>${d.best_hour} Uhr</b> erzielen durchschnittlich <b>${fmt(d.hour_stats?.[d.best_hour]?.mean)}</b> OR — das ist die beste Stunde im Datensatz (n=${d.hour_stats?.[d.best_hour]?.n}).`, type: 'fact' });
+  if (topCat)
+    wissensItems.push({ text: `<b>${topCat[0]}</b>-Pushes performen am besten: <b>${fmt(topCat[1].mean)}</b> OR im Schnitt (${topCat[1].n} Pushes). Schlechteste Kategorie: ${flopCat?.[0] || '?'} mit ${fmt(flopCat?.[1]?.mean)} OR.`, type: 'fact' });
+  if (bestLen)
+    wissensItems.push({ text: `Titellange <b>${bestLen[0]}</b> erzielt die hoechste OR: <b>${fmt(bestLen[1].mean)}</b> (n=${bestLen[1].n}). ${lenRanked.length > 1 ? 'Kuerzeste Differenz zu ' + lenRanked[lenRanked.length-1][0] + ': ' + Math.abs(bestLen[1].mean - lenRanked[lenRanked.length-1][1].mean).toFixed(2) + ' pp.' : ''}`, type: 'fact' });
+  if (d.best_dow)
+    wissensItems.push({ text: `<b>${d.best_dow}</b> ist der starkste Wochentag (${fmt(d.dow_stats?.[d.best_dow]?.mean)} OR), <b>${d.worst_dow}</b> der schwaechste (${fmt(d.dow_stats?.[d.worst_dow]?.mean)} OR). Aber: Der Effekt ist oft kleiner als er aussieht.`, type: 'fact' });
+  if (d.n_breaking > 10 && d.breaking_or && d.nonbreaking_or)
+    wissensItems.push({ text: `Eilmeldungen erzielen <b>${fmt(d.breaking_or)}</b> OR — normale Pushes <b>${fmt(d.nonbreaking_or)}</b>. Das sind ${Math.abs(d.breaking_or - d.nonbreaking_or).toFixed(2)} pp Unterschied (n=${d.n_breaking} Eilmeldungen).`, type: 'fact' });
+  if (d.or_trend_pp != null)
+    wissensItems.push({ text: `Die durchschnittliche OR der letzten 90 Tage liegt bei <b>${fmt(d.mean_or_recent)}</b> — ${d.or_trend_pp >= 0 ? 'hoeher' : 'niedriger'} als die 90 Tage davor (${fmt(d.mean_or_older)}, Differenz: <b>${fmtPP(d.or_trend_pp)}</b>).`, type: d.or_trend_pp >= 0 ? 'good' : 'warn' });
+
+  // ── Block 2: Selbstkritik — Wo wir versagen ──
+  let kritikItems = [];
+  if (d.pred_accuracy_mae != null) {
+    kritikItems.push({ text: `Unser Modell liegt im Schnitt um <b>${d.pred_accuracy_mae.toFixed(2)} pp</b> daneben (MAE, letzte 90 Tage, n=${d.pred_n} Predictions). ${d.pred_within_2pp != null ? d.pred_within_2pp + '% der Vorhersagen lagen innerhalb von 2 pp.' : ''} ${d.pred_off_more_than_3pp != null ? '<b>' + d.pred_off_more_than_3pp + '%</b> lagen mehr als 3 pp daneben — das sind die Faelle, wo unsere Prognose wirklich falsch war.' : ''}`, type: 'bad' });
+  } else {
+    kritikItems.push({ text: `Wir haben noch keine Vorhersagen mit echten Ergebnissen verglichen — wir koennen unsere Genauigkeit deshalb <b>noch nicht beziffern</b>. Das ist ehrlich gesagt ein Problem.`, type: 'bad' });
+  }
+  kritikItems.push({ text: `Das Modell kennt <b>keinen Nachrichtenkontext</b>. Es weiss nicht, ob heute ein wichtiger Spieltag ist, ob eine Krise laeuft oder ob es bereits 3 Pushes zur gleichen Geschichte gab. Solche Effekte erklaeren viele unserer groessten Fehler.`, type: 'bad' });
+  kritikItems.push({ text: `<b>Kategorie ist zu grob</b>: "Sport" behandelt Bundesliga, F1 und Tennis identisch. In Wirklichkeit haben diese Themen sehr unterschiedliche Audiences und OR-Profile — wir mitteln das weg.`, type: 'bad' });
+  kritikItems.push({ text: `<b>Titelqualitaet koennen wir nicht messen.</b> Wir schauen nur auf Laenge und ob ein Doppelpunkt vorkommt. Ob der Titel gut geschrieben ist, ob er neugierig macht oder klar ist — das ist fuer unser Modell unsichtbar.`, type: 'bad' });
+  kritikItems.push({ text: `<b>Alte Daten koennten veraltet sein.</b> Wir trainieren auf ${d.n_total?.toLocaleString()} Pushes aus bis zu einem Jahr. Aber das Nutzerverhalten aendert sich. Ein Muster von vor 12 Monaten gilt heute vielleicht nicht mehr.`, type: 'warn' });
+  if (catRanked.length > 0) {
+    const smallCats = catRanked.filter(([,s]) => s.n < 30);
+    if (smallCats.length > 0)
+      kritikItems.push({ text: `${smallCats.length} Kategorien haben weniger als 30 Datenpunkte (${smallCats.map(([c]) => c).join(', ')}). Aussagen zu diesen Kategorien sind statistisch nicht belastbar — wir nennen trotzdem Zahlen, was irrefuehrend sein kann.`, type: 'warn' });
+  }
+
+  // ── Render ──
+  const badge = (type) => {
+    if (type === 'fact') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dbeafe;color:#1d4ed8;margin-right:6px;flex-shrink:0">FAKT</span>';
+    if (type === 'good') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#dcfce7;color:#15803d;margin-right:6px;flex-shrink:0">TREND</span>';
+    if (type === 'warn') return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#fef9c3;color:#a16207;margin-right:6px;flex-shrink:0">ACHTUNG</span>';
+    if (type === 'bad')  return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:#fee2e2;color:#b91c1c;margin-right:6px;flex-shrink:0">SCHWAECHE</span>';
+    return '';
+  };
+
+  const renderItems = items => items.map(item =>
+    `<div style="display:flex;align-items:flex-start;gap:0;padding:10px 14px;border-bottom:1px solid #f0f0f0;font-size:13px;line-height:1.6;color:#374151">
+      ${badge(item.type)}<span>${item.text}</span>
+    </div>`
+  ).join('');
+
+  // Monats-Trend Mini-Chart
+  let trendChart = '';
+  if (d.monthly_trend && d.monthly_trend.length >= 3) {
+    const vals = d.monthly_trend.map(m => m.mean_or);
+    const minV = Math.min(...vals), maxV = Math.max(...vals);
+    const range = maxV - minV || 0.1;
+    const W = 320, H = 48, pad = 4;
+    const pts = vals.map((v, i) => {
+      const x = pad + (i / (vals.length - 1)) * (W - 2 * pad);
+      const y = H - pad - ((v - minV) / range) * (H - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const last = d.monthly_trend[d.monthly_trend.length - 1];
+    trendChart = `<div style="margin:12px 0 4px;padding:12px 14px;background:#f8fafc;border-radius:8px">
+      <div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">OR-Verlauf (${d.monthly_trend[0].month} — ${last.month})</div>
+      <svg width="${W}" height="${H}" style="display:block"><polyline fill="none" stroke="#0070d2" stroke-width="2" stroke-linejoin="round" points="${pts}"/>${vals.map((v, i) => {
+        const x = pad + (i / (vals.length - 1)) * (W - 2 * pad);
+        const y = H - pad - ((v - minV) / range) * (H - 2 * pad);
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#0070d2"/>`;
+      }).join('')}</svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:2px">
+        <span>${d.monthly_trend[0].month}</span><span>${fmt(last.mean_or)} (${last.month})</span>
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid var(--border-light);border-radius:12px;overflow:hidden">
+      <div style="padding:14px 16px 10px;border-bottom:1px solid #f0f0f0">
+        <div style="font-size:13px;font-weight:700;color:#111">Datenbasis: ${d.n_total?.toLocaleString()} reife Pushes (>24h, OR>0%) — davon ${d.n_recent_90d?.toLocaleString()} aus den letzten 90 Tagen</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px">Nur Pushes mit stabiler Opening Rate werden beruecksichtigt. Ausreisser (OR > 30%) sind ausgeschlossen.</div>
+      </div>
+      ${trendChart ? `<div style="padding:0 2px">${trendChart}</div>` : ''}
+      <div style="padding:10px 16px 4px">
+        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Was wir wissen</div>
+      </div>
+      ${renderItems(wissensItems)}
+      <div style="padding:16px 16px 4px">
+        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Wo wir versagen — ehrliche Selbstkritik</div>
+      </div>
+      ${renderItems(kritikItems)}
+      <div style="padding:10px 14px;font-size:11px;color:#9ca3af;border-top:1px solid #f0f0f0">
+        Letzte Berechnung: jetzt — direkt aus SQLite. Kein Caching.
+      </div>
+    </div>`;
 }
 
 // ── GBRT Analytics ──────────────────────────────────────────────────────
