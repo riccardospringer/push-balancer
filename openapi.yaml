@@ -1,0 +1,2708 @@
+openapi: 3.0.3
+
+info:
+  title: Push Balancer API
+  description: |
+    ML-gestützte API für BILD Push-Notification-Optimierung.
+
+    Der Push Balancer analysiert historische Push-Daten, prognostiziert Opening Rates (OR)
+    via Gradient Boosted Trees und Stacking Ensemble (LightGBM + XGBoost + CatBoost → Ridge),
+    und liefert tagesaktuelle Empfehlungen für Redaktion und Sport.
+
+    **Safety**: Alle Vorhersagen sind ausschließlich beratend (ADVISORY_ONLY). Das System
+    darf niemals autonom Push-Benachrichtigungen versenden. Jede Prediction enthält
+    `advisoryOnly: true` und `actionAllowed: false`.
+  version: 2.4.0
+  contact:
+    name: BILD Digital Produkt
+    email: push-balancer@axelspringer.com
+
+servers:
+  - url: http://localhost:8050
+    description: Lokaler Entwicklungsserver
+  - url: https://push-balancer.onrender.com
+    description: Render Cloud Deployment
+
+tags:
+  - name: system
+    description: Systemstatus und Health-Checks
+  - name: feeds
+    description: BILD Sitemap und Competitor RSS-Feeds
+  - name: analytics
+    description: Adobe Analytics und Forschungsdaten
+  - name: ml
+    description: Machine-Learning Modell-Status und Predictions
+  - name: gbrt
+    description: Gradient Boosted Regression Trees (Client-Side Modell)
+  - name: tagesplan
+    description: Täglicher Push-Planungs-Kalender (18 Stunden-Slots)
+  - name: push
+    description: Push-Statistiken und Synchronisation
+  - name: ai
+    description: KI-gestützte Text-Generierung und Chat
+
+paths:
+
+  # ── System ──────────────────────────────────────────────────────────────
+
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Systemstatus abrufen
+      description: |
+        Gibt den aktuellen Gesundheitsstatus aller Endpunkte zurück, inkl. Uptime,
+        Anzahl erfolgreicher/fehlerhafter Checks und den Stand der Research-Daten.
+      responses:
+        "200":
+          description: Systemstatus
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/research-rules:
+    get:
+      operationId: getResearchRules
+      tags: [analytics]
+      summary: Aktive Forschungsregeln abrufen
+      description: |
+        Liefert die aktuell aktiven, vom Research-Worker autonom generierten Push-Regeln
+        (z.B. beste Stunden, Kategorien, Framing-Empfehlungen) inklusive Versionsnummer
+        und Rolling Accuracy.
+      responses:
+        "200":
+          description: Aktive Forschungsregeln
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchRulesResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Feeds ────────────────────────────────────────────────────────────────
+
+  /api/feed:
+    get:
+      operationId: getBildSitemapFeed
+      tags: [feeds]
+      summary: BILD News-Sitemap abrufen
+      description: |
+        Proxy zu `bild.de/sitemap-news.xml`. Liefert die aktuelle BILD News-Sitemap
+        als XML. Wird im Frontend zur Artikel-Auswahl für Push-Kandidaten genutzt.
+      responses:
+        "200":
+          description: BILD News-Sitemap als XML
+          content:
+            application/xml:
+              schema:
+                type: string
+                format: binary
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/competitors:
+    get:
+      operationId: getCompetitorFeeds
+      tags: [feeds]
+      summary: Alle Competitor-Feeds abrufen
+      description: |
+        Liefert geparsed RSS-Feeds aller deutschen Nachrichtenkonkurrenten aus dem
+        Background-Cache (Welt, Spiegel, Focus, n-tv, Tagesschau, FAZ, SZ, Stern,
+        t-online, Zeit). Response-Zeit unter 5 ms da gecacht.
+      responses:
+        "200":
+          description: Alle Competitor-Feeds als geparste JSON-Objekte
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedCollection"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-competitors:
+    get:
+      operationId: getSportCompetitorFeeds
+      tags: [feeds]
+      summary: Sport-Competitor-Feeds abrufen
+      description: |
+        Liefert geparsed RSS-Feeds der Sport-Konkurrenten (Kicker, Sportschau,
+        Transfermarkt etc.) aus dem Background-Cache.
+      responses:
+        "200":
+          description: Sport-Competitor-Feeds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedCollection"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-europa:
+    get:
+      operationId: getSportEuropaFeeds
+      tags: [feeds]
+      summary: Europäische Sport-Feeds abrufen
+      description: |
+        Liefert geparsed RSS-Feeds europäischer Sport-Outlets aus dem Background-Cache.
+      responses:
+        "200":
+          description: Europäische Sport-Feeds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedCollection"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-global:
+    get:
+      operationId: getSportGlobalFeeds
+      tags: [feeds]
+      summary: Globale Sport-Feeds abrufen
+      description: |
+        Liefert geparsed RSS-Feeds globaler Sport-Outlets (internationale Ligen,
+        Weltklasse-Medien) aus dem Background-Cache.
+      responses:
+        "200":
+          description: Globale Sport-Feeds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedCollection"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/international:
+    get:
+      operationId: getInternationalFeeds
+      tags: [feeds]
+      summary: Internationale News-Feeds abrufen
+      description: |
+        Liefert geparsed RSS-Feeds von 24 internationalen Nachrichtenquellen aus
+        Europa (BBC, Guardian, Le Monde, El País usw.) und Global (CNN, NYT,
+        Al Jazeera usw.) aus dem Background-Cache.
+      responses:
+        "200":
+          description: Internationale News-Feeds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedCollection"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/check-plus:
+    get:
+      operationId: checkPlusUrls
+      tags: [analytics]
+      summary: BILD-Plus-Status von URLs prüfen (GET)
+      description: |
+        Prüft für eine Liste von URLs, ob der jeweilige Artikel hinter der BILD-Plus-
+        Paywall liegt. Akzeptiert `?urls=url1,url2,...` als Query-Parameter.
+        Kann auch per POST mit einem JSON-Body aufgerufen werden.
+      parameters:
+        - name: urls
+          in: query
+          required: false
+          description: Kommagetrennte Liste von BILD-Artikel-URLs (max. 50)
+          schema:
+            type: string
+            example: "https://www.bild.de/artikel1,https://www.bild.de/artikel2"
+      responses:
+        "200":
+          description: Map von URL zu BILD-Plus-Boolean
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                example:
+                  "https://www.bild.de/artikel1": true
+                  "https://www.bild.de/artikel2": false
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Analytics ────────────────────────────────────────────────────────────
+
+  /api/forschung:
+    get:
+      operationId: getForschung
+      tags: [analytics]
+      summary: Forschungsinstitut-Daten abrufen
+      description: |
+        Liefert die vom autonomen Research-Worker berechneten Analyse-Daten:
+        OR-Statistiken, Zeitreihen-Insights, wöchentliche Vergleiche, Live-Regeln,
+        Ticker-Einträge und ML-Modell-Metriken. Wird kontinuierlich im Hintergrund
+        aktualisiert (alle ~20 Sekunden).
+
+        Wenn noch keine Daten vorliegen, wird `loading: true` zurückgegeben.
+      responses:
+        "200":
+          description: Forschungsdaten (vollständig oder loading)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForschungResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/learnings:
+    get:
+      operationId: getLearnings
+      tags: [analytics]
+      summary: Historische Learnings abrufen
+      description: |
+        Ehrliche, datenbasierte Erkenntnisse aus den letzten 6 Monaten an BILD-Pushes.
+        Enthält Stunden-Analyse, Kategorie-Ranking, Titellaenge-Studie, Wochentag-Effekte,
+        Eilmeldungs-Bonus und Vorhersage-Genauigkeit aus dem Prediction-Log.
+
+        Setzt mindestens 50 reife Pushes (>24h, OR 0–30%) voraus. Liefert sonst
+        `ready: false`.
+      responses:
+        "200":
+          description: Historische Learnings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningsResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/adobe/traffic:
+    get:
+      operationId: getAdobeTraffic
+      tags: [analytics]
+      summary: Adobe Analytics Traffic-Daten abrufen
+      description: |
+        Liefert Adobe Analytics Traffic-Quellen für die heutigen Pushes.
+        Wenn Adobe nicht konfiguriert ist (`ADOBE_CLIENT_ID` fehlt), wird
+        `enabled: false` zurückgegeben. Wenn Daten noch laden, wird `loading: true`
+        zurückgegeben.
+      responses:
+        "200":
+          description: Adobe Traffic-Daten
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdobeTrafficResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Push Proxy ────────────────────────────────────────────────────────────
+
+  /api/push/{proxyPath}:
+    get:
+      operationId: getPushApiProxy
+      tags: [push]
+      summary: Push-API Proxy
+      description: |
+        Transparenter Proxy zur internen BILD Push-Statistics-API
+        (`push-frontend.bildcms.de`). Der Pfad nach `/api/push/` wird direkt
+        an die Upstream-API weitergeleitet. Bei Nichterreichbarkeit wird auf
+        den lokalen Sync-Cache zurückgegriffen.
+      parameters:
+        - name: proxyPath
+          in: path
+          required: true
+          description: Pfad, der an die Push-Statistics-API weitergeleitet wird
+          schema:
+            type: string
+            example: "pushes/today"
+      responses:
+        "200":
+          description: Antwort der Push-Statistics-API (JSON)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/push-sync:
+    post:
+      operationId: syncPushData
+      tags: [push]
+      summary: Push-Daten synchronisieren
+      description: |
+        Empfängt Push-Daten vom lokalen Produktivserver und speichert sie im
+        In-Memory-Cache (für Render-Deployments ohne direkten Zugang zur
+        internen Push-API). Erfordert den konfigurierten `secret`-Schlüssel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushSyncRequest"
+      responses:
+        "200":
+          description: Sync erfolgreich
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  received:
+                    type: integer
+                    description: Anzahl empfangener Nachrichten
+                    example: 47
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── ML ───────────────────────────────────────────────────────────────────
+
+  /api/ml/status:
+    get:
+      operationId: getMlStatus
+      tags: [ml]
+      summary: ML-Modell-Status abrufen
+      description: |
+        Liefert den aktuellen Status des LightGBM-Modells: ob es trainiert ist,
+        Trainings-Metriken (MAE, RMSE, R²), SHAP Feature Importances, Trainings-Zähler
+        und Zeitstempel des letzten und nächsten Retrainings.
+      responses:
+        "200":
+          description: ML-Modell-Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/safety-status:
+    get:
+      operationId: getMlSafetyStatus
+      tags: [ml]
+      summary: ML Safety-Status abrufen
+      description: |
+        Prüft und gibt den Safety-Status des Systems zurück. Das System läuft
+        ausschließlich im `ADVISORY_ONLY`-Modus; `actionAllowed` ist immer `false`.
+        Dieser Endpoint ist für Monitoring und Compliance-Checks gedacht.
+      responses:
+        "200":
+          description: Safety-Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafetyStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/predict:
+    get:
+      operationId: getMlPredict
+      tags: [ml]
+      summary: Einzelne OR-Prognose (LightGBM)
+      description: |
+        Berechnet eine einzelne Opening-Rate-Prognose (XOR) für einen Push-Artikel
+        via LightGBM-Ensemble. Gibt `advisoryOnly: true` zurück — das Ergebnis ist
+        rein beratend und darf nicht für automatisches Pushen genutzt werden.
+      parameters:
+        - name: title
+          in: query
+          required: false
+          description: Push-Titelzeile (max. 120 Zeichen)
+          schema:
+            type: string
+            example: "Merz zum Kanzler gewählt: So reagiert Deutschland"
+        - name: cat
+          in: query
+          required: false
+          description: Artikel-Kategorie (z.B. news, sport, politik, unterhaltung)
+          schema:
+            type: string
+            default: news
+            example: politik
+        - name: hour
+          in: query
+          required: false
+          description: Stunde des geplanten Versands (0–23)
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 23
+            example: 18
+        - name: weekday
+          in: query
+          required: false
+          description: Wochentag (0=Montag … 6=Sonntag)
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 6
+            example: 2
+        - name: eilmeldung
+          in: query
+          required: false
+          description: "1 wenn Eilmeldung/Breaking News, sonst 0"
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 0
+      responses:
+        "200":
+          description: OR-Prognose mit Safety-Envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PredictionResult"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/experiments:
+    get:
+      operationId: getMlExperiments
+      tags: [ml]
+      summary: Trainings-Experimente auflisten
+      description: |
+        Gibt eine Liste aller gespeicherten Trainings-Experimente zurück (Experiment-ID,
+        Zeitstempel, Metriken, Hyperparameter), geordnet nach Zeitstempel absteigend.
+      responses:
+        "200":
+          description: Liste der Experimente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MlExperiment"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/experiments/compare:
+    get:
+      operationId: compareMlExperiments
+      tags: [ml]
+      summary: Trainings-Experimente vergleichen
+      description: |
+        Vergleicht zwei oder mehr Trainings-Experimente anhand ihrer Metriken
+        (MAE, RMSE, R², Feature Count). Nützlich für Champion/Challenger-Bewertung.
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          description: Kommagetrennte Liste von Experiment-IDs
+          schema:
+            type: string
+            example: "exp_20260401_143022,exp_20260402_091544"
+      responses:
+        "200":
+          description: Vergleichsergebnis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  experiments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MlExperiment"
+                  best:
+                    type: string
+                    description: ID des besten Experiments (niedrigstes MAE)
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/ab-status:
+    get:
+      operationId: getMlAbStatus
+      tags: [ml]
+      summary: A/B-Test-Status abrufen
+      description: |
+        Gibt den aktuellen Status des Champion/Challenger A/B-Tests zurück.
+        Enthält ob ein Test aktiv ist, IDs von Champion und Challenger,
+        Anzahl der gesammelten Samples und Zeitrahmen.
+      responses:
+        "200":
+          description: A/B-Test-Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/monitoring:
+    get:
+      operationId: getMlMonitoring
+      tags: [ml]
+      summary: ML-Monitoring-Dashboard abrufen
+      description: |
+        Liefert umfassendes Monitoring-Dashboard: MAE-Trends (24h, 7d), Calibration
+        Bias, A/B-Test-Zusammenfassung, Online-Learning-Status, Feature-Drift-Detektion,
+        Drift-State und jüngste Monitoring-Events aus der Datenbank.
+      responses:
+        "200":
+          description: Monitoring-Daten
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlMonitoringResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/retrain:
+    post:
+      operationId: triggerMlRetrain
+      tags: [ml]
+      summary: ML-Modell neu trainieren (manuell)
+      description: |
+        Startet asynchron ein Neu-Training des LightGBM-Modells im Hintergrund.
+        Wenn bereits ein Training läuft, wird `status: "already_training"` zurückgegeben.
+        Das Training nutzt alle reifen Pushes aus der SQLite-Datenbank.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Training-Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [training_started, already_training]
+                    example: training_started
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/predict-batch:
+    post:
+      operationId: predictBatch
+      tags: [ml]
+      summary: Batch-OR-Prognose für mehrere Artikel
+      description: |
+        Berechnet Opening-Rate-Prognosen für bis zu 300 Artikel in einem Request.
+        Nutzt einen 5-Minuten-Cache mit Micro-Variation für Live-Ticker-Updates.
+        Schneller Pfad: GBRT → LightGBM → Fallback (kein Heuristik-Overhead).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictBatchRequest"
+      responses:
+        "200":
+          description: Batch-Prognosen
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PredictBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/prediction-feedback:
+    post:
+      operationId: submitPredictionFeedback
+      tags: [ml]
+      summary: Prediction-Feedback einreichen
+      description: |
+        Meldet das tatsächliche Ergebnis eines Pushes zurück (actual OR vs. predicted OR).
+        Wird für Online-Bias-Korrektur und A/B-Test-Auswertung genutzt. Duplikate
+        (gleiche `pushId`) werden ignoriert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictionFeedbackRequest"
+      responses:
+        "200":
+          description: Feedback gespeichert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, duplicate]
+                    example: ok
+                  count:
+                    type: integer
+                    description: Gesamtanzahl gespeicherter Feedback-Einträge
+                    example: 142
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── GBRT ─────────────────────────────────────────────────────────────────
+
+  /api/gbrt/status:
+    get:
+      operationId: getGbrtStatus
+      tags: [gbrt]
+      summary: GBRT-Modell-Status abrufen
+      description: |
+        Umfassender Status des Gradient Boosted Regression Trees Modells:
+        Anzahl Bäume, Feature Importances, Kalibrierungs-Bins, Trainings-Metriken,
+        Error-Analyse nach Kategorie und Stunde sowie letzte 20 Predictions aus
+        dem Prediction-Log.
+      responses:
+        "200":
+          description: GBRT-Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GbrtStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/model.json:
+    get:
+      operationId: getGbrtModelJson
+      tags: [gbrt]
+      summary: GBRT-Modell für Client-Side-Evaluation exportieren
+      description: |
+        Exportiert das serialisierte GBRT-Modell als JSON für Client-Side-Inference
+        im Browser (JavaScript-Implementierung). Das Modell wird 5 Minuten gecacht
+        (`Cache-Control: max-age=300`).
+      responses:
+        "200":
+          description: Serialisiertes GBRT-Modell als JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                description: Serialisiertes Baumstruktur-JSON (baumspezifisches Format)
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/predict:
+    get:
+      operationId: getGbrtPredict
+      tags: [gbrt]
+      summary: Einzelne OR-Prognose (GBRT)
+      description: |
+        Berechnet eine OR-Prognose via dem serverseitigen GBRT-Modell. Liefert
+        neben der Prognose auch Quantile (Q10/Q90) und eine Konfidenzangabe.
+        Falls das Modell noch nicht trainiert ist, wird ein `error`-Feld zurückgegeben.
+      parameters:
+        - name: title
+          in: query
+          required: false
+          description: Push-Titelzeile
+          schema:
+            type: string
+            example: "Sensation im Bundestag: Das ist der neue Kanzler"
+        - name: cat
+          in: query
+          required: false
+          description: Artikel-Kategorie
+          schema:
+            type: string
+            default: News
+            example: Politik
+        - name: hour
+          in: query
+          required: false
+          description: Stunde des geplanten Versands (0–23), Standard ist aktuelle Stunde
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 23
+        - name: eilmeldung
+          in: query
+          required: false
+          description: "1 wenn Eilmeldung, sonst 0"
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 0
+        - name: plus
+          in: query
+          required: false
+          description: "1 wenn BILD-Plus-Artikel, sonst 0"
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 0
+      responses:
+        "200":
+          description: GBRT-Prognose
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GbrtPrediction"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/retrain:
+    post:
+      operationId: triggerGbrtRetrain
+      tags: [gbrt]
+      summary: GBRT-Modell neu trainieren (manuell)
+      description: |
+        Startet asynchron ein Neu-Training des GBRT-Modells im Hintergrund.
+        Das Training läuft via Early-Stopping und Kalibrierung.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Training gestartet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: gbrt_training_started
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/force-promote:
+    post:
+      operationId: forcePromoteGbrt
+      tags: [gbrt]
+      summary: Gespeichertes GBRT-Modell als Champion laden
+      description: |
+        Lädt das zuletzt in `gbrt_model.json` gespeicherte Modell als aktiven Champion
+        in den Speicher. Deaktiviert einen laufenden A/B-Test. Nützlich nach manuellem
+        Modell-Austausch oder nach einem Rollback.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Modell erfolgreich promoted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: force_promoted
+                  experimentId:
+                    type: string
+                    example: exp_20260401_143022
+                  testMae:
+                    type: number
+                    format: float
+                    example: 1.42
+                  modelType:
+                    type: string
+                    example: gbrt_ensemble
+                  nFeatures:
+                    type: integer
+                    example: 38
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── Tagesplan ────────────────────────────────────────────────────────────
+
+  /api/tagesplan:
+    get:
+      operationId: getTagesplan
+      tags: [tagesplan]
+      summary: Heutigen Push-Tagesplan abrufen
+      description: |
+        Liefert den ML-generierten Tagesplan für heute: 18 Stunden-Slots (06:00–23:00)
+        mit empfohlenen Kategorien, prognostizierten ORs, bereits gesendeten Pushes
+        und Top-Artikelvorschlägen. Unterstützt Modi `redaktion` und `sport`.
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          description: "Planungsmodus: `redaktion` für allgemeine Pushes, `sport` für Sport-Fokus"
+          schema:
+            type: string
+            enum: [redaktion, sport]
+            default: redaktion
+      responses:
+        "200":
+          description: Heutiger Tagesplan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagesplanResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/retro:
+    get:
+      operationId: getTagesplanRetro
+      tags: [tagesplan]
+      summary: 7-Tage-Retrospektive abrufen
+      description: |
+        Liefert eine aggregierte Retrospektive der letzten 7 Tage: durchschnittliche
+        OR pro Tag, beste und schlechteste Stunden, häufigste Kategorien.
+      responses:
+        "200":
+          description: 7-Tage-Retrospektive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagesplanRetroResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/history:
+    get:
+      operationId: getTagesplanHistory
+      tags: [tagesplan]
+      summary: Tagesplan für vergangenes Datum abrufen
+      description: |
+        Liefert den vollständigen Tagesplan für ein vergangenes Datum aus der
+        SQLite-Datenbank: 18 Stunden-Slots mit tatsächlich gesendeten Pushes,
+        deren echten ORs, prognostizierten ORs (Prediction-Log) und den damaligen
+        Artikelvorschlägen.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Datum im Format YYYY-MM-DD
+          schema:
+            type: string
+            format: date
+            example: "2026-03-28"
+        - name: mode
+          in: query
+          required: false
+          description: "Planungsmodus: `redaktion` oder `sport`"
+          schema:
+            type: string
+            enum: [redaktion, sport]
+            default: redaktion
+      responses:
+        "200":
+          description: Historischer Tagesplan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagesplanHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/suggestions:
+    get:
+      operationId: getTagesplanSuggestions
+      tags: [tagesplan]
+      summary: Gespeicherte Artikelvorschläge abrufen
+      description: |
+        Liefert die vom Frontend geloggten Artikelvorschläge pro Stunden-Slot für
+        ein bestimmtes Datum. Gibt ein Objekt zurück, bei dem die Slot-Stunde (als
+        String) auf eine Liste von Vorschlägen gemappt ist.
+      parameters:
+        - name: date
+          in: query
+          required: false
+          description: "Datum im Format YYYY-MM-DD (Standard: heute)"
+          schema:
+            type: string
+            format: date
+            example: "2026-04-02"
+        - name: mode
+          in: query
+          required: false
+          description: Planungsmodus (wird aktuell nicht gefiltert, reserviert)
+          schema:
+            type: string
+            enum: [redaktion, sport]
+            default: redaktion
+      responses:
+        "200":
+          description: Artikelvorschläge nach Slot-Stunde
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagesplanSuggestionsResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/log-suggestions:
+    post:
+      operationId: logTagesplanSuggestions
+      tags: [tagesplan]
+      summary: Artikelvorschläge loggen
+      description: |
+        Das Frontend loggt die aktuell angezeigten Artikelvorschläge pro Tagesplan-Slot
+        für spätere Gegenuberstellung mit den tatsächlich versendeten Pushes.
+        Max. 36 Einträge (18 Slots × 2 Vorschläge). Einträge älter als 30 Tage
+        werden automatisch gelöscht.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogSuggestionsRequest"
+      responses:
+        "200":
+          description: Vorschläge geloggt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  logged:
+                    type: integer
+                    description: Anzahl gespeicherter Vorschläge
+                    example: 18
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ── AI / Chat ─────────────────────────────────────────────────────────────
+
+  /api/push-title/generate:
+    post:
+      operationId: generatePushTitle
+      tags: [ai]
+      summary: Push-Titelzeile generieren
+      description: |
+        Agenten-Netzwerk (GPT-4.1-basiert) generiert und bewertet Push-Titelzeilen
+        für einen gegebenen Artikel. Liefert den optimalen Titel sowie Alternativen
+        mit Bewertungen (Kürze, Emotion, Klarheit, Klick-Potenzial).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushTitleGenerateRequest"
+      responses:
+        "200":
+          description: Generierte Push-Titel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PushTitleGenerateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/schwab-chat:
+    post:
+      operationId: schwabChat
+      tags: [ai]
+      summary: ML-Analytics-Assistent (Chat)
+      description: |
+        GPT-4.1-basierter Analytics-Assistent mit vollem Push-Daten-Kontext.
+        Beantwortet Fragen zu OR-Statistiken, ML-Modell-Verhalten, Timing-Empfehlungen
+        und aktuellen Trends. Unterstützt Chat-History (max. 10 Einträge).
+
+        Rate Limit: 10 Anfragen pro 60 Sekunden pro IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchwabChatRequest"
+      responses:
+        "200":
+          description: Chat-Antwort
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchwabChatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/schwab-approval:
+    post:
+      operationId: processSchwabApproval
+      tags: [ai]
+      summary: Schwab-Vorschlag genehmigen oder ablehnen
+      description: |
+        Ermöglicht Führungskräften (GF), algorithmische Anpassungsvorschläge des
+        Schwab-Assistenten zu genehmigen (`approve`) oder abzulehnen (`reject`).
+        Der Approval-Status wird im Research-State persistiert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchwabApprovalRequest"
+      responses:
+        "200":
+          description: Approval verarbeitet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [approved, rejected]
+                    example: approved
+                  id:
+                    type: integer
+                    example: 7
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/competitor-xor:
+    post:
+      operationId: competitorXor
+      tags: [analytics]
+      summary: Competitor-Artikel OR-Prognose (Batch)
+      description: |
+        Berechnet schnelle Opening-Rate-Prognosen für Competitor-Artikel-Titel via
+        Wort-Performance-Scoring (O(W)-Lookup statt O(N×M)-Jaccard). Bis zu 200
+        Titel in einem Request, Antwort in unter 50 ms. Erkennt automatisch
+        Kategorien, Eilmeldungen und Live-Ticker (niedrigere Konfidenz).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompetitorXorRequest"
+      responses:
+        "200":
+          description: OR-Prognosen für alle Titel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompetitorXorResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/monitoring/tick:
+    post:
+      operationId: triggerMonitoringTick
+      tags: [ml]
+      summary: Monitoring-Tick manuell auslösen
+      description: |
+        Löst manuell einen Monitoring-Tick aus (MAE-Berechnung, Calibration-Update,
+        Drift-Detektion). Normalerweise läuft dies automatisch im Hintergrund.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Tick erfolgreich
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  lastTick:
+                    type: number
+                    description: Unix-Timestamp des letzten Ticks
+                    example: 1743590400
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+# ── Components ────────────────────────────────────────────────────────────
+
+components:
+
+  schemas:
+
+    # ── RFC 9457 Problem Details ────────────────────────────────────────────
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details für HTTP APIs
+      required:
+        - type
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI-Referenz, die den Fehlertyp identifiziert
+          example: "https://push-balancer.example.com/problems/validation-error"
+        title:
+          type: string
+          description: Kurze, menschenlesbare Fehlerbeschreibung
+          example: "Validation Error"
+        status:
+          type: integer
+          description: HTTP-Statuscode
+          example: 400
+        detail:
+          type: string
+          description: Ausführlichere Fehlerbeschreibung
+          example: "Das Feld 'pushId' darf nicht leer sein"
+        instance:
+          type: string
+          format: uri
+          description: URI-Referenz des konkreten Fehler-Vorkommens
+          example: "/api/prediction-feedback"
+
+    # ── Health ──────────────────────────────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      required: [status, uptimeSeconds]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, starting, unknown]
+          description: Gesamtstatus des Systems
+          example: ok
+        uptimeSeconds:
+          type: integer
+          description: Laufzeit in Sekunden seit Serverstart
+          example: 86412
+        uptimeHuman:
+          type: string
+          description: Lesbare Laufzeit (z.B. "24h 0m")
+          example: "24h 0m"
+        lastCheck:
+          type: number
+          description: Unix-Timestamp des letzten Health-Checks
+          example: 1743590000
+        checksOk:
+          type: integer
+          description: Anzahl erfolgreicher Endpoint-Checks
+          example: 42
+        checksFail:
+          type: integer
+          description: Anzahl fehlerhafter Endpoint-Checks
+          example: 1
+        endpoints:
+          type: object
+          description: Status-Map je Endpoint-Name
+          additionalProperties:
+            type: string
+        researchDataPoints:
+          type: integer
+          description: Anzahl geladener Push-Datenpunkte im Research-State
+          example: 3820
+        researchLastAnalysis:
+          type: number
+          description: Unix-Timestamp der letzten Research-Analyse
+          example: 1743589980
+
+    # ── Feeds ───────────────────────────────────────────────────────────────
+
+    RssItem:
+      type: object
+      description: Einzelnes RSS-Feed-Item (geparst)
+      properties:
+        title:
+          type: string
+          description: Artikeltitel
+          example: "Merz zum Kanzler gewählt"
+        link:
+          type: string
+          format: uri
+          description: Artikel-URL
+          example: "https://www.welt.de/artikel/1234"
+        pubDate:
+          type: string
+          description: Veröffentlichungsdatum (RFC 2822)
+          example: "Thu, 02 Apr 2026 14:30:00 +0200"
+        description:
+          type: string
+          description: Teaser-Text
+
+    FeedCollection:
+      type: object
+      description: Map von Outlet-Name zu Liste von RSS-Items
+      additionalProperties:
+        type: array
+        items:
+          $ref: "#/components/schemas/RssItem"
+      example:
+        welt:
+          - title: "Eilmeldung: Erdbeben"
+            link: "https://www.welt.de/..."
+            pubDate: "Thu, 02 Apr 2026 10:00:00 +0200"
+
+    # ── Research Rules ──────────────────────────────────────────────────────
+
+    ResearchRule:
+      type: object
+      properties:
+        category:
+          type: string
+          description: Regelkategorie (z.B. timing, framing, category)
+          example: timing
+        rule:
+          type: string
+          description: Menschenlesbare Regelformulierung
+          example: "Pushes zwischen 17-19 Uhr haben 2.1pp höhere OR"
+        active:
+          type: boolean
+          example: true
+        confidence:
+          type: number
+          format: float
+          description: Konfidenz der Regel (0–1)
+          example: 0.87
+
+    ResearchRulesResponse:
+      type: object
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchRule"
+        version:
+          type: integer
+          description: Versionsnummer der aktiven Regelset-Generation
+          example: 47
+        accuracy:
+          type: number
+          format: float
+          description: Rolling Accuracy der Research-Analysen in Prozent
+          example: 78.4
+        nPushesAnalyzed:
+          type: integer
+          description: Anzahl analysierter Pushes
+          example: 3820
+        lastUpdate:
+          type: number
+          description: Unix-Timestamp der letzten Regelaktualisierung
+          example: 1743589800
+
+    # ── Adobe Traffic ───────────────────────────────────────────────────────
+
+    AdobeTrafficResponse:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: Ob Adobe Analytics konfiguriert ist
+          example: true
+        loading:
+          type: boolean
+          description: Ob Daten noch geladen werden
+          example: false
+        updatedAt:
+          type: number
+          description: Unix-Timestamp der letzten Aktualisierung
+          example: 1743590100
+        error:
+          type: string
+          description: Fehlermeldung falls vorhanden
+          example: ""
+
+    # ── Forschung ───────────────────────────────────────────────────────────
+
+    ForschungResponse:
+      type: object
+      properties:
+        loading:
+          type: boolean
+          description: True wenn Daten noch nicht bereit sind
+          example: false
+        accuracy:
+          type: number
+          format: float
+          description: Rolling Accuracy in Prozent
+          example: 76.3
+        accuracyTarget:
+          type: number
+          format: float
+          example: 99.5
+        insightsToday:
+          type: integer
+          description: Anzahl heutiger Insights
+          example: 12
+        nPushes:
+          type: integer
+          description: Anzahl analysierter reifer Pushes (>24h)
+          example: 3820
+        lastPushTs:
+          type: number
+          description: Unix-Timestamp des letzten analysierten Pushes
+          example: 1743500000
+        weekComparison:
+          type: object
+          description: KW-Vergleich (aktuelle KW vs. Vorwoche)
+          properties:
+            thisWeek:
+              $ref: "#/components/schemas/WeekStats"
+            lastWeek:
+              $ref: "#/components/schemas/WeekStats"
+        liveRules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchRule"
+        liveRulesCount:
+          type: integer
+          example: 5
+        ticker:
+          type: array
+          description: Aktuelle Ticker-Einträge aus dem Research-Worker
+          items:
+            type: string
+        monthlyTrend:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonthlyTrendEntry"
+
+    WeekStats:
+      type: object
+      properties:
+        kw:
+          type: integer
+          description: Kalenderwochen-Nummer
+          example: 14
+        avgOr:
+          type: number
+          format: float
+          description: Durchschnittliche Opening Rate in Prozent
+          example: 6.4
+        count:
+          type: integer
+          description: Anzahl Pushes in dieser Woche
+          example: 38
+
+    MonthlyTrendEntry:
+      type: object
+      properties:
+        month:
+          type: string
+          description: Monat im Format YYYY-MM
+          example: "2026-03"
+        meanOr:
+          type: number
+          format: float
+          example: 6.21
+        n:
+          type: integer
+          example: 187
+
+    # ── Learnings ───────────────────────────────────────────────────────────
+
+    LearningsResponse:
+      type: object
+      required: [ready]
+      properties:
+        ready:
+          type: boolean
+          description: False wenn nicht genug Daten vorhanden
+          example: true
+        n:
+          type: integer
+          description: Anzahl verfügbarer Pushes (falls not ready)
+          example: 42
+        nTotal:
+          type: integer
+          description: Gesamtanzahl reifer Pushes
+          example: 3820
+        nRecent90d:
+          type: integer
+          description: Anzahl Pushes der letzten 90 Tage
+          example: 890
+        meanOr:
+          type: number
+          format: float
+          description: Durchschnittliche OR über alle reifen Pushes
+          example: 6.18
+        meanOrRecent:
+          type: number
+          format: float
+          description: Durchschnittliche OR letzte 90 Tage
+          example: 6.44
+        meanOrOlder:
+          type: number
+          format: float
+          description: Durchschnittliche OR frühere Periode (90–180 Tage)
+          example: 5.92
+        orTrendPp:
+          type: number
+          format: float
+          nullable: true
+          description: OR-Trend in Prozentpunkten (positiv = Verbesserung)
+          example: 0.52
+        bestHour:
+          type: integer
+          nullable: true
+          description: Stunde mit höchster durchschnittlicher OR
+          example: 18
+        worstHour:
+          type: integer
+          nullable: true
+          description: Stunde mit niedrigster durchschnittlicher OR
+          example: 3
+        hourStats:
+          type: object
+          description: "Map von Stunde (int) zu {mean, n}"
+          additionalProperties:
+            $ref: "#/components/schemas/StatEntry"
+        catRanked:
+          type: array
+          description: Kategorien sortiert nach OR (absteigend)
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              oneOf:
+                - type: string
+                - $ref: "#/components/schemas/StatEntry"
+        lenStats:
+          type: object
+          description: "Map von Längenbereich zu {mean, n}"
+          additionalProperties:
+            $ref: "#/components/schemas/StatEntry"
+        dowStats:
+          type: object
+          description: "Map von Wochentagskürzel (Mo-So) zu {mean, n}"
+          additionalProperties:
+            $ref: "#/components/schemas/StatEntry"
+        bestDow:
+          type: string
+          nullable: true
+          description: Bester Wochentag (Mo–So)
+          example: "Di"
+        worstDow:
+          type: string
+          nullable: true
+          description: Schlechtester Wochentag (Mo–So)
+          example: "Sa"
+        predAccuracyMae:
+          type: number
+          format: float
+          nullable: true
+          description: Prediction-MAE über letzte 90 Tage in Prozentpunkten
+          example: 1.38
+        predN:
+          type: integer
+          description: Anzahl Prediction-Feedback-Einträge
+          example: 312
+        predWithin2pp:
+          type: number
+          format: float
+          description: Anteil Predictions mit Fehler ≤ 2pp in Prozent
+          example: 64.7
+        predOffMoreThan3pp:
+          type: number
+          format: float
+          description: Anteil Predictions mit Fehler > 3pp in Prozent
+          example: 22.1
+        breakingOr:
+          type: number
+          format: float
+          nullable: true
+          description: Durchschnittliche OR für Eilmeldungen
+          example: 9.82
+        nonbreakingOr:
+          type: number
+          format: float
+          nullable: true
+          description: Durchschnittliche OR für normale Pushes
+          example: 5.87
+        nBreaking:
+          type: integer
+          description: Anzahl analysierter Eilmeldungen
+          example: 47
+        monthlyTrend:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonthlyTrendEntry"
+
+    StatEntry:
+      type: object
+      properties:
+        mean:
+          type: number
+          format: float
+          description: Durchschnittliche Opening Rate
+          example: 6.84
+        n:
+          type: integer
+          description: Anzahl Datenpunkte
+          example: 145
+
+    # ── ML ──────────────────────────────────────────────────────────────────
+
+    MlStatusResponse:
+      type: object
+      properties:
+        trained:
+          type: boolean
+          description: Ob das Modell trainiert ist
+          example: true
+        training:
+          type: boolean
+          description: Ob gerade ein Training läuft
+          example: false
+        metrics:
+          $ref: "#/components/schemas/MlMetrics"
+        shapImportance:
+          type: array
+          description: Top-10 SHAP Feature Importances
+          items:
+            $ref: "#/components/schemas/FeatureImportanceEntry"
+        trainCount:
+          type: integer
+          description: Anzahl abgeschlossener Trainings-Zyklen
+          example: 12
+        lastTrainTs:
+          type: number
+          description: Unix-Timestamp des letzten Trainings
+          example: 1743500000
+        nextRetrainTs:
+          type: number
+          description: Unix-Timestamp des geplanten nächsten Trainings
+          example: 1743586400
+        featureCount:
+          type: integer
+          description: Anzahl verwendeter Features
+          example: 42
+
+    MlMetrics:
+      type: object
+      properties:
+        mae:
+          type: number
+          format: float
+          description: Mean Absolute Error in Prozentpunkten
+          example: 1.42
+        rmse:
+          type: number
+          format: float
+          description: Root Mean Squared Error in Prozentpunkten
+          example: 2.01
+        r2:
+          type: number
+          format: float
+          description: R²-Score (Bestimmtheitsmaß)
+          example: 0.71
+        trainN:
+          type: integer
+          description: Anzahl Trainings-Samples
+          example: 2800
+        valN:
+          type: integer
+          description: Anzahl Validierungs-Samples
+          example: 600
+        testN:
+          type: integer
+          description: Anzahl Test-Samples
+          example: 400
+
+    FeatureImportanceEntry:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Feature-Name
+          example: hour_sin
+        importance:
+          type: number
+          format: float
+          description: Relative Wichtigkeit (0–1)
+          example: 0.187
+
+    SafetyStatusResponse:
+      type: object
+      required: [safetyMode, advisoryOnly, actionAllowed]
+      properties:
+        safetyMode:
+          type: string
+          description: Immer "ADVISORY_ONLY"
+          example: ADVISORY_ONLY
+        advisoryOnly:
+          type: boolean
+          description: Immer true
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Immer false — das System darf niemals autonom pushen
+          example: false
+        status:
+          type: string
+          example: "OK — System ist im ADVISORY_ONLY Modus"
+
+    PredictionResult:
+      type: object
+      description: OR-Prognose mit Safety-Envelope
+      properties:
+        predictedOr:
+          type: number
+          format: float
+          description: Prognostizierte Opening Rate in Prozent
+          example: 7.24
+        or:
+          type: number
+          format: float
+          description: Alias für predictedOr (Kompatibilität)
+          example: 7.24
+        q10:
+          type: number
+          format: float
+          description: 10%-Quantil der Prognose
+          example: 4.8
+        q90:
+          type: number
+          format: float
+          description: 90%-Quantil der Prognose
+          example: 10.2
+        confidence:
+          type: number
+          format: float
+          description: Modell-Konfidenz (0–1)
+          example: 0.72
+        basis:
+          type: string
+          description: Modell-Basis (z.B. lgbm, ensemble, fallback)
+          example: ensemble
+        advisoryOnly:
+          type: boolean
+          description: Safety-Flag — immer true
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Safety-Flag — immer false
+          example: false
+        safetyMode:
+          type: string
+          example: ADVISORY_ONLY
+
+    MlExperiment:
+      type: object
+      properties:
+        experimentId:
+          type: string
+          example: exp_20260401_143022
+        timestamp:
+          type: number
+          description: Unix-Timestamp des Trainings
+          example: 1743500000
+        metrics:
+          $ref: "#/components/schemas/MlMetrics"
+        promoted:
+          type: boolean
+          description: Ob dieses Experiment als Champion promoted wurde
+          example: false
+        modelType:
+          type: string
+          example: stacking_ensemble
+
+    AbStatusResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+          description: Ob ein A/B-Test aktiv ist
+          example: true
+        championId:
+          type: string
+          description: Experiment-ID des Champion-Modells
+          example: exp_20260401_143022
+        challengerId:
+          type: string
+          description: Experiment-ID des Challenger-Modells
+          example: exp_20260402_091544
+        nSamples:
+          type: integer
+          description: Anzahl bisher gesammelter A/B-Samples
+          example: 47
+        startedAt:
+          type: number
+          description: Unix-Timestamp des Test-Starts
+          example: 1743500000
+        timeoutAt:
+          type: number
+          description: Unix-Timestamp des geplanten Test-Endes
+          example: 1743586400
+
+    MlMonitoringResponse:
+      type: object
+      properties:
+        mae24h:
+          type: number
+          format: float
+          description: MAE der letzten 24 Stunden
+          example: 1.38
+        mae7d:
+          type: number
+          format: float
+          description: MAE der letzten 7 Tage
+          example: 1.54
+        maeTrend:
+          type: array
+          description: Zeitreihe der MAE-Werte
+          items:
+            type: number
+        calibrationBias:
+          type: number
+          format: float
+          description: Globaler Calibration Bias (predicted − actual, Durchschnitt)
+          example: 0.12
+        calibrationTrend:
+          type: array
+          items:
+            type: number
+        abSummary:
+          type: object
+          properties:
+            active:
+              type: boolean
+            nSamples:
+              type: integer
+            challengerId:
+              type: string
+        onlineStatus:
+          type: object
+          properties:
+            paused:
+              type: boolean
+            updatesCount:
+              type: integer
+            onlineMae:
+              type: number
+            batchMae:
+              type: number
+        driftState:
+          type: object
+          properties:
+            detected:
+              type: boolean
+              description: Ob Data-Drift erkannt wurde
+            currentMae:
+              type: number
+            historicalMae:
+              type: number
+            autoRetrainCount:
+              type: integer
+        recentEvents:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitoringEvent"
+        lastTick:
+          type: number
+          description: Unix-Timestamp des letzten Monitoring-Ticks
+
+    MonitoringEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        timestamp:
+          type: number
+        eventType:
+          type: string
+          example: drift_detected
+        severity:
+          type: string
+          enum: [info, warning, error]
+          example: warning
+        message:
+          type: string
+          example: "MAE-Anstieg von 1.4 auf 2.1pp erkannt"
+        metrics:
+          type: object
+          additionalProperties: true
+
+    # ── Batch Prediction ────────────────────────────────────────────────────
+
+    PredictBatchArticle:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Eindeutige Artikel-ID (für Cache-Lookup)
+          example: "msg_12345"
+        title:
+          type: string
+          description: Push-Titelzeile
+          example: "Sensation im Finale: Bayern siegt!"
+        cat:
+          type: string
+          description: Kategorie
+          example: Sport
+        hour:
+          type: integer
+          description: Versand-Stunde (0–23)
+          example: 20
+        isEilmeldung:
+          type: boolean
+          description: Eilmeldung?
+          example: false
+        isBildPlus:
+          type: boolean
+          description: BILD-Plus-Artikel?
+          example: false
+
+    PredictBatchRequest:
+      type: object
+      required: [articles]
+      properties:
+        articles:
+          type: array
+          description: Liste zu prognostizierender Artikel (max. 300)
+          maxItems: 300
+          items:
+            $ref: "#/components/schemas/PredictBatchArticle"
+
+    PredictBatchPrediction:
+      type: object
+      properties:
+        or:
+          type: number
+          format: float
+          description: Prognostizierte OR (mit Micro-Variation für Live-Ticker)
+          example: 6.87
+        predictedOr:
+          type: number
+          format: float
+          example: 6.87
+        basis:
+          type: string
+          example: ensemble
+        confidence:
+          type: number
+          format: float
+          example: 0.68
+        q10:
+          type: number
+          format: float
+          example: 4.2
+        q90:
+          type: number
+          format: float
+          example: 9.8
+        modelType:
+          type: string
+          example: ensemble
+
+    PredictBatchResponse:
+      type: object
+      properties:
+        predictions:
+          type: object
+          description: Map von Artikel-ID zu Prognose
+          additionalProperties:
+            $ref: "#/components/schemas/PredictBatchPrediction"
+        modelType:
+          type: string
+          description: Verwendetes Modell (aus erstem Ergebnis)
+          example: ensemble
+        count:
+          type: integer
+          description: Anzahl berechneter Prognosen
+          example: 42
+        elapsedMs:
+          type: number
+          description: Berechnungszeit in Millisekunden
+          example: 18.4
+        cached:
+          type: integer
+          description: Anzahl aus dem Cache gelieferter Prognosen
+          example: 38
+
+    # ── Prediction Feedback ─────────────────────────────────────────────────
+
+    PredictionFeedbackRequest:
+      type: object
+      required: [pushId, predictedOr, actualOr]
+      properties:
+        pushId:
+          type: string
+          description: Eindeutige Push-ID
+          example: "msg_12345"
+        predictedOr:
+          type: number
+          format: float
+          description: Vom Modell prognostizierte Opening Rate
+          example: 7.24
+        actualOr:
+          type: number
+          format: float
+          description: Tatsächlich gemessene Opening Rate (nach Reife >24h)
+          example: 6.87
+        basisMethod:
+          type: string
+          description: Verwendete Methode (z.B. gbrt, ensemble, fallback)
+          example: ensemble
+        pushTitle:
+          type: string
+          description: Push-Titelzeile
+          example: "So reagiert Deutschland auf die Wahl"
+        pushCat:
+          type: string
+          description: Artikel-Kategorie
+          example: Politik
+        pushHour:
+          type: integer
+          description: Versand-Stunde
+          example: 18
+        source:
+          type: string
+          description: Herkunft des Feedbacks
+          example: frontend
+        championPred:
+          type: number
+          format: float
+          nullable: true
+          description: Champion-Modell-Prognose (für A/B-Test)
+        challengerPred:
+          type: number
+          format: float
+          nullable: true
+          description: Challenger-Modell-Prognose (für A/B-Test)
+
+    # ── GBRT ────────────────────────────────────────────────────────────────
+
+    GbrtPrediction:
+      type: object
+      properties:
+        predicted:
+          type: number
+          format: float
+          description: Prognostizierte Opening Rate in Prozent
+          example: 6.92
+        q10:
+          type: number
+          format: float
+          example: 4.1
+        q90:
+          type: number
+          format: float
+          example: 10.3
+        confidence:
+          type: number
+          format: float
+          example: 0.71
+        error:
+          type: string
+          nullable: true
+          description: Fehlermeldung falls Modell nicht trainiert
+          example: null
+
+    GbrtStatusResponse:
+      type: object
+      properties:
+        loaded:
+          type: boolean
+        trained:
+          type: boolean
+        message:
+          type: string
+          description: Fehlermeldung falls nicht trainiert
+          example: null
+        model:
+          type: object
+          properties:
+            type:
+              type: string
+              example: GBRT
+            nTrees:
+              type: integer
+              example: 180
+            nFeatures:
+              type: integer
+              example: 38
+            nPushes:
+              type: integer
+              example: 3820
+            mae:
+              type: number
+              format: float
+              example: 1.42
+            r2:
+              type: number
+              format: float
+              example: 0.74
+            trainedAt:
+              type: number
+              example: 1743500000
+            modelType:
+              type: string
+              example: gbrt_ensemble
+        metrics:
+          $ref: "#/components/schemas/MlMetrics"
+        featureImportance:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeatureImportanceEntry"
+        calibration:
+          type: object
+          properties:
+            bins:
+              type: array
+              items:
+                type: object
+                properties:
+                  predicted:
+                    type: number
+                  actual:
+                    type: number
+                  count:
+                    type: integer
+            calibrationError:
+              type: number
+              format: float
+        errorAnalysis:
+          type: object
+          properties:
+            byCategory:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  mae:
+                    type: number
+                  bias:
+                    type: number
+                  n:
+                    type: integer
+            byHour:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  mae:
+                    type: number
+                  bias:
+                    type: number
+                  n:
+                    type: integer
+        recentPredictions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentPrediction"
+
+    RecentPrediction:
+      type: object
+      properties:
+        title:
+          type: string
+        predicted:
+          type: number
+          format: float
+        actual:
+          type: number
+          format: float
+          nullable: true
+        confidence:
+          type: number
+          format: float
+        q10:
+          type: number
+          format: float
+        q90:
+          type: number
+          format: float
+
+    # ── Tagesplan ───────────────────────────────────────────────────────────
+
+    TagesplanPush:
+      type: object
+      description: Tatsächlich versendeter Push in einem Stunden-Slot
+      properties:
+        title:
+          type: string
+          description: Push-Titelzeile
+          example: "Bayern siegt im Finale"
+        cat:
+          type: string
+          description: Kategorie
+          example: sport
+        or:
+          type: number
+          format: float
+          description: Tatsächliche Opening Rate in Prozent (aus DB)
+          example: 8.42
+        predictedOr:
+          type: number
+          format: float
+          nullable: true
+          description: Zum Versandzeitpunkt prognostizierte OR
+          example: 7.91
+        delta:
+          type: number
+          format: float
+          nullable: true
+          description: Differenz predicted − actual OR
+          example: -0.51
+        isEilmeldung:
+          type: boolean
+          example: false
+        link:
+          type: string
+          format: uri
+          example: "https://www.bild.de/sport/..."
+        hour:
+          type: integer
+          example: 20
+
+    TagesplanSuggestion:
+      type: object
+      description: Empfohlener Artikel für einen Tagesplan-Slot
+      properties:
+        num:
+          type: integer
+          description: Vorschlags-Nummer (1 = bester)
+          example: 1
+        title:
+          type: string
+          example: "Überraschung im Endspiel: Bayern besiegt Dortmund"
+        link:
+          type: string
+          format: uri
+        category:
+          type: string
+          example: Sport
+        score:
+          type: number
+          format: float
+          description: Push-Score (Eignungsbewertung, 0–100)
+          example: 87.3
+        expectedOr:
+          type: number
+          format: float
+          description: Prognostizierte Opening Rate für diesen Artikel
+          example: 7.84
+        bestCat:
+          type: string
+          description: Empfohlene Best-Kategorie für diesen Slot
+          example: Sport
+
+    TagesplanSlot:
+      type: object
+      description: Einzelner Stunden-Slot im Tagesplan
+      properties:
+        hour:
+          type: integer
+          description: Stunde (6–23)
+          example: 18
+        isPast:
+          type: boolean
+          description: Liegt dieser Slot in der Vergangenheit?
+          example: false
+        isNow:
+          type: boolean
+          description: Ist dies der aktuelle Stunden-Slot?
+          example: true
+        expectedOr:
+          type: number
+          format: float
+          description: Prognostizierte OR für diesen Slot
+          example: 7.2
+        bestCat:
+          type: string
+          description: Empfohlene Kategorie für diesen Slot
+          example: Politik
+        nPushed:
+          type: integer
+          description: Anzahl bereits versendeter Pushes in diesem Slot
+          example: 1
+        pushedThisHour:
+          type: array
+          description: Tatsächlich versendete Pushes in diesem Slot
+          items:
+            $ref: "#/components/schemas/TagesplanPush"
+
+    TagesplanResponse:
+      type: object
+      properties:
+        date:
+          type: string
+          description: Datum im Format DD.MM.YYYY
+          example: "02.04.2026"
+        dateIso:
+          type: string
+          format: date
+          example: "2026-04-02"
+        weekday:
+          type: string
+          description: Wochentag-Kürzel (Mo–So)
+          example: "Do"
+        currentHour:
+          type: integer
+          description: Aktuelle Stunde (0–23)
+          example: 18
+        slots:
+          type: array
+          description: 18 Stunden-Slots (06:00–23:00)
+          items:
+            $ref: "#/components/schemas/TagesplanSlot"
+        alreadyPushedToday:
+          type: array
+          description: Liste aller heute bereits versendeten Pushes
+          items:
+            $ref: "#/components/schemas/TagesplanPush"
+        nPushedToday:
+          type: integer
+          example: 4
+        avgOrToday:
+          type: number
+          format: float
+          description: Durchschnittliche OR aller heutigen Pushes
+          example: 6.93
+        bestPush:
+          $ref: "#/components/schemas/TagesplanPush"
+          nullable: true
+        goldenHour:
+          type: integer
+          nullable: true
+          description: Empfohlene Top-Stunde heute
+          example: 18
+        mustHaveHours:
+          type: array
+          description: Stunden mit dringender Push-Empfehlung
+          items:
+            type: integer
+        totalPushesDb:
+          type: integer
+          description: Gesamtanzahl Pushes in der Datenbank
+          example: 3820
+        mlTrained:
+          type: boolean
+          description: Ob das ML-Modell verfügbar ist
+          example: true
+        mlMetrics:
+          $ref: "#/components/schemas/MlMetrics"
+
+    TagesplanHistoryResponse:
+      type: object
+      description: Historischer Tagesplan für ein vergangenes Datum
+      allOf:
+        - $ref: "#/components/schemas/TagesplanResponse"
+        - type: object
+          properties:
+            isHistory:
+              type: boolean
+              example: true
+            suggestions:
+              type: object
+              description: Map von Slot-Stunde (String) zu Vorschlägen
+              additionalProperties:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TagesplanSuggestion"
+
+    TagesplanRetroResponse:
+      type: object
+      properties:
+        days:
+          type: array
+          description: Tages-Zusammenfassungen der letzten 7 Tage
+          items:
+            type: object
+            properties:
+              dateIso:
+                type: string
+                format: date
+              date:
+                type: string
+                example: "Di, 01.04.2026"
+              avgOr:
+                type: number
+                format: float
+              nPushed:
+                type: integer
+              bestHour:
+                type: integer
+                nullable: true
+              bestCat:
+                type: string
+
+    TagesplanSuggestionsResponse:
+      type: object
+      properties:
+        dateIso:
+          type: string
+          format: date
+          example: "2026-04-02"
+        suggestions:
+          type: object
+          description: Map von Slot-Stunde (String) zu Vorschlägen
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/TagesplanSuggestion"
+
+    LogSuggestionsRequest:
+      type: object
+      required: [dateIso, suggestions]
+      properties:
+        dateIso:
+          type: string
+          format: date
+          description: Datum im Format YYYY-MM-DD
+          example: "2026-04-02"
+        suggestions:
+          type: array
+          description: Liste der Vorschläge (max. 36)
+          maxItems: 36
+          items:
+            type: object
+            required: [slotHour, suggestionNum]
+            properties:
+              slotHour:
+                type: integer
+                description: Stunden-Slot (6–23)
+                example: 18
+              suggestionNum:
+                type: integer
+                description: Vorschlags-Nummer (1 oder 2)
+                example: 1
+              title:
+                type: string
+                description: Artikeltitel (max. 200 Zeichen)
+              link:
+                type: string
+                format: uri
+              category:
+                type: string
+                example: Politik
+              score:
+                type: number
+                format: float
+                example: 87.3
+              expectedOr:
+                type: number
+                format: float
+                example: 7.2
+              bestCat:
+                type: string
+                example: Politik
+
+    # ── Push Sync ───────────────────────────────────────────────────────────
+
+    PushSyncRequest:
+      type: object
+      required: [secret, messages]
+      properties:
+        secret:
+          type: string
+          description: Sync-Schlüssel (aus Umgebungsvariable PUSH_SYNC_SECRET)
+          example: "bild-push-sync-2026"
+        messages:
+          type: array
+          description: Liste geparster Push-Nachrichten
+          items:
+            type: object
+            additionalProperties: true
+        channels:
+          type: array
+          description: Liste aktiver Push-Kanäle
+          items:
+            type: string
+
+    # ── AI / Chat ────────────────────────────────────────────────────────────
+
+    PushTitleGenerateRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          description: Original-Artikeltitel (Eingabe)
+          example: "Bundesliga: Bayern München schlägt Borussia Dortmund 3:1"
+        text:
+          type: string
+          description: Artikeltext oder Teaser (optional, verbessert Qualität)
+        category:
+          type: string
+          description: Artikel-Kategorie
+          default: news
+          example: sport
+        kicker:
+          type: string
+          description: Kicker/Überkopf-Zeile
+          example: "Bundesliga"
+        headline:
+          type: string
+          description: Haupt-Schlagzeile (kann sich vom title unterscheiden)
+
+    PushTitleGenerateResponse:
+      type: object
+      properties:
+        bestTitle:
+          type: string
+          description: Empfohlene Push-Titelzeile
+          example: "SENSATION! Bayern schlägt Dortmund – BL-Finale entschieden"
+        alternatives:
+          type: array
+          description: Alternative Titelzeilen mit Bewertungen
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              score:
+                type: number
+                format: float
+                description: Gesamt-Score (0–100)
+              scores:
+                type: object
+                description: Detailbewertungen (brevity, emotion, clarity, clickPotential)
+                additionalProperties:
+                  type: number
+        modelUsed:
+          type: string
+          example: gpt-4.1
+
+    SchwabChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Nutzernachricht (max. 2000 Zeichen)
+          maxLength: 2000
+          example: "Was war die OR der heutigen Pushes?"
+        history:
+          type: array
+          description: Chat-History (max. 10 Einträge)
+          maxItems: 10
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                type: string
+                maxLength: 2000
+
+    SchwabChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+          description: Antwort des Assistenten
+          example: "Heute wurden 5 Pushes versendet mit einer Durchschnitts-OR von 6.4%."
+        ts:
+          type: string
+          description: Zeitstempel der Antwort (DD.MM.YYYY HH:MM)
+          example: "02.04.2026 18:32"
+        pendingApproval:
+          nullable: true
+          description: Approval-Objekt falls Assistent eine Änderung vorschlägt
+          $ref: "#/components/schemas/SchwabApproval"
+
+    SchwabApproval:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 7
+        ts:
+          type: string
+          example: "02.04.2026 18:32"
+        proposal:
+          type: string
+          description: Konkreter Änderungsvorschlag (max. 300 Zeichen)
+        reason:
+          type: string
+          description: Begründung
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+          example: approved
+        changeType:
+          type: string
+          description: Typ der vorgeschlagenen Änderung
+
+    SchwabApprovalRequest:
+      type: object
+      required: [id, action]
+      properties:
+        id:
+          type: integer
+          description: Approval-ID aus dem Schwab-Chat
+          example: 7
+        action:
+          type: string
+          enum: [approve, reject]
+          description: Genehmigen oder ablehnen
+          example: approve
+
+    # ── Competitor XOR ──────────────────────────────────────────────────────
+
+    CompetitorXorRequest:
+      type: object
+      required: [titles]
+      properties:
+        titles:
+          type: array
+          description: Titel-Liste (max. 200; kann Strings oder Objekte sein)
+          maxItems: 200
+          items:
+            oneOf:
+              - type: string
+                description: Einfacher Titelstring
+              - type: object
+                description: Titel mit Kategorie und Stunde
+                properties:
+                  title:
+                    type: string
+                  cat:
+                    type: string
+                  hour:
+                    type: integer
+
+    CompetitorXorEntry:
+      type: object
+      properties:
+        or:
+          type: number
+          format: float
+          description: Prognostizierte OR
+          example: 5.84
+        q10:
+          type: number
+          format: float
+          example: 3.2
+        q90:
+          type: number
+          format: float
+          example: 8.9
+        confidence:
+          type: number
+          format: float
+          example: 0.54
+        basis:
+          type: string
+          example: "word(6)"
+        cat:
+          type: string
+          example: Politik
+        nWords:
+          type: integer
+          description: Anzahl gescorefer Wörter
+          example: 6
+        isLiveticker:
+          type: boolean
+          description: Wurde der Titel als Live-Ticker erkannt?
+          example: false
+
+    CompetitorXorResponse:
+      type: object
+      properties:
+        predictions:
+          type: object
+          description: Map von Titel (max. 120 Zeichen) zu Prognose
+          additionalProperties:
+            $ref: "#/components/schemas/CompetitorXorEntry"
+        count:
+          type: integer
+          example: 42
+        elapsedMs:
+          type: number
+          example: 38.7
+
+  # ── Responses ────────────────────────────────────────────────────────────
+
+  responses:
+    BadRequest:
+      description: Ungültige Anfrage (fehlende oder falsche Parameter)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/bad-request"
+            title: "Bad Request"
+            status: 400
+            detail: "Das Feld 'pushId' darf nicht leer sein"
+
+    Forbidden:
+      description: Zugriff verweigert (ungültiger Sync-Secret)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/forbidden"
+            title: "Forbidden"
+            status: 403
+            detail: "Invalid sync secret"
+
+    NotFound:
+      description: Ressource nicht gefunden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/not-found"
+            title: "Not Found"
+            status: 404
+            detail: "GBRT-Modell nicht vorhanden"
+
+    TooManyRequests:
+      description: Rate Limit überschritten
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/rate-limit"
+            title: "Too Many Requests"
+            status: 429
+            detail: "Zu viele Anfragen. Bitte warte kurz."
+
+    InternalServerError:
+      description: Interner Serverfehler
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/internal-error"
+            title: "Internal Server Error"
+            status: 500
+            detail: "ML status error: model not initialized"
+
+    BadGateway:
+      description: Upstream-Fehler (externe API nicht erreichbar)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: "https://push-balancer.example.com/problems/bad-gateway"
+            title: "Bad Gateway"
+            status: 502
+            detail: "Proxy error: Connection timeout"

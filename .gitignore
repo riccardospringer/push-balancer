@@ -46,3 +46,8 @@ catboost_info/
 
 # Render/Railway Config (ggf. anpassen wenn gewuenscht)
 render.yaml
+~$*
+*.pptx
+__pycache__/
+*.pyc
+.pytest_cache/

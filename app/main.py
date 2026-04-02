@@ -1,0 +1,538 @@
+"""app/main.py — FastAPI Application + Route-Registrierungen + Startup-Events.
+
+Ersetzt den monolithischen BaseHTTPRequestHandler aus push-balancer-server.py.
+
+Startup-Sequenz (identisch zum Monolith):
+1. DB initialisieren (init_db)
+2. GBRT-Modell von Disk laden
+3. LightGBM-Modell von Disk laden
+4. Push-Snapshot seeden (wenn vorhanden)
+5. Feed-Cache Background-Worker starten
+6. Research-Worker starten (20s-Intervall)
+7. Health-Checker starten
+8. Embedding-Modell im Hintergrund laden
+9. LLM-Backfill-Thread starten
+10. Tagesplan + Feed-Cache vorberechnen
+11. Adobe Analytics Traffic-Worker starten (wenn konfiguriert)
+12. Push-Auto-Fetch-Worker starten
+13. Push-Sync-Worker starten (wenn RENDER_SYNC_URL gesetzt)
+14. Auto-Suggestion-Worker starten
+"""
+import json
+import logging
+import os
+import threading
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from app.config import (
+    ALLOWED_ORIGINS,
+    PORT,
+    SERVE_DIR,
+    SNAPSHOT_PATH,
+)
+from app.database import init_db, push_db_count, push_db_upsert
+from app.ml.gbrt import gbrt_load_model, _gbrt_model
+from app.routers import (
+    feed,
+    forschung,
+    gbrt,
+    health,
+    misc,
+    ml,
+    push,
+    tagesplan,
+)
+
+log = logging.getLogger("push-balancer")
+
+# ── Logging konfigurieren ─────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True,
+)
+for _h in logging.root.handlers:
+    if hasattr(_h, "stream") and hasattr(_h.stream, "reconfigure"):
+        try:
+            _h.stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+
+# libomp für LightGBM/XGBoost vorab laden (macOS SIP blockiert DYLD_LIBRARY_PATH)
+import ctypes as _ctypes
+_omp_lib = os.path.expanduser("~/.local/lib/libomp.dylib")
+if os.path.exists(_omp_lib):
+    try:
+        _ctypes.cdll.LoadLibrary(_omp_lib)
+    except OSError:
+        pass
+
+
+# ── Startup / Shutdown ─────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup und Shutdown Lifecycle Handler."""
+    # ── 1. Datenbank initialisieren ──
+    init_db()
+    log.info("[PushDB] SQLite initialisiert (%d Pushes)", push_db_count())
+
+    # ── 2. GBRT-Modell laden ──
+    if gbrt_load_model():
+        n_trees = len(getattr(_gbrt_model, "trees", []))
+        log.info("[GBRT] Modell geladen (%d Bäume)", n_trees)
+    else:
+        log.info("[GBRT] Kein gespeichertes Modell, wird beim ersten Zyklus trainiert")
+
+    # ── 3. LightGBM-Modell laden ──
+    _load_lgbm_model_from_disk()
+
+    # ── 4. Push-Snapshot seeden ──
+    _seed_push_snapshot()
+
+    # ── 5–14. Background-Worker starten ──
+    _start_background_workers()
+
+    log.info("Push Balancer FastAPI auf http://0.0.0.0:%d", PORT)
+
+    yield  # Server läuft
+
+    log.info("[Shutdown] Push Balancer beendet")
+
+
+def _load_lgbm_model_from_disk() -> None:
+    """Lädt gespeichertes LightGBM-Modell von Disk (wenn vorhanden)."""
+    try:
+        import joblib
+        from app.ml.lightgbm_model import _ml_lock, _ml_state
+    except ImportError:
+        return
+
+    # Modellpfad identisch mit push-balancer-server.py
+    ml_model_path = os.path.join(SERVE_DIR, ".ml_lgbm_model.pkl")
+    if not os.path.exists(ml_model_path):
+        log.info("[ML] Kein gespeichertes LightGBM-Modell, wird beim nächsten Training erstellt")
+        return
+
+    try:
+        ml_disk = joblib.load(ml_model_path)
+        with _ml_lock:
+            _ml_state["model"] = ml_disk["model"]
+            _ml_state["residual_model"] = ml_disk.get("residual_model")
+            _ml_state["stats"] = ml_disk["stats"]
+            _ml_state["feature_names"] = ml_disk["feature_names"]
+            _ml_state["calibrator"] = ml_disk.get("calibrator")
+            _ml_state["conformal_radius"] = ml_disk.get("conformal_radius", 1.0)
+            _ml_state["gbrt_lgbm_alpha"] = ml_disk.get("gbrt_lgbm_alpha", 0.6)
+            _ml_state["ml_heuristic_alpha"] = ml_disk.get("ml_heuristic_alpha", 0.55)
+            _ml_state["metrics"] = ml_disk.get("metrics", {})
+            _ml_state["shap_importance"] = ml_disk.get("shap_importance", [])
+            _ml_state["train_count"] = 1
+            _ml_state["last_train_ts"] = ml_disk.get("trained_at", 0)
+            _ml_state["next_retrain_ts"] = int(time.time()) + 6 * 3600
+
+        ml_age_h = (time.time() - ml_disk.get("trained_at", 0)) / 3600
+        r2 = ml_disk.get("metrics", {}).get("r2", "?")
+        n_feats = len(ml_disk["feature_names"])
+        log.info("[ML] LightGBM geladen (R²=%s, Features: %d, Alter: %.1fh)", r2, n_feats, ml_age_h)
+    except Exception as e:
+        log.warning("[ML] Modell laden fehlgeschlagen: %s", e)
+
+
+def _seed_push_snapshot() -> None:
+    """Seedet Push-Snapshot in DB beim Start (für Render: eingebackene Daten als Fallback)."""
+    if not os.path.exists(SNAPSHOT_PATH):
+        return
+    try:
+        with open(SNAPSHOT_PATH) as f:
+            snap = json.load(f)
+        if isinstance(snap, list) and snap:
+            n = push_db_upsert(snap)
+            log.info("[Snapshot] %d Pushes in DB geseedet", n)
+        elif isinstance(snap, dict) and snap.get("messages"):
+            from app.routers.push import _push_sync_cache, _push_sync_lock
+            with _push_sync_lock:
+                _push_sync_cache["messages"] = snap.get("messages", [])
+                _push_sync_cache["ts"] = snap.get("_generated", time.time())
+            log.info("[Snapshot] %d Pushes aus Snapshot (Dict-Format) geladen",
+                     len(_push_sync_cache["messages"]))
+    except Exception as e:
+        log.warning("[Snapshot] Fehler beim Laden: %s", e)
+
+
+def _start_background_workers() -> None:
+    """Startet alle Background-Worker-Threads (identisch zum Monolith)."""
+    from app.research.worker import (
+        _research_state,
+        monitoring_tick,
+        run_autonomous_analysis,
+        update_residual_corrector,
+    )
+    from app.ml.gbrt import gbrt_train, gbrt_online_update, gbrt_check_drift
+    from app.ml.lightgbm_model import ml_train_model, unified_train, train_stacking_model
+    from app.tagesplan.builder import build_tagesplan
+
+    # 5. Feed-Cache Worker
+    def _feed_cache_worker():
+        from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS, SPORT_COMPETITOR_FEEDS, SPORT_EUROPA_FEEDS, SPORT_GLOBAL_FEEDS
+        from app.research.worker import _feed_cache
+        from app.routers.feed import _fetch_url
+        _FEED_CACHE_TTL = 300
+
+        log.info("[FeedCache] Background-Worker gestartet (alle %ds)", _FEED_CACHE_TTL)
+        while True:
+            for name, url in {**COMPETITOR_FEEDS, **INTERNATIONAL_FEEDS,
+                               **SPORT_COMPETITOR_FEEDS, **SPORT_EUROPA_FEEDS,
+                               **SPORT_GLOBAL_FEEDS}.items():
+                try:
+                    _fetch_url(url)
+                except Exception:
+                    pass
+            time.sleep(_FEED_CACHE_TTL)
+
+    threading.Thread(target=_feed_cache_worker, daemon=True).start()
+    log.info("[FeedCache] Background-Worker gestartet")
+
+    # 6. Research-Worker
+    def _research_worker():
+        time.sleep(2)
+        try:
+            update_residual_corrector()
+            log.info("[ResidualCorrector] Initial geladen: bias=%+.3f, n=%d",
+                     0.0, 0)
+        except Exception as e:
+            log.warning("[ResidualCorrector] Initial-Load fehlgeschlagen: %s", e)
+
+        log.info("[Research] Autonomer Research-Worker gestartet (20s Intervall)")
+        while True:
+            try:
+                run_autonomous_analysis()
+                n = len(_research_state.get("push_data", []))
+                if n > 0 and _research_state.get("_worker_first_log", True):
+                    log.info("[Research] Erste Analyse fertig: %d Pushes, Accuracy %.1f%%",
+                             n, _research_state.get("rolling_accuracy", 0))
+                    _research_state["_worker_first_log"] = False
+            except Exception as e:
+                import traceback
+                log.warning("[Research] Worker-Fehler: %s\n%s", e, traceback.format_exc())
+
+            # Periodische Tasks
+            try:
+                counter = _research_state.get("_stacking_counter", 0) + 1
+                _research_state["_stacking_counter"] = counter
+
+                if counter % 30 == 0:
+                    train_stacking_model(_research_state)
+                if counter == 1 or counter % 1080 == 0:
+                    try:
+                        ml_train_model()
+                    except Exception as e:
+                        log.warning("[ML] Training-Fehler im Research-Worker: %s", e)
+                if counter == 1 or counter % 360 == 0:
+                    try:
+                        gbrt_train()
+                    except Exception as e:
+                        log.warning("[GBRT] Training-Fehler: %s", e)
+                if counter == 5 or counter % 1440 == 0:
+                    try:
+                        unified_train()
+                    except Exception as e:
+                        log.warning("[Unified] Training-Fehler: %s", e)
+                if counter % 60 == 0 and counter > 3:
+                    try:
+                        gbrt_check_drift(_research_state)
+                    except Exception as e:
+                        log.warning("[GBRT] Drift-Check-Fehler: %s", e)
+                if counter % 90 == 0 and counter > 5:
+                    try:
+                        gbrt_online_update()
+                    except Exception as e:
+                        log.warning("[GBRT] Online-Update-Fehler: %s", e)
+                if counter == 5 or (counter % 60 == 0 and counter > 5):
+                    try:
+                        monitoring_tick()
+                    except Exception as e:
+                        log.warning("[Monitoring] Tick-Fehler: %s", e)
+                if counter % 15 == 0:
+                    try:
+                        build_tagesplan(background=True)
+                    except Exception as e:
+                        log.debug("[Tagesplan] Background-Refresh: %s", e)
+            except Exception as e:
+                import traceback
+                log.warning("[Research] Periodic-Task-Fehler: %s\n%s", e, traceback.format_exc())
+
+            time.sleep(20)
+
+    threading.Thread(target=_research_worker, daemon=True).start()
+    log.info("[Research] Autonomer Research-Worker gestartet")
+
+    # 7. Health-Checker
+    def _health_checker():
+        from app.research.worker import _health_state
+        import urllib.request
+
+        _health_state["uptime_start"] = time.time()
+        time.sleep(5)
+        log.info("[Health] Checker gestartet (60s Intervall)")
+        while True:
+            try:
+                endpoints = {}
+                for name, url in [("bild_sitemap", "https://www.bild.de/sitemap-news.xml")]:
+                    try:
+                        req = urllib.request.Request(url, headers={"User-Agent": "HealthCheck/1.0"})
+                        import ssl as _ssl
+                        try:
+                            import certifi
+                            ctx = _ssl.create_default_context(cafile=certifi.where())
+                        except ImportError:
+                            ctx = _ssl.create_default_context()
+                        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                            status = resp.status
+                        endpoints[name] = {"ok": status == 200, "status": status}
+                        _health_state["checks_ok"] = _health_state.get("checks_ok", 0) + 1
+                    except Exception as e:
+                        endpoints[name] = {"ok": False, "error": str(e)[:100]}
+                        _health_state["checks_fail"] = _health_state.get("checks_fail", 0) + 1
+                _health_state["endpoints"] = endpoints
+                _health_state["last_check"] = time.time()
+                _health_state["status"] = "ok" if all(v.get("ok") for v in endpoints.values()) else "degraded"
+            except Exception as e:
+                log.warning("[Health] Checker-Fehler: %s", e)
+            time.sleep(60)
+
+    threading.Thread(target=_health_checker, daemon=True).start()
+    log.info("[Health] Checker gestartet")
+
+    # 8. Embedding-Modell im Hintergrund laden
+    def _load_embedding_model():
+        try:
+            from push_balancer_server_compat import _load_embedding_model_background  # type: ignore
+            _load_embedding_model_background()
+        except ImportError:
+            log.info("[Embeddings] Legacy-Import nicht verfügbar, überspringe Embedding-Load")
+
+    threading.Thread(target=_load_embedding_model, daemon=True).start()
+    log.info("[Embeddings] Modell wird im Hintergrund geladen")
+
+    # 9. LLM-Backfill Thread
+    def _llm_backfill():
+        try:
+            from push_balancer_server_compat import _backfill_llm_scores  # type: ignore
+            _backfill_llm_scores()
+        except ImportError:
+            from app.config import OPENAI_API_KEY
+            if not OPENAI_API_KEY:
+                log.info("[LLM-Backfill] Kein OPENAI_API_KEY, überspringe Backfill")
+
+    threading.Thread(target=_llm_backfill, daemon=True).start()
+    log.info("[LLM-Backfill] Scoring-Thread gestartet")
+
+    # 10. Preload Caches
+    def _preload_caches():
+        from app.routers.feed import _fetch_url
+        from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
+        time.sleep(8)
+        try:
+            build_tagesplan()
+            log.info("[Preload] Tagesplan vorberechnet")
+        except Exception as e:
+            log.warning("[Preload] Tagesplan-Fehler: %s", e)
+        try:
+            for url in list(COMPETITOR_FEEDS.values()) + list(INTERNATIONAL_FEEDS.values()):
+                _fetch_url(url)
+            log.info("[Preload] Competitor + International Feeds gecacht")
+        except Exception as e:
+            log.warning("[Preload] Feed-Cache-Fehler: %s", e)
+
+    threading.Thread(target=_preload_caches, daemon=True).start()
+    log.info("[Preload] Caches werden im Hintergrund aufgebaut")
+
+    # 11. Adobe Analytics Traffic Worker
+    from app.routers.misc import _adobe_state
+    if _adobe_state["enabled"]:
+        def _adobe_traffic_worker():
+            try:
+                from push_balancer_server_compat import _adobe_traffic_worker as _atw  # type: ignore
+                _atw()
+            except ImportError:
+                log.info("[Adobe] Legacy-Import nicht verfügbar")
+
+        threading.Thread(target=_adobe_traffic_worker, daemon=True).start()
+        log.info("[Adobe] Traffic-Worker gestartet (30-Min-Intervall)")
+    else:
+        log.info("[Adobe] Deaktiviert (ADOBE_CLIENT_ID/SECRET nicht gesetzt)")
+
+    # 12. Push-Auto-Fetch Worker
+    from app.config import PUSH_API_BASE
+    import ssl as _ssl_mod2
+    try:
+        import certifi as _certifi2
+        _auto_ssl = _ssl_mod2.create_default_context(cafile=_certifi2.where())
+    except ImportError:
+        _auto_ssl = _ssl_mod2.create_default_context()
+
+    def _push_auto_fetch_worker():
+        import urllib.request as _ur
+        from app.routers.push import _push_sync_cache, _push_sync_lock
+        time.sleep(5)
+        log.info("[AutoFetch] Push-Daten-Worker gestartet (alle 120s)")
+        while True:
+            try:
+                end_ts = int(time.time())
+                start_ts = end_ts - 3 * 86400
+                url = (f"{PUSH_API_BASE}/push/statistics/message"
+                       f"?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL")
+                req = _ur.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                    "Accept": "application/json",
+                })
+                all_msgs = []
+                with _ur.urlopen(req, timeout=20, context=_auto_ssl) as resp:
+                    data = json.loads(resp.read())
+                    all_msgs = data.get("messages", [])
+                    next_params = data.get("next")
+                    page = 0
+                    while next_params and page < 10:
+                        url2 = f"{PUSH_API_BASE}/push/statistics/message?{next_params}"
+                        req2 = _ur.Request(url2, headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                            "Accept": "application/json",
+                        })
+                        with _ur.urlopen(req2, timeout=15, context=_auto_ssl) as resp2:
+                            d2 = json.loads(resp2.read())
+                            all_msgs.extend(d2.get("messages", []))
+                            next_params = d2.get("next")
+                        page += 1
+                channels = []
+                try:
+                    ch_url = f"{PUSH_API_BASE}/push/statistics/message/channels?sourceTypes=EDITORIAL"
+                    ch_req = _ur.Request(ch_url, headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                        "Accept": "application/json",
+                    })
+                    with _ur.urlopen(ch_req, timeout=10, context=_auto_ssl) as ch_resp:
+                        channels = json.loads(ch_resp.read())
+                except Exception:
+                    pass
+                with _push_sync_lock:
+                    _push_sync_cache["messages"] = all_msgs
+                    _push_sync_cache["channels"] = channels
+                    _push_sync_cache["ts"] = time.time()
+                log.info("[AutoFetch] OK: %d Push-Messages geladen", len(all_msgs))
+            except Exception as e:
+                log.warning("[AutoFetch] Fehler: %s", e)
+            time.sleep(120)
+
+    threading.Thread(target=_push_auto_fetch_worker, daemon=True).start()
+    log.info("[AutoFetch] Push-Daten werden direkt von bildcms.de geholt (alle 120s)")
+
+    # 13. Push-Sync Worker (zu Render)
+    from app.config import RENDER_SYNC_URL, SYNC_SECRET
+
+    def _push_sync_worker():
+        import urllib.request as _ur2
+        from app.routers.push import _push_sync_cache, _push_sync_lock
+        time.sleep(15)
+        if not RENDER_SYNC_URL:
+            log.info("[Sync] RENDER_SYNC_URL nicht gesetzt, Sync deaktiviert")
+            return
+        log.info("[Sync] Worker gestartet, synce zu %s", RENDER_SYNC_URL)
+        while True:
+            try:
+                with _push_sync_lock:
+                    msgs = list(_push_sync_cache["messages"])
+                    chs = list(_push_sync_cache["channels"])
+                sync_payload = json.dumps({
+                    "secret": SYNC_SECRET,
+                    "messages": msgs,
+                    "channels": chs,
+                }).encode()
+                req = _ur2.Request(
+                    f"{RENDER_SYNC_URL}/api/push-sync",
+                    data=sync_payload,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with _ur2.urlopen(req, timeout=15, context=_auto_ssl) as resp:
+                    resp.read()
+                log.info("[Sync] %d Messages zu Render gesendet", len(msgs))
+            except Exception as e:
+                log.warning("[Sync] Fehler: %s", e)
+            time.sleep(60)
+
+    if RENDER_SYNC_URL:
+        threading.Thread(target=_push_sync_worker, daemon=True).start()
+        log.info("[Sync] Worker gestartet")
+
+    # 14. Auto-Suggestion Worker
+    def _auto_sug_worker():
+        time.sleep(30)
+        log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
+        while True:
+            try:
+                from push_balancer_server_compat import _auto_save_suggestions  # type: ignore
+                _auto_save_suggestions()
+            except ImportError:
+                pass
+            except Exception as e:
+                log.warning("[AutoSug] Worker-Fehler: %s", e)
+            time.sleep(600)
+
+    threading.Thread(target=_auto_sug_worker, daemon=True).start()
+    log.info("[AutoSug] Worker gestartet (stündlich)")
+
+
+# ── FastAPI App ────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Push Balancer",
+    description="Push-Balancer API — KI-gestützte Push-Optimierung für BILD",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
+
+# ── CORS ────────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Encoding", "Content-Length"],
+)
+
+# ── Routers ────────────────────────────────────────────────────────────────
+app.include_router(health.router, tags=["Health"])
+app.include_router(forschung.router, tags=["Forschung"])
+app.include_router(tagesplan.router, tags=["Tagesplan"])
+app.include_router(ml.router, tags=["ML"])
+app.include_router(gbrt.router, tags=["GBRT"])
+app.include_router(push.router, tags=["Push"])
+app.include_router(feed.router, tags=["Feed"])
+app.include_router(misc.router, tags=["Misc"])
+
+# ── Statische Dateien (HTML, JS, CSS) ─────────────────────────────────────
+# Wird nach den API-Routen gemountet, damit /api/* Priorität hat
+if os.path.isdir(SERVE_DIR):
+    app.mount("/", StaticFiles(directory=SERVE_DIR, html=True), name="static")
+
+
+# ── Einstiegspunkt für direkten Start ─────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=False,
+        log_level="info",
+    )
