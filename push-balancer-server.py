@@ -999,13 +999,14 @@ def _keyword_magnitude_heuristic(title, cat_lower, is_eilmeldung=0):
         # Sport-spezifische Magnitude: Ereignisse die im allgemeinen Keyword-Set fehlen
         # Kalibriert gegen DB-Daten: Trainer-Entlassung=5.1%, Verletzung=4.5%, Transfer=4.6%
         _sport_high = {"gestorben", "ist tot", "tödlich", "herzstillstand",
-                       "abgesagt", "abbruch", "spielabbruch", "in lebensgefahr"}   # OR 7-10%: dramatisch
+                       "spielabbruch", "abgesagt", "in lebensgefahr"}   # OR 7-10%: dramatisch
         _sport_med = {"verletzt", "verletzung", "ausfall", "entlassen", "feuert", "rauswurf",
                       "rücktritt", "suspendiert", "dopingsperre", "sperre"}  # OR 5-7%: wichtig
         _sport_low_boost = {"transfer", "wechsel", "abgang", "verpflichtet", "unterschreibt",
                             "verlängert", "aufstellung", "nominiert", "kader"}  # OR ~4.6%: leicht über Schnitt
-        _sport_malus = {"überblick", "alle spiele", "alle tore", "spieltag",
-                        "ergebnisse", "tabelle"}  # OR 2-3%: Routine-Übersicht
+        _sport_malus = {"überblick", "alle tore", "alle ergebnisse",
+                        "tabelle", "spieltagsrückblick"}  # OR 2-3%: Routine-Übersicht
+        # "alle spiele" und "spieltag" entfernt — zu breit (matcht auch Breaking "Alle Spiele abgesagt")
 
         title_words = title_lower  # Substring-Suche (keine Tokenisierung nötig)
         if any(w in title_words for w in _sport_high):
