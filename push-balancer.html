@@ -4565,10 +4565,15 @@ const _lpCache = { all: null, sport: null, nonsport: null };
 const _lpCacheTs = { all: 0, sport: 0, nonsport: 0 };
 
 function _isSportPush(p) {
-  const ch = ((p.targetList || [])[0]?.channel || '').toLowerCase();
+  // Channel-Check (primär)
+  const allChannels = (p.targetList || []).map(t => (t.channel || '').toLowerCase());
+  if (allChannels.some(ch => ch.includes('sport') || ch.includes('fussball') || ch.includes('fußball'))) return true;
+  // URL-Check (wie isSportArticle — fängt 79% der bisher gemissten Sport-Pushes)
+  const url = (p.urlId || p.url || '').toLowerCase();
+  if (/\/(sport|fussball|bundesliga|formel1|formel-1|tennis|boxen|motorsport)\//.test(url)) return true;
+  // Titel-Fallback: Spielstand oder klare Sport-Keywords
   const title = (p.kickerAndHeadline || p.headline || '').toLowerCase();
-  return ch.includes('sport') || ch.includes('fussball') || ch.includes('fußball')
-    || title.includes('bundesliga') || title.includes('champions') || title.includes('dfb')
+  return title.includes('bundesliga') || title.includes('champions') || title.includes('dfb')
     || title.includes('transfermarkt') || /\b\d+:\d+\b/.test(title);
 }
 

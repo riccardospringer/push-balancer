@@ -990,11 +990,32 @@ def _keyword_magnitude_heuristic(title, cat_lower, is_eilmeldung=0):
                 score += 0.5
             break
 
-    # Kategorie-Adjustierung (Sport: neutral, nicht mehr bestraft)
+    # Kategorie-Adjustierung
     if cat_lower == "unterhaltung":
         score -= 1.0
     elif cat_lower in ("politik", "news"):
         score += 0.5
+    elif cat_lower == "sport":
+        # Sport-spezifische Magnitude: Ereignisse die im allgemeinen Keyword-Set fehlen
+        # Kalibriert gegen DB-Daten: Trainer-Entlassung=5.1%, Verletzung=4.5%, Transfer=4.6%
+        _sport_high = {"gestorben", "ist tot", "tödlich", "herzstillstand",
+                       "abgesagt", "abbruch", "spielabbruch", "in lebensgefahr"}   # OR 7-10%: dramatisch
+        _sport_med = {"verletzt", "verletzung", "ausfall", "entlassen", "feuert", "rauswurf",
+                      "rücktritt", "suspendiert", "dopingsperre", "sperre"}  # OR 5-7%: wichtig
+        _sport_low_boost = {"transfer", "wechsel", "abgang", "verpflichtet", "unterschreibt",
+                            "verlängert", "aufstellung", "nominiert", "kader"}  # OR ~4.6%: leicht über Schnitt
+        _sport_malus = {"überblick", "alle spiele", "alle tore", "spieltag",
+                        "ergebnisse", "tabelle"}  # OR 2-3%: Routine-Übersicht
+
+        title_words = title_lower  # Substring-Suche (keine Tokenisierung nötig)
+        if any(w in title_words for w in _sport_high):
+            score += 3.0
+        elif any(w in title_words for w in _sport_med):
+            score += 2.0
+        elif any(w in title_words for w in _sport_low_boost):
+            score += 0.8
+        if any(w in title_words for w in _sport_malus):
+            score -= 1.5
 
     return max(1.0, min(10.0, score))
 
