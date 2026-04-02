@@ -217,10 +217,17 @@ if os.path.exists(_SNAPSHOT_PATH):
     try:
         with open(_SNAPSHOT_PATH) as _sf:
             _snap = json.load(_sf)
-        with _push_sync_lock:
-            _push_sync_cache["messages"] = _snap.get("messages", [])
-            _push_sync_cache["ts"] = _snap.get("_generated", time.time())
-        log.info(f"[Snapshot] {len(_push_sync_cache['messages'])} Pushes aus Snapshot geladen")
+        if isinstance(_snap, list) and _snap:
+            # Snapshot ist eine Liste von geparsten Pushes — direkt in SQLite seeden
+            # Synchron damit Research-Worker sofort Daten hat (kein 2min API-Timeout)
+            _n_seeded = _push_db_upsert(_snap)
+            log.info(f"[Snapshot] {_n_seeded} Pushes in DB geseedet (Startup-Seed)")
+        elif isinstance(_snap, dict):
+            # Altes Format: Dict mit "messages" Key
+            with _push_sync_lock:
+                _push_sync_cache["messages"] = _snap.get("messages", [])
+                _push_sync_cache["ts"] = _snap.get("_generated", time.time())
+            log.info(f"[Snapshot] {len(_push_sync_cache['messages'])} Pushes aus Snapshot (Dict-Format) geladen")
     except Exception as _se:
         log.warning(f"[Snapshot] Fehler beim Laden: {_se}")
 
