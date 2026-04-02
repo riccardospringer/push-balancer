@@ -4,3 +4,4 @@ joblib>=1.0
 lightgbm>=3.0
 certifi>=2021.0
 openai>=1.0
+shap>=0.42

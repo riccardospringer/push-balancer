@@ -2164,8 +2164,6 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
     timeline_raw = []
     recipient_counts = []
     cat_recipient_data = defaultdict(list)
-    word_or_data = defaultdict(list)
-    bigram_or_data = defaultdict(list)
 
     for p in valid:
         ts = p["ts_num"]
@@ -2208,16 +2206,7 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
                     channel_or_data[ch_lower]["or_all"].append(orv)
                     channel_or_data[ch_lower]["n_all"] += 1
 
-        # Keyword→OR tracking (Wörter mit min 3 Zeichen)
-        title_text = (p.get("title", "") or "").lower()
-        words = [w for w in title_text.split() if len(w) >= 3 and w not in _TOPIC_STOPS]
-        for w in words:
-            word_or_data[w].append(orv)
-        # Bigrams
-        if len(words) >= 2:
-            for i in range(len(words) - 1):
-                bg = f"{words[i]}_{words[i+1]}"
-                bigram_or_data[bg].append(orv)
+        # word_or_data / bigram_or_data entfernt — wurden nie zurückgegeben (totes RAM ~100MB)
 
     def _agg(lst):
         return {"avg": sum(lst) / len(lst), "n": len(lst)} if lst else {"avg": 0, "n": 0}
@@ -15747,8 +15736,8 @@ if __name__ == "__main__":
                         log.warning(f"[ML] Training-Fehler im Research-Worker: {_mle}")
                         import traceback
                         log.warning(traceback.format_exc())
-                # GBRT-Modell: erster Train bei Zyklus 3, danach alle 360 Zyklen (~2h)
-                if _stacking_counter == 3 or _stacking_counter % 360 == 0:
+                # GBRT-Modell: erster Train bei Zyklus 1 (Render: _gbrt_history_stats schnell verfuegbar)
+                if _stacking_counter == 1 or _stacking_counter % 360 == 0:
                     try:
                         _gbrt_train()
                     except Exception as _ge:

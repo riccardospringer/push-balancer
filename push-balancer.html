@@ -17739,8 +17739,8 @@ async function loadTagesplan() {
     } else {
       // ── Heute: bestehende Logik ──
       const [tpResp, mlResp, sugResp] = await Promise.all([
-        resilientFetch(API_BASE + '/api/tagesplan' + _modeQ, {_timeout: 20000}),
-        resilientFetch(API_BASE + '/api/ml/status', {_timeout: 15000}),
+        resilientFetch(API_BASE + '/api/tagesplan' + _modeQ, {_timeout: 60000}),
+        resilientFetch(API_BASE + '/api/ml/status', {_timeout: 30000}),
         resilientFetch(API_BASE + '/api/tagesplan/suggestions' + _modeQ, {_timeout: 10000}).catch(() => null),
       ]);
       if (!tpResp.ok) throw new Error('Tagesplan HTTP ' + tpResp.status);
