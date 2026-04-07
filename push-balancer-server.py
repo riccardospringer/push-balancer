@@ -3712,7 +3712,6 @@ ML_LGBM_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".
 
 # ── ML v2: sklearn-Modell + PCA State ──
 _sklearn_model = None           # sklearn GBR (Direct)
-_sklearn_model_direct = None    # sklearn GBR (Direct)
 _sklearn_feature_names = []     # Feature-Namen für sklearn
 _use_sklearn = _SKLEARN_AVAILABLE  # Flag ob sklearn oder Pure-Python
 
@@ -6178,14 +6177,8 @@ _ML_EMOTION_KW = re.compile(r"(?i)\b(drama|tragödie|skandal|schock|horror|wahns
 _ML_CAT_COLS = ["sport", "politik", "unterhaltung", "geld", "regional", "digital", "leben", "news"]
 
 
-def _ml_build_stats(pushes):
-    """Delegiert an _gbrt_build_history_stats für Feature-Parität (80+ Features)."""
-    return _gbrt_build_history_stats(pushes)
-
-
-def _ml_extract_features(row, stats):
-    """Delegiert an _gbrt_extract_features für Feature-Parität (80+ Features)."""
-    return _gbrt_extract_features(row, stats)
+_ml_build_stats = _gbrt_build_history_stats
+_ml_extract_features = _gbrt_extract_features
 
 
 def _ml_train_model():
