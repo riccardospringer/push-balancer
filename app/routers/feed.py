@@ -33,6 +33,29 @@ from app.config import (
 )
 from app.research.worker import _xor_perf_cache, _xor_perf_lock, get_cached_feeds
 
+# ── Outlet-Farben für Konkurrenz-Tab ──────────────────────────────────────
+_OUTLET_COLORS: dict[str, str] = {
+    "welt":          "#003F5C",
+    "spiegel":       "#E2001A",
+    "focus":         "#F7A600",
+    "ntv":           "#002A6E",
+    "tagesschau":    "#003366",
+    "faz":           "#003F7D",
+    "sz":            "#B90000",
+    "stern":         "#E31C23",
+    "t-online":      "#D9002C",
+    "zeit":          "#D6121F",
+    "kicker":        "#008F5D",
+    "sportschau":    "#004F9F",
+    "transfermarkt": "#1D8E3E",
+    "sport_de":      "#FF6600",
+    "spiegel_sport": "#E2001A",
+    "faz_sport":     "#003F7D",
+    "rp_sport":      "#C80000",
+    "tz_sport":      "#002A6E",
+    "11freunde":     "#FF6B00",
+}
+
 log = logging.getLogger("push-balancer")
 router = APIRouter()
 
@@ -255,6 +278,145 @@ def get_international_feed(name: str) -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
+def _normalize_words(text: str) -> set[str]:
+    """Normalisierte Wortmenge für Jaccard-Ähnlichkeitsvergleich."""
+    STOP = {
+        "der", "die", "das", "den", "dem", "des", "ein", "eine", "einem",
+        "einen", "eines", "und", "oder", "aber", "nicht", "mit", "von",
+        "zu", "in", "an", "auf", "bei", "nach", "für", "ist", "sind",
+        "wird", "wurde", "werden", "hat", "haben", "war", "waren", "wie",
+        "auch", "sich", "aus", "am", "im", "zum", "zur", "als", "mehr",
+        "noch", "nur", "so", "schon", "jetzt", "the", "a", "of", "to",
+        "and", "is", "for", "on", "at", "that", "by", "this", "it",
+    }
+    return {
+        w.strip(".,;:!?\"'()[]{}«»–—-").lower()
+        for w in text.split()
+        if len(w.strip(".,;:!?\"'()[]{}«»–—-")) > 3
+    } - STOP
+
+
+def _build_competitor_response(feeds: dict[str, list[dict]], outlet_colors: dict[str, str]) -> dict:
+    """Konvertiert rohe Feed-Dicts zu CompetitorResponse (mit Hot/Exklusiv/Gap-Markierung)."""
+    import datetime
+    from email.utils import parsedate_to_datetime
+
+    # Alle Items flattenen (Liveticker überspringen)
+    flat: list[dict] = []
+    for outlet, items in feeds.items():
+        color = outlet_colors.get(outlet, "#666666")
+        for item in items:
+            title = (item.get("t") or "").strip()
+            if not title or item.get("lt"):
+                continue
+            flat.append({
+                "title": title,
+                "url": item.get("l", ""),
+                "pubDate": item.get("p", ""),
+                "outlet": outlet,
+                "outletColor": color,
+                "_words": _normalize_words(title),
+            })
+
+    # Jaccard-Clustering: ähnliche Artikel verschiedener Outlets zusammenführen
+    n = len(flat)
+    merged_into: list[int] = list(range(n))
+    for i in range(n):
+        if merged_into[i] != i:
+            continue
+        wi = flat[i]["_words"]
+        if not wi:
+            continue
+        for j in range(i + 1, n):
+            if merged_into[j] != j or flat[j]["outlet"] == flat[i]["outlet"]:
+                continue
+            wj = flat[j]["_words"]
+            if wj and len(wi & wj) / len(wi | wj) >= 0.2:
+                merged_into[j] = i
+
+    # Cluster-Dicts aufbauen
+    clusters: dict[int, dict] = {}
+    for i, rep in enumerate(merged_into):
+        item = flat[i]
+        if rep not in clusters:
+            clusters[rep] = {
+                "title": flat[rep]["title"],
+                "url": flat[rep]["url"],
+                "pubDate": flat[rep]["pubDate"],
+                "outlet": flat[rep]["outlet"],
+                "outletColor": flat[rep]["outletColor"],
+                "outlets": set(),
+            }
+        clusters[rep]["outlets"].add(item["outlet"])
+
+    # Sortierhilfe: pubDate → timestamp
+    def _ts(d: str) -> float:
+        try:
+            return parsedate_to_datetime(d).timestamp()
+        except Exception:
+            pass
+        try:
+            return datetime.datetime.fromisoformat(d).timestamp()
+        except Exception:
+            return 0.0
+
+    result: list[dict] = []
+    for c in clusters.values():
+        outlets = sorted(c["outlets"])
+        n_out = len(outlets)
+        result.append({
+            "title": c["title"],
+            "url": c["url"],
+            "pubDate": c["pubDate"],
+            "outlet": c["outlet"],
+            "outletColor": c["outletColor"],
+            "isGap": n_out >= 2,        # 2+ Outlets = Lücke (BILD fehlt)
+            "isExklusiv": n_out == 1,   # Nur 1 Outlet = Exklusiv-Winkel
+            "isHot": n_out >= 3,        # 3+ Outlets = Hot Topic
+            "outlets": outlets,
+        })
+
+    result.sort(key=lambda x: _ts(x["pubDate"]), reverse=True)
+
+    total = len(result)
+    return {
+        "items": result,
+        "summary": {
+            "total": total,
+            "gaps": sum(1 for x in result if x["isGap"]),
+            "exklusiv": sum(1 for x in result if x["isExklusiv"]),
+            "hot": sum(1 for x in result if x["isHot"]),
+        },
+        "fetchedAt": datetime.datetime.now().isoformat(),
+    }
+
+
+@router.get("/api/feeds/competitor")
+def get_feeds_competitor() -> JSONResponse:
+    """Aufbereitete Redaktion-Competitor-Feeds im CompetitorResponse-Format."""
+    try:
+        parsed = get_cached_feeds("competitors")
+        if not parsed:
+            parsed = _fetch_feeds_live(COMPETITOR_FEEDS)
+        return JSONResponse(content=_build_competitor_response(parsed or {}, _OUTLET_COLORS))
+    except Exception as e:
+        log.exception("[feed] Fehler in get_feeds_competitor")
+        raise HTTPException(status_code=502, detail=f"Competitor feeds error: {e}")
+
+
+@router.get("/api/feeds/competitor/sport")
+def get_feeds_competitor_sport() -> JSONResponse:
+    """Aufbereitete Sport-Competitor-Feeds im CompetitorResponse-Format."""
+    try:
+        parsed = get_cached_feeds("sport_competitors")
+        if not parsed:
+            parsed = _fetch_feeds_live(SPORT_COMPETITOR_FEEDS)
+        return JSONResponse(content=_build_competitor_response(parsed or {}, _OUTLET_COLORS))
+    except Exception as e:
+        log.exception("[feed] Fehler in get_feeds_competitor_sport")
+        raise HTTPException(status_code=502, detail=f"Sport competitor feeds error: {e}")
+
+
 @router.post("/api/competitors/xor")
 def post_competitor_xor(body: CompetitorXorRequest) -> JSONResponse:
     """Batch-XOR via Wort-Performance-Scoring.
@@ -335,17 +497,17 @@ def post_competitor_xor(body: CompetitorXorRequest) -> JSONResponse:
         predicted_or = round(max(0.5, min(20.0, word_score_avg)), 2)
 
         simplified[title] = {
-            "predicted_or": predicted_or,
+            "predictedOr": predicted_or,
             "basis": "word_perf" if word_scores else "global_avg",
             "cat": cat,
-            "is_liveticker": is_lt,
-            "is_eilmeldung": is_eil,
-            "word_matches": len(word_scores),
+            "isLiveticker": is_lt,
+            "isEilmeldung": is_eil,
+            "wordMatches": len(word_scores),
         }
 
     elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
     return JSONResponse(content={
         "results": simplified,
         "count": len(simplified),
-        "elapsed_ms": elapsed_ms,
+        "elapsedMs": elapsed_ms,
     })
