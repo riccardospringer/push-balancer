@@ -82,21 +82,31 @@ async def lifespan(app: FastAPI):
     init_db()
     log.info("[PushDB] SQLite initialisiert (%d Pushes)", push_db_count())
 
-    # ── 2. GBRT-Modell laden ──
-    if gbrt_load_model():
-        n_trees = len(getattr(_gbrt_model, "trees", []))
-        log.info("[GBRT] Modell geladen (%d Bäume)", n_trees)
-    else:
-        log.info("[GBRT] Kein gespeichertes Modell, wird beim ersten Zyklus trainiert")
-
-    # ── 3. LightGBM-Modell laden ──
-    _load_lgbm_model_from_disk()
-
-    # ── 4. Push-Snapshot seeden ──
+    # ── 2. Push-Snapshot seeden ──
     _seed_push_snapshot()
 
-    # ── 5–14. Background-Worker starten ──
+    # ── 3. Background-Worker starten ──
     _start_background_workers()
+
+    # ── 4. ML-Modelle im Hintergrund laden (nicht synchron — spart ~300MB RAM beim Start) ──
+    def _load_ml_models_background():
+        import time as _t
+        _t.sleep(2)  # warte bis Worker-Threads initialisiert sind
+        try:
+            if gbrt_load_model():
+                from app.ml.gbrt import _gbrt_model as _m
+                n_trees = len(getattr(_m, "trees", []))
+                log.info("[GBRT] Modell geladen (%d Bäume)", n_trees)
+            else:
+                log.info("[GBRT] Kein gespeichertes Modell, wird beim ersten Zyklus trainiert")
+        except Exception as e:
+            log.warning("[GBRT] Modell-Load fehlgeschlagen: %s", e)
+        try:
+            _load_lgbm_model_from_disk()
+        except Exception as e:
+            log.warning("[ML] LightGBM-Load fehlgeschlagen: %s", e)
+
+    threading.Thread(target=_load_ml_models_background, daemon=True).start()
 
     log.info("Push Balancer FastAPI auf http://0.0.0.0:%d", PORT)
 
