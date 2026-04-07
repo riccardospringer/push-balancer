@@ -1785,25 +1785,6 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     feat["keyword_vs_hour"] = feat["keyword_avg_or"] - feat["weekday_hour_avg_or"]
     feat["keyword_vs_rolling24h"] = feat["keyword_avg_or"] - feat["rolling_or_24h"]
 
-    # ── Sentence Embedding Similarity Features (Phase F) ──
-    # _compute_embedding_features: 500 Cosine-Calls pro Push → NUR in Inference
-    # Im Training (8000 Pushes) wären das 4M Cosine-Calls → skip, PCA ersetzt Signal
-    _is_inference = state is not None  # state wird nur in Inference übergeben
-    if _is_inference and _embedding_model is not None:
-        try:
-            emb_feats = _compute_embedding_features(title, history_stats)
-            feat.update(emb_feats)
-        except Exception:
-            feat["emb_max_sim"] = 0.0
-            feat["emb_avg_sim_top10"] = 0.0
-            feat["emb_n_similar_50"] = 0.0
-            feat["emb_similar_avg_or"] = 0.0
-    else:
-        feat["emb_max_sim"] = 0.0
-        feat["emb_avg_sim_top10"] = 0.0
-        feat["emb_n_similar_50"] = 0.0
-        feat["emb_similar_avg_or"] = 0.0
-
     feat["heur_research_factor"] = 1.0
     feat["heur_phd_combined"] = 1.0
 
@@ -3754,8 +3735,6 @@ ML_LGBM_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".
 _sklearn_model = None           # sklearn GBR (Direct)
 _sklearn_model_direct = None    # sklearn GBR (Direct)
 _sklearn_feature_names = []     # Feature-Namen für sklearn
-_embedding_pca = None           # PCA-Transformer (25 Komponenten)
-_embedding_pca_mean = None      # PCA Mittelwert-Vektor
 _use_sklearn = _SKLEARN_AVAILABLE  # Flag ob sklearn oder Pure-Python
 
 # ── Competitor XOR Performance-Cache ─────────────────────────────────
@@ -4459,232 +4438,6 @@ def _gbrt_online_update():
         log.warning(f"[Online] Update-Fehler: {e}")
 
 
-# ── Sentence Embeddings (Phase F) ───────────────────────────────────────
-
-_embedding_model = None
-_embedding_model_loading = False
-_EMBEDDING_CACHE_MAX = 20000  # Max 20k Titel (~30 MB bei 384-dim float32)
-_embedding_cache_mem = {}  # In-Memory Cache: title_hash → embedding
-
-
-def _load_embedding_model_background():
-    """Laedt das Sentence-Transformer Modell im Hintergrund und pre-cached Titel."""
-    global _embedding_model, _embedding_model_loading
-    _embedding_model_loading = True
-    try:
-        from sentence_transformers import SentenceTransformer
-        _embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-        log.info("[Embeddings] Modell geladen: paraphrase-multilingual-MiniLM-L12-v2 (384-dim)")
-        # Pre-cache existing titles from DB
-        _precache_embeddings()
-    except ImportError:
-        log.info("[Embeddings] sentence-transformers nicht installiert — Fallback auf TF-IDF")
-    except Exception as e:
-        log.warning(f"[Embeddings] Modell-Ladefehler: {e}")
-    finally:
-        _embedding_model_loading = False
-
-
-def _precache_embeddings():
-    """Pre-cached Embeddings fuer alle existierenden Titel in der DB."""
-    if _embedding_model is None:
-        return
-    try:
-        import hashlib
-        with _push_db_lock:
-            conn = sqlite3.connect(PUSH_DB_PATH)
-            rows = conn.execute("SELECT DISTINCT title FROM pushes WHERE title IS NOT NULL AND title != '' ORDER BY ts_num DESC LIMIT 2000").fetchall()
-            conn.close()
-        titles = [r[0] for r in rows if r[0]]
-        if not titles:
-            return
-
-        # Check which are already cached in memory or SQLite
-        uncached = []
-        for t in titles:
-            title_hash = hashlib.md5(t.encode()).hexdigest()
-            if title_hash not in _embedding_cache_mem:
-                uncached.append(t)
-
-        if not uncached:
-            log.info(f"[Embeddings] Alle {len(titles)} Titel bereits gecacht")
-            return
-
-        # Batch encode uncached titles
-        log.info(f"[Embeddings] Pre-caching {len(uncached)} Titel-Embeddings...")
-        batch_size = 64
-        cached_count = 0
-        for i in range(0, len(uncached), batch_size):
-            batch = uncached[i:i + batch_size]
-            try:
-                embs = _embedding_model.encode(batch).tolist()
-                for t, emb in zip(batch, embs):
-                    title_hash = hashlib.md5(t.encode()).hexdigest()
-                    _embedding_cache_mem[title_hash] = emb
-                    cached_count += 1
-            except Exception as be:
-                log.warning(f"[Embeddings] Batch-Encode-Fehler: {be}")
-                continue
-        log.info(f"[Embeddings] {cached_count} Titel-Embeddings pre-gecacht")
-    except Exception as e:
-        log.warning(f"[Embeddings] Pre-Cache-Fehler: {e}")
-
-
-def _get_embedding(title):
-    """Berechnet Embedding fuer einen Titel mit Memory + SQLite Cache.
-
-    Returns: Liste von Floats (384-dim) oder None
-    """
-    if _embedding_model is None:
-        return None
-
-    import hashlib
-    title_hash = hashlib.md5(title.encode()).hexdigest()
-
-    # Memory Cache
-    if title_hash in _embedding_cache_mem:
-        return _embedding_cache_mem[title_hash]
-
-    # SQLite Cache
-    try:
-        with _push_db_lock:
-            conn = sqlite3.connect(PUSH_DB_PATH)
-            row = conn.execute("SELECT embedding FROM embedding_cache WHERE title_hash = ?",
-                               (title_hash,)).fetchone()
-            conn.close()
-        if row and row[0]:
-            emb = json.loads(row[0])
-            _embedding_cache_mem[title_hash] = emb
-            return emb
-    except Exception:
-        pass
-
-    # Berechne Embedding
-    try:
-        emb = _embedding_model.encode(title).tolist()
-        # Eviction: älteste Einträge entfernen wenn Cache voll
-        if len(_embedding_cache_mem) >= _EMBEDDING_CACHE_MAX:
-            # Entferne ~10% der ältesten Einträge
-            keys_to_remove = list(_embedding_cache_mem.keys())[:_EMBEDDING_CACHE_MAX // 10]
-            for k in keys_to_remove:
-                del _embedding_cache_mem[k]
-        _embedding_cache_mem[title_hash] = emb
-        # In DB speichern
-        try:
-            with _push_db_lock:
-                conn = sqlite3.connect(PUSH_DB_PATH)
-                conn.execute("""INSERT OR REPLACE INTO embedding_cache
-                    (title_hash, title, embedding, created_at) VALUES (?, ?, ?, ?)""",
-                    (title_hash, title, json.dumps(emb), int(time.time())))
-                conn.commit()
-                conn.close()
-        except Exception:
-            pass
-        return emb
-    except Exception as e:
-        log.warning(f"[Embeddings] Encode-Fehler: {e}")
-        return None
-
-
-def _cosine_similarity(a, b):
-    """Kosinus-Ähnlichkeit zweier Vektoren (numpy-beschleunigt)."""
-    if np is not None:
-        # Wenn schon ndarray, kein Copy (zero-cost)
-        a_arr = a if isinstance(a, np.ndarray) else np.asarray(a, dtype=np.float32)
-        b_arr = b if isinstance(b, np.ndarray) else np.asarray(b, dtype=np.float32)
-        dot = np.dot(a_arr, b_arr)
-        norm_a = np.linalg.norm(a_arr)
-        norm_b = np.linalg.norm(b_arr)
-        denom = norm_a * norm_b
-        if denom < 1e-10:
-            return 0.0
-        return float(dot / denom)
-    # Fallback: Pure Python
-    dot = sum(a[i] * b[i] for i in range(len(a)))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a < 1e-10 or norm_b < 1e-10:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def _compute_embedding_features(title, history_stats):
-    """Berechnet 4 Embedding-basierte Features.
-
-    Returns: Dict mit emb_max_sim, emb_avg_sim_top10, emb_n_similar_50, emb_similar_avg_or
-    """
-    result = {
-        "emb_max_sim": 0.0,
-        "emb_avg_sim_top10": 0.0,
-        "emb_n_similar_50": 0.0,
-        "emb_similar_avg_or": 0.0,
-    }
-
-    if _embedding_model is None:
-        return result
-
-    emb = _get_embedding(title)
-    if emb is None:
-        return result
-
-    # Vergleiche mit historischen Titeln
-    hist_titles = history_stats.get("_recent_titles", [])
-    if not hist_titles:
-        return result
-
-    sims = []
-    for ht_title, ht_or in hist_titles:
-        ht_emb = _get_embedding(ht_title)
-        if ht_emb is not None:
-            sim = _cosine_similarity(emb, ht_emb)
-            sims.append((sim, ht_or))
-
-    if not sims:
-        return result
-
-    sims.sort(key=lambda x: -x[0])
-    result["emb_max_sim"] = sims[0][0]
-    top10 = sims[:10]
-    result["emb_avg_sim_top10"] = sum(s for s, _ in top10) / len(top10)
-    similar_50 = [(s, o) for s, o in sims if s >= 0.50]
-    result["emb_n_similar_50"] = float(len(similar_50))
-    if similar_50:
-        result["emb_similar_avg_or"] = sum(o for _, o in similar_50) / len(similar_50)
-
-    return result
-
-
-def _build_embedding_pca(train_pushes, n_components=25):
-    """Baut PCA auf Titel-Embeddings der Trainingsdaten (kein Leakage)."""
-    global _embedding_pca, _embedding_pca_mean
-    if not _SKLEARN_AVAILABLE or _embedding_model is None or np is None:
-        log.info("[PCA] sklearn oder Embedding-Modell nicht verfügbar, überspringe PCA")
-        return
-    try:
-        embeddings = []
-        for p in train_pushes:
-            title = p.get("title", "")
-            if not title:
-                continue
-            emb = _get_embedding(title)
-            if emb is not None and len(emb) == 384:
-                embeddings.append(emb)
-        if len(embeddings) < 100:
-            log.info(f"[PCA] Nur {len(embeddings)} Embeddings, brauche min 100")
-            return
-        emb_matrix = np.array(embeddings)
-        _embedding_pca_mean = emb_matrix.mean(axis=0).reshape(1, -1)
-        n_comp = min(n_components, emb_matrix.shape[0], emb_matrix.shape[1])
-        pca = SklearnPCA(n_components=n_comp, random_state=42)
-        pca.fit(emb_matrix - _embedding_pca_mean)
-        _embedding_pca = pca
-        explained = sum(pca.explained_variance_ratio_) * 100
-        log.info(f"[PCA] {n_comp} Komponenten aus {len(embeddings)} Titeln, "
-                 f"erklärte Varianz: {explained:.1f}%")
-    except Exception as e:
-        log.warning(f"[PCA] Fehler: {e}")
-
-
 _gbrt_training_active = threading.Event()  # Guard gegen parallele Trainings
 
 
@@ -4999,9 +4752,6 @@ def _gbrt_train_inner(pushes=None):
     log.info(f"[GBRT] Direct Modeling: Train-OR mean={sum(y_train)/len(y_train):.3f}, "
              f"std={math.sqrt(sum((r - sum(y_train)/len(y_train))**2 for r in y_train)/len(y_train)):.3f}, "
              f"Baseline-Einträge={len(_cat_hour_baselines)} (Shrinkage K={SHRINKAGE_K})")
-
-    # ── ML v2: Embedding-PCA auf Train-Daten bauen ──
-    _build_embedding_pca(train_data, n_components=25)
 
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 3: Optuna Hyperparameter-Optimierung (wenn verfuegbar)
@@ -5566,8 +5316,6 @@ def _gbrt_train_inner(pushes=None):
                     "cat_hour_baselines": _cat_hour_baselines,
                     "global_train_avg": _global_train_avg,
                     "trained_at": int(time.time()),
-                    "pca": _embedding_pca,
-                    "pca_mean": _embedding_pca_mean.tolist() if _embedding_pca_mean is not None else None,
                     "metrics": model.train_metrics,
                     "model_type": chosen_model_type,
                     "ensemble_weights": ensemble_weights,
@@ -5755,7 +5503,6 @@ def _gbrt_load_model():
     """Laedt ein gespeichertes GBRT-Modell von Disk (sklearn oder Pure-Python)."""
     global _gbrt_model, _gbrt_model_direct, _gbrt_model_q10, _gbrt_model_q90, _gbrt_calibrator
     global _gbrt_feature_names, _gbrt_train_ts, _gbrt_ensemble_weights, _gbrt_model_type
-    global _embedding_pca, _embedding_pca_mean
 
     # Versuch 1: sklearn-Modell laden (bevorzugt, schneller)
     if _SKLEARN_AVAILABLE and os.path.exists(SKLEARN_MODEL_PATH):
@@ -5786,10 +5533,6 @@ def _gbrt_load_model():
                     _gbrt_cat_hour_baselines.clear()
                     _gbrt_cat_hour_baselines.update(sk_data["cat_hour_baselines"])
                     globals()["_gbrt_global_train_avg"] = sk_data.get("global_train_avg", 4.77)
-                if sk_data.get("pca") is not None:
-                    _embedding_pca = sk_data["pca"]
-                if sk_data.get("pca_mean") is not None and np is not None:
-                    _embedding_pca_mean = np.array(sk_data["pca_mean"]).reshape(1, -1)
             log.info(f"[GBRT] sklearn-Modell geladen: {sk_model.n_estimators_} Bäume, "
                      f"Features: {len(feature_names)}, Typ: {_gbrt_model_type}")
             _gbrt_load_history_stats()
@@ -15317,11 +15060,6 @@ if __name__ == "__main__":
     health_thread = threading.Thread(target=_health_checker, daemon=True)
     health_thread.start()
     print(f"  [Security] Health Checker gestartet (60s Intervall)")
-
-    # Sentence Embedding Model im Hintergrund laden (Phase F)
-    emb_thread = threading.Thread(target=_load_embedding_model_background, daemon=True)
-    emb_thread.start()
-    print(f"  [Embeddings] Modell wird im Hintergrund geladen")
 
     # ML v2: LLM-Magnitude Backfill im Hintergrund
     llm_backfill_thread = threading.Thread(target=_backfill_llm_scores, daemon=True)
