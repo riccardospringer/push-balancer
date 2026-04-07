@@ -123,11 +123,28 @@ def get_feed() -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
+def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
+    """Fetcht alle Feeds parallel via ThreadPool als Live-Fallback."""
+    import concurrent.futures
+    result: dict = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(_fetch_url, url): name for name, url in feeds.items()}
+        for fut, name in futures.items():
+            try:
+                xml_bytes = fut.result(timeout=10)
+                result[name] = _parse_rss_items(xml_bytes) if xml_bytes else []
+            except Exception:
+                result[name] = []
+    return result
+
+
 @router.get("/api/competitors")
 def get_competitors() -> JSONResponse:
-    """Liefert alle Competitor-Feeds aus Background-Cache (sofort, <5ms)."""
+    """Liefert alle Competitor-Feeds aus Background-Cache; live-fetcht wenn Cache leer."""
     try:
         parsed = get_cached_feeds("competitors")
+        if not parsed:
+            parsed = _fetch_feeds_live(COMPETITOR_FEEDS)
         return JSONResponse(content=parsed)
     except Exception as e:
         log.exception("[feed] Fehler in get_competitors")
