@@ -182,21 +182,17 @@ def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
 
 
 @router.get("/api/competitors")
-def get_competitors(
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-) -> JSONResponse:
-    """Liefert alle Competitor-Feeds aus Background-Cache (paginiert).
+def get_competitors() -> JSONResponse:
+    """Liefert alle Competitor-Feeds aus Background-Cache.
 
-    Query-Parameter:
-        offset: Startindex (Standard: 0)
-        limit:  Max. Anzahl Feeds (Standard: 20, max. 100)
+    Format: { "welt": [{t, l, p, d, c, lt}, ...], "spiegel": [...], ... }
+    (flaches Dict für push-balancer.html Kompatibilität)
     """
     try:
         parsed = get_cached_feeds("competitors")
         if not parsed:
             parsed = _fetch_feeds_live(COMPETITOR_FEEDS)
-        return JSONResponse(content=_paginate_feed_dict(parsed, offset, limit))
+        return JSONResponse(content=parsed or {})
     except Exception as e:
         log.exception("[feed] Fehler in get_competitors")
         raise HTTPException(status_code=502, detail=f"Competitor feeds error: {e}")
@@ -215,14 +211,15 @@ def get_competitor(name: str) -> Response:
 
 
 @router.get("/api/sport-competitors")
-def get_sport_competitors(
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-) -> JSONResponse:
-    """Liefert Sport-Competitor-Feeds aus Background-Cache (paginiert)."""
+def get_sport_competitors() -> JSONResponse:
+    """Liefert Sport-Competitor-Feeds aus Background-Cache.
+
+    Format: { "kicker": [{t, l, p, d, c, lt}, ...], ... }
+    (flaches Dict für push-balancer.html Kompatibilität)
+    """
     try:
         parsed = get_cached_feeds("sport_competitors")
-        return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
+        return JSONResponse(content=parsed or {})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport competitor feeds error: {e}")
 
