@@ -1807,51 +1807,6 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     feat["heur_research_factor"] = 1.0
     feat["heur_phd_combined"] = 1.0
 
-    # ── Granulare Wetter-Features (6) ──
-    weather_data = ctx.get("weather", {}) if ctx.get("last_fetch", 0) > 0 else {}
-    feat["weather_temp_c"] = float(weather_data.get("temp_c", 15)) / 40.0  # normalisiert auf ~0-1
-    feat["weather_humidity"] = float(weather_data.get("humidity", 50)) / 100.0
-    feat["weather_precip_mm"] = min(1.0, float(weather_data.get("precip_mm", 0)) / 10.0)
-    feat["weather_wind_kmph"] = min(1.0, float(weather_data.get("wind_kmph", 10)) / 80.0)
-    feat["weather_cloud_cover"] = float(weather_data.get("cloud_cover", 50)) / 100.0
-    feat["weather_uv_index"] = min(1.0, float(weather_data.get("uv_index", 3)) / 11.0)
-
-    # ── Titel-Embedding einmalig cachen (für PCA, Trends, Konkurrenz) ──
-    # 1 Call pro Push (gecacht), nur in CV-Folds (fast_mode) übersprungen
-    _title_emb = None
-    if _embedding_model is not None and title:
-        try:
-            _title_emb = _get_embedding(title)  # Memory-cached, O(1) bei Wiederholung
-        except Exception:
-            pass
-
-    # ── Google-Trends Embedding-Similarity (5) ──
-    trends_list = ctx.get("trends", []) if ctx else []
-    feat["trends_max_sim"] = 0.0
-    feat["trends_avg_sim_top3"] = 0.0
-    feat["trends_n_matching"] = 0.0
-    feat["trends_is_trending"] = 0.0
-    feat["trends_score_weighted"] = 0.0
-    if trends_list and _title_emb is not None:
-        try:
-            trend_sims = []
-            for trend_topic in trends_list[:20]:
-                if not trend_topic or not isinstance(trend_topic, str):
-                    continue
-                trend_emb = _get_embedding(trend_topic)
-                if trend_emb is not None:
-                    sim = _cosine_similarity(_title_emb, trend_emb)
-                    trend_sims.append(sim)
-            if trend_sims:
-                trend_sims.sort(reverse=True)
-                feat["trends_max_sim"] = trend_sims[0]
-                feat["trends_avg_sim_top3"] = sum(trend_sims[:3]) / min(3, len(trend_sims))
-                feat["trends_n_matching"] = float(sum(1 for s in trend_sims if s > 0.4))
-                feat["trends_is_trending"] = 1.0 if trend_sims[0] > 0.6 else 0.0
-                feat["trends_score_weighted"] = sum(s for s in trend_sims if s > 0.3)
-        except Exception:
-            pass
-
     # ── Konkurrenz-Features (6) — nur Jaccard, kein Embedding pro Headline ──
     comp_cache = state.get("_competitor_cache", {}) if state else {}
     feat["comp_n_covering"] = 0.0
@@ -1902,20 +1857,6 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
             feat["comp_is_exclusive"] = 1.0 if covering_sources == 0 else 0.0
             feat["comp_german_coverage"] = float(german_covering)
             feat["comp_saturation"] = covering_sources / max(1, total_sources)
-        except Exception:
-            pass
-
-    # ── Embedding-PCA Features (25) ──
-    for i in range(25):
-        feat[f"emb_pca_{i}"] = 0.0
-    if _embedding_pca is not None and _title_emb is not None and np is not None:
-        try:
-            emb_arr = np.array(_title_emb).reshape(1, -1)
-            if _embedding_pca_mean is not None:
-                emb_arr = emb_arr - _embedding_pca_mean
-            pca_components = _embedding_pca.transform(emb_arr)[0]
-            for i in range(min(25, len(pca_components))):
-                feat[f"emb_pca_{i}"] = float(pca_components[i])
         except Exception:
             pass
 
