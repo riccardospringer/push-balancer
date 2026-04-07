@@ -3,9 +3,16 @@ services:
     name: push-balancer
     runtime: docker
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    disk:
+      name: push-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: PUSH_API_BASE
         value: http://push-frontend.bildcms.de
+      - key: DB_PATH
+        value: /data/.push_history.db
       - key: OPENAI_API_KEY
         sync: false
       - key: FOOTBALL_DATA_KEY

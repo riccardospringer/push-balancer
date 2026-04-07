@@ -160,6 +160,44 @@ def init_db() -> None:
     conn.commit()
     conn.close()
     log.info("[PushDB] Initialized at %s", PUSH_DB_PATH)
+    _db_cleanup()
+
+
+def _db_cleanup() -> None:
+    """Löscht veraltete Daten — verhindert unbegrenztes DB-Wachstum."""
+    cutoff_pushes = int(time.time()) - 90 * 86400       # Pushes älter als 90 Tage
+    cutoff_predlog = int(time.time()) - 180 * 86400     # Prediction-Log: 180 Tage
+    cutoff_embedding = int(time.time()) - 30 * 86400    # Embedding-Cache: 30 Tage
+    cutoff_monitoring = int(time.time()) - 14 * 86400   # Monitoring-Events: 14 Tage
+    cutoff_experiments = int(time.time()) - 365 * 86400 # Experimente: 1 Jahr
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        deleted = {}
+        deleted["pushes"] = conn.execute(
+            "DELETE FROM pushes WHERE ts_num < ?", (cutoff_pushes,)
+        ).rowcount
+        deleted["prediction_log"] = conn.execute(
+            "DELETE FROM prediction_log WHERE predicted_at < ?", (cutoff_predlog,)
+        ).rowcount
+        deleted["embedding_cache"] = conn.execute(
+            "DELETE FROM embedding_cache WHERE created_at < ?", (cutoff_embedding,)
+        ).rowcount
+        deleted["monitoring_events"] = conn.execute(
+            "DELETE FROM monitoring_events WHERE timestamp < ?", (cutoff_monitoring,)
+        ).rowcount
+        deleted["experiments"] = conn.execute(
+            "DELETE FROM experiments WHERE timestamp < ? AND promoted = 0",
+            (cutoff_experiments,)
+        ).rowcount
+        total = sum(deleted.values())
+        if total > 0:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht %s", total, deleted)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning("[PushDB] Cleanup fehlgeschlagen: %s", e)
 
 
 # ── Upsert / Laden ─────────────────────────────────────────────────────────

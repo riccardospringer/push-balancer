@@ -44,9 +44,16 @@ ADOBE_RSID: str = "axelspringerbild"
 ADOBE_TOKEN_URL: str = "https://ims-na1.adobelogin.com/ims/token/v3"
 ADOBE_API_BASE: str = "https://analytics.adobe.io/api"
 
+# ── Render-Erkennung ───────────────────────────────────────────────────────
+IS_RENDER: bool = os.environ.get("RENDER", "").lower() == "true"
+
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = _APP_DIR  # Verzeichnis mit HTML/JS/CSS Dateien
-PUSH_DB_PATH: str = os.path.join(_APP_DIR, ".push_history.db")
+# DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db
+PUSH_DB_PATH: str = os.environ.get(
+    "DB_PATH",
+    os.path.join(_APP_DIR, ".push_history.db"),
+)
 SNAPSHOT_PATH: str = os.path.join(_APP_DIR, "push-snapshot.json")
 
 # ── Railway / Render Domain ────────────────────────────────────────────────

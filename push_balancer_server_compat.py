@@ -16,12 +16,10 @@ log = logging.getLogger("push-balancer")
 _MODULE_NAME = "pbserver_legacy"
 _SERVER_PATH = os.path.join(os.path.dirname(__file__), "push-balancer-server.py")
 
-# Auf Render oder wenn DISABLE_LEGACY_WORKER gesetzt: Monolith NICHT laden (~200 MB RAM).
-# Render setzt automatisch RENDER=true in allen Services.
-_LEGACY_DISABLED = (
-    os.environ.get("RENDER", "").lower() == "true"
-    or os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
-)
+# Monolith deaktivieren wenn DISABLE_LEGACY_WORKER=true gesetzt.
+# Auf Render ist der Monolith standardmäßig AKTIV — catboost+xgboost wurden aus
+# requirements.txt entfernt, sodass nur lightgbm lädt (~150 MB, passt in 512 MB).
+_LEGACY_DISABLED = os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
 
 
 class _MissingSymbol:
