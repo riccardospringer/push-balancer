@@ -88,10 +88,18 @@ async def lifespan(app: FastAPI):
     # ── 3. Background-Worker starten ──
     _start_background_workers()
 
-    # ── 4. ML-Modelle im Hintergrund laden (nicht synchron — spart ~300MB RAM beim Start) ──
+    # ── 4. ML-Modelle im Hintergrund laden — nur wenn Legacy-Monolith aktiviert ──
+    _legacy_disabled = (
+        os.environ.get("RENDER", "").lower() == "true"
+        or os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
+    )
+
     def _load_ml_models_background():
+        if _legacy_disabled:
+            log.info("[ML] Monolith deaktiviert — ML-Modell-Load übersprungen")
+            return
         import time as _t
-        _t.sleep(2)  # warte bis Worker-Threads initialisiert sind
+        _t.sleep(2)
         try:
             if gbrt_load_model():
                 from app.ml.gbrt import _gbrt_model as _m

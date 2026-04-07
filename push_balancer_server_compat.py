@@ -16,6 +16,13 @@ log = logging.getLogger("push-balancer")
 _MODULE_NAME = "pbserver_legacy"
 _SERVER_PATH = os.path.join(os.path.dirname(__file__), "push-balancer-server.py")
 
+# Auf Render oder wenn DISABLE_LEGACY_WORKER gesetzt: Monolith NICHT laden (~200 MB RAM).
+# Render setzt automatisch RENDER=true in allen Services.
+_LEGACY_DISABLED = (
+    os.environ.get("RENDER", "").lower() == "true"
+    or os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
+)
+
 
 class _MissingSymbol:
     """Platzhalter für Symbole die aus dem Legacy-Modul entfernt wurden.
@@ -35,6 +42,9 @@ class _MissingSymbol:
 
 
 def _load():
+    if _LEGACY_DISABLED:
+        log.info("[compat] Legacy-Monolith deaktiviert (Render/DISABLE_LEGACY_WORKER) — spart ~200 MB RAM")
+        return None
     if _MODULE_NAME in sys.modules:
         return sys.modules[_MODULE_NAME]
     spec = importlib.util.spec_from_file_location(_MODULE_NAME, _SERVER_PATH)
@@ -45,7 +55,11 @@ def _load():
 
 
 def _re(name: str, default=None):
-    """Sicherer Re-Export: gibt _MissingSymbol zurück wenn Symbol fehlt."""
+    """Sicherer Re-Export: gibt _MissingSymbol zurück wenn Symbol fehlt oder Monolith disabled."""
+    if _legacy is None:
+        if default is not None:
+            return default
+        return _MissingSymbol(name)
     if hasattr(_legacy, name):
         return getattr(_legacy, name)
     if default is not None:
