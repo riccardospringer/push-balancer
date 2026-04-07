@@ -1,8 +1,8 @@
 """app/routers/push.py — Push-API-Proxy und Sync-Endpunkte.
 
 GET  /api/push/{path:path}     — Proxy zur BILD Push-API
-POST /api/push-sync            — Empfängt Push-Daten von lokalem Server (Relay)
-POST /api/prediction-feedback  — Prediction-Feedback für ML-Training
+POST /api/pushes/sync          — Empfängt Push-Daten von lokalem Server (Relay)
+POST /api/predictions/feedback — Prediction-Feedback für ML-Training
 """
 import json
 import logging
@@ -103,7 +103,7 @@ async def proxy_push_api(path: str, request: Request) -> Response:
     return Response(content=fallback, media_type="application/json; charset=utf-8")
 
 
-@router.post("/api/push-sync")
+@router.post("/api/pushes/sync")
 def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     """Empfängt Push-Daten von lokalem Server (Relay für Render).
 
@@ -122,7 +122,7 @@ def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     return JSONResponse(content={"ok": True, "received": len(body.messages)})
 
 
-@router.post("/api/prediction-feedback")
+@router.post("/api/predictions/feedback")
 def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
     """Speichert tatsächliche Opening Rate für eine frühere Prediction.
 

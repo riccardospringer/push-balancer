@@ -482,7 +482,7 @@ def _start_background_workers() -> None:
                     "channels": chs,
                 }).encode()
                 req = _ur2.Request(
-                    f"{RENDER_SYNC_URL}/api/push-sync",
+                    f"{RENDER_SYNC_URL}/api/pushes/sync",
                     data=sync_payload,
                     method="POST",
                     headers={"Content-Type": "application/json"},

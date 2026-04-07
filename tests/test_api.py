@@ -53,7 +53,7 @@ def _build_mock_app():
             "generated_at": int(time.time()),
         })
 
-    @app.post("/api/push-sync")
+    @app.post("/api/pushes/sync")
     async def push_sync(request: Request):
         body = await request.json()
         if body.get("secret") != SYNC_SECRET:
@@ -158,29 +158,29 @@ class TestMlStatusEndpoint:
         assert "application/json" in resp.headers.get("content-type", "")
 
 
-# ── POST /api/push-sync ───────────────────────────────────────────────────────
+# ── POST /api/pushes/sync ───────────────────────────────────────────────────────
 
 class TestPushSyncEndpoint:
     def test_push_sync_wrong_secret_returns_403(self):
-        """POST /api/push-sync mit falschem secret → 403."""
+        """POST /api/pushes/sync mit falschem secret → 403."""
         resp = client.post(
-            "/api/push-sync",
+            "/api/pushes/sync",
             json={"secret": "WRONG_SECRET", "messages": [], "channels": []},
         )
         assert resp.status_code == 403
 
     def test_push_sync_empty_secret_returns_403(self):
-        """POST /api/push-sync ohne secret → 403."""
+        """POST /api/pushes/sync ohne secret → 403."""
         resp = client.post(
-            "/api/push-sync",
+            "/api/pushes/sync",
             json={"messages": [], "channels": []},
         )
         assert resp.status_code == 403
 
     def test_push_sync_correct_secret_returns_200(self):
-        """POST /api/push-sync mit korrektem secret → 200."""
+        """POST /api/pushes/sync mit korrektem secret → 200."""
         resp = client.post(
-            "/api/push-sync",
+            "/api/pushes/sync",
             json={
                 "secret": "bild-push-sync-2026",
                 "messages": [],
@@ -193,7 +193,7 @@ class TestPushSyncEndpoint:
     def test_push_sync_correct_secret_response_ok(self):
         """Korrekter Secret → Response mit 'ok: true'."""
         resp = client.post(
-            "/api/push-sync",
+            "/api/pushes/sync",
             json={
                 "secret": "bild-push-sync-2026",
                 "messages": [{"id": "1", "title": "Test"}],
@@ -210,7 +210,7 @@ class TestPushSyncEndpoint:
         # Nur für echte App relevant
         monkeypatch.setenv("PUSH_SYNC_SECRET", "custom-secret-test")
         resp = client.post(
-            "/api/push-sync",
+            "/api/pushes/sync",
             json={"secret": "custom-secret-test", "messages": [], "channels": []},
         )
         assert resp.status_code in (200, 201, 403)  # Akzeptiert je nach Implementierung

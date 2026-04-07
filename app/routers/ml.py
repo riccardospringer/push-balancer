@@ -22,7 +22,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import SAFETY_MODE
-from app.database import load_experiments, load_monitoring_events, push_db_log_prediction
+from app.database import (
+    count_experiments,
+    count_monitoring_events,
+    load_experiments,
+    load_monitoring_events,
+    push_db_log_prediction,
+)
 from app.ml.lightgbm_model import _ml_state, _ml_lock, ml_train_model
 from app.ml.predict import safety_envelope
 from app.research.worker import _research_state
@@ -43,9 +49,9 @@ class PredictBatchRequest(BaseModel):
 def get_ml_safety_status() -> JSONResponse:
     """Gibt Safety-Status zurück — ADVISORY_ONLY Guard."""
     return JSONResponse(content={
-        "safety_mode": SAFETY_MODE,
-        "advisory_only": True,
-        "action_allowed": False,
+        "safetyMode": SAFETY_MODE,
+        "advisoryOnly": True,
+        "actionAllowed": False,
         "message": "Alle Predictions sind ausschliesslich beratend. Das System darf niemals autonom Push-Benachrichtigungen senden.",
     })
 
@@ -58,17 +64,17 @@ def get_ml_status() -> JSONResponse:
 
     return JSONResponse(content={
         "trained": s["model"] is not None,
-        "model_loaded": s["model"] is not None,
-        "train_count": s["train_count"],
-        "last_train_ts": s["last_train_ts"],
-        "next_retrain_ts": s["next_retrain_ts"],
+        "modelLoaded": s["model"] is not None,
+        "trainCount": s["train_count"],
+        "lastTrainTs": s["last_train_ts"],
+        "nextRetrainTs": s["next_retrain_ts"],
         "training": s["training"],
         "metrics": s["metrics"],
-        "shap_importance": s["shap_importance"],
-        "feature_count": len(s["feature_names"]),
-        "feature_names": s["feature_names"],
-        "stacking_active": False,
-        "safety_mode": SAFETY_MODE,
+        "shapImportance": s["shap_importance"],
+        "featureCount": len(s["feature_names"]),
+        "featureNames": s["feature_names"],
+        "stackingActive": False,
+        "safetyMode": SAFETY_MODE,
     })
 
 
@@ -133,17 +139,39 @@ def get_ml_predict(
                 title=title,
             )
 
-        return JSONResponse(content=result)
+        # Transform interne snake_case Keys zu camelCase an der API-Grenze
+        predicted_or_val = result.get("predicted_or") if result else None
+        camel_result = {
+            "predictedOr": predicted_or_val,
+            "or": predicted_or_val,
+            "basis": result.get("basis_method") if result else None,
+            "confidence": result.get("confidence") if result else None,
+            "q10": result.get("q10") if result else None,
+            "q90": result.get("q90") if result else None,
+            "advisoryOnly": result.get("advisory_only") if result else True,
+            "actionAllowed": result.get("action_allowed") if result else False,
+            "safetyMode": result.get("safety_mode") if result else SAFETY_MODE,
+        } if result else {}
+        return JSONResponse(content=camel_result)
     except Exception as e:
         log.exception("[ml] Fehler in get_ml_predict")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.get("/api/ml/experiments")
-def get_ml_experiments() -> JSONResponse:
-    """Liefert Liste der ML-Experimente."""
-    experiments = load_experiments(limit=50)
-    return JSONResponse(content={"experiments": experiments, "count": len(experiments)})
+def get_ml_experiments(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> JSONResponse:
+    """Liefert Liste der ML-Experimente (paginiert).
+
+    Query-Parameter:
+        offset: Startindex (Standard: 0)
+        limit:  Max. Anzahl Einträge (Standard: 20, max. 200)
+    """
+    total = count_experiments()
+    items = load_experiments(limit=limit, offset=offset)
+    return JSONResponse(content={"items": items, "total": total, "offset": offset, "limit": limit})
 
 
 @router.get("/api/ml/experiments/compare")
@@ -162,16 +190,16 @@ def get_ml_experiments_compare(
     exp_a = exp_by_id.get(a)
     exp_b = exp_by_id.get(b)
     return JSONResponse(content={
-        "experiment_a": exp_a,
-        "experiment_b": exp_b,
+        "experimentA": exp_a,
+        "experimentB": exp_b,
         "comparable": exp_a is not None and exp_b is not None,
     })
 
 
 _ab_state: dict = {
-    "ab_active": False,
-    "champion_mae": None,
-    "challenger_mae": None,
+    "active": False,
+    "championMae": None,
+    "challengerMae": None,
     "evaluated": 0,
 }
 
@@ -186,13 +214,24 @@ def get_ml_ab_status() -> JSONResponse:
 
 
 @router.get("/api/ml/monitoring")
-def get_ml_monitoring() -> JSONResponse:
-    """Liefert Monitoring-Events (Drift, MAE-Spikes, A/B-Ergebnisse)."""
-    events = load_monitoring_events(limit=100)
+def get_ml_monitoring(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> JSONResponse:
+    """Liefert Monitoring-Events (Drift, MAE-Spikes, A/B-Ergebnisse), paginiert.
+
+    Query-Parameter:
+        offset: Startindex (Standard: 0)
+        limit:  Max. Anzahl Einträge (Standard: 20, max. 200)
+    """
+    total = count_monitoring_events()
+    items = load_monitoring_events(limit=limit, offset=offset)
     return JSONResponse(content={
-        "events": events,
-        "count": len(events),
-        "safety_mode": SAFETY_MODE,
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "safetyMode": SAFETY_MODE,
     })
 
 
@@ -265,10 +304,10 @@ def post_predict_batch(body: PredictBatchRequest) -> JSONResponse:
             var = ((seed % 1000) - 500) / 5000.0
             live_or = max(0.5, round(base_or * (1 + var), 2))
             out[art_id] = {
-                "or": live_or, "predicted_or": live_or,
+                "or": live_or, "predictedOr": live_or,
                 "basis": cached["basis"], "confidence": cached["confidence"],
                 "q10": cached["q10"], "q90": cached["q90"],
-                "model_type": cached["basis"],
+                "modelType": cached["basis"],
             }
         else:
             need_predict.append((art_id, a))
@@ -308,19 +347,19 @@ def post_predict_batch(body: PredictBatchRequest) -> JSONResponse:
         var = ((seed % 1000) - 500) / 5000.0
         live_or = max(0.5, round(base_or * (1 + var), 2))
         out[art_id] = {
-            "or": live_or, "predicted_or": live_or,
+            "or": live_or, "predictedOr": live_or,
             "basis": basis, "confidence": confidence,
-            "q10": q10, "q90": q90, "model_type": basis,
+            "q10": q10, "q90": q90, "modelType": basis,
         }
 
     elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-    model_type = next((v.get("model_type", "unknown") for v in out.values()), "none")
+    model_type = next((v.get("modelType", "unknown") for v in out.values()), "none")
 
     return JSONResponse(content={
         "predictions": out,
-        "model_type": model_type,
+        "modelType": model_type,
         "count": len(out),
-        "elapsed_ms": elapsed_ms,
+        "elapsedMs": elapsed_ms,
         "cached": len(articles) - len(need_predict),
         "computed": len(need_predict),
     })

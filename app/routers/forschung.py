@@ -7,7 +7,7 @@ GET /api/research-rules    — Aktive Forschungsregeln
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from app.research.worker import _research_state
@@ -82,13 +82,26 @@ def get_learnings() -> JSONResponse:
 
 
 @router.get("/api/research-rules")
-def get_research_rules() -> JSONResponse:
-    """Liefert aktive Forschungsregeln für den Push-Kandidaten-Ablauf."""
+def get_research_rules(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> JSONResponse:
+    """Liefert aktive Forschungsregeln (paginiert).
+
+    Query-Parameter:
+        offset: Startindex (Standard: 0)
+        limit:  Max. Anzahl Regeln (Standard: 20, max. 200)
+    """
     rules = _research_state.get("live_rules", [])
     active = [r for r in rules if r.get("active")]
+    total = len(active)
+    items = active[offset: offset + limit]
     accuracy = _research_state.get("rolling_accuracy", 0.0)
     return JSONResponse(content={
-        "rules": active,
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
         "version": _research_state.get("live_rules_version", 0),
         "accuracy": round(accuracy, 1),
         "n_pushes_analyzed": len(_research_state.get("push_data", [])),

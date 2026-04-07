@@ -8,7 +8,7 @@ GET /api/sport-europa            — Sport-Europa-Feeds
 GET /api/sport-global            — Sport-Global-Feeds
 GET /api/international           — Internationale Feeds (gecacht)
 GET /api/international/{name}    — Einzelner internationaler Feed
-POST /api/competitor-xor         — Batch-XOR via Wort-Performance-Scoring
+POST /api/competitors/xor        — Batch-XOR via Wort-Performance-Scoring
 """
 import json
 import logging
@@ -18,7 +18,7 @@ import time
 import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 
@@ -128,6 +128,21 @@ def get_feed() -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
+def _paginate_feed_dict(
+    feeds: dict[str, list],
+    offset: int,
+    limit: int,
+) -> dict:
+    """Konvertiert ein Feed-Dict in einen paginierten Pagination-Envelope.
+
+    Jedes Item enthält `name` und `articles`.
+    """
+    all_items = [{"name": name, "articles": articles} for name, articles in feeds.items()]
+    total = len(all_items)
+    items = all_items[offset: offset + limit]
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
 def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
     """Fetcht alle Feeds parallel via ThreadPool als Live-Fallback."""
     import concurrent.futures
@@ -144,13 +159,21 @@ def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
 
 
 @router.get("/api/competitors")
-def get_competitors() -> JSONResponse:
-    """Liefert alle Competitor-Feeds aus Background-Cache; live-fetcht wenn Cache leer."""
+def get_competitors(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """Liefert alle Competitor-Feeds aus Background-Cache (paginiert).
+
+    Query-Parameter:
+        offset: Startindex (Standard: 0)
+        limit:  Max. Anzahl Feeds (Standard: 20, max. 100)
+    """
     try:
         parsed = get_cached_feeds("competitors")
         if not parsed:
             parsed = _fetch_feeds_live(COMPETITOR_FEEDS)
-        return JSONResponse(content=parsed)
+        return JSONResponse(content=_paginate_feed_dict(parsed, offset, limit))
     except Exception as e:
         log.exception("[feed] Fehler in get_competitors")
         raise HTTPException(status_code=502, detail=f"Competitor feeds error: {e}")
@@ -169,41 +192,53 @@ def get_competitor(name: str) -> Response:
 
 
 @router.get("/api/sport-competitors")
-def get_sport_competitors() -> JSONResponse:
-    """Liefert Sport-Competitor-Feeds aus Background-Cache."""
+def get_sport_competitors(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """Liefert Sport-Competitor-Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("sport_competitors")
-        return JSONResponse(content=parsed)
+        return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport competitor feeds error: {e}")
 
 
 @router.get("/api/sport-europa")
-def get_sport_europa() -> JSONResponse:
-    """Liefert Sport-Europa-Feeds aus Background-Cache."""
+def get_sport_europa(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """Liefert Sport-Europa-Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("sport_europa")
-        return JSONResponse(content=parsed)
+        return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport Europa feeds error: {e}")
 
 
 @router.get("/api/sport-global")
-def get_sport_global() -> JSONResponse:
-    """Liefert Sport-Global-Feeds aus Background-Cache."""
+def get_sport_global(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """Liefert Sport-Global-Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("sport_global")
-        return JSONResponse(content=parsed)
+        return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport Global feeds error: {e}")
 
 
 @router.get("/api/international")
-def get_international() -> JSONResponse:
-    """Liefert alle internationalen Feeds aus Background-Cache."""
+def get_international(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    """Liefert alle internationalen Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("international")
-        return JSONResponse(content=parsed)
+        return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"International feeds error: {e}")
 
@@ -220,7 +255,7 @@ def get_international_feed(name: str) -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
-@router.post("/api/competitor-xor")
+@router.post("/api/competitors/xor")
 def post_competitor_xor(body: CompetitorXorRequest) -> JSONResponse:
     """Batch-XOR via Wort-Performance-Scoring.
 

@@ -323,7 +323,7 @@ paths:
         "502":
           $ref: "#/components/responses/BadGateway"
 
-  /api/push-sync:
+  /api/pushes/sync:
     post:
       operationId: syncPushData
       tags: [push]
@@ -608,7 +608,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /api/prediction-feedback:
+  /api/predictions/feedback:
     post:
       operationId: submitPredictionFeedback
       tags: [ml]
@@ -1076,7 +1076,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /api/competitor-xor:
+  /api/competitors/xor:
     post:
       operationId: competitorXor
       tags: [analytics]
@@ -1173,7 +1173,7 @@ components:
           type: string
           format: uri
           description: URI-Referenz des konkreten Fehler-Vorkommens
-          example: "/api/prediction-feedback"
+          example: "/api/predictions/feedback"
 
     # ── Health ──────────────────────────────────────────────────────────────
 

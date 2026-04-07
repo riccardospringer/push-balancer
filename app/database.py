@@ -381,27 +381,36 @@ def log_monitoring_event(
         log.warning("[Monitoring] Event-Log Fehler: %s", e)
 
 
-def load_monitoring_events(limit: int = 100) -> list:
-    """Lädt die letzten N Monitoring-Events aus der DB."""
+def load_monitoring_events(limit: int = 100, offset: int = 0) -> list:
+    """Lädt Monitoring-Events aus der DB (paginiert)."""
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM monitoring_events ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM monitoring_events ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
         conn.close()
     return [dict(r) for r in rows]
 
 
-def load_experiments(limit: int = 50) -> list:
-    """Lädt die letzten N ML-Experimente."""
+def count_monitoring_events() -> int:
+    """Zählt alle Monitoring-Events in der DB."""
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        n = conn.execute("SELECT COUNT(*) FROM monitoring_events").fetchone()[0]
+        conn.close()
+    return n
+
+
+def load_experiments(limit: int = 50, offset: int = 0) -> list:
+    """Lädt ML-Experimente aus der DB (paginiert)."""
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM experiments ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM experiments ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
         conn.close()
     result = []
@@ -415,6 +424,15 @@ def load_experiments(limit: int = 50) -> list:
                     pass
         result.append(d)
     return result
+
+
+def count_experiments() -> int:
+    """Zählt alle ML-Experimente in der DB."""
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        n = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+        conn.close()
+    return n
 
 
 def load_llm_scores_for_push(push_id: str) -> dict:
