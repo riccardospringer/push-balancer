@@ -218,13 +218,6 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
         "cat_momentum": cat_momentum,
         "median_recipients": sorted(recipient_counts)[len(recipient_counts)//2] if recipient_counts else 0,
         "cat_median_recipients": {cat: sorted(vals)[len(vals)//2] for cat, vals in cat_recipient_data.items() if vals},
-        # Keyword→OR: nur Wörter mit min 5 Vorkommen (stabil genug)
-        "word_or": {w: {"avg": sum(ors)/len(ors), "n": len(ors),
-                        "std": (sum((o - sum(ors)/len(ors))**2 for o in ors) / len(ors))**0.5,
-                        "median": sorted(ors)[len(ors)//2]}
-                    for w, ors in word_or_data.items() if len(ors) >= 5},
-        "bigram_or": {bg: {"avg": sum(ors)/len(ors), "n": len(ors)}
-                      for bg, ors in bigram_or_data.items() if len(ors) >= 5},
     }
 
 
