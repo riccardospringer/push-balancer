@@ -223,7 +223,16 @@ def _start_background_workers() -> None:
     log.info("[FeedCache] Background-Worker gestartet")
 
     # 6. Research-Worker
+    # Auf Render (oder bei gesetztem DISABLE_LEGACY_WORKER) überspringen:
+    # Der Research-Worker lädt den ~700 KB Legacy-Monolithen in RAM (~150 MB).
+    # Für Memory-limitierte Umgebungen kann er deaktiviert werden.
+    _legacy_worker_disabled = os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
+
     def _research_worker():
+        if _legacy_worker_disabled:
+            log.info("[Research] Worker deaktiviert (DISABLE_LEGACY_WORKER=true) — spart ~150 MB RAM")
+            return
+
         time.sleep(2)
         try:
             update_residual_corrector()

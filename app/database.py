@@ -200,19 +200,22 @@ def push_db_upsert(parsed_pushes: list) -> int:
     return count
 
 
-def push_db_load_all(min_ts: int = 0) -> list:
-    """Lädt alle Pushes aus SQLite, optional gefiltert nach min_ts (Unix-Timestamp).
+def push_db_load_all(min_ts: int = 0, max_days: int = 90) -> list:
+    """Lädt Pushes aus SQLite, optional gefiltert nach min_ts (Unix-Timestamp).
 
-    Nutzt eigene Connection mit WAL-Mode für nicht-blockierendes Lesen.
+    max_days: Maximales Alter der geladenen Pushes (default: 90 Tage).
+              Verhindert, dass die gesamte ~239 MB DB in RAM geladen wird.
     Filtert SportBILD und AutoBILD Links heraus.
     """
+    import time as _time
+    cutoff = max(min_ts, int(_time.time()) - max_days * 86400)
     conn = sqlite3.connect(PUSH_DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             "SELECT * FROM pushes WHERE ts_num > ? AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%' ORDER BY ts_num DESC",
-            (min_ts,),
+            (cutoff,),
         ).fetchall()
     finally:
         conn.close()

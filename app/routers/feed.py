@@ -38,6 +38,7 @@ router = APIRouter()
 
 # ── In-Memory URL-Cache ────────────────────────────────────────────────────
 _url_cache: dict[str, tuple[float, bytes]] = {}
+_URL_CACHE_MAX = 80  # max. Einträge — verhindert unbegrenztes Wachstum
 
 try:
     import certifi as _certifi
@@ -58,6 +59,10 @@ def _fetch_url(url: str) -> bytes | None:
         })
         with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             data = resp.read()
+        # LRU-Eviction: ältesten Eintrag entfernen wenn Limit erreicht
+        if len(_url_cache) >= _URL_CACHE_MAX:
+            oldest = min(_url_cache, key=lambda k: _url_cache[k][0])
+            del _url_cache[oldest]
         _url_cache[url] = (now, data)
         return data
     except Exception as e:
