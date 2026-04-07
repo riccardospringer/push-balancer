@@ -35,10 +35,16 @@ from app.ml.stats import gbrt_build_history_stats as _gbrt_build_history_stats
 from app.ml.gbrt import gbrt_predict as _gbrt_predict, gbrt_train as _gbrt_train, gbrt_check_drift as _gbrt_check_drift, gbrt_online_update as _gbrt_online_update
 from app.ml.lightgbm_model import ml_train_model as _ml_train_model, unified_train as _unified_train, train_stacking_model as _train_stacking_model, monitoring_tick as _monitoring_tick
 from app.database import push_db_load_all, push_db_upsert, push_db_count, push_db_max_ts
-from app.config import PUSH_API_BASE, PUSH_DB_PATH, RENDER_SYNC_URL, SYNC_SECRET, BILD_SITEMAP
+from app.config import PUSH_API_BASE, PUSH_DB_PATH, RENDER_SYNC_URL, SYNC_SECRET, BILD_SITEMAP, IS_RENDER
 
 # ── Convenience aliases (Monolith-kompatibel) ─────────────────────────────────
-_push_db_load_all = push_db_load_all
+# Auf Render max. 5000 Rows laden (statt 15000) — spart RAM bei jedem Tagesplan-Build
+_TP_MAX_ROWS = 5000 if IS_RENDER else 15000
+
+
+def _push_db_load_all(min_ts: int = 0, max_days: int = 90) -> list:
+    """Wrapper um push_db_load_all mit Render-spezifischem Zeilenlimit."""
+    return push_db_load_all(min_ts=min_ts, max_days=max_days, max_rows=_TP_MAX_ROWS)
 _push_db_upsert = push_db_upsert
 _push_db_count = push_db_count
 _push_db_max_ts = push_db_max_ts

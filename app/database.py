@@ -22,6 +22,8 @@ def init_db() -> None:
     """Initialisiert die SQLite-Datenbank (alle Tabellen + Indizes, idempotent)."""
     conn = sqlite3.connect(PUSH_DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
+    # Cache auf 4 MB begrenzen — verhindert exzessives RAM-Caching auf Render
+    conn.execute("PRAGMA cache_size = -4096")
     conn.execute("""CREATE TABLE IF NOT EXISTS pushes (
         message_id TEXT PRIMARY KEY,
         ts_num INTEGER NOT NULL,
@@ -193,9 +195,16 @@ def _db_cleanup() -> None:
         total = sum(deleted.values())
         if total > 0:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht %s", total, deleted)
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
+            # VACUUM außerhalb der Transaktion: gibt Plattenplatz tatsächlich frei
+            conn2 = sqlite3.connect(PUSH_DB_PATH, timeout=30)
+            conn2.execute("VACUUM")
+            conn2.close()
+            log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht + VACUUM %s", total, deleted)
+        else:
+            conn.commit()
+            conn.close()
     except Exception as e:
         log.warning("[PushDB] Cleanup fehlgeschlagen: %s", e)
 
@@ -238,11 +247,12 @@ def push_db_upsert(parsed_pushes: list) -> int:
     return count
 
 
-def push_db_load_all(min_ts: int = 0, max_days: int = 90) -> list:
+def push_db_load_all(min_ts: int = 0, max_days: int = 90, max_rows: int = 15000) -> list:
     """Lädt Pushes aus SQLite, optional gefiltert nach min_ts (Unix-Timestamp).
 
     max_days: Maximales Alter der geladenen Pushes (default: 90 Tage).
               Verhindert, dass die gesamte ~239 MB DB in RAM geladen wird.
+    max_rows: Absolutes Zeilenlimit als OOM-Sicherheitsnetz (default: 15000).
     Filtert SportBILD und AutoBILD Links heraus.
     """
     import time as _time
@@ -252,8 +262,8 @@ def push_db_load_all(min_ts: int = 0, max_days: int = 90) -> list:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT * FROM pushes WHERE ts_num > ? AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%' ORDER BY ts_num DESC",
-            (cutoff,),
+            "SELECT * FROM pushes WHERE ts_num > ? AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%' ORDER BY ts_num DESC LIMIT ?",
+            (cutoff, max_rows),
         ).fetchall()
     finally:
         conn.close()

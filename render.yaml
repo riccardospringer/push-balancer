@@ -25,3 +25,5 @@ services:
         sync: false
       - key: ADOBE_GLOBAL_COMPANY_ID
         value: axelsp2
+      - key: DISABLE_LEGACY_WORKER
+        value: "true"
