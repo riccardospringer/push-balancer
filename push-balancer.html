@@ -8361,7 +8361,7 @@ function sendPredictionFeedback() {
       }
       sentCount++;
       const _fbPushId = pushId; // Closure sicher
-      fetch(API_BASE + '/api/prediction-feedback', {
+      fetch(API_BASE + '/api/predictions/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -11990,7 +11990,7 @@ async function _batchFetchCompXor(titleList, reRenderFn) {
   if (uncached.length === 0) return;
   const batch = uncached.slice(0, 200);
   try {
-    const resp = await resilientFetch(API_BASE + '/api/competitor-xor', {
+    const resp = await resilientFetch(API_BASE + '/api/competitors/xor', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ titles: batch }),
@@ -12261,8 +12261,8 @@ function isArticleCoveredByBild(title) {
 function predictCompetitorOR(title, pubDate) {
   // ══════════════════════════════════════════════════════════════
   // XOR-PROGNOSE für Konkurrenz-Artikel
-  // Zweistufig: (0) Server-Cache via /api/competitor-xor, (2) Client-Multi-Signal-Berechnung
-  // Server-Endpoint /api/competitor-xor nutzt Wort-Performance-Scoring für differenzierte Werte
+  // Zweistufig: (0) Server-Cache via /api/competitors/xor, (2) Client-Multi-Signal-Berechnung
+  // Server-Endpoint /api/competitors/xor nutzt Wort-Performance-Scoring für differenzierte Werte
   // ══════════════════════════════════════════════════════════════
   try {
   // ── STUFE 0: Server-Cache (Wort-Performance-Scoring, beste Qualität) ──
