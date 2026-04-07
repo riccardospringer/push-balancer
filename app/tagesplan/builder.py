@@ -850,9 +850,9 @@ def start_auto_sug_worker():
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-def build_tagesplan(mode: str = "redaktion") -> dict:
+def build_tagesplan(background: bool = False, mode: str = "redaktion") -> dict:
     """Öffentliche API: ML-Tagesplan bauen."""
-    return _ml_build_tagesplan(mode=mode)
+    return _ml_build_tagesplan(background=background, mode=mode)
 
 
 def build_tagesplan_retro() -> dict:

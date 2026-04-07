@@ -10819,159 +10819,6 @@ def _compute_mae_for_range(feedback, ts_start, ts_end):
     return sum(errors) / len(errors) if errors else 0.0
 
 
-# ── Stacking Meta-Modell (Ridge Regression ueber Methoden-Outputs) ──────────
-_stacking_model = {"weights": None, "bias": 0.0, "trained_at": 0, "n_samples": 0, "mae": 0.0}
-
-
-def _solve_ridge(X, y, ridge_lambda):
-    """Löst Ridge Regression via Gauss-Elimination: w = (X^T X + λI)^{-1} X^T y.
-    Reine Python-Implementierung ohne numpy."""
-    n_features = len(X[0])
-    n = len(X)
-
-    XtX = [[0.0] * n_features for _ in range(n_features)]
-    Xty = [0.0] * n_features
-
-    for i in range(n):
-        for j in range(n_features):
-            Xty[j] += X[i][j] * y[i]
-            for k in range(n_features):
-                XtX[j][k] += X[i][j] * X[i][k]
-
-    for j in range(n_features):
-        XtX[j][j] += ridge_lambda
-
-    augmented = [XtX[j][:] + [Xty[j]] for j in range(n_features)]
-    for col in range(n_features):
-        max_row = max(range(col, n_features), key=lambda r: abs(augmented[r][col]))
-        augmented[col], augmented[max_row] = augmented[max_row], augmented[col]
-        pivot = augmented[col][col]
-        if abs(pivot) < 1e-12:
-            continue
-        for j in range(col, n_features + 1):
-            augmented[col][j] /= pivot
-        for row in range(n_features):
-            if row == col:
-                continue
-            factor = augmented[row][col]
-            for j in range(col, n_features + 1):
-                augmented[row][j] -= factor * augmented[col][j]
-
-    return [augmented[j][n_features] for j in range(n_features)]
-
-
-def _train_stacking_model(state):
-    """Train Ridge Regression mit Lambda-Tuning und ML-Outputs als Features (13 Features).
-    Grid-Search über Lambda-Werte, temporal 80/20 Validation Split."""
-    global _stacking_model
-    try:
-        training_data = _push_db_get_training_data(limit=2000)
-        if len(training_data) < 30:
-            return
-
-        method_names = ["m1_similarity", "m2_keyword", "m3_entity", "m4_cat_hour",
-                        "m5_research", "m6_phd", "m7_timing", "m8_context"]
-        X = []
-        y = []
-        for row in training_data:
-            detail = json.loads(row.get("methods_detail") or "{}")
-            features_json = json.loads(row.get("features") or "{}")
-            mvec = []
-            for mname in method_names:
-                mdata = detail.get(mname, {})
-                if isinstance(mdata, dict):
-                    mvec.append(mdata.get("or", 0) or 0)
-                else:
-                    mvec.append(0)
-            # Context features
-            mvec.append(features_json.get("hour", 12))
-            mvec.append(1 if features_json.get("is_sport") else 0)
-            mvec.append(features_json.get("title_len", 50))
-            # ML-Outputs als Features (11 → 13 Features)
-            mvec.append(float(detail.get("gbrt_predicted", 0) or 0))
-            mvec.append(float(detail.get("lgbm_predicted", 0) or 0))
-            X.append(mvec)
-            y.append(row["actual_or"])
-
-        if len(X) < 30:
-            return
-
-        n_features = len(X[0])
-        n = len(X)
-
-        # Temporal 80/20 Split für Lambda-Tuning
-        split_idx = int(n * 0.8)
-        X_train_s, X_val_s = X[:split_idx], X[split_idx:]
-        y_train_s, y_val_s = y[:split_idx], y[split_idx:]
-
-        # Lambda Grid-Search
-        lambda_candidates = [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0]
-        best_lambda = 1.0
-        best_val_mae = float('inf')
-
-        if len(X_train_s) >= n_features:
-            for lam in lambda_candidates:
-                w = _solve_ridge(X_train_s, y_train_s, lam)
-                val_mae = sum(abs(sum(wi * xi for wi, xi in zip(w, X_val_s[i])) - y_val_s[i])
-                              for i in range(len(X_val_s))) / max(len(X_val_s), 1)
-                if val_mae < best_val_mae:
-                    best_val_mae = val_mae
-                    best_lambda = lam
-
-        # Finales Training mit bestem Lambda auf allen Daten
-        weights = _solve_ridge(X, y, best_lambda)
-
-        mae_sum = 0
-        for i in range(n):
-            pred = sum(w * x for w, x in zip(weights, X[i]))
-            mae_sum += abs(pred - y[i])
-        train_mae = mae_sum / n
-
-        _stacking_model = {
-            "weights": weights,
-            "method_names": method_names,
-            "bias": 0.0,
-            "trained_at": int(time.time()),
-            "n_samples": n,
-            "mae": round(train_mae, 3),
-            "val_mae": round(best_val_mae, 3),
-            "n_features": n_features,
-            "best_lambda": best_lambda,
-        }
-        state["stacking_model"] = _stacking_model
-        log.info(f"[Stacking] Trained on {n} samples, MAE={train_mae:.3f}, "
-                 f"Val-MAE={best_val_mae:.3f}, λ={best_lambda}, features={n_features}")
-
-    except Exception as e:
-        log.warning(f"[Stacking] Training error: {e}")
-
-
-def _stacking_predict(methods_detail, features):
-    """Use trained stacking model to predict OR from method outputs (13 Features)."""
-    if not _stacking_model.get("weights"):
-        return None
-    weights = _stacking_model["weights"]
-    method_names = _stacking_model.get("method_names", [])
-    mvec = []
-    for mname in method_names:
-        mdata = methods_detail.get(mname, 0)
-        if isinstance(mdata, (int, float)):
-            mvec.append(float(mdata))
-        elif isinstance(mdata, dict):
-            mvec.append(float(mdata.get("or", 0) or 0))
-        else:
-            mvec.append(0)
-    mvec.append(features.get("hour", 12))
-    mvec.append(1 if features.get("is_sport") else 0)
-    mvec.append(features.get("title_len", 50))
-    # ML-Outputs (müssen zum Training passen)
-    mvec.append(float(methods_detail.get("gbrt_predicted", 0) or 0))
-    mvec.append(float(methods_detail.get("lgbm_predicted", 0) or 0))
-    if len(mvec) != len(weights):
-        return None
-    return max(0.1, sum(w * x for w, x in zip(weights, mvec)))
-
-
 def _compute_research_modifiers(push_data, findings, state):
     """Berechnet konkrete Scoring-Modifier aus Forschungserkenntnissen.
 
@@ -11939,16 +11786,8 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
         weight_sum += cap
     heuristic_predicted = weighted_sum / weight_sum if weight_sum > 0 else global_avg
 
-    # Stacking Meta-Modell: wenn trainiert, blende gelerntes Ergebnis ein
     is_sport = push_cat.lower() in ("sport", "fussball", "bundesliga")
-    stacking_pred = _stacking_predict(methods, {"hour": push_hour, "is_sport": is_sport, "title_len": push.get("title_len", len(push.get("title", "")))})
-    if stacking_pred and _stacking_model.get("n_samples", 0) >= 50:
-        blend_w = min(0.6, _stacking_model["n_samples"] / 500)
-        predicted = stacking_pred * blend_w + heuristic_predicted * (1 - blend_w)
-        methods["stacking_pred"] = round(stacking_pred, 3)
-        methods["stacking_blend"] = round(blend_w, 3)
-    else:
-        predicted = heuristic_predicted
+    predicted = heuristic_predicted
 
     # ── ML-Blend: Wenn ein einzelnes ML-Modell verfuegbar, mit Heuristik blenden ──
     if ml_predictions and len(ml_predictions) == 1:
@@ -15720,9 +15559,6 @@ if __name__ == "__main__":
             try:
                 _stacking_counter = _research_state.get("_stacking_counter", 0) + 1
                 _research_state["_stacking_counter"] = _stacking_counter
-                # Stacking Meta-Modell alle 30 Zyklen (~10 Min) trainieren
-                if _stacking_counter % 30 == 0:
-                    _train_stacking_model(_research_state)
                 # LightGBM ML-Modell alle 1080 Zyklen (~6h) trainieren, erster Train bei Zyklus 1
                 if _stacking_counter == 1 or _stacking_counter % 1080 == 0:
                     try:
