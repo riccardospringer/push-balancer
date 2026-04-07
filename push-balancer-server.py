@@ -8122,15 +8122,9 @@ _research_state = {
     # Schwab Decision Log — nachvollziehbar
     "schwab_decisions": [],       # [{ts, decision, reason, outcome, affected_teams}]
     "schwab_current": "",         # aktuelle Direktive
-    # BILD-Adaption internationaler Forschung
-    "bild_adaptations": [],       # [{international_finding, bild_adaptation, evidence}]
     # Live-Regeln: Von Schwab freigegebene Forschungserkenntnisse fuer den Push-Betrieb
     "live_rules": [],             # [{id, rule, source, impact, approved_by, approved_at, active}]
     "live_rules_version": 0,      # incrementiert bei jeder Aenderung
-    # Forschungs-Progress: Laufende Projekte und Meilensteine (persistiert ueber Sessions)
-    "research_projects": [],       # [{id, title, lead, team, status, milestones, started, progress}]
-    "research_milestones": [],     # [{ts, project_id, milestone, achieved_by}]
-    "dynamic_discussions": [],     # GPT-4o-generierte Diskussionen
     # Forschungsgedaechtnis: Kumulierte Erkenntnisse pro Forscher (waechst mit jedem Zyklus)
     "research_memory": {},         # researcher_id -> [{"gen": N, "ts": ..., "finding": ..., "builds_on": ...}]
     "research_log": [],            # Chronologisches Log aller Erkenntnisse (max 100)
@@ -8140,10 +8134,6 @@ _research_state = {
     "pending_approvals": [],
     "approval_counter": 0,         # ID-Zaehler
     "decided_topics": set(),       # change_type/proposal-Keys die bereits entschieden wurden — verhindert Re-Approvals
-    # Event-getriebene Mikro-Diskussionen
-    "event_queue": [],              # [{type, data, prio, ts}] — wartende Events
-    "event_history": [],            # [{type, data, ts}] — verarbeitete Events (max 24h)
-    "event_discussions": [],        # GPT-generierte Mikro-Diskussionen aus Events
     "_prev_mature_ids": set(),      # IDs der reifen Pushes im letzten Zyklus
     "_prev_memory_lens": {},        # researcher_id -> len(entries) im letzten Zyklus
     "_prev_milestone_count": 0,     # Anzahl Meilensteine im letzten Zyklus
@@ -12362,14 +12352,13 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({
                     "accuracy": 0, "accuracy_trend": 0, "accuracy_target": 99.5,
                     "insights_today": 0, "insights_trend": 0, "pages_today": 0, "pages_trend": 0,
-                    "researchers": [], "guest_researchers": [], "guest_exchanges": [],
+                    "researchers": [],
                     "orchestrator": {"id": "ml-system", "name": "ML Pipeline",
                                      "role": "Autonomes System", "status": "loading",
                                      "current_directive": "Lade Push-Daten...",
                                      "teams_active": 1, "decisions_today": 0, "schwab_decisions": []},
-                    "bild_team": [], "ticker": [], "learning": [],
-                    "dissertations": [], "diskurs": [],
-                    "week_comparison": {}, "live_rules": [], "live_rules_count": 0,
+                    "ticker": [], "learning": [],
+                                        "week_comparison": {}, "live_rules": [], "live_rules_count": 0,
                     "n_pushes": 0, "last_push_ts": 0, "loading": True,
                     "mature_count": 0, "fresh_count": 0, "fresh_pushes": [],
                     "research_memory": {}, "research_memory_total": 0, "research_log": [],
@@ -12566,9 +12555,6 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             n_decisions = len(_research_state.get("schwab_decisions", []))
             n_live = len([r for r in _research_state.get("live_rules", []) if r.get("active")])
 
-            guest_researchers = []
-            algo_team_researchers = []
-            bild_team = []
             # Learning metrics — 100% aus echten Daten, keine Simulation
             or_values = [p["or"] for p in _mature_data]  # Nur reife Pushes (>24h)
             # Primaer-Metrik: MAE (Mean Absolute Error in Prozentpunkten)
@@ -12623,8 +12609,6 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             ticker = list(_research_state.get("ticker_entries", []))
 
             # Theater entfernt — Feynman, Dissertationen, Diskurs
-            dissertations = []
-            diskurs_data = []
             selected = []
             week_comparison = _research_state.get("week_comparison", {})
             live_rules = _research_state.get("live_rules", [])
@@ -12704,14 +12688,10 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 "pages_today": pages_today,
                 "pages_trend": 0,
                 "researchers": researchers,
-                "guest_researchers": guest_researchers,
                 "guest_exchanges": selected,
                 "orchestrator": orchestrator,
-                "bild_team": bild_team,
                 "ticker": ticker,
                 "learning": learning,
-                "dissertations": dissertations,
-                "diskurs": diskurs_data,
                 "week_comparison": week_comparison,
                 "live_rules": [r for r in live_rules if r.get("active")],
                 "live_rules_count": _cur_live_rules_n,
@@ -12727,8 +12707,6 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 "top_category_or_trend": _top_cat_or_delta,
                 "top_categories": _top_cats,
                 "last_push_ts": max((p.get("ts_num", 0) for p in _mature_data), default=0) if _mature_data else 0,
-                "research_projects": _research_state.get("research_projects", []),
-                "research_milestones": _research_state.get("research_milestones", [])[-20:],
                 # Kumuliertes Forschungsgedaechtnis — zeigt echten Progress
                 "research_memory": {rid: entries[-3:] for rid, entries in _research_state.get("research_memory", {}).items() if entries},
                 "research_memory_total": sum(len(v) for v in _research_state.get("research_memory", {}).values()),
@@ -12746,7 +12724,6 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 # Research-Modifier: Werden vom Frontend als 8. Methode in predictOR() verwendet
                 "research_modifiers": _research_state.get("research_modifiers", {}),
                 # Algorithmus-Elite-Team
-                "algorithm_team": algo_team_researchers,
                 # Score-Analyse: Feature-Importance, Score-Dekomposition, XOR-Vorschlaege
                 "score_analysis": _research_state.get("algo_score_analysis", {}),
                 # PhD-Insights: 10 mathematische Doktorarbeiten liefern erweiterte Modifier
