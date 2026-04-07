@@ -101,7 +101,12 @@ def get_tagesplan_suggestions(
         date: ISO-Datumsstring (YYYY-MM-DD), optional
     """
     rows = load_tagesplan_suggestions(date_iso=date)
-    return JSONResponse(content={"suggestions": rows, "count": len(rows)})
+    # Frontend erwartet {hour_str: [suggestions]} — nach slot_hour gruppieren
+    grouped: dict[str, list] = {}
+    for row in rows:
+        key = str(row.get("slot_hour", ""))
+        grouped.setdefault(key, []).append(row)
+    return JSONResponse(content={"suggestions": grouped, "count": len(rows)})
 
 
 @router.post("/api/tagesplan/log-suggestions")

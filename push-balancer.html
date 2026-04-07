@@ -18079,7 +18079,7 @@ function renderTagesplan(data, mlStatus, savedSuggestions) {
   const _allSugUrls = new Set();
   const _allSugTitles = new Set();
   for (const hKey of Object.keys(savedSuggestions)) {
-    for (const sg of savedSuggestions[hKey]) {
+    for (const sg of (Array.isArray(savedSuggestions[hKey]) ? savedSuggestions[hKey] : [])) {
       if (sg.link) _allSugUrls.add(sg.link.replace(/\/$/, ''));
       if (sg.title) _allSugTitles.add(sg.title.trim().toLowerCase().substring(0, 50));
     }
@@ -18423,7 +18423,7 @@ function renderTagesplan(data, mlStatus, savedSuggestions) {
           // XOR aus der Original-Empfehlung holen
           let _xhXor = 0;
           for (const hk of Object.keys(savedSuggestions)) {
-            for (const r of savedSuggestions[hk]) {
+            for (const r of (Array.isArray(savedSuggestions[hk]) ? savedSuggestions[hk] : [])) {
               const rLink = (r.link || '').replace(/\/$/, '');
               const rTitle = (r.title || '').trim().toLowerCase().substring(0, 50);
               if ((pLink && rLink && pLink === rLink) || (pTitle && rTitle && pTitle === rTitle)) { _xhXor = r.expected_or || 0; break; }
