@@ -8740,21 +8740,6 @@ _research_state = {
     "_prev_milestone_count": 0,     # Anzahl Meilensteine im letzten Zyklus
     "_last_paper_discovery": 0,     # Zeitpunkt der letzten Paper-Entdeckung
     "_discovered_papers": set(),    # Bereits entdeckte Paper-Titel
-    # Negativ-Ergebnisse Register: Gescheiterte Hypothesen dokumentieren (Max-Planck-Prinzip)
-    "negative_results": [],         # [{id, hypothesis, test, result, learning, locked_until, researcher}]
-    "negative_results_counter": 0,
-    # Cross-Referenz-Engine: Synthese wenn 2+ Forscher verwandte Patterns finden
-    "cross_references": [],         # [{ts, researchers, finding_a, finding_b, synthesis, type}]
-    "_last_cross_ref_run": 0,
-    # Meta-Research: Forschung ueber die Forschung (alle 6h)
-    "meta_research": {},            # {last_run, findings, resource_allocation, sunset_candidates}
-    "_last_meta_research": 0,
-    # Entscheidungsvorlagen: Fertig formatiert fuer GF (Ja/Nein/Testen)
-    "decision_proposals": [],       # [{id, title, source, evidence, risk, rollback, recommendation, change, status}]
-    "decision_counter": 0,
-    # Exploration-Budget: 15% fuer spekulative Forschung
-    "exploration_experiments": [],   # [{id, hypothesis, params, started, status, baseline_acc}]
-    "_last_exploration": 0,
     # Autonomes Tuning: Geschlossener Feedback-Loop fuer predictOR()
     "prediction_feedback": [],      # [{push_id, predicted_or, actual_or, methods_detail, ts}]
     "tuning_history": [],           # [{change_id, ts, params_before, params_after, acc_before, acc_after_24h, status, reasoning}]
@@ -8775,17 +8760,6 @@ def _save_tuning_state():
             "tuning_history": _research_state.get("tuning_history", []),
             "tuning_params": _research_state.get("tuning_params", {}),
             "tuning_params_version": _research_state.get("tuning_params_version", 0),
-            # Autonomes Institut: Persistierte Forschungsdaten
-            "negative_results": _research_state.get("negative_results", []),
-            "negative_results_counter": _research_state.get("negative_results_counter", 0),
-            "cross_references": _research_state.get("cross_references", []),
-            "meta_research": _research_state.get("meta_research", {}),
-            "decision_proposals": _research_state.get("decision_proposals", []),
-            "decision_counter": _research_state.get("decision_counter", 0),
-            "exploration_experiments": _research_state.get("exploration_experiments", []),
-            "arxiv_papers": _research_state.get("arxiv_papers", []),
-            "_arxiv_query_idx": _research_state.get("_arxiv_query_idx", 0),
-            "outlier_patterns": _research_state.get("outlier_patterns", {}),
         }
         tmp = _TUNING_STATE_FILE + ".tmp"
         with open(tmp, "w") as f:
@@ -8805,17 +8779,6 @@ def _load_tuning_state():
         _research_state["tuning_history"] = data.get("tuning_history", [])
         _research_state["tuning_params"] = data.get("tuning_params", {})
         _research_state["tuning_params_version"] = data.get("tuning_params_version", 0)
-        # Autonomes Institut: Persistierte Daten laden
-        _research_state["negative_results"] = data.get("negative_results", [])
-        _research_state["negative_results_counter"] = data.get("negative_results_counter", 0)
-        _research_state["cross_references"] = data.get("cross_references", [])
-        _research_state["meta_research"] = data.get("meta_research", {})
-        _research_state["decision_proposals"] = data.get("decision_proposals", [])
-        _research_state["decision_counter"] = data.get("decision_counter", 0)
-        _research_state["exploration_experiments"] = data.get("exploration_experiments", [])
-        _research_state["arxiv_papers"] = data.get("arxiv_papers", [])
-        _research_state["_arxiv_query_idx"] = data.get("_arxiv_query_idx", 0)
-        _research_state["outlier_patterns"] = data.get("outlier_patterns", {})
         # Server-Feedback-IDs rekonstruieren (verhindert Duplikate nach Neustart)
         # Migration: Alte IDs mit instabilem hash() durch stabile md5-Hashes ersetzen
         import hashlib as _hl
@@ -10160,69 +10123,6 @@ def _run_autonomous_analysis_inner():
 
 
     log.info(f"[Research] Volle Analyse FERTIG: Gen #{gen}")
-
-
-def _analyze_paper_for_improvements(state, paper, category):
-    """Claude Sonnet 4 analysiert ein hochrelevantes Paper auf konkrete Verbesserungen.
-
-    Nur fuer Papers mit Relevanz >= 4. Generiert konkrete Vorschlaege
-    die als Entscheidungsvorlage an den GF gehen.
-    """
-    try:
-        # Aktuellen System-Kontext zusammenfassen
-        acc = state.get("rolling_accuracy", 0)
-        modifiers = state.get("research_modifiers", {})
-        params = state.get("tuning_params", {})
-
-        prompt = f"""Du bist Forschungsleiter eines Push-Notification-Vorhersagesystems (XOR-Ensemble, 8 Methoden).
-
-NEUES PAPER:
-Titel: {paper['title']}
-Autoren: {paper['authors']}
-Abstract: {paper['summary']}
-
-UNSER SYSTEM:
-- 8-Methoden-Ensemble: Similarity, Keywords, Entities, Psychology, Regression, Agent-Consensus, Timing (Von-Mises), Research-Modifiers
-- Bayesian Log-Odds Fusion mit adaptiver Konfidenz
-- Aktuelle Accuracy: {acc:.1f}%
-- Aktive Modifiers: {list(modifiers.keys()) if isinstance(modifiers, dict) else 'keine'}
-
-FRAGE: Enthaelt dieses Paper konkrete Methoden/Algorithmen die unser System verbessern koennten?
-
-Antworte NUR mit JSON:
-{{"applicable": true/false, "methods": ["Methode 1", "Methode 2"], "expected_benefit": "Kurze Beschreibung", "implementation_effort": "gering/mittel/hoch", "priority": "hoch/mittel/niedrig"}}
-
-Wenn nicht anwendbar: {{"applicable": false, "reason": "Warum nicht"}}"""
-
-        result = _call_o3_json(prompt, max_tokens=500, label="Paper-Analysis")
-
-        if result.get("applicable"):
-            methods = result.get("methods", [])
-            benefit = result.get("expected_benefit", "")
-            effort = result.get("implementation_effort", "?")
-            priority = result.get("priority", "mittel")
-
-            # Entscheidungsvorlage erstellen
-            _create_decision_proposal(
-                state,
-                title=f"Paper-Insight: {', '.join(methods[:2])} aus {paper['authors']}",
-                source=f"Paper-Scout + Claude-Analyse ({category})",
-                evidence=f"Paper: \"{paper['title'][:60]}\" ({paper['authors']}, {paper['year']}). "
-                         f"Methoden: {', '.join(methods)}. {benefit}",
-                risk=f"Implementation-Aufwand: {effort}. Neuer Algorithmus muss validiert werden.",
-                rollback="Kann als Feature-Flag implementiert werden. Deaktivierung jederzeit.",
-                recommendation="24H_TESTEN" if priority == "hoch" else "VERTAGEN",
-                change_detail=f"Neue Methode(n): {', '.join(methods)}",
-                expected_impact=benefit,
-            )
-
-            log.info(f"[Paper-Scout] Paper-Analyse: {len(methods)} anwendbare Methoden gefunden (Prioritaet: {priority})")
-        else:
-            log.info(f"[Paper-Scout] Paper nicht direkt anwendbar: {result.get('reason', '?')}")
-
-    except Exception as e:
-        log.warning(f"[Paper-Scout] Paper-Analyse fehlgeschlagen: {e}")
-
 
 
 def _validate_api_response(data, push_data):
@@ -11894,35 +11794,6 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
 # ROBUSTER O3-JSON-CALL — mit Fallback + JSON-Extraktion
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _call_o3_json(prompt, max_tokens=1200, label="o3"):
-    """Ruft o3 auf, extrahiert JSON. Fallback auf gpt-4.1 bei leerer Antwort."""
-    import openai as _oai
-    _client = _oai.OpenAI(api_key=OPENAI_API_KEY)
-    resp = _client.chat.completions.create(
-        model="o3",
-        messages=[{"role": "user", "content": prompt}],
-        max_completion_tokens=max_tokens,
-    )
-    raw = (resp.choices[0].message.content or "").strip()
-    if not raw:
-        log.warning(f"[{label}] o3 leere Antwort, Fallback auf gpt-4.1")
-        resp = _client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[{"role": "system", "content": "Du bist ein Forschungsassistent. Antworte NUR mit JSON."}, {"role": "user", "content": prompt}],
-            max_tokens=max_tokens, temperature=0.7,
-        )
-        raw = (resp.choices[0].message.content or "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    json_start = raw.find("{")
-    json_end = raw.rfind("}") + 1
-    if json_start >= 0 and json_end > json_start:
-        raw = raw[json_start:json_end]
-    return json.loads(raw)
-
-
 # EXTERNE DATENQUELLEN — Wetter, Trends, Feiertage, Kontext
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -12086,112 +11957,6 @@ def _context_topic_match(push_title, trends):
             matches += 1  # Schwacher Match
     # Normalisieren: 0-1 Score
     return min(1.0, matches / 3.0)
-
-
-def _analyze_prediction_outliers(state):
-    """Analysiert die groessten Vorhersage-Fehler und extrahiert Lern-Signale.
-
-    Laeuft alle 30min. Speichert Muster in state['outlier_patterns'] die vom
-    autonomen Tuning genutzt werden koennen.
-    """
-    now_t = time.time()
-    if now_t - state.get("_last_outlier_analysis", 0) < 1800:  # 30min Cooldown
-        return
-    state["_last_outlier_analysis"] = now_t
-
-    feedback = state.get("prediction_feedback", [])
-    if len(feedback) < 50:
-        return
-
-    # Nur letzte 300 Feedbacks analysieren (vermeidet stale Patterns aus alter Modell-Version)
-    recent_feedback = feedback[-300:]
-
-    # Finde alle Outlier (|error| > 2pp)
-    outliers_under = []  # Wir haben UNTERSCHAETZT (actual >> predicted)
-    outliers_over = []   # Wir haben UEBERSCHAETZT (predicted >> actual)
-
-    for fb in recent_feedback:
-        error = fb["predicted_or"] - fb["actual_or"]
-        if error < -2.0:
-            outliers_under.append(fb)
-        elif error > 2.0:
-            outliers_over.append(fb)
-
-    if not outliers_under and not outliers_over:
-        return
-
-    # Muster-Extraktion: Was haben Outlier gemeinsam?
-    patterns = {"underpredicted": {}, "overpredicted": {}, "ts": now_t}
-
-    # Underpredicted: Welche Kategorien/Stunden werden systematisch unterschaetzt?
-    if outliers_under:
-        cat_errors = defaultdict(list)
-        hour_errors = defaultdict(list)
-        for fb in outliers_under:
-            cat = fb.get("push_cat") or fb.get("category", "")
-            hour = fb.get("push_hour") or fb.get("hour", 0)
-            err = fb["predicted_or"] - fb["actual_or"]
-            if cat:
-                cat_errors[cat].append(err)
-            hour_errors[hour].append(err)
-
-        # Systematische Unterschaetzung pro Kategorie
-        cat_bias = {}
-        for cat, errs in cat_errors.items():
-            if len(errs) >= 3:
-                avg_err = sum(errs) / len(errs)
-                cat_bias[cat] = {"avg_error": round(avg_err, 2), "n": len(errs)}
-
-        # Systematische Unterschaetzung pro Stunde
-        hour_bias = {}
-        for hour, errs in hour_errors.items():
-            if len(errs) >= 3:
-                avg_err = sum(errs) / len(errs)
-                hour_bias[str(hour)] = {"avg_error": round(avg_err, 2), "n": len(errs)}
-
-        patterns["underpredicted"] = {
-            "n": len(outliers_under),
-            "avg_error": round(sum(fb["predicted_or"] - fb["actual_or"] for fb in outliers_under) / len(outliers_under), 2),
-            "worst_titles": [fb.get("push_title", "")[:50] for fb in sorted(outliers_under, key=lambda x: x["predicted_or"] - x["actual_or"])[:5]],
-            "cat_bias": cat_bias,
-            "hour_bias": hour_bias,
-        }
-
-    # Overpredicted
-    if outliers_over:
-        cat_errors = defaultdict(list)
-        hour_errors = defaultdict(list)
-        for fb in outliers_over:
-            cat = fb.get("push_cat") or fb.get("category", "")
-            hour = fb.get("push_hour") or fb.get("hour", 0)
-            err = fb["predicted_or"] - fb["actual_or"]
-            if cat:
-                cat_errors[cat].append(err)
-            hour_errors[hour].append(err)
-
-        cat_bias = {}
-        for cat, errs in cat_errors.items():
-            if len(errs) >= 3:
-                cat_bias[cat] = {"avg_error": round(sum(errs) / len(errs), 2), "n": len(errs)}
-
-        hour_bias = {}
-        for hour, errs in hour_errors.items():
-            if len(errs) >= 3:
-                hour_bias[str(hour)] = {"avg_error": round(sum(errs) / len(errs), 2), "n": len(errs)}
-
-        patterns["overpredicted"] = {
-            "n": len(outliers_over),
-            "avg_error": round(sum(fb["predicted_or"] - fb["actual_or"] for fb in outliers_over) / len(outliers_over), 2),
-            "worst_titles": [fb.get("push_title", "")[:50] for fb in sorted(outliers_over, key=lambda x: x["actual_or"] - x["predicted_or"])[:5]],
-            "cat_bias": cat_bias,
-            "hour_bias": hour_bias,
-        }
-
-    state["outlier_patterns"] = patterns
-    n_total = len(feedback)
-    n_outliers = len(outliers_under) + len(outliers_over)
-    log.info(f"[Outlier] {n_outliers}/{n_total} Outlier (>{n_outliers/n_total*100:.0f}%): "
-             f"{len(outliers_under)} unterschaetzt, {len(outliers_over)} ueberschaetzt")
 
 
 def _build_progress_ticker(state, findings):
@@ -13611,13 +13376,6 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 "external_context": _research_state.get("external_context", {}),
                 # Progress-Ticker: Echte Events aus dem Forschungsteam
                 "progress_ticker": _build_progress_ticker(_research_state, findings),
-                # ── Autonomes Forschungsinstitut: Neue Datenfelder ──
-                "cross_references": _research_state.get("cross_references", [])[-10:],
-                "negative_results": _research_state.get("negative_results", [])[-10:],
-                "meta_research": _research_state.get("meta_research", {}),
-                "decision_proposals": [d for d in _research_state.get("decision_proposals", []) if d.get("status") == "pending"],
-                "exploration_experiments": _research_state.get("exploration_experiments", [])[-5:],
-                "arxiv_papers": _research_state.get("arxiv_papers", [])[-10:],
                 "algo_lab_progress": _research_state.get("algo_lab_progress", {}),
                 # ── Sport/NonSport Split ──
                 "sport_n": _research_state.get("_sport_n", 0),
