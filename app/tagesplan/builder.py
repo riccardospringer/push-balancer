@@ -847,3 +847,14 @@ def start_auto_sug_worker():
     """Startet den Auto-Suggestion Worker als Daemon-Thread."""
     threading.Thread(target=_auto_sug_worker, daemon=True).start()
     print("  [AutoSug] Worker gestartet (stündlich)")
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+def build_tagesplan(mode: str = "redaktion") -> dict:
+    """Öffentliche API: ML-Tagesplan bauen."""
+    return _ml_build_tagesplan(mode=mode)
+
+
+def build_tagesplan_retro() -> dict:
+    """Öffentliche API: Tagesplan-Retrospektive bauen."""
+    return _build_tagesplan_retro()
