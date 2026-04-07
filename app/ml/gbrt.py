@@ -1,18 +1,7 @@
 """app/ml/gbrt.py — GBRT-Modell (Gradient Boosted Regression Trees, reines Python).
 
 Globaler State und Trainings-/Predict-Logik.
-
-IMPLEMENTIERUNGSHINWEIS:
-    Vollständige Implementierungen aus push-balancer-server.py:
-    - Klassen _GBRTNode, _GBRTTree, GBRTModel: Zeilen 2800–3500
-    - _gbrt_train(): Trainings-Orchestrierung
-    - _gbrt_predict(): Prediction-Pipeline mit Kalibrierung + SHAP
-    - _gbrt_load_model() / _gbrt_save_model(): Persistenz via JSON
-    - _gbrt_online_update(): Online-Learning
-    - _gbrt_check_drift(): Concept Drift Detection
-    - _ab_shadow_predict(): A/B Challenger Shadow Mode
-    - _GBRTCalibrator: Isotonische Kalibrierung
-    - _gbrt_ensemble_weights, _gbrt_cat_hour_baselines, etc.
+Migration über Compat-Shim — direkte Migration folgt schrittweise.
 """
 from __future__ import annotations
 

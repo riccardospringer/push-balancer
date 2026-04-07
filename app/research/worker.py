@@ -3,61 +3,6 @@
 Bündelt den Research-Worker und alle Hilfsfunktionen aus push-balancer-server.py.
 Migration über Compat-Shim — direkte Migration folgt schrittweise.
 """
-import threading
-import logging
-
-log = logging.getLogger("push-balancer")
-
-from push_balancer_server_compat import (  # noqa: F401
-    _run_autonomous_analysis,
-    _run_autonomous_analysis_inner,
-    _fetch_push_data,
-    _fetch_external_context,
-    _generate_live_rules,
-    _build_progress_ticker,
-)
-from push_balancer_server_compat import _research_state  # noqa: F401
-
-
-def start_research_worker() -> threading.Thread:
-    """Startet den autonomen Research-Worker Thread."""
-    import push_balancer_server_compat as _compat
-    # Nutze den Worker-Start aus dem Legacy-Modul
-    pbserver = _compat._legacy
-    if hasattr(pbserver, '_research_worker'):
-        t = threading.Thread(target=pbserver._research_worker, daemon=True)
-        t.start()
-        log.info("[Research] Worker gestartet (via compat)")
-        return t
-    log.warning("[Research] _research_worker nicht gefunden im Legacy-Modul")
-    return None
-
-
-# IMPLEMENTIERUNGSHINWEIS (Original-Kommentar):
-    Vollständige Implementierungen aus push-balancer-server.py:
-    - _research_state: Globales State-Dict (push_data, findings, live_rules, etc.)
-    - _research_state_lock: Threading-Lock
-    - _run_autonomous_analysis(): Analysiert Push-Daten autonom alle 20s
-    - _compute_findings_for_subset(): Berechnet Findings-Dict aus Push-Subset
-    - _compute_temporal_trends(): Berechnet temporale Trends
-    - _compute_research_modifiers(): Berechnet Research-Modifikatoren
-    - _update_residual_corrector(): Aktualisiert Online-Bias-Korrektur
-    - _monitoring_tick(): Monitoring-Tick (Drift, MAE-Spike etc.)
-    - _health_checker(): Security & Health Checker
-    - _feed_cache_worker(): Background-Worker für Competitor + International Feeds
-    - _get_cached_feeds(): Liefert gecachte Feeds
-    - _score_push_llm(): LLM-Scoring via GPT-4o
-    - _backfill_llm_scores(): Background-Backfill aller ungescoredter Pushes
-    - _adobe_traffic_worker(): Adobe Analytics Traffic Worker
-    - _push_auto_fetch_worker(): Direkt-Fetch von bildcms.de
-    - _push_sync_worker(): Sync zu Render
-    - _auto_save_suggestions(): Stündliche Auto-Suggestion Speicherung
-
-Globale States:
-    _research_state, _health_state, _adobe_state, _push_sync_cache,
-    _xor_perf_cache, _topic_tracker, _world_event_index,
-    _residual_corrector, _model_selector_state, _auto_retrain_state
-"""
 from __future__ import annotations
 
 import logging
@@ -117,11 +62,7 @@ _xor_perf_lock = threading.Lock()
 
 
 def run_autonomous_analysis() -> None:
-    """Analysiert Push-Daten autonom — wird vom Research-Worker alle 20s aufgerufen.
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _run_autonomous_analysis()
-    """
+    """Analysiert Push-Daten autonom — wird vom Research-Worker alle 20s aufgerufen."""
     try:
         from push_balancer_server_compat import _run_autonomous_analysis  # type: ignore
         _run_autonomous_analysis()
@@ -139,11 +80,7 @@ def get_cached_feeds(feed_type: str) -> dict | list:
 
 
 def update_residual_corrector() -> None:
-    """Aktualisiert den Online-Bias-Korrektor aus der Prediction-Log-DB.
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _update_residual_corrector()
-    """
+    """Aktualisiert den Online-Bias-Korrektor aus der Prediction-Log-DB."""
     try:
         from push_balancer_server_compat import _update_residual_corrector  # type: ignore
         _update_residual_corrector()
@@ -152,11 +89,7 @@ def update_residual_corrector() -> None:
 
 
 def monitoring_tick() -> None:
-    """Monitoring-Tick: prüft Drift, MAE-Spikes, A/B-Ergebnisse etc.
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _monitoring_tick()
-    """
+    """Monitoring-Tick: prüft Drift, MAE-Spikes, A/B-Ergebnisse etc."""
     try:
         from push_balancer_server_compat import _monitoring_tick  # type: ignore
         _monitoring_tick()
@@ -165,11 +98,7 @@ def monitoring_tick() -> None:
 
 
 def build_xor_perf_cache() -> None:
-    """Baut/aktualisiert den XOR-Performance-Cache für /api/competitor-xor.
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _build_xor_perf_cache()
-    """
+    """Baut/aktualisiert den XOR-Performance-Cache für /api/competitor-xor."""
     try:
         from push_balancer_server_compat import _build_xor_perf_cache  # type: ignore
         _build_xor_perf_cache()

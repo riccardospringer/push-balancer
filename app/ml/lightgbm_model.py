@@ -2,17 +2,7 @@
 
 Globaler ML-State und Training für LightGBM + Stacking Ensemble
 (LightGBM + XGBoost + CatBoost → Ridge Meta-Learner).
-
-IMPLEMENTIERUNGSHINWEIS:
-    Vollständige Implementierungen aus push-balancer-server.py:
-    - _ml_state: Dict mit model, stats, feature_names, metrics, etc. (Zeilen 75–86)
-    - _unified_state: Dict für Stacking Ensemble (Zeilen 89–103)
-    - _ml_train_model(): LightGBM-Training mit 5-Fold TimeSeriesSplit + OOF (Zeile 6533)
-    - _unified_train(): Stacking Ensemble Training (Zeile 6533+)
-    - _train_stacking_model(): Meta-Learner Training (Ridge auf OOF-Predictions)
-    - ML_LGBM_MODEL_PATH: Pfad zum gespeicherten LightGBM-Modell
-    - Calibrator: Isotonische Kalibrierung
-    - Conformal Prediction Radius
+Migration über Compat-Shim — direkte Migration folgt schrittweise.
 """
 from __future__ import annotations
 
@@ -96,3 +86,12 @@ def train_stacking_model(research_state: dict) -> None:
         _train_stacking_model(research_state)
     except ImportError:
         log.warning("[lightgbm] train_stacking_model: Legacy-Import fehlgeschlagen")
+
+
+def monitoring_tick() -> None:
+    """Monitoring-Tick: Drift, MAE-Spikes, A/B-Ergebnisse etc."""
+    try:
+        from push_balancer_server_compat import _monitoring_tick  # type: ignore
+        _monitoring_tick()
+    except ImportError:
+        log.warning("[lightgbm] monitoring_tick: Legacy-Import fehlgeschlagen")

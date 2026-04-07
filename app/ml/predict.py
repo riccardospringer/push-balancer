@@ -1,29 +1,7 @@
 """app/ml/predict.py — predictOR-Pipeline (9 Methoden).
 
-Bündelt alle Prediction-Methoden aus push-balancer-server.py:
-
-1. GBRT-Prediction (_gbrt_predict)
-2. LightGBM-Prediction (via _ml_state)
-3. Unified/Stacking-Prediction (via _unified_state)
-4. Heuristik-Fallback (Cat×Hour Baseline)
-5. Keyword-Magnitude-Heuristik
-6. LLM-Score-Prediction
-7. Ensemble-Blending (GBRT × α + LightGBM × (1-α))
-8. Online Residual Correction
-9. Safety Envelope
-
-SICHERHEITSHINWEIS:
-    Alle Predictions sind ADVISORY_ONLY. Das System darf niemals autonom
-    Push-Benachrichtigungen senden. Alle Ergebnisse enthalten
-    advisory_only=True und action_allowed=False.
-
-IMPLEMENTIERUNGSHINWEIS:
-    Vollständige predictOR-Pipeline aus push-balancer-server.py:
-    - predictOR(): Hauptfunktion (9-Methoden-Pipeline)
-    - _safety_check() / _safety_envelope()
-    - _update_residual_corrector()
-    - Online Bias Correction via _residual_corrector
-    - _model_selector_state für GBRT vs Ensemble-Auswahl
+Bündelt alle Prediction-Methoden aus push-balancer-server.py.
+Migration über Compat-Shim — direkte Migration folgt schrittweise.
 """
 from __future__ import annotations
 
