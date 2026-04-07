@@ -148,19 +148,11 @@ def get_adobe_traffic() -> JSONResponse:
 def post_schwab_chat(body: SchwabChatRequest) -> JSONResponse:
     """Schwab-Chat: LLM-Dialog für Push-Empfehlungen.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
-        _schwab_chat() hierher migrieren.
+    Chat-Funktion noch nicht migriert — gibt Stub zurück.
     """
-    try:
-        from push_balancer_server_compat import _schwab_chat_handler  # type: ignore
-        result = _schwab_chat_handler(body.message, body.history, _research_state)
-        return JSONResponse(content=result)
-    except ImportError:
-        pass
     return JSONResponse(content={
-        "reply": "Schwab-Chat ist in der FastAPI-Migration noch nicht verfügbar.",
-        "error": "not_implemented",
+        "ok": False,
+        "message": "Chat-Funktion wird migriert",
     })
 
 
@@ -188,22 +180,10 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
 def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
     """Generiert Push-Titel-Varianten via LLM (GPT-4o).
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
-        _serve_push_title_generate() (Zeile 14148) hierher migrieren.
+    LLM-Titelfunktion noch nicht migriert — gibt Stub zurück.
     """
-    try:
-        from push_balancer_server_compat import _push_title_generate_handler  # type: ignore
-        result = _push_title_generate_handler(
-            headline=body.headline,
-            kicker=body.kicker or "",
-            category=body.category,
-            target_length=body.target_length,
-        )
-        return JSONResponse(content=result)
-    except ImportError:
-        pass
     return JSONResponse(content={
+        "ok": False,
+        "message": "LLM-Titelfunktion nicht verfügbar",
         "titles": [],
-        "error": "push-title/generate ist in der FastAPI-Migration noch nicht verfügbar.",
     })

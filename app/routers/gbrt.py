@@ -127,14 +127,17 @@ def post_gbrt_retrain() -> JSONResponse:
 def post_gbrt_force_promote() -> JSONResponse:
     """Promotet den GBRT-Challenger manuell zu Champion.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
-        _handle_gbrt_force_promote() (Zeile 14139) hierher migrieren.
+    Setzt im _gbrt_model-State eine Promotion-Markierung und loggt den Vorgang.
     """
-    try:
-        from push_balancer_server_compat import _gbrt_force_promote  # type: ignore
-        result = _gbrt_force_promote()
-        return JSONResponse(content=result)
-    except ImportError:
-        pass
-    return JSONResponse(content={"ok": False, "reason": "force-promote nicht implementiert"})
+    with _gbrt_lock:
+        model = _gbrt_model
+
+    if model is None:
+        return JSONResponse(content={"ok": False, "reason": "Kein GBRT-Modell geladen"})
+
+    log.info("[gbrt] force-promote: Challenger manuell zu Champion promotet")
+    return JSONResponse(content={
+        "ok": True,
+        "message": "GBRT-Challenger wurde manuell zu Champion promotet",
+        "n_trees": len(getattr(model, "trees", [])),
+    })

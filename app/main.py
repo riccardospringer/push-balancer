@@ -349,24 +349,18 @@ def _start_background_workers() -> None:
 
     # 8. Embedding-Modell im Hintergrund laden
     def _load_embedding_model():
-        try:
-            from push_balancer_server_compat import _load_embedding_model_background  # type: ignore
-            _load_embedding_model_background()
-        except ImportError:
-            log.info("[Embeddings] Legacy-Import nicht verfügbar, überspringe Embedding-Load")
+        log.info("[Embeddings] Embedding-Modell-Load noch nicht migriert, übersprungen")
 
     threading.Thread(target=_load_embedding_model, daemon=True).start()
     log.info("[Embeddings] Modell wird im Hintergrund geladen")
 
     # 9. LLM-Backfill Thread
     def _llm_backfill():
-        try:
-            from push_balancer_server_compat import _backfill_llm_scores  # type: ignore
-            _backfill_llm_scores()
-        except ImportError:
-            from app.config import OPENAI_API_KEY
-            if not OPENAI_API_KEY:
-                log.info("[LLM-Backfill] Kein OPENAI_API_KEY, überspringe Backfill")
+        from app.config import OPENAI_API_KEY
+        if not OPENAI_API_KEY:
+            log.info("[LLM-Backfill] Kein OPENAI_API_KEY, überspringe Backfill")
+            return
+        log.info("[LLM-Backfill] LLM-Backfill noch nicht migriert, übersprungen")
 
     threading.Thread(target=_llm_backfill, daemon=True).start()
     log.info("[LLM-Backfill] Scoring-Thread gestartet")
@@ -395,11 +389,7 @@ def _start_background_workers() -> None:
     from app.routers.misc import _adobe_state
     if _adobe_state["enabled"]:
         def _adobe_traffic_worker():
-            try:
-                from push_balancer_server_compat import _adobe_traffic_worker as _atw  # type: ignore
-                _atw()
-            except ImportError:
-                log.info("[Adobe] Legacy-Import nicht verfügbar")
+            log.info("[Adobe] Adobe Traffic-Worker noch nicht migriert, übersprungen")
 
         threading.Thread(target=_adobe_traffic_worker, daemon=True).start()
         log.info("[Adobe] Traffic-Worker gestartet (30-Min-Intervall)")
@@ -514,10 +504,8 @@ def _start_background_workers() -> None:
         log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
         while True:
             try:
-                from push_balancer_server_compat import _auto_save_suggestions  # type: ignore
+                from app.tagesplan.builder import _auto_save_suggestions
                 _auto_save_suggestions()
-            except ImportError:
-                pass
             except Exception as e:
                 log.warning("[AutoSug] Worker-Fehler: %s", e)
             time.sleep(600)

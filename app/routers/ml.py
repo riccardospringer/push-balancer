@@ -168,25 +168,21 @@ def get_ml_experiments_compare(
     })
 
 
+_ab_state: dict = {
+    "ab_active": False,
+    "champion_mae": None,
+    "challenger_mae": None,
+    "evaluated": 0,
+}
+
+
 @router.get("/api/ml/ab-status")
 def get_ml_ab_status() -> JSONResponse:
     """Liefert A/B-Test-Status des GBRT Challenger-Modells.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
-        _serve_ml_ab_status() (Zeile 14927) hierher migrieren.
+    A/B-Testing noch nicht migriert — gibt lokalen Stub-State zurück.
     """
-    try:
-        from push_balancer_server_compat import _ab_state  # type: ignore
-        return JSONResponse(content=_ab_state)
-    except ImportError:
-        pass
-    return JSONResponse(content={
-        "ab_active": False,
-        "champion_mae": None,
-        "challenger_mae": None,
-        "evaluated": 0,
-    })
+    return JSONResponse(content=_ab_state)
 
 
 @router.get("/api/ml/monitoring")

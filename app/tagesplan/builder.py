@@ -829,6 +829,124 @@ def _build_tagesplan_retro():
     return result
 
 
+# ── _auto_save_suggestions ───────────────────────────────────────────────────
+_auto_sug_last_hour: int = -1
+
+_ASG_CAT_SCORES: dict = {
+    "politik": 22,
+    "unterhaltung": 20,
+    "panorama": 21,
+    "sport": 18,
+    "wirtschaft": 19,
+    "ratgeber": 15,
+    "regional": 14,
+    "lifestyle": 13,
+    "reise": 12,
+    "auto": 11,
+}
+_ASG_HIGH_KW = {"TRUMP", "PUTIN", "UKRAINE", "KRIEG"}
+_ASG_URG_KW = {"EILMELDUNG", "TERROR", "TOD"}
+
+# Slots an denen Vorschläge erzeugt werden (ganztägig 06–23 Uhr)
+_ASG_PUSH_SLOTS = list(range(6, 24))
+
+
+def _auto_save_suggestions() -> None:
+    """Scoret aktuelle BILD-Sitemap-Artikel und speichert Top-3 pro Slot in DB."""
+    global _auto_sug_last_hour
+
+    now = datetime.datetime.now()
+    if now.hour < 6 or now.hour > 23:
+        return
+
+    # Duplikat-Guard: pro Stunde nur einmal
+    if now.hour == _auto_sug_last_hour:
+        return
+    _auto_sug_last_hour = now.hour
+
+    try:
+        from app.routers.feed import _fetch_url
+        from app.config import BILD_SITEMAP
+        from app.database import save_tagesplan_suggestions
+
+        xml_bytes = _fetch_url(BILD_SITEMAP)
+        if not xml_bytes:
+            log.warning("[AutoSug] BILD Sitemap nicht erreichbar")
+            return
+
+        # Sitemap XML parsen (news:news Format)
+        import xml.etree.ElementTree as ET
+        try:
+            root = ET.fromstring(xml_bytes.decode("utf-8", errors="replace"))
+        except ET.ParseError as pe:
+            log.warning("[AutoSug] Sitemap XML-Fehler: %s", pe)
+            return
+
+        ns_sitemap = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        ns_news = {"news": "http://www.google.com/schemas/sitemap-news/0.9"}
+
+        articles: list[dict] = []
+        for url_el in root.findall("sm:url", ns_sitemap):
+            loc = (url_el.findtext("sm:loc", "", ns_sitemap) or "").strip()
+            news_el = url_el.find("news:news", ns_news)
+            if news_el is None:
+                continue
+            title = (news_el.findtext("news:title", "", ns_news) or "").strip()
+            pub_date = (news_el.findtext("news:publication_date", "", ns_news) or "").strip()
+            if not title or not loc:
+                continue
+
+            # Kategorie aus URL ableiten
+            cat = "news"
+            loc_lower = loc.lower()
+            for cat_key in _ASG_CAT_SCORES:
+                if f"/{cat_key}/" in loc_lower or loc_lower.endswith(f"/{cat_key}"):
+                    cat = cat_key
+                    break
+
+            # Heuristik-Score berechnen
+            score = _ASG_CAT_SCORES.get(cat, 10)
+            title_upper = title.upper()
+            for kw in _ASG_HIGH_KW:
+                if kw in title_upper:
+                    score += 4
+            for kw in _ASG_URG_KW:
+                if kw in title_upper:
+                    score += 5
+
+            articles.append({
+                "title": title,
+                "link": loc,
+                "cat": cat,
+                "score": float(score),
+                "expected_or": 0.0,
+                "best_cat": cat,
+                "pub_date": pub_date,
+            })
+
+        if not articles:
+            log.info("[AutoSug] Keine Artikel in Sitemap gefunden")
+            return
+
+        date_iso = now.strftime("%Y-%m-%d")
+        articles_by_score = sorted(articles, key=lambda a: a["score"], reverse=True)
+
+        saved_slots = 0
+        for slot_hour in _ASG_PUSH_SLOTS:
+            top3 = articles_by_score[:3]
+            if top3:
+                save_tagesplan_suggestions(date_iso, slot_hour, top3)
+                saved_slots += 1
+
+        log.info(
+            "[AutoSug] %d Artikel gescort, %d Slots gespeichert (Stunde %d)",
+            len(articles), saved_slots, now.hour,
+        )
+
+    except Exception as exc:
+        log.warning("[AutoSug] _auto_save_suggestions Fehler: %s", exc)
+
+
 # ── _auto_sug_worker ──────────────────────────────────────────────────────────
 def _auto_sug_worker():
     import time as _asw_t
@@ -836,7 +954,6 @@ def _auto_sug_worker():
     log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
     while True:
         try:
-            from push_balancer_server_compat import _auto_save_suggestions  # type: ignore
             _auto_save_suggestions()
         except Exception as _asw_e:
             log.warning(f"[AutoSug] Worker-Fehler: {_asw_e}")

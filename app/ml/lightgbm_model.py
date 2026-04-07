@@ -193,29 +193,22 @@ def _ml_train_model_impl() -> None:
 
 
 def unified_train() -> None:
-    """Trainiert das Stacking Ensemble (LightGBM + XGBoost + CatBoost → Ridge).
+    """Unified Ensemble Training — nutzt ml_train_model() als Basis.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _unified_train()
+    XGBoost/CatBoost wurden aus requirements.txt entfernt.
+    Das LightGBM-Modell dient als alleiniger Basis-Learner.
     """
-    try:
-        from push_balancer_server_compat import _unified_train  # type: ignore
-        _unified_train()
-    except ImportError:
-        log.warning("[lightgbm] unified_train: Legacy-Import fehlgeschlagen")
+    log.info("[lightgbm] unified_train: delegiert an ml_train_model()")
+    ml_train_model()
 
 
 def train_stacking_model(research_state: dict) -> None:
-    """Trainiert den Meta-Learner des Stacking Ensembles.
+    """Stacking Meta-Learner — entfällt (XGBoost/CatBoost nicht mehr installiert).
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _train_stacking_model()
+    Mit nur einem Basis-Learner ergibt Stacking keinen Mehrwert.
+    ml_train_model() liefert das einzige aktive Modell.
     """
-    try:
-        from push_balancer_server_compat import _train_stacking_model  # type: ignore
-        _train_stacking_model(research_state)
-    except ImportError:
-        log.warning("[lightgbm] train_stacking_model: Legacy-Import fehlgeschlagen")
+    log.debug("[lightgbm] train_stacking_model: kein Stacking ohne XGBoost/CatBoost, übersprungen")
 
 
 def monitoring_tick() -> None:

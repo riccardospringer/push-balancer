@@ -868,24 +868,194 @@ def update_residual_corrector() -> None:
         log.warning("[ResidualCorrector] Berechnungsfehler: %s", exc)
 
 
+_XOR_STOP_WORDS = {
+    "der", "die", "das", "und", "oder", "ist", "war", "hat", "ein", "eine",
+    "von", "für", "mit", "auf", "an", "im", "zu", "am",
+}
+
+
 def monitoring_tick() -> None:
-    """Monitoring-Tick: prüft Drift, MAE-Spikes, A/B-Ergebnisse etc."""
+    """Monitoring-Tick: berechnet MAE-Statistiken, Calibration-Bias und aktualisiert Residual-Corrector."""
     try:
-        from push_balancer_server_compat import _monitoring_tick  # type: ignore
-        _monitoring_tick()
-    except ImportError:
-        pass
+        from app.config import PUSH_DB_PATH
+        now_ts = int(time.time())
+        ts_24h = now_ts - 86400
+        ts_7d = now_ts - 7 * 86400
+
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+
+        # MAE 24h
+        rows_24h = conn.execute(
+            "SELECT predicted_or, actual_or, predicted_at FROM prediction_log "
+            "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at >= ?",
+            (ts_24h,),
+        ).fetchall()
+
+        # MAE 7d
+        rows_7d = conn.execute(
+            "SELECT predicted_or, actual_or, predicted_at FROM prediction_log "
+            "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at >= ?",
+            (ts_7d,),
+        ).fetchall()
+
+        # Calibration-Bias: letzte 100 Predictions (signed error)
+        rows_bias = conn.execute(
+            "SELECT predicted_or, actual_or FROM prediction_log "
+            "WHERE actual_or > 0 AND predicted_or > 0 "
+            "ORDER BY predicted_at DESC LIMIT 100",
+        ).fetchall()
+
+        conn.close()
+
+        mae_24h = 0.0
+        if rows_24h:
+            mae_24h = round(sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_24h) / len(rows_24h), 3)
+
+        mae_7d = 0.0
+        if rows_7d:
+            mae_7d = round(sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_7d) / len(rows_7d), 3)
+
+        # Stündlicher MAE-Trend (letzte 24h, nach Stunde gebucketed)
+        hour_errors: dict = defaultdict(list)
+        for r in rows_24h:
+            h = datetime.datetime.fromtimestamp(r["predicted_at"]).hour
+            hour_errors[h].append(abs(r["predicted_or"] - r["actual_or"]))
+        mae_trend = {h: round(sum(e) / len(e), 3) for h, e in hour_errors.items() if e}
+
+        # Calibration-Bias (mittlerer signed error)
+        calibration_bias = 0.0
+        if rows_bias:
+            calibration_bias = round(
+                sum(r["predicted_or"] - r["actual_or"] for r in rows_bias) / len(rows_bias), 4
+            )
+
+        # Residual Corrector aktualisieren
+        update_residual_corrector()
+
+        # Ergebnisse in _research_state schreiben
+        with _research_state_lock:
+            _research_state["mae_24h"] = mae_24h
+            _research_state["mae_7d"] = mae_7d
+            _research_state["mae_trend"] = mae_trend
+            _research_state["calibration_bias"] = calibration_bias
+            _research_state["monitoring_last_ts"] = now_ts
+
+        if mae_24h > 2.0:
+            log.warning(
+                "[monitoring_tick] MAE verschlechtert: mae_24h=%.3f (Schwellwert 2.0), mae_7d=%.3f",
+                mae_24h, mae_7d,
+            )
+        else:
+            log.info(
+                "[monitoring_tick] mae_24h=%.3f, mae_7d=%.3f, bias=%+.4f, n_24h=%d",
+                mae_24h, mae_7d, calibration_bias, len(rows_24h),
+            )
     except Exception as exc:
         log.warning("[research] monitoring_tick Fehler: %s", exc)
 
 
 def build_xor_perf_cache() -> None:
-    """Baut/aktualisiert den XOR-Performance-Cache für /api/competitor-xor."""
+    """Baut XOR-Performance-Cache aus historischer Push-Daten."""
     try:
-        from push_balancer_server_compat import _build_xor_perf_cache  # type: ignore
-        _build_xor_perf_cache()
-    except ImportError:
-        pass
+        from app.database import push_db_load_all
+
+        # Daten laden: aus State wenn frisch, sonst direkt aus DB
+        push_data = _research_state.get("push_data") or []
+        if len(push_data) < 100:
+            push_data = push_db_load_all()
+
+        # Filtere: OR > 0 und OR <= 25
+        valid = [p for p in push_data if 0 < p.get("or", 0) <= 25]
+
+        if len(valid) < 100:
+            log.info("[build_xor_perf_cache] Zu wenig Daten (%d), Cache nicht gebaut", len(valid))
+            return
+
+        # ── word_perf ──────────────────────────────────────────────────────
+        word_ors: dict = defaultdict(list)
+        for p in valid:
+            title_lower = (p.get("title") or "").lower()
+            tokens = re.findall(r"[a-zäöüß]{3,}", title_lower)
+            for tok in tokens:
+                if tok not in _XOR_STOP_WORDS:
+                    word_ors[tok].append(p["or"])
+
+        word_perf: dict = {}
+        for word, ors in word_ors.items():
+            if len(ors) < 5:
+                continue
+            ors_sorted = sorted(ors)
+            n = len(ors_sorted)
+            avg = sum(ors_sorted) / n
+            p25 = ors_sorted[int(n * 0.25)]
+            p75 = ors_sorted[int(n * 0.75)]
+            p90 = ors_sorted[int(n * 0.90)]
+            word_perf[word] = {
+                "avg": round(avg, 3),
+                "count": n,
+                "p25": round(p25, 3),
+                "p75": round(p75, 3),
+                "p90": round(p90, 3),
+            }
+
+        # ── cat_hour_perf ─────────────────────────────────────────────────
+        cat_hour_ors: dict = defaultdict(list)
+        for p in valid:
+            cat = p.get("cat") or "News"
+            hour = p.get("hour", 0)
+            key = f"{cat}_{hour}"
+            cat_hour_ors[key].append(p["or"])
+
+        cat_hour_perf: dict = {}
+        for key, ors in cat_hour_ors.items():
+            if len(ors) < 3:
+                continue
+            ors_sorted = sorted(ors)
+            n = len(ors_sorted)
+            avg = sum(ors_sorted) / n
+            p25 = ors_sorted[int(n * 0.25)]
+            p50 = ors_sorted[int(n * 0.50)]
+            p75 = ors_sorted[int(n * 0.75)]
+            cat_hour_perf[key] = {
+                "avg": round(avg, 3),
+                "p25": round(p25, 3),
+                "p50": round(p50, 3),
+                "p75": round(p75, 3),
+                "count": n,
+            }
+
+        # ── eil_perf ───────────────────────────────────────────────────────
+        eil_ors = [p["or"] for p in valid if p.get("is_eilmeldung") or
+                   any(m in (p.get("title") or "").lower() for m in ("eilmeldung", "+++", "breaking"))]
+        eil_perf: dict = {}
+        if eil_ors:
+            eil_sorted = sorted(eil_ors)
+            ne = len(eil_sorted)
+            eil_perf = {
+                "avg": round(sum(eil_sorted) / ne, 3),
+                "count": ne,
+                "p25": round(eil_sorted[int(ne * 0.25)], 3),
+                "p75": round(eil_sorted[int(ne * 0.75)], 3),
+                "p90": round(eil_sorted[int(ne * 0.90)], 3),
+            }
+
+        # ── global_avg ─────────────────────────────────────────────────────
+        global_avg = round(sum(p["or"] for p in valid) / len(valid), 3)
+
+        # Thread-safe schreiben
+        with _xor_perf_lock:
+            _xor_perf_cache["word_perf"] = word_perf
+            _xor_perf_cache["cat_hour_perf"] = cat_hour_perf
+            _xor_perf_cache["eil_perf"] = eil_perf
+            _xor_perf_cache["global_avg"] = global_avg
+            _xor_perf_cache["built_at"] = time.time()
+
+        log.info(
+            "[build_xor_perf_cache] Fertig: %d Wörter, %d Cat-Hour-Slots, global_avg=%.2f%%, n=%d",
+            len(word_perf), len(cat_hour_perf), global_avg, len(valid),
+        )
     except Exception as exc:
         log.warning("[research] build_xor_perf_cache Fehler: %s", exc)
 

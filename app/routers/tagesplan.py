@@ -79,16 +79,48 @@ def get_tagesplan_history(
 ) -> JSONResponse:
     """Liefert historische Tagesplan-Performance-Daten.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py: _serve_tagesplan_history()
-        (Zeile 15041) hierher migrieren.
+    Lädt die letzten `days` Tage Push-Daten aus der DB, gruppiert nach Tag
+    und Stunde und berechnet Durchschnitts-OR pro Slot.
     """
+    import sqlite3
+    import datetime
+    from app.database import PUSH_DB_PATH
+
     try:
-        from push_balancer_server_compat import _serve_tagesplan_history_data  # type: ignore
-        return JSONResponse(content=_serve_tagesplan_history_data(days))
-    except ImportError:
-        pass
-    return JSONResponse(content={"days": days, "slots": [], "loading": False})
+        cutoff_ts = int(
+            (datetime.datetime.now() - datetime.timedelta(days=days)).timestamp()
+        )
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT
+                date(ts_num, 'unixepoch', 'localtime') AS date,
+                hour,
+                AVG(or_val) AS avg_or,
+                COUNT(*) AS n_pushes
+            FROM pushes
+            WHERE ts_num >= ? AND or_val > 0
+            GROUP BY date, hour
+            ORDER BY date, hour
+            """,
+            (cutoff_ts,),
+        ).fetchall()
+        conn.close()
+
+        slots = [
+            {
+                "date": r["date"],
+                "hour": r["hour"],
+                "avg_or": round(r["avg_or"], 2),
+                "n_pushes": r["n_pushes"],
+            }
+            for r in rows
+        ]
+        return JSONResponse(content={"days": days, "slots": slots, "loading": False})
+    except Exception as e:
+        log.exception("[tagesplan] Fehler in get_tagesplan_history")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.get("/api/tagesplan/suggestions")

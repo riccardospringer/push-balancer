@@ -35,14 +35,6 @@ def get_forschung() -> JSONResponse:
         - Ticker-Einträge
         - Live-Rules
     """
-    try:
-        from push_balancer_server_compat import PushBalancerHandler  # type: ignore
-        # Die Forschungs-Logik ist sehr komplex — delegiere an Legacy-Handler
-        # bis zur vollständigen Migration
-        pass
-    except ImportError:
-        pass
-
     if not _research_state.get("push_data"):
         return JSONResponse(content={
             "accuracy": 0, "accuracy_trend": 0, "accuracy_target": 99.5,
