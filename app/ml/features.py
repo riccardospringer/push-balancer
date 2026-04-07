@@ -20,6 +20,11 @@ from app.scoring.magnitude import keyword_magnitude_heuristic as _keyword_magnit
 
 log = logging.getLogger("push-balancer")
 
+# ── Module-level Singleton für CharNGramTFIDF ────────────────────────────────
+# Wird beim ersten Aufruf von _gbrt_extract_features lazy initialisiert.
+# Kein Monolith-Import erforderlich — lebt vollständig in features.py.
+_char_ngram_tfidf = None  # type: ignore[assignment]
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ══ GBRT: Gradient Boosted Regression Trees (pure Python, kein numpy) ═══════
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,17 +159,29 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     Returns:
         Dict mit Feature-Name → Float-Wert
     """
-    # Lazy-import globaler Objekte aus dem Legacy-Monolithen (werden dort als module-level globals gehalten)
-    import push_balancer_server as _srv  # type: ignore
-    _char_ngram_tfidf = getattr(_srv, "_char_ngram_tfidf", None)
-    _embedding_model = getattr(_srv, "_embedding_model", None)
-    _embedding_pca = getattr(_srv, "_embedding_pca", None)
-    _embedding_pca_mean = getattr(_srv, "_embedding_pca_mean", None)
-    _external_context_cache = getattr(_srv, "_external_context_cache", {})
-    _context_topic_match = getattr(_srv, "_context_topic_match", lambda t, tr: 0.0)
-    _compute_embedding_features = getattr(_srv, "_compute_embedding_features", None)
-    _get_embedding = getattr(_srv, "_get_embedding", None)
-    _cosine_similarity = getattr(_srv, "_cosine_similarity", None)
+    # CharNGramTFIDF: Singleton, wird beim ersten Aufruf aus core_classes initialisiert.
+    # Das Objekt wird in _char_ngram_tfidf (module-level) gecacht — kein Monolith-Import nötig.
+    global _char_ngram_tfidf
+    if _char_ngram_tfidf is None:
+        try:
+            from app.ml.core_classes import CharNGramTFIDF as _CharNGramTFIDF
+            _char_ngram_tfidf = _CharNGramTFIDF()
+        except Exception:
+            _char_ngram_tfidf = None  # Graceful Degradation: TF-IDF Features = 0
+
+    # Embedding-Features: Optional — Monolith nicht verfügbar → 0-Fallback.
+    # _embedding_model, _get_embedding, _cosine_similarity, _compute_embedding_features
+    # und _embedding_pca werden NICHT mehr aus push_balancer_server importiert.
+    # Alle Feature-Gruppen die davon abhängen liefern 0-Werte (graceful degradation).
+    _embedding_model = None
+    _embedding_pca = None
+    _embedding_pca_mean = None
+    _get_embedding = None
+    _cosine_similarity = None
+    _compute_embedding_features = None
+    _external_context_cache: dict = {}
+    _context_topic_match = lambda t, tr: 0.0  # noqa: E731
+
     try:
         import numpy as np
     except ImportError:
