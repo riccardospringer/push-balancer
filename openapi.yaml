@@ -3,25 +3,29 @@ openapi: 3.0.3
 info:
   title: Push Balancer API
   description: |
-    ML-gestützte API für BILD Push-Notification-Optimierung.
+    ML-powered advisory API for optimising BILD push notification scheduling.
 
-    Der Push Balancer analysiert historische Push-Daten, prognostiziert Opening Rates (OR)
-    via Gradient Boosted Trees und Stacking Ensemble (LightGBM + XGBoost + CatBoost → Ridge),
-    und liefert tagesaktuelle Empfehlungen für Redaktion und Sport.
+    The Push Balancer analyses historical push data, predicts expected Opening Rates (OR)
+    using Gradient Boosted Trees and a Stacking Ensemble (LightGBM → Ridge Meta-Learner),
+    and delivers daily slot recommendations for editorial and sport desks.
 
-    **Safety**: Alle Vorhersagen sind ausschließlich beratend (ADVISORY_ONLY). Das System
-    darf niemals autonom Push-Benachrichtigungen versenden. Jede Prediction enthält
-    `advisoryOnly: true` und `actionAllowed: false`.
+    **Safety**: All predictions are strictly advisory (ADVISORY_ONLY). The system must
+    never send push notifications autonomously. Every prediction includes
+    `advisoryOnly: true` and `actionAllowed: false`.
   version: 2.4.0
   contact:
     name: BILD Digital Produkt
+    url: https://github.com/spring-media/push-balancer
     email: push-balancer@axelspringer.com
 
 servers:
   - url: http://localhost:8050
-    description: Lokaler Entwicklungsserver
+    description: Local development server
   - url: https://push-balancer.onrender.com
-    description: Render Cloud Deployment
+    description: Render cloud deployment
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: system
@@ -2696,7 +2700,7 @@ components:
             detail: "ML status error: model not initialized"
 
     BadGateway:
-      description: Upstream-Fehler (externe API nicht erreichbar)
+      description: Upstream error (external API not reachable)
       content:
         application/json:
           schema:
@@ -2706,3 +2710,13 @@ components:
             title: "Bad Gateway"
             status: 502
             detail: "Proxy error: Connection timeout"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Authentication is handled by UAA (Unified Authentication and Authorization).
+        All requests from users must include a valid Bearer token issued by UAA.
+        Backend-to-backend communication within the Kubernetes cluster requires no token.
