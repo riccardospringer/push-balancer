@@ -53,24 +53,6 @@ try:
 except (ImportError, OSError):
     pass
 
-# XGBoost für Stacking Ensemble
-_XGB_AVAILABLE = False
-_xgb = None
-try:
-    import xgboost as _xgb
-    _XGB_AVAILABLE = True
-except (ImportError, OSError):
-    pass
-
-# CatBoost für Stacking Ensemble
-_CATBOOST_AVAILABLE = False
-_cb = None
-try:
-    import catboost as _cb
-    _CATBOOST_AVAILABLE = True
-except (ImportError, OSError):
-    pass
-
 # ── ML State (LightGBM + SHAP) ──────────────────────────────────────────
 _ml_state = {
     "model": None,
@@ -97,9 +79,6 @@ _unified_state = {
     "last_train_ts": 0,
     "training": False,
     # Stacking Ensemble
-    "base_models": {},       # {"lgb": model, "xgb": model, "catboost": model}
-    "meta_model": None,      # Ridge Meta-Learner
-    "stacking_active": False, # True wenn Stacking besser als single LightGBM
 }
 _unified_lock = threading.Lock()
 
@@ -6865,233 +6844,12 @@ def _unified_train():
 
         model.fit(X_train, y_train, sample_weight=sample_weights)
 
-        # Single-LightGBM Metriken (Baseline für Stacking-Vergleich)
         y_pred_test_single = model.predict(X_test)
         single_mae = float(mean_absolute_error(y_test, y_pred_test_single))
         log.info(f"[Unified] Single LightGBM MAE={single_mae:.4f}")
 
-        # ── Stacking Ensemble ────────────────────────────────────────────────
-        stacking_active = False
-        base_models = {}
-        meta_model = None
-        stacking_mae = None
-
-        # Prüfe welche Base Learner verfügbar sind
-        available_learners = []
-        if _use_lgb:
-            available_learners.append("lgb")
-        try:
-            import xgboost as xgb_lib
-            available_learners.append("xgb")
-        except (ImportError, OSError):
-            log.info("[Unified] XGBoost nicht verfügbar, übersprungen für Stacking")
-        try:
-            import catboost as cb_lib
-            available_learners.append("catboost")
-        except (ImportError, OSError):
-            log.info("[Unified] CatBoost nicht verfügbar, übersprungen für Stacking")
-
-        if len(available_learners) >= 2 and len(X_train) >= 200:
-            log.info(f"[Unified] Stacking mit {len(available_learners)} Base Learnern: {available_learners}")
-
-            try:
-                from sklearn.linear_model import Ridge
-                from sklearn.model_selection import TimeSeriesSplit
-
-                n_folds = 5
-                tscv = TimeSeriesSplit(n_splits=n_folds)
-                oof_preds = {name: np.zeros(len(X_train)) for name in available_learners}
-                oof_filled = np.zeros(len(X_train), dtype=bool)
-
-                # ── OOF-Predictions (5-Fold TimeSeries) ──────────────────────
-                for fold_i, (tr_idx, va_idx) in enumerate(tscv.split(X_train)):
-                    X_tr_fold = X_train[tr_idx]
-                    y_tr_fold = y_train[tr_idx]
-                    sw_fold = sample_weights[tr_idx]
-                    X_va_fold = X_train[va_idx]
-
-                    # LightGBM
-                    if "lgb" in available_learners:
-                        try:
-                            m_lgb = lgb.LGBMRegressor(
-                                **best_params, verbose=-1, n_jobs=2,
-                            )
-                            m_lgb.fit(X_tr_fold, y_tr_fold, sample_weight=sw_fold)
-                            oof_preds["lgb"][va_idx] = m_lgb.predict(X_va_fold)
-                        except Exception as e:
-                            log.warning(f"[Unified] LGB Fold {fold_i} Fehler: {e}")
-                            oof_preds["lgb"][va_idx] = np.mean(y_tr_fold)
-
-                    # XGBoost
-                    if "xgb" in available_learners:
-                        try:
-                            m_xgb = xgb_lib.XGBRegressor(
-                                n_estimators=best_params["n_estimators"],
-                                learning_rate=best_params["learning_rate"] * 1.15,
-                                max_depth=min(best_params["max_depth"], 8),
-                                subsample=min(best_params["subsample"] + 0.05, 0.95),
-                                colsample_bytree=max(best_params.get("colsample_bytree", 0.7) - 0.1, 0.3),
-                                reg_lambda=best_params["reg_lambda"] * 0.8,
-                                reg_alpha=best_params.get("reg_alpha", 0.1) * 1.5,
-                                gamma=best_params.get("min_split_gain", 0.1) * 0.5,
-                                verbosity=0, n_jobs=2,
-                            )
-                            m_xgb.fit(X_tr_fold, y_tr_fold, sample_weight=sw_fold)
-                            oof_preds["xgb"][va_idx] = m_xgb.predict(X_va_fold)
-                        except Exception as e:
-                            log.warning(f"[Unified] XGB Fold {fold_i} Fehler: {e}")
-                            oof_preds["xgb"][va_idx] = np.mean(y_tr_fold)
-
-                    # CatBoost
-                    if "catboost" in available_learners:
-                        try:
-                            m_cb = cb_lib.CatBoostRegressor(
-                                iterations=best_params["n_estimators"],
-                                learning_rate=best_params["learning_rate"] * 0.9,
-                                depth=min(best_params["max_depth"], 6),
-                                l2_leaf_reg=best_params["reg_lambda"] * 1.2,
-                                subsample=max(best_params["subsample"] - 0.05, 0.5),
-                                random_strength=best_params.get("reg_alpha", 0.5) * 0.8,
-                                bagging_temperature=0.5,
-                                verbose=0, thread_count=2,
-                            )
-                            m_cb.fit(X_tr_fold, y_tr_fold, sample_weight=sw_fold)
-                            oof_preds["catboost"][va_idx] = m_cb.predict(X_va_fold)
-                        except Exception as e:
-                            log.warning(f"[Unified] CatBoost Fold {fold_i} Fehler: {e}")
-                            oof_preds["catboost"][va_idx] = np.mean(y_tr_fold)
-
-                    oof_filled[va_idx] = True
-
-                log.info(f"[Unified] OOF-Predictions: {int(oof_filled.sum())}/{len(X_train)} Samples")
-
-                # ── 3 finale Base Models auf gesamtem X_train ────────────────
-                if "lgb" in available_learners:
-                    base_models["lgb"] = lgb.LGBMRegressor(
-                        **best_params, verbose=-1, n_jobs=2,
-                    )
-                    base_models["lgb"].fit(X_train, y_train, sample_weight=sample_weights)
-                    log.info("[Unified] Base Model LightGBM trainiert")
-
-                if "xgb" in available_learners:
-                    base_models["xgb"] = xgb_lib.XGBRegressor(
-                        n_estimators=best_params["n_estimators"],
-                        learning_rate=best_params["learning_rate"] * 1.15,
-                        max_depth=min(best_params["max_depth"], 8),
-                        subsample=min(best_params["subsample"] + 0.05, 0.95),
-                        colsample_bytree=max(best_params.get("colsample_bytree", 0.7) - 0.1, 0.3),
-                        reg_lambda=best_params["reg_lambda"] * 0.8,
-                        reg_alpha=best_params.get("reg_alpha", 0.1) * 1.5,
-                        gamma=best_params.get("min_split_gain", 0.1) * 0.5,
-                        verbosity=0, n_jobs=2,
-                    )
-                    base_models["xgb"].fit(X_train, y_train, sample_weight=sample_weights)
-                    log.info("[Unified] Base Model XGBoost trainiert")
-
-                if "catboost" in available_learners:
-                    base_models["catboost"] = cb_lib.CatBoostRegressor(
-                        iterations=best_params["n_estimators"],
-                        learning_rate=best_params["learning_rate"] * 0.9,
-                        depth=min(best_params["max_depth"], 6),
-                        l2_leaf_reg=best_params["reg_lambda"] * 1.2,
-                        subsample=max(best_params["subsample"] - 0.05, 0.5),
-                        random_strength=best_params.get("reg_alpha", 0.5) * 0.8,
-                        bagging_temperature=0.5,
-                        verbose=0, thread_count=2,
-                    )
-                    base_models["catboost"].fit(X_train, y_train, sample_weight=sample_weights)
-                    log.info("[Unified] Base Model CatBoost trainiert")
-
-                # ── Ridge Meta-Learner auf OOF-Predictions ───────────────────
-                # Nur Samples nehmen die in mind. einem OOF-Fold waren
-                mask = oof_filled
-                if mask.sum() > 50:
-                    # Meta-Features: OOF-Predictions + hour/weekday als Context
-                    meta_cols = [oof_preds[name][mask] for name in available_learners]
-                    # hour und weekday aus Feature-Matrix extrahieren (falls vorhanden)
-                    hour_idx = feature_names.index("hour") if "hour" in feature_names else None
-                    wday_idx = feature_names.index("weekday") if "weekday" in feature_names else None
-                    if hour_idx is not None:
-                        meta_cols.append(X_train[mask, hour_idx])
-                    if wday_idx is not None:
-                        meta_cols.append(X_train[mask, wday_idx])
-                    X_meta = np.column_stack(meta_cols)
-                    y_meta = y_train[mask]
-
-                    # Alpha Grid-Search auf Validation-Set
-                    best_alpha = 1.0
-                    best_meta_mae = float("inf")
-                    # Validation-Set Predictions der finalen Base Models
-                    val_base_preds = [base_models[name].predict(X_val) for name in available_learners]
-                    val_meta_cols = list(val_base_preds)
-                    if hour_idx is not None:
-                        val_meta_cols.append(X_val[:, hour_idx])
-                    if wday_idx is not None:
-                        val_meta_cols.append(X_val[:, wday_idx])
-                    X_val_meta = np.column_stack(val_meta_cols)
-
-                    for alpha in [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]:
-                        ridge = Ridge(alpha=alpha)
-                        ridge.fit(X_meta, y_meta)
-                        val_pred = ridge.predict(X_val_meta)
-                        val_mae = float(mean_absolute_error(y_val, val_pred))
-                        if val_mae < best_meta_mae:
-                            best_meta_mae = val_mae
-                            best_alpha = alpha
-
-                    meta_model = Ridge(alpha=best_alpha)
-                    meta_model.fit(X_meta, y_meta)
-                    # Meta-Learner Gewichte loggen
-                    weight_names = list(available_learners)
-                    if hour_idx is not None:
-                        weight_names.append("hour")
-                    if wday_idx is not None:
-                        weight_names.append("weekday")
-                    weights_str = ", ".join(f"{n}={w:.3f}" for n, w in zip(weight_names, meta_model.coef_))
-                    log.info(f"[Unified] Ridge Meta-Learner: alpha={best_alpha}, weights=[{weights_str}], "
-                             f"intercept={meta_model.intercept_:.3f}")
-
-                    # ── Test-Set Evaluation: Stacking vs Single ──────────────
-                    test_base_preds = [base_models[name].predict(X_test) for name in available_learners]
-                    test_meta_cols = list(test_base_preds)
-                    if hour_idx is not None:
-                        test_meta_cols.append(X_test[:, hour_idx])
-                    if wday_idx is not None:
-                        test_meta_cols.append(X_test[:, wday_idx])
-                    X_test_meta = np.column_stack(test_meta_cols)
-                    y_pred_stacking = meta_model.predict(X_test_meta)
-                    stacking_mae = float(mean_absolute_error(y_test, y_pred_stacking))
-
-                    log.info(f"[Unified] Stacking MAE={stacking_mae:.4f} vs Single LightGBM MAE={single_mae:.4f}")
-
-                    # Safety: Stacking nur aktivieren wenn besser
-                    if stacking_mae <= single_mae * 1.02:  # max 2% Toleranz
-                        stacking_active = True
-                        log.info(f"[Unified] Stacking Ensemble AKTIVIERT ({len(base_models)} Base Models)")
-                    else:
-                        log.warning(f"[Unified] Stacking schlechter als Single LightGBM, Fallback auf Single")
-                        base_models = {}
-                        meta_model = None
-                else:
-                    log.warning(f"[Unified] Zu wenig OOF-Samples ({mask.sum()}), Stacking übersprungen")
-
-            except ImportError as ie:
-                log.warning(f"[Unified] Stacking-Abhängigkeit fehlt: {ie}")
-            except Exception as se:
-                log.warning(f"[Unified] Stacking-Fehler: {se}")
-                import traceback
-                log.warning(traceback.format_exc())
-        else:
-            if len(available_learners) < 2:
-                log.info(f"[Unified] Nur {len(available_learners)} Learner verfügbar, Stacking übersprungen")
-
-        # ── Metriken: Verwende Stacking-Predictions wenn aktiv ───────────────
-        if stacking_active and stacking_mae is not None:
-            y_pred_test = meta_model.predict(X_test_meta)
-            mae = stacking_mae
-        else:
-            y_pred_test = y_pred_test_single
-            mae = single_mae
+        y_pred_test = y_pred_test_single
+        mae = single_mae
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
         r2 = float(r2_score(y_test, y_pred_test))
 
@@ -7099,11 +6857,7 @@ def _unified_train():
         unified_calibrator = None
         try:
             from sklearn.isotonic import IsotonicRegression
-            # Calibration auf Val-Set: Stacking oder Single
-            if stacking_active and meta_model is not None:
-                y_pred_val_cal = meta_model.predict(X_val_meta)
-            else:
-                y_pred_val_cal = model.predict(X_val)
+            y_pred_val_cal = model.predict(X_val)
             iso = IsotonicRegression(out_of_bounds="clip")
             iso.fit(y_pred_val_cal, y_val)
             unified_calibrator = iso
@@ -7118,10 +6872,7 @@ def _unified_train():
         # Conformal Prediction (Q10/Q90)
         conformal_radius = 1.0
         try:
-            if stacking_active and meta_model is not None:
-                y_pred_val_conf = meta_model.predict(X_val_meta)
-            else:
-                y_pred_val_conf = model.predict(X_val)
+            y_pred_val_conf = model.predict(X_val)
             if unified_calibrator:
                 y_pred_val_conf = unified_calibrator.predict(y_pred_val_conf)
             residuals = sorted(abs(y_pred_val_conf[i] - y_val[i]) for i in range(len(y_val)))
@@ -7149,26 +6900,12 @@ def _unified_train():
 
         elapsed = time.time() - t0
 
-        # Stacking-Meta-Info für Metrics
-        stacking_info = {"active": stacking_active, "n_base_models": len(base_models)}
-        if stacking_active and stacking_mae is not None:
-            stacking_info["stacking_mae"] = round(stacking_mae, 4)
-            stacking_info["single_lgb_mae"] = round(single_mae, 4)
-            stacking_info["base_learners"] = list(base_models.keys())
-            if meta_model is not None:
-                stacking_info["meta_alpha"] = meta_model.alpha
-                stacking_info["meta_weights"] = {n: round(float(w), 4) for n, w in
-                                                  zip(weight_names, meta_model.coef_)}
-
         with _unified_lock:
             _unified_state["model"] = model
             _unified_state["feature_names"] = feature_names
             _unified_state["stats"] = history_stats
             _unified_state["calibrator"] = unified_calibrator
             _unified_state["conformal_radius"] = conformal_radius
-            _unified_state["base_models"] = base_models
-            _unified_state["meta_model"] = meta_model
-            _unified_state["stacking_active"] = stacking_active
             _unified_state["metrics"] = {
                 "mae": round(mae, 4),
                 "rmse": round(rmse, 4),
@@ -7180,13 +6917,12 @@ def _unified_train():
                 "conformal_radius": round(conformal_radius, 4),
                 "tuning": tuning_info,
                 "shap_top10": shap_top10,
-                "stacking": stacking_info,
             }
             _unified_state["train_count"] += 1
             _unified_state["last_train_ts"] = int(time.time())
             _unified_state["training"] = False
 
-        model_label = f"Stacking({len(base_models)})" if stacking_active else "Single-LightGBM"
+        model_label = "Single-LightGBM"
         log.info(f"[Unified] Training komplett in {elapsed:.1f}s: "
                  f"{model_label}, {len(feature_names)} Features, MAE={mae:.4f}, RMSE={rmse:.4f}, R²={r2:.4f}, "
                  f"Conformal={conformal_radius:.4f}, Optuna={tuning_info.get('n_trials', 0)} Trials")
@@ -7211,10 +6947,6 @@ def _unified_predict(push, state=None):
         calibrator = _unified_state.get("calibrator")
         conformal_radius = _unified_state.get("conformal_radius", 1.0)
         metrics = _unified_state.get("metrics", {})
-        base_models = _unified_state.get("base_models", {})
-        meta_model = _unified_state.get("meta_model")
-        stacking_active = _unified_state.get("stacking_active", False)
-
     if model is None or not feature_names or not history_stats:
         return None
 
@@ -7225,44 +6957,7 @@ def _unified_predict(push, state=None):
         feat = _unified_extract_features(push, history_stats, state)
         x = np.array([[feat.get(k, 0.0) for k in feature_names]])
 
-        # ── Stacking Prediction ──────────────────────────────────────────
-        if stacking_active and base_models and meta_model is not None:
-            try:
-                base_preds = []
-                available_names = []
-                for name in ["lgb", "xgb", "catboost"]:
-                    bm = base_models.get(name)
-                    if bm is not None:
-                        try:
-                            base_preds.append(float(bm.predict(x)[0]))
-                            available_names.append(name)
-                        except Exception:
-                            pass
-
-                if len(available_names) >= 2:
-                    meta_cols = list(base_preds)
-                    # Context-Features (hour, weekday) für Meta-Learner
-                    hour_idx = feature_names.index("hour") if "hour" in feature_names else None
-                    wday_idx = feature_names.index("weekday") if "weekday" in feature_names else None
-                    if hour_idx is not None:
-                        meta_cols.append(float(x[0, hour_idx]))
-                    if wday_idx is not None:
-                        meta_cols.append(float(x[0, wday_idx]))
-
-                    # Meta-Learner erwartet gleiche Anzahl Features wie beim Training
-                    expected_n = meta_model.n_features_in_
-                    if len(meta_cols) == expected_n:
-                        x_meta = np.array([meta_cols])
-                        predicted = float(meta_model.predict(x_meta)[0])
-                    else:
-                        predicted = float(model.predict(x)[0])
-                else:
-                    predicted = float(model.predict(x)[0])
-            except Exception:
-                predicted = float(model.predict(x)[0])
-        else:
-            # Single LightGBM Fallback
-            predicted = float(model.predict(x)[0])
+        predicted = float(model.predict(x)[0])
 
         # Kalibrierung
         if calibrator:
@@ -7317,7 +7012,7 @@ def _unified_predict(push, state=None):
             except Exception:
                 pass
 
-        model_label = f"Stacking({len(base_models)})" if stacking_active else "Unified-LightGBM"
+        model_label = "Unified-LightGBM"
         return {
             "predicted": round(predicted, 3),
             "q10": round(q10, 3),
@@ -7362,9 +7057,6 @@ def _batch_predict_or(articles, push_data=None, state=None):
         u_calibrator = _unified_state.get("calibrator")
         u_conformal = _unified_state.get("conformal_radius", 1.0)
         u_metrics = _unified_state.get("metrics", {})
-        u_base_models = _unified_state.get("base_models", {})
-        u_meta_model = _unified_state.get("meta_model")
-        u_stacking = _unified_state.get("stacking_active", False)
 
     use_unified = (
         _model_selector_state.get("active_model") == "unified"
@@ -7400,33 +7092,7 @@ def _batch_predict_or(articles, push_data=None, state=None):
             try:
                 X = np.array(rows)
 
-                # ── Stacking Batch Prediction ────────────────────────────
-                if u_stacking and u_base_models and u_meta_model is not None:
-                    try:
-                        base_pred_arrays = []
-                        for name in ["lgb", "xgb", "catboost"]:
-                            bm = u_base_models.get(name)
-                            if bm is not None:
-                                base_pred_arrays.append(bm.predict(X))
-                        if len(base_pred_arrays) >= 2:
-                            meta_cols = list(base_pred_arrays)
-                            hour_idx = u_fnames.index("hour") if "hour" in u_fnames else None
-                            wday_idx = u_fnames.index("weekday") if "weekday" in u_fnames else None
-                            if hour_idx is not None:
-                                meta_cols.append(X[:, hour_idx])
-                            if wday_idx is not None:
-                                meta_cols.append(X[:, wday_idx])
-                            X_meta = np.column_stack(meta_cols)
-                            if X_meta.shape[1] == u_meta_model.n_features_in_:
-                                preds = u_meta_model.predict(X_meta)
-                            else:
-                                preds = u_model.predict(X)
-                        else:
-                            preds = u_model.predict(X)
-                    except Exception:
-                        preds = u_model.predict(X)
-                else:
-                    preds = u_model.predict(X)
+                preds = u_model.predict(X)
 
                 # Vektorisierte Kalibrierung
                 if u_calibrator:
@@ -7438,7 +7104,7 @@ def _batch_predict_or(articles, push_data=None, state=None):
                     except Exception:
                         pass
 
-                model_label = f"Stacking({len(u_base_models)})" if u_stacking else "Unified-LightGBM"
+                model_label = "Unified-LightGBM"
                 # Lookup fuer cat/hour pro message_id
                 _art_lookup = {a.get("message_id", ""): a for a in articles}
                 for i, mid in enumerate(valid_ids):
