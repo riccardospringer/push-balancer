@@ -180,19 +180,33 @@ def _start_background_workers() -> None:
     # 5. Feed-Cache Worker
     def _feed_cache_worker():
         from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS, SPORT_COMPETITOR_FEEDS, SPORT_EUROPA_FEEDS, SPORT_GLOBAL_FEEDS
-        from app.research.worker import _feed_cache
-        from app.routers.feed import _fetch_url
+        from app.research.worker import _feed_cache, _feed_cache_lock
+        from app.routers.feed import _fetch_url, _parse_rss_items
         _FEED_CACHE_TTL = 300
+
+        _FEED_TYPE_MAP = {
+            "competitors":       COMPETITOR_FEEDS,
+            "international":     INTERNATIONAL_FEEDS,
+            "sport_competitors": SPORT_COMPETITOR_FEEDS,
+            "sport_europa":      SPORT_EUROPA_FEEDS,
+            "sport_global":      SPORT_GLOBAL_FEEDS,
+        }
 
         log.info("[FeedCache] Background-Worker gestartet (alle %ds)", _FEED_CACHE_TTL)
         while True:
-            for name, url in {**COMPETITOR_FEEDS, **INTERNATIONAL_FEEDS,
-                               **SPORT_COMPETITOR_FEEDS, **SPORT_EUROPA_FEEDS,
-                               **SPORT_GLOBAL_FEEDS}.items():
-                try:
-                    _fetch_url(url)
-                except Exception:
-                    pass
+            for feed_type, feeds in _FEED_TYPE_MAP.items():
+                parsed: dict = {}
+                for name, url in feeds.items():
+                    try:
+                        xml_bytes = _fetch_url(url)
+                        parsed[name] = _parse_rss_items(xml_bytes) if xml_bytes else []
+                    except Exception as e:
+                        log.debug("[FeedCache] %s/%s Fehler: %s", feed_type, name, e)
+                        parsed[name] = []
+                with _feed_cache_lock:
+                    _feed_cache[feed_type]["data"] = parsed
+                    _feed_cache[feed_type]["ts"] = time.time()
+            log.debug("[FeedCache] Alle Feeds aktualisiert")
             time.sleep(_FEED_CACHE_TTL)
 
     threading.Thread(target=_feed_cache_worker, daemon=True).start()

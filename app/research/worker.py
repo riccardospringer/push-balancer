@@ -1,8 +1,39 @@
 """app/research/worker.py — Autonomer Research Worker Thread.
 
 Bündelt den Research-Worker und alle Hilfsfunktionen aus push-balancer-server.py.
+Migration über Compat-Shim — direkte Migration folgt schrittweise.
+"""
+import threading
+import logging
 
-IMPLEMENTIERUNGSHINWEIS:
+log = logging.getLogger("push-balancer")
+
+from push_balancer_server_compat import (  # noqa: F401
+    _run_autonomous_analysis,
+    _run_autonomous_analysis_inner,
+    _fetch_push_data,
+    _fetch_external_context,
+    _generate_live_rules,
+    _build_progress_ticker,
+)
+from push_balancer_server_compat import _research_state  # noqa: F401
+
+
+def start_research_worker() -> threading.Thread:
+    """Startet den autonomen Research-Worker Thread."""
+    import push_balancer_server_compat as _compat
+    # Nutze den Worker-Start aus dem Legacy-Modul
+    pbserver = _compat._legacy
+    if hasattr(pbserver, '_research_worker'):
+        t = threading.Thread(target=pbserver._research_worker, daemon=True)
+        t.start()
+        log.info("[Research] Worker gestartet (via compat)")
+        return t
+    log.warning("[Research] _research_worker nicht gefunden im Legacy-Modul")
+    return None
+
+
+# IMPLEMENTIERUNGSHINWEIS (Original-Kommentar):
     Vollständige Implementierungen aus push-balancer-server.py:
     - _research_state: Globales State-Dict (push_data, findings, live_rules, etc.)
     - _research_state_lock: Threading-Lock
@@ -71,6 +102,7 @@ _feed_cache: dict = {
     "sport_europa": {"data": None, "ts": 0},
     "sport_global": {"data": None, "ts": 0},
 }
+_feed_cache_lock = threading.Lock()
 _FEED_CACHE_TTL: int = 300  # 5 Minuten
 
 # ── XOR Perf Cache ─────────────────────────────────────────────────────────
@@ -98,21 +130,11 @@ def run_autonomous_analysis() -> None:
 
 
 def get_cached_feeds(feed_type: str) -> dict | list:
-    """Liefert gecachte Feeds aus dem Background-Cache.
-
-    Args:
-        feed_type: "competitors", "international", "sport_competitors",
-                   "sport_europa", "sport_global"
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Implementierung aus push-balancer-server.py: _get_cached_feeds()
-    """
-    try:
-        from push_balancer_server_compat import _get_cached_feeds  # type: ignore
-        return _get_cached_feeds(feed_type)
-    except ImportError:
-        pass
-    # Fallback: Leeres Ergebnis
+    """Liefert gecachte Feeds aus dem Background-Cache."""
+    with _feed_cache_lock:
+        entry = _feed_cache.get(feed_type, {})
+        if entry.get("data") and (time.time() - entry.get("ts", 0)) < _FEED_CACHE_TTL * 3:
+            return entry["data"]
     return {}
 
 

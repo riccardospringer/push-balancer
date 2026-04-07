@@ -69,6 +69,51 @@ class CompetitorXorRequest(BaseModel):
     titles: list[Any]
 
 
+def _parse_rss_items(xml_bytes: bytes, max_items: int = 30) -> list[dict]:
+    """Parst RSS/Atom XML zu kompakten Dicts. Portiert aus push-balancer-server.py."""
+    import xml.etree.ElementTree as ET
+    xml_str = xml_bytes.decode("utf-8", errors="replace")
+    items: list[dict] = []
+    try:
+        root = ET.fromstring(xml_str)
+        # RSS 2.0
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            desc = (item.findtext("description") or "").strip()[:200]
+            cats = [c.text.strip() for c in item.findall("category") if c.text]
+            items.append({"t": title, "l": link, "p": pub, "d": desc, "c": cats})
+            if len(items) >= max_items:
+                break
+        if not items:
+            # Atom fallback
+            ns = {"a": "http://www.w3.org/2005/Atom"}
+            for entry in root.findall(".//a:entry", ns):
+                title = (entry.findtext("a:title", "", ns) or "").strip()
+                link_el = entry.find("a:link", ns)
+                link = link_el.get("href", "") if link_el is not None else ""
+                pub = (entry.findtext("a:published", "", ns) or entry.findtext("a:updated", "", ns) or "").strip()
+                desc = (entry.findtext("a:summary", "", ns) or "").strip()[:200]
+                items.append({"t": title, "l": link, "p": pub, "d": desc, "c": []})
+                if len(items) >= max_items:
+                    break
+    except ET.ParseError:
+        pass
+    # Live-Ticker markieren
+    for it in items:
+        tl = (it.get("t") or "").lower()
+        ll = (it.get("l") or "").lower()
+        it["lt"] = bool(
+            re.search(r'/(liveticker|newsticker|news-ticker|alle-news|news-blog)(/|$|\?)', ll)
+            or re.search(r'/live[\d/]', ll)
+            or re.search(r'/ticker(/|$|\?)', ll)
+            or re.search(r'live[\s-]?ticker|news[\s-]?ticker|newsticker', tl)
+            or re.search(r'alle\s+(news|infos|entwicklungen|meldungen)\s+(zu|zum|zur|im|aus|über)', tl)
+        )
+    return items
+
+
 @router.get("/api/feed")
 def get_feed() -> Response:
     """Proxy zur BILD News-Sitemap (XML)."""
