@@ -166,7 +166,38 @@ def init_db() -> None:
     conn.commit()
     conn.close()
     log.info("[PushDB] Initialized at %s", PUSH_DB_PATH)
+    _backfill_weekday()
     _db_cleanup()
+
+
+def _backfill_weekday() -> None:
+    """Füllt weekday-Spalte für alle Zeilen mit weekday = -1 (einmalige Migration).
+
+    Läuft nur wenn noch nicht migrierte Zeilen vorhanden sind — danach No-Op.
+    """
+    import datetime as _dt_mod
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        n_pending = conn.execute("SELECT COUNT(*) FROM pushes WHERE weekday = -1").fetchone()[0]
+        if n_pending == 0:
+            conn.close()
+            return
+        log.info("[PushDB] Weekday-Backfill: %d Zeilen werden migriert...", n_pending)
+        rows = conn.execute("SELECT message_id, ts_num FROM pushes WHERE weekday = -1").fetchall()
+        updates = []
+        for mid, ts_num in rows:
+            try:
+                wd = (_dt_mod.datetime.fromtimestamp(ts_num).weekday() + 1) % 7
+            except Exception:
+                wd = 0
+            updates.append((wd, mid))
+        conn.executemany("UPDATE pushes SET weekday = ? WHERE message_id = ?", updates)
+        conn.commit()
+        conn.close()
+        log.info("[PushDB] Weekday-Backfill abgeschlossen: %d Zeilen migriert", len(updates))
+    except Exception as e:
+        log.warning("[PushDB] Weekday-Backfill fehlgeschlagen: %s", e)
 
 
 def _db_cleanup() -> None:

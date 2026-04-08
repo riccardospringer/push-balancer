@@ -9,6 +9,5 @@ COPY push_title_agent.py .
 COPY push-balancer-server.py .
 COPY push_balancer_server_compat.py .
 COPY push-snapshot.json .
-COPY dist-frontend/ ./dist-frontend/
 EXPOSE 8050
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8050}
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8050"]
