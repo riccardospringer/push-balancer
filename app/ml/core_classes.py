@@ -699,6 +699,79 @@ class _SklearnModelWrapper:
         }
 
 
+# ── _LGBMModelWrapper ────────────────────────────────────────────────────
+
+class _LGBMModelWrapper:
+    """Wrapper um LightGBM-Modell für API-Kompatibilität mit GBRTModel.
+
+    Portiert aus push-balancer-server.py. Wird von gbrt_train() genutzt wenn
+    LightGBM verfügbar ist.
+    """
+
+    _is_lgbm = True
+
+    def __init__(self, lgbm_model, feature_names):
+        self.lgbm_model = lgbm_model
+        self.feature_names = list(feature_names)
+        self.trees = list(range(getattr(lgbm_model, "n_estimators_", 200)))
+        self.train_metrics = {}
+        self.conformal_radius = 1.0
+        self.blend_alpha = 1.0
+        # Feature Importance (normalisiert auf 0–1)
+        raw_imp = lgbm_model.feature_importances_
+        total = sum(raw_imp) if sum(raw_imp) > 0 else 1
+        self.feature_importance_ = {
+            f: float(raw_imp[i]) / total
+            for i, f in enumerate(feature_names)
+        }
+
+    def predict(self, X):
+        if np is None:
+            return [0.0] * len(X)
+        return self.lgbm_model.predict(np.array(X, dtype=np.float64)).tolist()
+
+    def predict_one(self, x):
+        if np is None:
+            return 0.0
+        return float(self.lgbm_model.predict(np.array([x], dtype=np.float64))[0])
+
+    def predict_with_uncertainty(self, x):
+        pred = self.predict_one(x)
+        # LightGBM: keine Baum-Varianz ohne Quantile-Modell — feste Konfidenz
+        return {"predicted": pred, "confidence": 0.7, "std": self.conformal_radius * 0.8}
+
+    def shap_values(self, x):
+        """Leave-One-Out Näherung auf Top-20 Features (kein SHAP-Paket nötig)."""
+        base = self.predict_one(x)
+        top_feat = sorted(self.feature_importance_.items(), key=lambda t: -t[1])[:20]
+        contributions = {}
+        for fname, _ in top_feat:
+            if fname not in self.feature_names:
+                continue
+            idx = self.feature_names.index(fname)
+            x_mod = list(x)
+            x_mod[idx] = 0.0
+            contributions[fname] = {"shap_values": {fname: round(base - self.predict_one(x_mod), 4)}}
+        # Kompatibles Format: {"shap_values": {name: val, ...}}
+        flat = {fname: v["shap_values"][fname] for fname, v in contributions.items()}
+        return {"shap_values": flat}
+
+    def feature_importance(self, top_n=20):
+        return sorted(self.feature_importance_.items(), key=lambda t: -t[1])[:top_n]
+
+    def to_json(self):
+        return {
+            "type": "lgbm_GBR",
+            "n_trees": len(self.trees),
+            "feature_names": self.feature_names,
+            "metrics": self.train_metrics,
+            "feature_importance": [{"name": k, "importance": v}
+                                   for k, v in self.feature_importance(20)],
+            "conformal_radius": getattr(self, "conformal_radius", None),
+            "blend_alpha": getattr(self, "blend_alpha", None),
+        }
+
+
 # ── Isotonic Regression (PAVA) fuer Kalibrierung ────────────────────────
 
 def _isotonic_regression_pava(predicted, actual):

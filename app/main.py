@@ -139,7 +139,7 @@ def _load_lgbm_model_from_disk() -> None:
         with _ml_lock:
             _ml_state["model"] = ml_disk["model"]
             _ml_state["residual_model"] = ml_disk.get("residual_model")
-            _ml_state["stats"] = ml_disk["stats"]
+            _ml_state["stats"] = ml_disk.get("stats")
             _ml_state["feature_names"] = ml_disk["feature_names"]
             _ml_state["calibrator"] = ml_disk.get("calibrator")
             _ml_state["conformal_radius"] = ml_disk.get("conformal_radius", 1.0)
@@ -369,9 +369,11 @@ def _start_background_workers() -> None:
     def _preload_caches():
         from app.routers.feed import _fetch_url
         from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
-        time.sleep(8)
+        # Kurz warten bis ML-Modelle von Disk geladen sind (~2s) + kleiner Puffer
+        time.sleep(5)
         try:
-            build_tagesplan()
+            # background=True: blockiert bis der Plan fertig berechnet ist (kein fire-and-forget)
+            build_tagesplan(background=True)
             log.info("[Preload] Tagesplan vorberechnet")
         except Exception as e:
             log.warning("[Preload] Tagesplan-Fehler: %s", e)

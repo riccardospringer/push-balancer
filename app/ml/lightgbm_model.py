@@ -186,6 +186,7 @@ def _ml_train_model_impl() -> None:
         from app.config import SERVE_DIR
         model_path = os.path.join(SERVE_DIR, ".ml_lgbm_model.pkl")
         joblib.dump({"model": model, "feature_names": feature_names, "calibrator": calibrator,
+                     "stats": stats,
                      "stats_global_avg": stats.get("global_avg", 4.77)}, model_path)
         log.info("[lightgbm] Modell gespeichert: %s", model_path)
     except Exception as exc:

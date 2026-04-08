@@ -5,11 +5,12 @@ Die Funktionen sind thread-safe via _push_db_lock (threading.Lock).
 """
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
 
-from app.config import PUSH_DB_PATH
+from app.config import PUSH_DB_PATH, IS_RENDER
 
 log = logging.getLogger("push-balancer")
 
@@ -35,6 +36,7 @@ def init_db() -> None:
         link TEXT,
         type TEXT DEFAULT 'editorial',
         hour INTEGER DEFAULT -1,
+        weekday INTEGER DEFAULT -1,
         title_len INTEGER DEFAULT 0,
         opened INTEGER DEFAULT 0,
         received INTEGER DEFAULT 0,
@@ -51,6 +53,7 @@ def init_db() -> None:
     for _col, _type, _default in [
         ("target_stats", "TEXT", "'{}'"), ("app_list", "TEXT", "'[]'"),
         ("n_apps", "INTEGER", "0"), ("total_recipients", "INTEGER", "0"),
+        ("weekday", "INTEGER", "-1"),
     ]:
         try:
             conn.execute(f"ALTER TABLE pushes ADD COLUMN {_col} {_type} DEFAULT {_default}")
@@ -60,6 +63,7 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_cat ON pushes(cat)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_or_ts ON pushes(or_val, ts_num)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_hour_or ON pushes(hour, or_val)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_weekday_hour ON pushes(weekday, hour)")
 
     # Prediction log
     conn.execute("""CREATE TABLE IF NOT EXISTS prediction_log (
@@ -175,6 +179,8 @@ def _db_cleanup() -> None:
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA cache_size = -4096")
+        conn.execute("PRAGMA mmap_size = 0")
         deleted = {}
         deleted["pushes"] = conn.execute(
             "DELETE FROM pushes WHERE ts_num < ?", (cutoff_pushes,)
@@ -197,16 +203,81 @@ def _db_cleanup() -> None:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.commit()
             conn.close()
-            # VACUUM außerhalb der Transaktion: gibt Plattenplatz tatsächlich frei
-            conn2 = sqlite3.connect(PUSH_DB_PATH, timeout=30)
-            conn2.execute("VACUUM")
-            conn2.close()
-            log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht + VACUUM %s", total, deleted)
+            if IS_RENDER:
+                # VACUUM INTO: schreibt kompakte DB in neue Datei, atomarer Tausch.
+                # Peak RAM = SQLite Page Cache (4 MB) — kein 2× DB-Größe Spike.
+                # Läuft im Hintergrund damit der Start nicht blockiert wird.
+                def _vacuum_background():
+                    _vacuum_into_safe()
+                import threading as _t
+                _t.Thread(target=_vacuum_background, daemon=True).start()
+                log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht, VACUUM INTO im Hintergrund %s", total, deleted)
+            else:
+                # Lokal: VACUUM gibt Plattenplatz tatsächlich frei
+                conn2 = sqlite3.connect(PUSH_DB_PATH, timeout=30)
+                conn2.execute("VACUUM")
+                conn2.close()
+                log.info("[PushDB] Cleanup: %d veraltete Einträge gelöscht + VACUUM %s", total, deleted)
         else:
             conn.commit()
             conn.close()
     except Exception as e:
         log.warning("[PushDB] Cleanup fehlgeschlagen: %s", e)
+
+
+def _vacuum_into_safe() -> None:
+    """Shrinks the DB via VACUUM INTO + atomic swap (kein 2x-RAM-Spike).
+
+    VACUUM INTO schreibt eine kompakte Kopie der DB in eine neue Datei.
+    Peak RAM = SQLite Page Cache (~4 MB), nicht 2× DB-Größe.
+    Nur aktiv wenn >= 25% der Seiten frei sind und DB > 20 MB.
+    """
+    compact_path = PUSH_DB_PATH + ".compact"
+    try:
+        if not os.path.exists(PUSH_DB_PATH):
+            return
+        file_size_mb = os.path.getsize(PUSH_DB_PATH) / 1024 / 1024
+        if file_size_mb < 20:
+            return
+
+        # Freelist-Ratio prüfen
+        conn_check = sqlite3.connect(PUSH_DB_PATH, timeout=10)
+        freelist = conn_check.execute("PRAGMA freelist_count").fetchone()[0]
+        page_count = conn_check.execute("PRAGMA page_count").fetchone()[0]
+        conn_check.close()
+        free_ratio = freelist / max(page_count, 1)
+        if free_ratio < 0.25:
+            log.info("[PushDB] VACUUM INTO übersprungen (%.0f%% frei < 25%%, %.0f MB)", free_ratio * 100, file_size_mb)
+            return
+
+        log.info("[PushDB] VACUUM INTO gestartet: %.0f MB, %.0f%% frei...", file_size_mb, free_ratio * 100)
+        conn_vac = sqlite3.connect(PUSH_DB_PATH, timeout=60)
+        conn_vac.execute("PRAGMA cache_size = -4096")
+        conn_vac.execute("PRAGMA mmap_size = 0")
+        conn_vac.execute(f"VACUUM INTO '{compact_path}'")
+        conn_vac.close()
+
+        compact_size_mb = os.path.getsize(compact_path) / 1024 / 1024
+        saved_mb = file_size_mb - compact_size_mb
+        if saved_mb >= 5:
+            os.replace(compact_path, PUSH_DB_PATH)
+            # WAL/SHM der alten DB entfernen — neue DB hat sauberen Stand
+            for ext in ("-wal", "-shm"):
+                try:
+                    os.unlink(PUSH_DB_PATH + ext)
+                except FileNotFoundError:
+                    pass
+            log.info("[PushDB] VACUUM INTO: %.0f MB → %.0f MB (%.0f MB gespart)", file_size_mb, compact_size_mb, saved_mb)
+        else:
+            os.unlink(compact_path)
+            log.info("[PushDB] VACUUM INTO: < 5 MB Ersparnis, Original behalten (%.0f MB)", file_size_mb)
+    except Exception as e:
+        log.warning("[PushDB] VACUUM INTO fehlgeschlagen: %s", e)
+        try:
+            if os.path.exists(compact_path):
+                os.unlink(compact_path)
+        except Exception:
+            pass
 
 
 # ── Upsert / Laden ─────────────────────────────────────────────────────────
@@ -215,19 +286,28 @@ def push_db_upsert(parsed_pushes: list) -> int:
     """Insert or update parsed pushes into SQLite. Returns count of new/updated rows."""
     if not parsed_pushes:
         return 0
+    import datetime as _dt_mod
     now = int(time.time())
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.execute("PRAGMA cache_size = -4096")   # 4 MB max page cache
+        conn.execute("PRAGMA mmap_size = 0")         # kein memory-mapped I/O
         cur = conn.cursor()
         count = 0
         for p in parsed_pushes:
             mid = p.get("message_id") or f"{p['ts_num']}_{p.get('title', '')[:30]}"
             _ts_json = json.dumps(p.get("target_stats", {})) if isinstance(p.get("target_stats"), dict) else "{}"
             _apps_json = json.dumps(p.get("app_list", [])) if isinstance(p.get("app_list"), list) else "[]"
+            # Wochentag im SQLite-Format (0=So, 1=Mo, ..., 6=Sa) — ersetzt CAST(strftime(...)) in Queries
+            _ts_num = p["ts_num"]
+            try:
+                _weekday = (_dt_mod.datetime.fromtimestamp(_ts_num).weekday() + 1) % 7
+            except Exception:
+                _weekday = -1
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
-                cat, link, type, hour, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
+                cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
                 target_stats, app_list, n_apps, total_recipients)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     or_val = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
                     opened = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
@@ -236,9 +316,9 @@ def push_db_upsert(parsed_pushes: list) -> int:
                     n_apps = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
                     total_recipients = CASE WHEN excluded.total_recipients > 0 THEN excluded.total_recipients ELSE total_recipients END,
                     updated_at = ?
-            """, (mid, p["ts_num"], p.get("or", p.get("or_val", 0)), p.get("title", ""), p.get("headline", ""),
+            """, (mid, _ts_num, p.get("or", p.get("or_val", 0)), p.get("title", ""), p.get("headline", ""),
                   p.get("kicker", ""), p.get("cat", ""), p.get("link", ""), p.get("type", "editorial"),
-                  p.get("hour", -1), p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
+                  p.get("hour", -1), _weekday, p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
                   p.get("channel", ""), json.dumps(p.get("channels", [])), 1 if p.get("is_eilmeldung") else 0,
                   now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0), now))
             count += cur.rowcount
@@ -259,6 +339,8 @@ def push_db_load_all(min_ts: int = 0, max_days: int = 90, max_rows: int = 15000)
     cutoff = max(min_ts, int(_time.time()) - max_days * 86400)
     conn = sqlite3.connect(PUSH_DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA cache_size = -4096")   # 4 MB max page cache
+    conn.execute("PRAGMA mmap_size = 0")         # kein memory-mapped I/O
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

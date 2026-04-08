@@ -21,8 +21,8 @@ router = APIRouter()
 
 
 class LogSuggestionsRequest(BaseModel):
-    date_iso: str
-    slot_hour: int
+    dateIso: str
+    slotHour: int
     suggestions: list[dict[str, Any]]
 
 
@@ -45,7 +45,7 @@ def get_tagesplan(mode: str = Query(default="redaktion")) -> JSONResponse:
             import datetime
             plan = {"slots": [], "loading": True, "mode": mode,
                     "date": datetime.datetime.now().strftime("%d.%m.%Y"),
-                    "ml_trained": False, "total_pushes_db": 0}
+                    "mlTrained": False, "totalPushesDb": 0}
         return JSONResponse(content=plan)
     except Exception as e:
         log.exception("[tagesplan] Fehler in get_tagesplan")
@@ -116,8 +116,8 @@ def get_tagesplan_history(
             {
                 "date": r["date"],
                 "hour": r["hour"],
-                "avg_or": round(r["avg_or"], 2),
-                "n_pushes": r["n_pushes"],
+                "avgOr": round(r["avg_or"], 2),
+                "nPushes": r["n_pushes"],
             }
             for r in all_rows
         ]
@@ -175,8 +175,8 @@ def log_tagesplan_suggestions(body: LogSuggestionsRequest) -> JSONResponse:
     """
     try:
         save_tagesplan_suggestions(
-            date_iso=body.date_iso,
-            slot_hour=body.slot_hour,
+            date_iso=body.dateIso,
+            slot_hour=body.slotHour,
             suggestions=body.suggestions,
         )
         return JSONResponse(content={"ok": True, "saved": len(body.suggestions)})

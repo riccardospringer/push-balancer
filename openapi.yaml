@@ -1996,11 +1996,15 @@ components:
     GbrtPrediction:
       type: object
       properties:
-        predicted:
+        predictedOr:
           type: number
           format: float
           description: Prognostizierte Opening Rate in Prozent
           example: 6.92
+        basisMethod:
+          type: string
+          description: Modell-Basis (gbrt, fallback)
+          example: gbrt
         q10:
           type: number
           format: float
@@ -2013,6 +2017,24 @@ components:
           type: number
           format: float
           example: 0.71
+        std:
+          type: number
+          format: float
+          description: Standardabweichung der Prognose
+          example: 0.84
+        nTrees:
+          type: integer
+          description: Anzahl verwendeter Bäume
+          example: 180
+        onlineBias:
+          type: number
+          format: float
+          description: Aktueller Online-Bias-Korrekturfaktor
+          example: 0.12
+        modelLoaded:
+          type: boolean
+          description: Ob das GBRT-Modell geladen ist
+          example: true
         error:
           type: string
           nullable: true
@@ -2589,44 +2611,37 @@ components:
     CompetitorXorEntry:
       type: object
       properties:
-        or:
+        predictedOr:
           type: number
           format: float
-          description: Prognostizierte OR
+          description: Prognostizierte Opening Rate in Prozent
           example: 5.84
-        q10:
-          type: number
-          format: float
-          example: 3.2
-        q90:
-          type: number
-          format: float
-          example: 8.9
-        confidence:
-          type: number
-          format: float
-          example: 0.54
         basis:
           type: string
-          example: "word(6)"
+          description: Scoring-Basis (word_perf oder global_avg)
+          example: word_perf
         cat:
           type: string
           example: Politik
-        nWords:
-          type: integer
-          description: Anzahl gescorefer Wörter
-          example: 6
         isLiveticker:
           type: boolean
           description: Wurde der Titel als Live-Ticker erkannt?
           example: false
+        isEilmeldung:
+          type: boolean
+          description: Wurde der Titel als Eilmeldung erkannt?
+          example: false
+        wordMatches:
+          type: integer
+          description: Anzahl gescoreter Wörter mit ausreichend Historie
+          example: 6
 
     CompetitorXorResponse:
       type: object
       properties:
-        predictions:
+        results:
           type: object
-          description: Map von Titel (max. 120 Zeichen) zu Prognose
+          description: Map von Titel zu Prognose
           additionalProperties:
             $ref: "#/components/schemas/CompetitorXorEntry"
         count:

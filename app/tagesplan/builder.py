@@ -19,21 +19,26 @@ log = logging.getLogger("push-balancer")
 from app.state import (
     _tagesplan_cache,
     _tagesplan_cache_lock,
-    _research_state,
-    _ml_state,
-    _ml_lock,
-    _gbrt_model,
-    _gbrt_feature_names,
-    _gbrt_history_stats,
-    _push_sync_lock,
-    _push_sync_cache,
     _retro_cache,
     _retro_cache_lock,
 )
+from app.ml.lightgbm_model import (
+    _ml_state, _ml_lock,
+    ml_train_model as _ml_train_model,
+    unified_train as _unified_train,
+    train_stacking_model as _train_stacking_model,
+    monitoring_tick as _monitoring_tick,
+)
+from app.ml.gbrt import (
+    _gbrt_model, _gbrt_feature_names,
+    gbrt_predict as _gbrt_predict,
+    gbrt_train as _gbrt_train,
+    gbrt_check_drift as _gbrt_check_drift,
+    gbrt_online_update as _gbrt_online_update,
+)
+from app.research.worker import _research_state
 from app.ml.features import gbrt_extract_features as _gbrt_extract_features
 from app.ml.stats import gbrt_build_history_stats as _gbrt_build_history_stats
-from app.ml.gbrt import gbrt_predict as _gbrt_predict, gbrt_train as _gbrt_train, gbrt_check_drift as _gbrt_check_drift, gbrt_online_update as _gbrt_online_update
-from app.ml.lightgbm_model import ml_train_model as _ml_train_model, unified_train as _unified_train, train_stacking_model as _train_stacking_model, monitoring_tick as _monitoring_tick
 from app.database import push_db_load_all, push_db_upsert, push_db_count, push_db_max_ts
 from app.config import PUSH_API_BASE, PUSH_DB_PATH, RENDER_SYNC_URL, SYNC_SECRET, BILD_SITEMAP, IS_RENDER
 
@@ -58,7 +63,7 @@ from app.database import _push_db_lock
 
 
 def _ml_build_stats(pushes):
-    """Baut ML-Stats aus Push-Liste (Fallback wenn _gbrt_history_stats leer)."""
+    """Baut ML-Stats aus Push-Liste (Fallback wenn kein trainiertes Modell)."""
     from app.ml.stats import _gbrt_build_history_stats as _bhs
     return _bhs(pushes)
 
@@ -179,15 +184,17 @@ def _ml_build_tagesplan_inner(now, current_hour, mode="redaktion"):
             log.info(f"[Tagesplan] push_data aus DB geladen: {len(push_data)} Pushes")
         except Exception as _pd_e:
             log.warning(f"[Tagesplan] DB-Fallback fuer push_data fehlgeschlagen: {_pd_e}")
-    # Optimierung: GBRT-History-Stats wiederverwenden statt alles neu zu berechnen
-    if not stats and _gbrt_history_stats:
-        stats = _gbrt_history_stats
-    # pushes nur laden wenn stats fehlt (Fallback) — SQL-Aggregation ersetzt den großen Loop
+    # Optimierung: Stats aus _ml_state["stats"] wiederverwenden (vom letzten Training)
+    if not stats:
+        with _ml_lock:
+            stats = _ml_state.get("stats")
+    # pushes nur laden wenn stats fehlt (Fallback) — push_data wiederverwenden statt zweiten DB-Load
     pushes = []
     if not stats:
-        pushes = _push_db_load_all()
+        # push_data wurde oben bereits geladen — kein zweiter DB-Roundtrip nötig
+        pushes = push_data if push_data else _push_db_load_all()
         if not pushes:
-            # Fallback: In-Memory Daten vom Research Worker (nach Server-Neustart)
+            # Letzter Fallback: In-Memory Daten vom Research Worker
             pushes = _research_state.get("push_data", [])
             if pushes:
                 log.info(f"[Tagesplan] DB leer, nutze {len(pushes)} In-Memory Pushes als Fallback")
@@ -264,7 +271,7 @@ def _ml_build_tagesplan_inner(now, current_hour, mode="redaktion"):
                        AVG(or_val) as avg_or, COUNT(*) as cnt
                 FROM pushes
                 WHERE or_val > 0 AND or_val <= 20 AND ts_num > 0
-                  AND CAST(strftime('%w', ts_num, 'unixepoch') AS INTEGER) = ?
+                  AND weekday = ?
                   AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%'
                   {_cat_filter}
                 GROUP BY hour, LOWER(TRIM(cat))
@@ -285,7 +292,7 @@ def _ml_build_tagesplan_inner(now, current_hour, mode="redaktion"):
                     FROM pushes
                     WHERE or_val >= 4.0 AND or_val <= 20 AND ts_num > 0
                       AND received >= 10000
-                      AND CAST(strftime('%w', ts_num, 'unixepoch') AS INTEGER) = ?
+                      AND weekday = ?
                       AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%'
                       {_cat_filter}
                 ) WHERE rn <= 2

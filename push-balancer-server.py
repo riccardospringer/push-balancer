@@ -13040,7 +13040,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._schwab_chat()
         elif self.path == "/api/schwab-approval":
             self._schwab_approval()
-        elif self.path == "/api/prediction-feedback":
+        elif self.path == "/api/predictions/feedback":
             self._prediction_feedback()
         elif self.path == "/api/tagesplan/log-suggestions":
             self._log_tagesplan_suggestions()
@@ -13054,18 +13054,18 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_monitoring_tick()
         elif self.path == "/api/ml/predict-batch" or self.path == "/api/predict-batch":
             self._serve_predict_batch()
-        elif self.path == "/api/competitor-xor":
+        elif self.path == "/api/competitors/xor":
 
             self._serve_competitor_xor()
         elif self.path == "/api/push-title/generate":
             self._serve_push_title_generate()
-        elif self.path == "/api/push-sync":
+        elif self.path == "/api/pushes/sync":
             self._handle_push_sync()
         else:
             self._error(404, "Not found")
 
     def _handle_push_sync(self):
-        """POST /api/push-sync — Empfaengt Push-Daten von lokalem Server (Relay fuer Render)."""
+        """POST /api/pushes/sync — Empfaengt Push-Daten von lokalem Server (Relay fuer Render)."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
@@ -13229,7 +13229,7 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._error(500, f"Batch predict error: {e}")
 
     def _serve_competitor_xor(self):
-        """POST /api/competitor-xor — Batch-XOR via Wort-Performance-Scoring.
+        """POST /api/competitors/xor — Batch-XOR via Wort-Performance-Scoring.
 
         Nutzt vorberechneten _xor_perf_cache fuer O(W)-Lookup pro Titel
         statt O(N*M)-Jaccard ueber 8000 historische Pushes.
@@ -14853,7 +14853,7 @@ if __name__ == "__main__":
                     "channels": channels,
                 }).encode()
                 sync_req = urllib.request.Request(
-                    f"{render_url}/api/push-sync",
+                    f"{render_url}/api/pushes/sync",
                     data=sync_payload,
                     headers={"Content-Type": "application/json"},
                     method="POST",

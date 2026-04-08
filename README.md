@@ -191,15 +191,15 @@ A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml).
 | `POST /api/check-plus` | Check multiple URLs for BILD+ paywall |
 | `POST /api/schwab-chat` | Editorial assistant chat (GPT-4o) |
 | `POST /api/schwab-approval` | Approve or reject an editorial suggestion |
-| `POST /api/prediction-feedback` | Submit actual OR for a past prediction |
+| `POST /api/predictions/feedback` | Submit actual OR for a past prediction |
 | `POST /api/tagesplan/log-suggestions` | Persist article suggestions for a slot |
 | `POST /api/ml/retrain` | Trigger manual LightGBM retrain |
 | `POST /api/ml/monitoring/tick` | Manual monitoring tick |
 | `POST /api/ml/predict-batch` | Batch OR prediction |
 | `POST /api/predict-batch` | Alias for `/api/ml/predict-batch` |
-| `POST /api/competitor-xor` | Batch competitor XOR via word-performance scoring |
+| `POST /api/competitors/xor` | Batch competitor XOR via word-performance scoring |
 | `POST /api/push-title/generate` | Generate optimized push headline variants |
-| `POST /api/push-sync` | Receive push data sync from local server (Render relay) |
+| `POST /api/pushes/sync` | Receive push data sync from local server (Render relay) |
 | `POST /api/gbrt/retrain` | Trigger manual GBRT retrain |
 | `POST /api/gbrt/force-promote` | Promote last saved GBRT model as champion |
 
@@ -241,7 +241,7 @@ services:
 Because Render instances cannot reach the internal BILD Push Statistics API directly, a two-path strategy is used:
 
 1. **Direct fetch** (`_push_auto_fetch_worker`): The Render instance tries to fetch `PUSH_API_BASE` directly every 120 seconds.
-2. **Relay sync** (`POST /api/push-sync`): The local Mac server posts fresh push data to the Render instance every cycle, authenticated via `PUSH_SYNC_SECRET`. Set `RENDER_SYNC_URL` on the local server to enable this.
+2. **Relay sync** (`POST /api/pushes/sync`): The local Mac server posts fresh push data to the Render instance every cycle, authenticated via `PUSH_SYNC_SECRET`. Set `RENDER_SYNC_URL` on the local server to enable this.
 3. **Startup seed**: `push-snapshot.json` is bundled into the Docker image and seeded into SQLite at startup so the instance has baseline data before any live fetch succeeds.
 
 ### CORS

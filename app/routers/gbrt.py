@@ -32,14 +32,14 @@ def get_gbrt_status() -> JSONResponse:
         model = _gbrt_model
 
     if model is None:
-        return JSONResponse(content={"model_loaded": False, "n_trees": 0, "metrics": {}})
+        return JSONResponse(content={"modelLoaded": False, "nTrees": 0, "metrics": {}})
 
     return JSONResponse(content={
-        "model_loaded": True,
-        "n_trees": len(getattr(model, "trees", [])),
+        "modelLoaded": True,
+        "nTrees": len(getattr(model, "trees", [])),
         "metrics": getattr(model, "train_metrics", {}),
-        "feature_names": getattr(model, "feature_names", []),
-        "feature_count": len(getattr(model, "feature_names", [])),
+        "featureNames": getattr(model, "feature_names", []),
+        "featureCount": len(getattr(model, "feature_names", [])),
     })
 
 
@@ -59,10 +59,10 @@ def get_gbrt_model_json() -> JSONResponse:
 
     try:
         serialized = {
-            "n_trees": len(getattr(model, "trees", [])),
-            "feature_names": getattr(model, "feature_names", []),
+            "nTrees": len(getattr(model, "trees", [])),
+            "featureNames": getattr(model, "feature_names", []),
             "metrics": getattr(model, "train_metrics", {}),
-            "initial_prediction": getattr(model, "initial_prediction", 0.0),
+            "initialPrediction": getattr(model, "initial_prediction", 0.0),
         }
         return JSONResponse(content=serialized)
     except Exception as e:
@@ -102,10 +102,23 @@ def get_gbrt_predict(
     result = gbrt_predict(push, _research_state)
     if result is None:
         return JSONResponse(content={
-            "model_loaded": False,
+            "modelLoaded": False,
             "error": "Kein GBRT-Modell geladen",
         })
-    return JSONResponse(content=result)
+    # Transform interne snake_case Keys zu camelCase an der API-Grenze
+    camel_result = {
+        "predictedOr": result.get("predicted_or"),
+        "basisMethod": result.get("basis_method"),
+        "confidence": result.get("confidence"),
+        "q10": result.get("q10"),
+        "q90": result.get("q90"),
+        "std": result.get("std"),
+        "nTrees": result.get("n_trees"),
+        "onlineBias": result.get("online_bias"),
+        "features": result.get("features"),
+        "importance": result.get("importance"),
+    }
+    return JSONResponse(content=camel_result)
 
 
 @router.post("/api/gbrt/retrain")
@@ -139,5 +152,5 @@ def post_gbrt_force_promote() -> JSONResponse:
     return JSONResponse(content={
         "ok": True,
         "message": "GBRT-Challenger wurde manuell zu Champion promotet",
-        "n_trees": len(getattr(model, "trees", [])),
+        "nTrees": len(getattr(model, "trees", [])),
     })

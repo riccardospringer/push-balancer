@@ -5,12 +5,15 @@ Bündelt den Research-Worker und alle Hilfsfunktionen aus push-balancer-server.p
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import math
 import re
 import sqlite3
+import ssl
 import threading
 import time
+import urllib.request
 from collections import defaultdict
 
 log = logging.getLogger("push-balancer")
@@ -73,6 +76,26 @@ _research_state: dict = {
 _research_state["analysis_lock"] = threading.RLock()
 _research_state_lock = threading.Lock()
 
+# ── Monitoring State ──────────────────────────────────────────────────────
+_monitoring_state: dict = {
+    "last_tick": 0,
+    "mae_24h": 0.0,
+    "mae_7d": 0.0,
+    "mae_trend": [],
+    "calibration_bias": 0.0,
+    "calibration_trend": [],
+    "feature_drift": {},
+    "residual_corrector": {},
+}
+_monitoring_state_lock = threading.Lock()
+
+# ── Auto-Retrain State ─────────────────────────────────────────────────────
+_auto_retrain_state: dict = {
+    "consecutive_degraded_ticks": 0,
+    "last_retrain_trigger_ts": 0,
+    "total_retrains": 0,
+}
+
 # ── Health State ───────────────────────────────────────────────────────────
 _health_state: dict = {
     "status": "starting",
@@ -93,6 +116,30 @@ _feed_cache: dict = {
 }
 _feed_cache_lock = threading.Lock()
 _FEED_CACHE_TTL: int = 300  # 5 Minuten
+
+# ── Deutsche Feiertage 2025-2027 ──────────────────────────────────────────
+_GERMAN_HOLIDAYS: dict = {
+    "2025-01-01": "Neujahr", "2025-04-18": "Karfreitag", "2025-04-21": "Ostermontag",
+    "2025-05-01": "Tag der Arbeit", "2025-05-29": "Christi Himmelfahrt",
+    "2025-06-09": "Pfingstmontag", "2025-10-03": "Tag der dt. Einheit",
+    "2025-12-25": "1. Weihnachtstag", "2025-12-26": "2. Weihnachtstag",
+    "2026-01-01": "Neujahr", "2026-04-03": "Karfreitag", "2026-04-06": "Ostermontag",
+    "2026-05-01": "Tag der Arbeit", "2026-05-14": "Christi Himmelfahrt",
+    "2026-05-25": "Pfingstmontag", "2026-10-03": "Tag der dt. Einheit",
+    "2026-12-25": "1. Weihnachtstag", "2026-12-26": "2. Weihnachtstag",
+    "2027-01-01": "Neujahr", "2027-03-26": "Karfreitag", "2027-03-29": "Ostermontag",
+    "2027-05-01": "Tag der Arbeit", "2027-05-06": "Christi Himmelfahrt",
+    "2027-05-17": "Pfingstmontag", "2027-10-03": "Tag der dt. Einheit",
+    "2027-12-25": "1. Weihnachtstag", "2027-12-26": "2. Weihnachtstag",
+}
+
+# ── Externer Kontext Cache ────────────────────────────────────────────────
+_external_context_cache: dict = {
+    "weather": {},
+    "trends": [],
+    "holiday": "",
+    "last_fetch": 0,
+}
 
 # ── XOR Perf Cache ─────────────────────────────────────────────────────────
 _xor_perf_cache: dict = {
@@ -334,6 +381,56 @@ def _update_rolling_accuracy(push_data: list, state: dict) -> None:
         state["mae_trend"] = state["mae_trend"][-20:]
     state["cat_error_std"] = {c: round(v, 3) for c, v in cat_std.items() if v is not None}
 
+    # ── Ensemble-Accuracy: ML-Pipeline (predict_or) ───────────────────────
+    # PERFORMANCE: Nur ausführen wenn ML-Modell geladen ist.
+    # Ohne ML fällt predict_or auf Heuristik zurück (O(n) pro Push) und blockiert den Worker.
+    _has_ml_model = False
+    try:
+        from app.ml.gbrt import _gbrt_model as _gbrt_m, _gbrt_lock as _gbrt_lk
+        with _gbrt_lk:
+            _has_ml_model = _gbrt_m is not None
+    except Exception:
+        pass
+    if not _has_ml_model:
+        try:
+            from app.ml.lightgbm_model import _ml_state as _ml_st, _ml_lock as _ml_lk
+            with _ml_lk:
+                _has_ml_model = _ml_st.get("model") is not None
+        except Exception:
+            pass
+
+    if _has_ml_model:
+        try:
+            from app.ml.predict import predict_or as _predict_or
+            sample = valid[-50:] if len(valid) > 50 else valid
+            ens_hits, ens_total, ens_mae_sum = 0, 0, 0.0
+            for p in sample:
+                result = _predict_or(p, research_state=state, push_data=valid)
+                if result is None:
+                    continue
+                pred = result.get("predicted_or", 0.0)
+                actual = p["or"]
+                err = abs(pred - actual)
+                ens_mae_sum += err
+                ens_total += 1
+                cat = p.get("cat", "News")
+                tol = max(0.5, cat_std[cat] * 1.0) if cat_std.get(cat) is not None else max(0.5, actual * 0.25)
+                if err <= tol:
+                    ens_hits += 1
+            if ens_total > 0:
+                ens_accuracy = round(ens_hits / ens_total * 100, 1)
+                ens_mae = round(ens_mae_sum / ens_total, 3)
+                prev_ens = state.get("ensemble_accuracy", 0)
+                state["ensemble_accuracy"] = ens_accuracy
+                state["ensemble_mae"] = ens_mae
+                state.setdefault("ensemble_accuracy_trend", []).append(ens_accuracy)
+                if len(state["ensemble_accuracy_trend"]) > 20:
+                    state["ensemble_accuracy_trend"] = state["ensemble_accuracy_trend"][-20:]
+                if prev_ens > 0:
+                    state["ensemble_accuracy_delta"] = round(ens_accuracy - prev_ens, 2)
+        except Exception as _ens_err:
+            log.debug("[research] Ensemble-Accuracy-Berechnung fehlgeschlagen: %s", _ens_err)
+
     cat_errors: dict = defaultdict(list)
     for h in history:
         cat_errors[h["cat"]].append(h["error"])
@@ -486,6 +583,660 @@ def _generate_live_rules(findings: dict, state: dict) -> None:
             })
 
     state["live_rules"] = rules
+
+
+# ── Temporale Trend-Analyse ───────────────────────────────────────────────
+
+def _compute_temporal_trends(push_data: list) -> dict:
+    """Temporale Segmentierung: Monats-, Wochen-, Wochentag-, Stunden-Trends."""
+    now = time.time()
+    result: dict = {}
+
+    def _ts(p: dict) -> int:
+        ts = p.get("ts_num", 0)
+        if not ts:
+            try:
+                ts = int(p.get("ts", 0))
+                if ts > 1e12:
+                    ts //= 1000
+            except (ValueError, TypeError):
+                ts = 0
+        return ts
+
+    def _stats(group: list) -> dict:
+        ors = [p["or"] for p in group if p.get("or", 0) > 0]
+        if not ors:
+            return {"avg_or": 0, "median_or": 0, "push_count": len(group), "or_count": 0}
+        s = sorted(ors)
+        return {
+            "avg_or": round(sum(ors) / len(ors), 2),
+            "median_or": round(s[len(s) // 2], 2),
+            "push_count": len(group),
+            "or_count": len(ors),
+        }
+
+    def _best_cat(group: list) -> str:
+        cat_or: dict = defaultdict(list)
+        for p in group:
+            if p.get("or", 0) > 0:
+                cat_or[p.get("cat") or "News"].append(p["or"])
+        if not cat_or:
+            return ""
+        return max(cat_or, key=lambda c: sum(cat_or[c]) / len(cat_or[c]))
+
+    def _best_hour(group: list) -> int:
+        h_or: dict = defaultdict(list)
+        for p in group:
+            if p.get("or", 0) > 0 and 0 <= p.get("hour", -1) <= 23:
+                h_or[p["hour"]].append(p["or"])
+        if not h_or:
+            return 0
+        return max(h_or, key=lambda h: sum(h_or[h]) / len(h_or[h]))
+
+    # Monats-Vergleich (bis 12 Monate)
+    monthly: dict = {}
+    for p in push_data:
+        ts = _ts(p)
+        if ts > 0:
+            key = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m")
+            monthly.setdefault(key, []).append(p)
+    monthly_stats = []
+    for month_key in sorted(monthly.keys()):
+        group = monthly[month_key]
+        s = _stats(group)
+        s["month"] = month_key
+        s["best_cat"] = _best_cat(group)
+        s["best_hour"] = _best_hour(group)
+        monthly_stats.append(s)
+    result["monthly"] = monthly_stats
+
+    recent_months = monthly_stats[-6:]
+    if len(recent_months) >= 3:
+        xs = list(range(len(recent_months)))
+        ys = [m["avg_or"] for m in recent_months]
+        mx = sum(xs) / len(xs)
+        my = sum(ys) / len(ys)
+        num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        den = sum((x - mx) ** 2 for x in xs)
+        slope = num / den if den > 0 else 0
+        if slope > 0.05:
+            result["trend_direction"] = "steigend"
+        elif slope < -0.05:
+            result["trend_direction"] = "fallend"
+        else:
+            result["trend_direction"] = "stabil"
+        result["trend_slope"] = round(slope, 4)
+    else:
+        result["trend_direction"] = "zu wenig Daten"
+        result["trend_slope"] = 0
+
+    # Tages-Vergleich (letzte 30 Tage)
+    cutoff_30d = now - 30 * 86400
+    daily: dict = {}
+    for p in push_data:
+        ts = _ts(p)
+        if ts > cutoff_30d and ts > 0:
+            key = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            daily.setdefault(key, []).append(p)
+    daily_stats = []
+    for day_key in sorted(daily.keys()):
+        group = daily[day_key]
+        s = _stats(group)
+        s["date"] = day_key
+        s["best_cat"] = _best_cat(group)
+        daily_stats.append(s)
+    result["daily_30"] = daily_stats
+
+    # Wochen-Evolution (letzte 12 Wochen)
+    weekly: dict = {}
+    for p in push_data:
+        ts = _ts(p)
+        if ts > 0:
+            kw = datetime.datetime.fromtimestamp(ts).strftime("%Y-W%W")
+            weekly.setdefault(kw, []).append(p)
+    weekly_stats = []
+    for wk_key in sorted(weekly.keys()):
+        group = weekly[wk_key]
+        s = _stats(group)
+        s["week"] = wk_key
+        s["top_cat"] = _best_cat(group)
+        weekly_stats.append(s)
+    weekly_stats = weekly_stats[-12:]
+    result["weekly"] = weekly_stats
+
+    moving_avg = []
+    for i in range(len(weekly_stats)):
+        window = weekly_stats[max(0, i - 3):i + 1]
+        avg = sum(w["avg_or"] for w in window) / len(window) if window else 0
+        moving_avg.append({
+            "week": weekly_stats[i]["week"],
+            "moving_avg_4w": round(avg, 2),
+        })
+    result["moving_avg_4w"] = moving_avg
+
+    return result
+
+
+# ── Sport/NonSport Subset-Analysen ────────────────────────────────────────
+
+def _update_rolling_accuracy_subset(subset_data: list, state: dict, key: str) -> None:
+    """Berechne Rolling Accuracy für ein Subset (sport/nonsport) und speichere unter state[key]."""
+    if len([p for p in subset_data if p.get("or", 0) > 0]) < 10:
+        return
+    tmp_state: dict = {
+        "rolling_accuracy": 0, "basis_mae": 0, "accuracy_history": [],
+        "accuracy_trend": [], "mae_trend": [], "mae_by_cat": {}, "mae_by_hour": {},
+        "accuracy_by_cat": {}, "ensemble_accuracy": 0, "ensemble_mae": 0,
+        "ensemble_accuracy_trend": [], "ensemble_accuracy_delta": 0,
+        "tuning_params": state.get("tuning_params"),
+    }
+    _update_rolling_accuracy(subset_data, tmp_state)
+    state[key] = {
+        "rolling_accuracy": tmp_state.get("rolling_accuracy", 0),
+        "basis_mae": tmp_state.get("basis_mae", 0),
+        "mae_by_cat": tmp_state.get("mae_by_cat", {}),
+        "mae_by_hour": tmp_state.get("mae_by_hour", {}),
+        "ensemble_mae": tmp_state.get("ensemble_mae", 0),
+        "accuracy_by_cat": tmp_state.get("accuracy_by_cat", {}),
+        "n": len(subset_data),
+        "n_with_or": len([p for p in subset_data if p.get("or", 0) > 0]),
+    }
+
+
+_EMOTION_GROUPS: dict = {
+    "Angst/Bedrohung":    {"words": ["krieg","terror","angriff","bombe","tod","sterben","opfer","gefahr","warnung","alarm","attacke","explosion","gewalt","mord","bedroh","toedlich","anschlag","crash","absturz","katastrophe"], "icon": "warn"},
+    "Empoerung/Skandal":  {"words": ["skandal","betrug","luege","schock","unglaublich","dreist","frechheit","enthuellung","vorwurf","ermittl","anklage","razzia","affaere","korrupt","verdacht","versagen","versagt","beschuldigt"], "icon": "anger"},
+    "Neugier/Geheimnis":  {"words": ["geheimnis","wahrheit","ueberraschung","raetsel","enthuellt","exklusiv","kurios","irre","unfassbar","verraet","insider","daran liegt","dahinter","warum","wieso","was steckt"], "icon": "search"},
+    "Freude/Erfolg":      {"words": ["gewinn","sieg","triumph","rekord","sensation","held","glueck","traum","jubel","feier","meister","gold","beste","weltmeister","gewinnt","siegt","tor","titel","champion"], "icon": "trophy"},
+    "Mitgefuehl/Drama":   {"words": ["trauer","abschied","schicksal","drama","tragoedie","bewegend","ruehrend","verlust","weint","traenen","tot","gestorben","verstorben","letzter wille","beerdigung","nachruf"], "icon": "sad"},
+    "Dringlichkeit":      {"words": ["jetzt","sofort","dringend","warnung","alarm","achtung","notfall","letzte chance","nur noch","deadline","eilmeldung","breaking","+++","aktuell","gerade","live"], "icon": "urgent"},
+    "Personalisierung":   {"words": ["so lebt","privat","zuhause","geheime","liebes","hochzeit","baby","schwanger","trennung","ehe","familie","verlobt","kind","star","promi","vip","millionaer"], "icon": "person"},
+}
+
+
+def _compute_findings_for_subset(subset_data: list) -> dict:
+    """Berechne strukturierte Analyse-Findings für ein Subset (Sport/NonSport)."""
+    findings: dict = {}
+    _or_max_sane = 30.0
+    or_pushes = [p for p in subset_data if 0 < p.get("or", 0) <= _or_max_sane]
+    or_values = [p["or"] for p in or_pushes]
+    sorted_or = sorted(or_values) if or_values else [0]
+    median_or = sorted_or[len(sorted_or) // 2]
+    mean_or = median_or
+    std_or = (
+        math.sqrt(sum((x - median_or) ** 2 for x in or_values) / max(1, len(or_values) - 1))
+        if len(or_values) > 1 else 0
+    )
+
+    hours: dict = defaultdict(list)
+    for p in subset_data:
+        if 0 <= p.get("hour", -1) <= 23 and p.get("or", 0) > 0:
+            hours[p["hour"]].append(p["or"])
+    hour_avgs = {h: sum(v) / len(v) for h, v in hours.items() if v}
+    best_hour = max(hour_avgs, key=hour_avgs.get) if hour_avgs else 18
+    worst_hour = min(hour_avgs, key=hour_avgs.get) if hour_avgs else 3
+    findings["hour_analysis"] = {
+        "best_hour": best_hour, "best_or": hour_avgs.get(best_hour, 0),
+        "worst_hour": worst_hour, "worst_or": hour_avgs.get(worst_hour, 0),
+        "hour_avgs": dict(hour_avgs),
+    }
+
+    cat_or: dict = defaultdict(list)
+    for p in subset_data:
+        if p.get("or", 0) > 0:
+            cat_or[p.get("cat") or "News"].append(p["or"])
+    cat_avgs = {c: sum(v) / len(v) for c, v in cat_or.items() if v}
+    findings["cat_analysis"] = [
+        {"category": c, "avg_or": v, "count": len(cat_or.get(c, []))}
+        for c, v in sorted(cat_avgs.items(), key=lambda x: -x[1])
+    ]
+
+    emo_words = {"schock","drama","skandal","angst","tod","sterben","krieg","panik",
+                 "horror","warnung","gefahr","krise","irre","wahnsinn","hammer","brutal","bitter"}
+    emo_pushes: list = []
+    q_pushes: list = []
+    neutral_pushes: list = []
+    for p in subset_data:
+        if p.get("or", 0) <= 0:
+            continue
+        _tl = p.get("title", "").lower()
+        if any(w in _tl for w in emo_words):
+            emo_pushes.append(p)
+        elif "?" in p.get("title", ""):
+            q_pushes.append(p)
+        else:
+            neutral_pushes.append(p)
+    findings["framing_analysis"] = {
+        "emotional_or": sum(p["or"] for p in emo_pushes) / len(emo_pushes) if emo_pushes else 0,
+        "neutral_or": sum(p["or"] for p in neutral_pushes) / len(neutral_pushes) if neutral_pushes else 0,
+        "emotional_count": len(emo_pushes), "neutral_count": len(neutral_pushes),
+        "question_or": sum(p["or"] for p in q_pushes) / len(q_pushes) if q_pushes else 0,
+        "question_count": len(q_pushes),
+    }
+
+    len_data: dict = {"kurz": [], "mittel": [], "lang": []}
+    for p in subset_data:
+        if p.get("or", 0) > 0:
+            tl = p.get("title_len", len(p.get("title", "")))
+            if tl < 50:
+                len_data["kurz"].append(p["or"])
+            elif tl <= 80:
+                len_data["mittel"].append(p["or"])
+            else:
+                len_data["lang"].append(p["or"])
+    len_avgs = {k: sum(v) / len(v) if v else 0 for k, v in len_data.items()}
+    best_len = max(len_avgs, key=len_avgs.get) if len_avgs else "mittel"
+    findings["title_length"] = {
+        "best_range": best_len, "best_or": len_avgs.get(best_len, 0),
+        "kurz_or": len_avgs.get("kurz", 0), "mittel_or": len_avgs.get("mittel", 0),
+        "lang_or": len_avgs.get("lang", 0),
+    }
+
+    day_counts: dict = defaultdict(int)
+    day_or_map: dict = defaultdict(list)
+    for p in subset_data:
+        try:
+            ts = int(p.get("ts", p.get("ts_num", 0)))
+            if ts > 1e12:
+                ts //= 1000
+            dk = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+        except Exception:
+            dk = "unknown"
+        day_counts[dk] += 1
+        if p.get("or", 0) > 0:
+            day_or_map[dk].append(p["or"])
+    day_stats = [
+        (day_counts[d], sum(day_or_map[d]) / len(day_or_map[d]))
+        for d in day_counts if d in day_or_map and day_or_map[d]
+    ]
+    if len(day_stats) > 1:
+        xs = [s[0] for s in day_stats]
+        ys = [s[1] for s in day_stats]
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        sx = math.sqrt(sum((x - mx) ** 2 for x in xs))
+        sy = math.sqrt(sum((y - my) ** 2 for y in ys))
+        freq_corr = cov / (sx * sy) if sx * sy > 0 else 0.0
+    else:
+        freq_corr = 0.0
+    findings["frequency_correlation"] = {
+        "correlation": freq_corr,
+        "optimal_daily": int(sum(s[0] for s in day_stats) / max(1, len(day_stats))) if day_stats else 0,
+        "days_analyzed": len(day_stats),
+    }
+
+    colon_pushes = [p for p in subset_data if (":" in p.get("title", "") or "|" in p.get("title", "")) and p.get("or", 0) > 0]
+    no_colon = [p for p in subset_data if ":" not in p.get("title", "") and "|" not in p.get("title", "") and p.get("or", 0) > 0]
+    findings["linguistic_analysis"] = {
+        "colon_or": sum(p["or"] for p in colon_pushes) / len(colon_pushes) if colon_pushes else 0,
+        "no_colon_or": sum(p["or"] for p in no_colon) / len(no_colon) if no_colon else 0,
+        "colon_count": len(colon_pushes), "no_colon_count": len(no_colon),
+    }
+
+    stops = {
+        "der","die","das","und","in","von","fuer","mit","auf","den","ist","ein","eine",
+        "es","im","zu","an","nach","vor","ueber","bei","wie","nicht","auch","er","sie",
+        "sich","so","als","aber","dem","zum","hat","aus","noch","am","nur","einen","dass",
+        "jetzt","bild","news","alle","neue","neuer","neues","schon","ab","wird","wurde",
+    }
+    word_or: dict = defaultdict(list)
+    for p in subset_data:
+        if p.get("or", 0) > 0:
+            for w in re.findall(r'[A-Za-z\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc\u00df]{4,}', p.get("title", "")):
+                wl = w.lower()
+                if wl not in stops:
+                    word_or[wl].append(p["or"])
+    kw_avgs = {w: sum(v) / len(v) for w, v in word_or.items() if len(v) >= 2}
+    findings["keyword_analysis"] = {
+        "top_keywords": sorted(kw_avgs, key=kw_avgs.get, reverse=True)[:10],
+        "keyword_count": len(kw_avgs),
+    }
+
+    total_with_or = len(or_pushes)
+    _sub_emo_sums: dict = {g: 0.0 for g in _EMOTION_GROUPS}
+    _sub_emo_counts: dict = {g: 0 for g in _EMOTION_GROUPS}
+    for p in subset_data:
+        if p.get("or", 0) <= 0:
+            continue
+        _tl = p.get("title", "").lower()
+        for gn, cfg in _EMOTION_GROUPS.items():
+            if any(w in _tl for w in cfg["words"]):
+                _sub_emo_sums[gn] += p["or"]
+                _sub_emo_counts[gn] += 1
+    emotion_results = []
+    for group_name, cfg in _EMOTION_GROUPS.items():
+        ec = _sub_emo_counts[group_name]
+        avg_or = _sub_emo_sums[group_name] / ec if ec > 0 else 0
+        emotion_results.append({
+            "group": group_name, "icon": cfg["icon"],
+            "avg_or": round(avg_or, 2), "diff": round(avg_or - mean_or if ec > 0 else 0, 2),
+            "count": ec, "pct": round(ec / max(1, total_with_or) * 100, 1),
+        })
+    emotion_results.sort(key=lambda e: e["avg_or"], reverse=True)
+    findings["emotion_radar"] = emotion_results
+    findings["_summary"] = {
+        "n": len(subset_data), "n_with_or": total_with_or,
+        "mean_or": round(mean_or, 3), "median_or": round(median_or, 3), "std_or": round(std_or, 3),
+    }
+    return findings
+
+
+def _generate_live_rules_for_subset(findings: dict, rules_out: list) -> None:
+    """Generiere Live-Rules für ein Subset (Sport oder NonSport) — lightweight Version."""
+    now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    rule_id = 0
+    hour_data = findings.get("hour_analysis", {})
+    if isinstance(hour_data, dict) and hour_data.get("best_hour") is not None:
+        rule_id += 1
+        rules_out.append({
+            "id": rule_id, "active": True,
+            "rule": f"Primaer-Slot: {hour_data['best_hour']}:00 ({hour_data.get('best_or', 0):.1f}%), Meiden: {hour_data.get('worst_hour', 0)}:00 ({hour_data.get('worst_or', 0):.1f}%)",
+            "source": "Subset-Timing-Analyse", "category": "timing",
+            "approved_by": "Auto", "approved_at": now_str,
+        })
+    cat_data = findings.get("cat_analysis", [])
+    if cat_data and len(cat_data) >= 2:
+        best_cat = max(cat_data, key=lambda c: c.get("avg_or", 0))
+        rule_id += 1
+        rules_out.append({
+            "id": rule_id, "active": True,
+            "rule": f"Top-Kategorie: {best_cat['category']} ({best_cat['avg_or']:.1f}%)",
+            "source": "Subset-Kategorie-Analyse", "category": "kategorie",
+            "approved_by": "Auto", "approved_at": now_str,
+        })
+
+
+# ── Research Modifiers ────────────────────────────────────────────────────
+
+def _compute_research_modifiers(push_data: list, findings: dict, state: dict) -> None:
+    """Berechnet konkrete Scoring-Modifier aus Forschungserkenntnissen.
+
+    Jeder Modifier ist ein multiplikativer Faktor (1.0 = neutral).
+    """
+    modifiers: dict = {
+        "version": state.get("live_rules_version", 0),
+        "n_rules": len([r for r in state.get("live_rules", []) if r.get("active")]),
+        "timing": {}, "category": {}, "framing": {},
+        "length": {}, "frequency": {}, "linguistic": {}, "emotion": {},
+    }
+
+    valid = [p for p in push_data if p.get("or", 0) > 0]
+    if not valid:
+        state["research_modifiers"] = modifiers
+        return
+
+    global_avg = sum(p["or"] for p in valid) / len(valid)
+    if global_avg <= 0:
+        state["research_modifiers"] = modifiers
+        return
+
+    def _clamp(val: float) -> float:
+        return max(0.3, min(3.0, round(val, 3)))
+
+    hour_avgs = findings.get("hour_analysis", {}).get("hour_avgs", {})
+    for h, avg in hour_avgs.items():
+        modifiers["timing"][str(h)] = _clamp(avg / global_avg)
+
+    for c in findings.get("cat_analysis", []):
+        if c.get("avg_or", 0) > 0 and c.get("count", 0) >= 3:
+            modifiers["category"][c["category"]] = _clamp(c["avg_or"] / global_avg)
+
+    framing = findings.get("framing_analysis", {})
+    for key in ("emotional", "neutral", "question"):
+        val = framing.get(f"{key}_or", 0)
+        if val > 0:
+            modifiers["framing"][key] = _clamp(val / global_avg)
+
+    for key in ("kurz", "mittel", "lang"):
+        val = findings.get("title_length", {}).get(f"{key}_or", 0)
+        if val > 0:
+            modifiers["length"][key] = _clamp(val / global_avg)
+
+    freq = findings.get("frequency_correlation", {})
+    if freq:
+        modifiers["frequency"]["max_daily"] = freq.get("optimal_daily", 20)
+        modifiers["frequency"]["fatigue_r"] = round(freq.get("correlation", 0), 3)
+
+    ling = findings.get("linguistic_analysis", {})
+    for key, field in (("with_colon", "colon_or"), ("no_colon", "no_colon_or")):
+        val = ling.get(field, 0)
+        if val > 0:
+            modifiers["linguistic"][key] = _clamp(val / global_avg)
+
+    for e in findings.get("emotion_radar", []):
+        if e.get("count", 0) >= 3 and e.get("avg_or", 0) > 0:
+            modifiers["emotion"][e["group"]] = _clamp(e["avg_or"] / global_avg)
+
+    eil_ors = [p["or"] for p in valid if p.get("is_eilmeldung")]
+    normal_ors = [p["or"] for p in valid if not p.get("is_eilmeldung")]
+    if eil_ors and normal_ors:
+        modifiers["channel"] = {
+            "eilmeldung": _clamp(sum(eil_ors) / len(eil_ors) / global_avg),
+            "normal": _clamp(sum(normal_ors) / len(normal_ors) / global_avg),
+            "n_eilmeldung": len(eil_ors),
+        }
+
+    accuracy = state.get("rolling_accuracy", 0)
+    n_pushes = len(valid)
+    confidence = min(0.85, (n_pushes / 2000) * 0.4 + (accuracy / 100) * 0.45)
+    modifiers["confidence"] = round(confidence, 3)
+    modifiers["global_avg"] = round(global_avg, 3)
+    modifiers["n_pushes"] = n_pushes
+    state["research_modifiers"] = modifiers
+
+
+# ── Score-Komponenten-Analyse ─────────────────────────────────────────────
+
+def _analyze_score_components(push_data: list, findings: dict, state: dict) -> None:
+    """Algo-Team: Berechnet Feature-Importance und Score-Dekomposition."""
+    valid = [p for p in push_data if p.get("or", 0) > 0]
+    if len(valid) < 10:
+        return
+
+    global_avg = sum(p["or"] for p in valid) / len(valid)
+    n = len(valid)
+    total_var = sum((p["or"] - global_avg) ** 2 for p in valid) / max(1, n - 1)
+    if total_var <= 0:
+        total_var = 0.01
+
+    hour_groups: dict = defaultdict(list)
+    for p in valid:
+        hour_groups[p.get("hour", 0)].append(p["or"])
+    timing_var = sum(len(vs) * (sum(vs) / len(vs) - global_avg) ** 2 for vs in hour_groups.values() if vs) / max(1, n - 1)
+
+    cat_groups: dict = defaultdict(list)
+    for p in valid:
+        cat_groups[p.get("cat", "Sonstige")].append(p["or"])
+    cat_var = sum(len(vs) * (sum(vs) / len(vs) - global_avg) ** 2 for vs in cat_groups.values() if vs) / max(1, n - 1)
+
+    emo_words = ["schock","drama","skandal","angst","tod","krieg","panik","horror","warnung","krise","alarm","unfall","mord","terror"]
+    emo_ors = [p["or"] for p in valid if any(w in p.get("title", "").lower() for w in emo_words)]
+    neutral_ors = [p["or"] for p in valid if not any(w in p.get("title", "").lower() for w in emo_words)]
+    framing_var = 0.0
+    if emo_ors and neutral_ors:
+        emo_avg = sum(emo_ors) / len(emo_ors)
+        neu_avg = sum(neutral_ors) / len(neutral_ors)
+        framing_var = (len(emo_ors) * (emo_avg - global_avg) ** 2 + len(neutral_ors) * (neu_avg - global_avg) ** 2) / max(1, n - 1)
+
+    len_groups: dict = {"kurz": [], "mittel": [], "lang": []}
+    for p in valid:
+        tl = len(p.get("title", ""))
+        if tl < 50:
+            len_groups["kurz"].append(p["or"])
+        elif tl > 80:
+            len_groups["lang"].append(p["or"])
+        else:
+            len_groups["mittel"].append(p["or"])
+    length_var = sum(len(vs) * (sum(vs) / len(vs) - global_avg) ** 2 for vs in len_groups.values() if vs) / max(1, n - 1)
+
+    colon_ors = [p["or"] for p in valid if ":" in p.get("title", "") or "|" in p.get("title", "")]
+    no_colon_ors = [p["or"] for p in valid if ":" not in p.get("title", "") and "|" not in p.get("title", "")]
+    ling_var = 0.0
+    if colon_ors and no_colon_ors:
+        c_avg = sum(colon_ors) / len(colon_ors)
+        nc_avg = sum(no_colon_ors) / len(no_colon_ors)
+        ling_var = (len(colon_ors) * (c_avg - global_avg) ** 2 + len(no_colon_ors) * (nc_avg - global_avg) ** 2) / max(1, n - 1)
+
+    explained_total = timing_var + cat_var + framing_var + length_var + ling_var
+    residual_var = max(0.0, total_var - explained_total)
+
+    feature_importance = {
+        "timing": round(timing_var / total_var * 100, 1),
+        "kategorie": round(cat_var / total_var * 100, 1),
+        "framing": round(framing_var / total_var * 100, 1),
+        "titel_laenge": round(length_var / total_var * 100, 1),
+        "linguistik": round(ling_var / total_var * 100, 1),
+        "residual": round(residual_var / total_var * 100, 1),
+    }
+
+    modifiers = state.get("research_modifiers", {})
+    score_decomposition = {
+        "global_avg": round(global_avg, 2),
+        "timing_effect": round(modifiers.get("timing", {}).get(str(findings.get("hour_analysis", {}).get("best_hour", 18)), 1.0) - 1.0, 3),
+        "category_effect": round(max(modifiers.get("category", {}).values(), default=1.0) - 1.0, 3) if modifiers.get("category") else 0,
+        "framing_effect": round(modifiers.get("framing", {}).get("emotional", 1.0) - modifiers.get("framing", {}).get("neutral", 1.0), 3),
+        "length_effect": round(max(modifiers.get("length", {}).values(), default=1.0) - min(modifiers.get("length", {}).values(), default=1.0), 3) if modifiers.get("length") else 0,
+        "linguistic_effect": round(modifiers.get("linguistic", {}).get("with_colon", 1.0) - modifiers.get("linguistic", {}).get("no_colon", 1.0), 3) if modifiers.get("linguistic") else 0,
+    }
+
+    xor_suggestions: list = []
+    if feature_importance["timing"] > 20:
+        current_w = 0.3
+        suggested_w = round(min(0.6, feature_importance["timing"] / 100 * 1.2), 2)
+        if suggested_w != current_w:
+            xor_suggestions.append({
+                "type": "timing_weight", "current": current_w, "suggested": suggested_w,
+                "reason": f"Timing erklaert {feature_importance['timing']:.1f}% der OR-Varianz",
+                "expected_impact": f"+{(suggested_w - current_w) * feature_importance['timing']:.1f}% Score-Praezision",
+            })
+    if feature_importance["kategorie"] > 15:
+        cat_data = findings.get("cat_analysis", [])
+        if cat_data and len(cat_data) > 1:
+            best = cat_data[0]
+            worst = cat_data[-1]
+            if best["avg_or"] - worst["avg_or"] > 1.0:
+                xor_suggestions.append({
+                    "type": "category_boost",
+                    "current": 1.0, "suggested": round(best["avg_or"] / global_avg, 2),
+                    "reason": f"{best['category']} ({best['avg_or']:.1f}%) vs. {worst['category']} ({worst['avg_or']:.1f}%)",
+                    "expected_impact": "Bessere Kategorie-Differenzierung im Score",
+                })
+    if feature_importance["framing"] > 10 and emo_ors and neutral_ors:
+        emo_avg = sum(emo_ors) / len(emo_ors)
+        neu_avg = sum(neutral_ors) / len(neutral_ors)
+        if abs(emo_avg - neu_avg) > 0.5:
+            xor_suggestions.append({
+                "type": "framing_factor",
+                "current": 1.0, "suggested": round(emo_avg / neu_avg, 2),
+                "reason": f"Emotional {emo_avg:.1f}% vs. Neutral {neu_avg:.1f}%",
+                "expected_impact": "Emotionales Framing korrekt einpreisen",
+            })
+
+    state["algo_score_analysis"] = {
+        "ts": datetime.datetime.now().strftime("%d.%m. %H:%M"),
+        "n_pushes": n,
+        "feature_importance": feature_importance,
+        "score_decomposition": score_decomposition,
+        "xor_suggestions": xor_suggestions,
+        "total_variance": round(total_var, 4),
+        "explained_variance": round(explained_total / total_var * 100, 1) if total_var > 0 else 0,
+    }
+
+
+# ── Externer Kontext ──────────────────────────────────────────────────────
+
+def _fetch_external_context(state: dict) -> dict:
+    """Holt Wetter, Google Trends und Feiertag-Info. Alle 30min."""
+    global _external_context_cache
+    now = time.time()
+    if now - _external_context_cache["last_fetch"] < 1800:
+        return _external_context_cache
+
+    log.info("[Kontext] Fetche externe Datenquellen...")
+
+    # Wetter Berlin via wttr.in
+    weather: dict = {"bad_weather_score": 0.3, "temp_c": 15, "weather_desc": "unbekannt"}
+    try:
+        ssl_ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            "https://wttr.in/Berlin?format=j1",
+            headers={"User-Agent": "PushBalancer/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            cur = data.get("current_condition", [{}])[0]
+            temp_c = int(cur.get("temp_C", 15))
+            precip_mm = float(cur.get("precipMM", 0))
+            cloud_cover = int(cur.get("cloudcover", 50))
+            wind_kmph = int(cur.get("windspeedKmph", 0))
+            bad_score = 0.0
+            if precip_mm > 0.5:
+                bad_score += 0.3
+            if temp_c < 5:
+                bad_score += 0.2
+            elif temp_c > 30:
+                bad_score += 0.1
+            if cloud_cover > 80:
+                bad_score += 0.15
+            if wind_kmph > 30:
+                bad_score += 0.1
+            weather = {
+                "temp_c": temp_c, "precip_mm": precip_mm, "cloud_cover": cloud_cover,
+                "wind_kmph": wind_kmph, "humidity": int(cur.get("humidity", 50)),
+                "weather_desc": cur.get("weatherDesc", [{}])[0].get("value", ""),
+                "bad_weather_score": round(min(1.0, bad_score), 2),
+            }
+    except Exception as exc:
+        log.warning("[Kontext] Wetter-Fetch fehlgeschlagen: %s", exc)
+
+    # Google Trends Deutschland
+    trends: list = []
+    try:
+        ssl_ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            "https://trends.google.com/trending/rss?geo=DE",
+            headers={"User-Agent": "PushBalancer/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
+            xml = resp.read().decode("utf-8", errors="replace")
+            titles = re.findall(r"<title>([^<]+)</title>", xml)
+            for t in titles[1:21]:
+                t = t.strip()
+                if t and len(t) > 1:
+                    trends.append(t.lower())
+    except Exception as exc:
+        log.warning("[Kontext] Google Trends fehlgeschlagen: %s", exc)
+
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    holiday = _GERMAN_HOLIDAYS.get(today_str, "")
+    weekday = datetime.datetime.now().weekday()
+    day_type = "holiday" if holiday else ("weekend" if weekday >= 5 else "weekday")
+
+    hour = datetime.datetime.now().hour
+    if 6 <= hour <= 8:
+        time_context = "pendler_morgen"
+    elif 11 <= hour <= 13:
+        time_context = "mittagspause"
+    elif 16 <= hour <= 18:
+        time_context = "feierabend"
+    elif 20 <= hour <= 23:
+        time_context = "prime_time"
+    elif 0 <= hour <= 5:
+        time_context = "nacht"
+    else:
+        time_context = "normal"
+
+    _external_context_cache = {
+        "weather": weather, "trends": trends,
+        "holiday": holiday, "last_fetch": now,
+    }
+    state["external_context"] = {
+        "weather": weather, "trends_count": len(trends),
+        "trends_top5": trends[:5], "holiday": holiday,
+        "day_type": day_type, "time_context": time_context,
+        "last_update": datetime.datetime.now().strftime("%H:%M"),
+    }
+    return _external_context_cache
 
 
 # ── Haupt-Analyse ──────────────────────────────────────────────────────────
@@ -875,7 +1626,7 @@ _XOR_STOP_WORDS = {
 
 
 def monitoring_tick() -> None:
-    """Monitoring-Tick: berechnet MAE-Statistiken, Calibration-Bias und aktualisiert Residual-Corrector."""
+    """Monitoring-Tick: MAE-Statistiken, Calibration, Residual-Corrector, Auto-Retrain."""
     try:
         from app.config import PUSH_DB_PATH
         now_ts = int(time.time())
@@ -886,55 +1637,77 @@ def monitoring_tick() -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
 
-        # MAE 24h
         rows_24h = conn.execute(
             "SELECT predicted_or, actual_or, predicted_at FROM prediction_log "
-            "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at >= ?",
+            "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at >= ? "
+            "ORDER BY predicted_at DESC",
             (ts_24h,),
         ).fetchall()
 
-        # MAE 7d
         rows_7d = conn.execute(
-            "SELECT predicted_or, actual_or, predicted_at FROM prediction_log "
+            "SELECT predicted_or, actual_or FROM prediction_log "
             "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at >= ?",
             (ts_7d,),
-        ).fetchall()
-
-        # Calibration-Bias: letzte 100 Predictions (signed error)
-        rows_bias = conn.execute(
-            "SELECT predicted_or, actual_or FROM prediction_log "
-            "WHERE actual_or > 0 AND predicted_or > 0 "
-            "ORDER BY predicted_at DESC LIMIT 100",
         ).fetchall()
 
         conn.close()
 
         mae_24h = 0.0
         if rows_24h:
-            mae_24h = round(sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_24h) / len(rows_24h), 3)
+            mae_24h = round(
+                sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_24h) / len(rows_24h), 4
+            )
 
         mae_7d = 0.0
         if rows_7d:
-            mae_7d = round(sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_7d) / len(rows_7d), 3)
-
-        # Stündlicher MAE-Trend (letzte 24h, nach Stunde gebucketed)
-        hour_errors: dict = defaultdict(list)
-        for r in rows_24h:
-            h = datetime.datetime.fromtimestamp(r["predicted_at"]).hour
-            hour_errors[h].append(abs(r["predicted_or"] - r["actual_or"]))
-        mae_trend = {h: round(sum(e) / len(e), 3) for h, e in hour_errors.items() if e}
-
-        # Calibration-Bias (mittlerer signed error)
-        calibration_bias = 0.0
-        if rows_bias:
-            calibration_bias = round(
-                sum(r["predicted_or"] - r["actual_or"] for r in rows_bias) / len(rows_bias), 4
+            mae_7d = round(
+                sum(abs(r["predicted_or"] - r["actual_or"]) for r in rows_7d) / len(rows_7d), 4
             )
 
-        # Residual Corrector aktualisieren
-        update_residual_corrector()
+        # Stündlicher MAE-Trend (24h, als sortierte Liste wie im Legacy)
+        hourly_buckets: dict = {}
+        for r in rows_24h:
+            h_ts = (r["predicted_at"] // 3600) * 3600
+            hourly_buckets.setdefault(h_ts, []).append(abs(r["predicted_or"] - r["actual_or"]))
+        mae_trend = [
+            {"ts": h_ts, "mae": round(sum(errs) / len(errs), 4), "n": len(errs)}
+            for h_ts in sorted(hourly_buckets)
+            if hourly_buckets[h_ts]
+        ][-24:]
 
-        # Ergebnisse in _research_state schreiben
+        # Calibration-Bias + Trend (letzte 100, in 20er-Blöcken)
+        calibration_bias = 0.0
+        calibration_trend: list = []
+        recent_100 = list(rows_24h[:100])
+        if recent_100:
+            signed = [r["predicted_or"] - r["actual_or"] for r in recent_100]
+            calibration_bias = round(sum(signed) / len(signed), 4)
+            for i in range(0, len(signed), 20):
+                block = signed[i:i + 20]
+                if block:
+                    calibration_trend.append(round(sum(block) / len(block), 4))
+
+        # Residual Corrector aktualisieren + Snapshot erfassen
+        update_residual_corrector()
+        with _residual_corrector_lock:
+            rc_snapshot = {
+                "global_bias": _residual_corrector["global_bias"],
+                "cat_bias": dict(_residual_corrector["cat_bias"]),
+                "hourgroup_bias": dict(_residual_corrector["hourgroup_bias"]),
+                "n_samples": _residual_corrector["n_samples"],
+                "last_update_ts": _residual_corrector["last_update_ts"],
+            }
+
+        # Ergebnisse atomar in beide State-Dicts schreiben
+        with _monitoring_state_lock:
+            _monitoring_state["last_tick"] = now_ts
+            _monitoring_state["mae_24h"] = mae_24h
+            _monitoring_state["mae_7d"] = mae_7d
+            _monitoring_state["mae_trend"] = mae_trend
+            _monitoring_state["calibration_bias"] = calibration_bias
+            _monitoring_state["calibration_trend"] = calibration_trend
+            _monitoring_state["residual_corrector"] = rc_snapshot
+
         with _research_state_lock:
             _research_state["mae_24h"] = mae_24h
             _research_state["mae_7d"] = mae_7d
@@ -942,16 +1715,57 @@ def monitoring_tick() -> None:
             _research_state["calibration_bias"] = calibration_bias
             _research_state["monitoring_last_ts"] = now_ts
 
-        if mae_24h > 2.0:
+        # MAE-Spike Warnung
+        if mae_7d > 0 and mae_24h > mae_7d * 1.15:
             log.warning(
-                "[monitoring_tick] MAE verschlechtert: mae_24h=%.3f (Schwellwert 2.0), mae_7d=%.3f",
+                "[monitoring_tick] MAE-Spike: mae_24h=%.4f ist %.1f%% über 7d-Baseline=%.4f",
+                mae_24h, (mae_24h / mae_7d - 1) * 100, mae_7d,
+            )
+        elif mae_24h > 2.0:
+            log.warning(
+                "[monitoring_tick] MAE verschlechtert: mae_24h=%.4f (Schwellwert 2.0), mae_7d=%.4f",
                 mae_24h, mae_7d,
             )
         else:
             log.info(
-                "[monitoring_tick] mae_24h=%.3f, mae_7d=%.3f, bias=%+.4f, n_24h=%d",
+                "[monitoring_tick] mae_24h=%.4f, mae_7d=%.4f, bias=%+.4f, n_24h=%d",
                 mae_24h, mae_7d, calibration_bias, len(rows_24h),
             )
+
+        # Calibration-Shift Warnung
+        if abs(calibration_bias) > 0.5:
+            log.warning(
+                "[monitoring_tick] Calibration-Shift: bias=%+.4f (Modell %sschätzt systematisch)",
+                calibration_bias, "über" if calibration_bias > 0 else "unter",
+            )
+
+        # Auto-Retrain Trigger: MAE_24h > MAE_7d × 1.3 für 3 aufeinanderfolgende Ticks
+        if mae_7d > 0 and mae_24h > mae_7d * 1.3:
+            _auto_retrain_state["consecutive_degraded_ticks"] += 1
+            if (
+                _auto_retrain_state["consecutive_degraded_ticks"] >= 3
+                and now_ts - _auto_retrain_state["last_retrain_trigger_ts"] > 3600
+            ):
+                _auto_retrain_state["last_retrain_trigger_ts"] = now_ts
+                _auto_retrain_state["consecutive_degraded_ticks"] = 0
+                _auto_retrain_state["total_retrains"] += 1
+                log.warning(
+                    "[AutoRetrain] Trigger: mae_24h=%.4f > mae_7d×1.3=%.4f → Retrain wird gestartet",
+                    mae_24h, mae_7d * 1.3,
+                )
+                try:
+                    from app.ml.lightgbm_model import ml_train_model
+                    threading.Thread(target=ml_train_model, daemon=True).start()
+                except Exception as _e:
+                    log.debug("[AutoRetrain] ml_train_model nicht verfügbar: %s", _e)
+                try:
+                    from app.ml.gbrt import gbrt_train
+                    threading.Thread(target=gbrt_train, daemon=True).start()
+                except Exception as _e:
+                    log.debug("[AutoRetrain] gbrt_train nicht verfügbar: %s", _e)
+        else:
+            _auto_retrain_state["consecutive_degraded_ticks"] = 0
+
     except Exception as exc:
         log.warning("[research] monitoring_tick Fehler: %s", exc)
 

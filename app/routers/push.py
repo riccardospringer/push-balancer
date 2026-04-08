@@ -35,8 +35,8 @@ except ImportError:
 
 
 class PredictionFeedbackRequest(BaseModel):
-    push_id: str
-    actual_or: float
+    pushId: str
+    actualOr: float
     title: str | None = None
 
 
@@ -135,12 +135,12 @@ def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
     """
     try:
         push_db_log_prediction(
-            push_id=body.push_id,
+            push_id=body.pushId,
             predicted_or=0.0,
-            actual_or=body.actual_or,
+            actual_or=body.actualOr,
             title=body.title or "",
         )
-        log.info("[Feedback] Push %s: actual_or=%.2f%%", body.push_id, body.actual_or)
+        log.info("[Feedback] Push %s: actual_or=%.2f%%", body.pushId, body.actualOr)
         return JSONResponse(content={"ok": True})
     except Exception as e:
         log.exception("[Feedback] Fehler in post_prediction_feedback")

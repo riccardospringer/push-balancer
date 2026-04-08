@@ -1,7 +1,13 @@
 """app/ml/predict.py — predictOR-Pipeline (9 Methoden).
 
-Bündelt alle Prediction-Methoden aus push-balancer-server.py.
-Migration über Compat-Shim — direkte Migration folgt schrittweise.
+Vollständige Migration aus push-balancer-server.py (_server_predict_or).
+Fallback-Kette:
+  1. LightGBM Stacking (wenn Modell geladen)
+  2. GBRT (wenn GBRT-Modell geladen)
+  3. ML-Heuristik-Blend: Einzelnes ML-Modell × Heuristik (falls push_data vorhanden)
+  4. Vollständige M1-M9-Heuristik (falls push_data vorhanden, kein ML)
+  5. Cat×Hour-Heuristik aus research_state
+  6. Global Average (4.77%)
 """
 from __future__ import annotations
 
@@ -36,27 +42,39 @@ def safety_envelope(result: dict | None) -> dict | None:
     return result
 
 
-def predict_or(push: dict, research_state: dict | None = None) -> dict | None:
+def predict_or(
+    push: dict,
+    research_state: dict | None = None,
+    push_data: list | None = None,
+) -> dict | None:
     """Hauptfunktion der predictOR-Pipeline.
 
     Fallback-Kette:
       1. LightGBM (wenn Modell geladen)
       2. GBRT (wenn GBRT-Modell geladen)
-      3. Cat×Hour Heuristik aus research_state
-      4. Global Average (4.77%)
+      3. ML-Blend mit Heuristik (einzelnes ML-Modell + push_data)
+      4. Vollständige M1-M9-Heuristik (wenn push_data >= 10 Pushes)
+      5. Cat×Hour Heuristik aus research_state
+      6. Global Average (4.77%)
 
     Die Funktion gibt immer einen Wert zurück und crasht nie.
 
     Args:
         push: Push-Dict mit title, cat, hour, ts_num, etc.
         research_state: Aktueller Research-Worker-State für Kontext
+        push_data: Historische Push-Liste für M1-M9-Heuristik (optional).
+                   Wenn None: aus research_state["push_data"] gelesen.
 
     Returns:
         Dict mit predicted_or, basis_method, confidence, q10, q90,
         advisory_only=True, action_allowed=False
     """
+    # push_data aus research_state lesen wenn nicht explizit übergeben
+    if push_data is None and research_state:
+        push_data = research_state.get("push_data") or []
+
     try:
-        result = _predict_or_impl(push, research_state)
+        result = _predict_or_impl(push, research_state, push_data or [])
         return safety_envelope(result)
     except Exception as exc:
         log.error("[predict] predict_or unerwarteter Fehler: %s", exc)
@@ -69,26 +87,52 @@ def predict_or(push: dict, research_state: dict | None = None) -> dict | None:
         })
 
 
-def _predict_or_impl(push: dict, research_state: dict | None) -> dict:
+def _predict_or_impl(
+    push: dict,
+    research_state: dict | None,
+    push_data: list,
+) -> dict:
     """Interne Implementierung der Fallback-Kette."""
 
     # ── 1. LightGBM-Prediction ─────────────────────────────────────────────
+    lgbm_result = None
     try:
-        result = _predict_lightgbm(push, research_state)
-        if result is not None:
-            return result
+        lgbm_result = _predict_lightgbm(push, research_state)
+        if lgbm_result is not None:
+            # Wenn push_data vorhanden: ML-Blend mit Heuristik
+            if len(push_data) >= 10:
+                return _ml_heuristic_blend(
+                    push, research_state, push_data,
+                    ml_name="lightgbm", ml_result=lgbm_result,
+                )
+            return lgbm_result
     except Exception as exc:
         log.warning("[predict] LightGBM-Prediction fehlgeschlagen: %s", exc)
 
     # ── 2. GBRT-Prediction ─────────────────────────────────────────────────
+    gbrt_result = None
     try:
-        result = _predict_gbrt(push, research_state)
-        if result is not None:
-            return result
+        gbrt_result = _predict_gbrt(push, research_state)
+        if gbrt_result is not None:
+            if len(push_data) >= 10:
+                return _ml_heuristic_blend(
+                    push, research_state, push_data,
+                    ml_name="gbrt", ml_result=gbrt_result,
+                )
+            return gbrt_result
     except Exception as exc:
         log.warning("[predict] GBRT-Prediction fehlgeschlagen: %s", exc)
 
-    # ── 3. Cat×Hour Heuristik ──────────────────────────────────────────────
+    # ── 3. Vollständige M1-M9-Heuristik ───────────────────────────────────
+    if len(push_data) >= 10:
+        try:
+            result = _predict_full_heuristic(push, research_state, push_data)
+            if result is not None:
+                return result
+        except Exception as exc:
+            log.warning("[predict] Vollständige Heuristik fehlgeschlagen: %s", exc)
+
+    # ── 4. Cat×Hour Heuristik ──────────────────────────────────────────────
     try:
         result = _predict_cat_hour_heuristic(push, research_state)
         if result is not None:
@@ -96,8 +140,64 @@ def _predict_or_impl(push: dict, research_state: dict | None) -> dict:
     except Exception as exc:
         log.warning("[predict] Cat×Hour-Heuristik fehlgeschlagen: %s", exc)
 
-    # ── 4. Global Average Fallback ─────────────────────────────────────────
+    # ── 5. Global Average Fallback ─────────────────────────────────────────
     return _predict_global_avg(push, research_state)
+
+
+def _ml_heuristic_blend(
+    push: dict,
+    research_state: dict | None,
+    push_data: list,
+    ml_name: str,
+    ml_result: dict,
+) -> dict:
+    """Blendet ein einzelnes ML-Modell mit der M1-M9-Heuristik.
+
+    Gewichte aus _ml_state["ml_heuristic_alpha"] (Fallback: 0.55).
+    """
+    try:
+        from app.ml.lightgbm_model import _ml_state, _ml_lock
+        with _ml_lock:
+            blend_w = _ml_state.get("ml_heuristic_alpha", 0.55)
+    except Exception:
+        blend_w = 0.55
+
+    ml_pred = ml_result.get("predicted_or", _GLOBAL_AVG_FALLBACK)
+
+    # Heuristik berechnen (wenn möglich)
+    heur_pred = None
+    try:
+        heur_result = _predict_full_heuristic(push, research_state, push_data)
+        if heur_result is not None:
+            heur_pred = heur_result.get("predicted_or")
+    except Exception:
+        pass
+
+    if heur_pred is None:
+        # Kein Blend ohne Heuristik — ML-Ergebnis direkt zurückgeben
+        return ml_result
+
+    blended = ml_pred * blend_w + heur_pred * (1 - blend_w)
+    blended = max(0.5, min(30.0, blended))
+
+    # Konfidenz: Mittelwert der beiden Konfidenzwerte
+    ml_conf = ml_result.get("confidence", 0.4)
+    heur_conf = heur_result.get("confidence", 0.3) if heur_result else 0.3
+    confidence = ml_conf * blend_w + heur_conf * (1 - blend_w)
+
+    q10 = max(0.1, blended - 1.28 * 1.5)
+    q90 = min(20.0, blended + 1.28 * 1.5)
+
+    return {
+        "predicted_or": round(blended, 4),
+        "basis_method": f"{ml_name}_heuristic_blend({blend_w:.0%}+{1-blend_w:.0%})",
+        "confidence": round(confidence, 3),
+        "q10": round(q10, 4),
+        "q90": round(q90, 4),
+        f"{ml_name}_predicted": round(ml_pred, 4),
+        "heuristic_predicted": round(heur_pred, 4) if heur_pred else None,
+        "ml_heuristic_alpha": round(blend_w, 3),
+    }
 
 
 def _predict_lightgbm(push: dict, research_state: dict | None) -> dict | None:
@@ -148,7 +248,6 @@ def _predict_lightgbm(push: dict, research_state: dict | None) -> dict | None:
     confidence = min(0.95, max(0.3, 1.0 - mae / 5.0)) if n_train >= 100 else 0.4
 
     # q10/q90 aus historischer Std-Abweichung
-    global_avg = stats.get("global_avg", _GLOBAL_AVG_FALLBACK)
     cat = (push.get("cat", "") or "news").lower().strip()
     cat_vol = stats.get("cat_volatility", {}).get(cat, {})
     std = cat_vol.get("std_30d", 0.0) or cat_vol.get("std_7d", 0.0) or 1.5
@@ -186,6 +285,36 @@ def _predict_gbrt(push: dict, research_state: dict | None) -> dict | None:
         }
     except Exception:
         return None
+
+
+def _predict_full_heuristic(
+    push: dict,
+    research_state: dict | None,
+    push_data: list,
+) -> dict | None:
+    """Vollständige M1-M9-Heuristik mit Post-Fusion-Korrektoren."""
+    try:
+        from app.ml.heuristic import predict_heuristic
+    except ImportError as exc:
+        log.warning("[predict] heuristic-Import fehlgeschlagen: %s", exc)
+        return None
+
+    # Residual-Corrector aus worker laden (lazy, kein circular import)
+    residual_corrector = None
+    try:
+        from app.research.worker import _residual_corrector, _residual_corrector_lock
+        with _residual_corrector_lock:
+            residual_corrector = dict(_residual_corrector)
+    except Exception:
+        pass
+
+    return predict_heuristic(
+        push=push,
+        push_data=push_data,
+        state=research_state or {},
+        residual_corrector=residual_corrector,
+        tuning_params=(research_state or {}).get("tuning_params"),
+    )
 
 
 def _predict_cat_hour_heuristic(push: dict, research_state: dict | None) -> dict | None:

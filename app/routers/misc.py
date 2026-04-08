@@ -131,14 +131,14 @@ def get_adobe_traffic() -> JSONResponse:
         return JSONResponse(content={
             "enabled": True,
             "loading": True,
-            "updated_at": 0,
+            "updatedAt": 0,
             "error": _adobe_state.get("error", ""),
         })
 
     return JSONResponse(content={
         "enabled": True,
         "loading": False,
-        "updated_at": _adobe_state["updated_at"],
+        "updatedAt": _adobe_state["updated_at"],
         "error": "",
         **traffic,
     })
@@ -170,8 +170,8 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
     log.info("[Schwab] Approval: decision=%s push_id=%s", body.decision, body.push_id)
     return JSONResponse(content={
         "ok": True,
-        "advisory_only": True,
-        "action_allowed": False,
+        "advisoryOnly": True,
+        "actionAllowed": False,
         "message": "Entscheidung geloggt. Push-Versand erfordert manuelle Aktion im CMS.",
     })
 
