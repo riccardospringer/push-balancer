@@ -69,8 +69,17 @@ export function TableRow({
         cursor: onClick ? 'pointer' : undefined,
         ...style,
       }}
-      onMouseEnter={onClick ? (e) => ((e.currentTarget as HTMLElement).style.background = 'var(--bg)') : undefined}
-      onMouseLeave={onClick ? (e) => ((e.currentTarget as HTMLElement).style.background = '') : undefined}
+      onMouseEnter={
+        onClick
+          ? (e) =>
+              ((e.currentTarget as HTMLElement).style.background = 'var(--bg)')
+          : undefined
+      }
+      onMouseLeave={
+        onClick
+          ? (e) => ((e.currentTarget as HTMLElement).style.background = '')
+          : undefined
+      }
     >
       {children}
     </tr>

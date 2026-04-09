@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Push-Zeilen Generator v4 — 2 schnelle GPT-4o Calls (~6s).
+"""Push-Zeilen Generator v5 — Editorial-One-Brain (Single Call).
 
-Call 1: Kreativteam generiert 6 Titel-Kandidaten mit Analyse
-Call 2: Chefredakteur waehlt den besten aus
+Ein einzelner LLM-Call erstellt Analyse, Kandidaten und Gewinnerauswahl.
 """
 
 import os
@@ -34,32 +33,33 @@ def _llm_call(system: str, user: str, temperature: float = 0.7, max_tokens: int 
     return resp.choices[0].message.content.strip()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CALL 1: KREATIVTEAM
-# ═══════════════════════════════════════════════════════════════════════════════
-
-KREATIV_SYS = f"""Du bist das BILD Push-Kreativteam. Analysiere den Artikel und generiere 6 Push-Titel.
+EDITORIAL_ONE_BRAIN_SYS = f"""Du bist die zentrale Editorial-One-Brain Instanz fuer BILD Push.
+Du arbeitest in EINEM Durchlauf: analysieren, Varianten bauen, bewerten, Gewinner waehlen.
 
 REGELN:
 - 60-80 Zeichen ideal, max {MAX_PUSH_LENGTH}
-- JEDER Titel braucht einen offenen Loop (Frage die nur durch Tippen aufgeloest wird)
-- Praesens + aktive Verben ("greift an" statt "hat angegriffen")
+- Praesens + aktive Verben
 - KEIN Pipe-Format ("|"), keine Emojis, kein Passiv, max 1 Komma
+- Titel muss journalistisch sauber und faktentreu sein
 
-TECHNIKEN (aus Top-Pushes mit 20% OR):
-- Gedankenstrich-Cliffhanger: "Fakt — Schock-Wende" (staerkste Technik)
-- Doppelpunkt-Kicker: "Kontext: Die Nachricht"
-- Name+Alter: "Leon (6)" macht Opfer zu Menschen
-- Zitat-Einstieg: Woertliche Rede = Leser IST in der Szene
-- Informationsluecke: GENUG verraten, EINE Sache offenlassen
-
-6 Titel: 2x sprachlich, 2x psychologisch (Curiosity Gap/Verlust-Aversion), 2x datenbasiert.
+LIEFERE:
+- analyse: kern/hook/emotion
+- kandidaten: exakt 6 Titel (2x sprachlich, 2x psychologisch, 2x datenbasiert)
+- bewertungen: bis zu 3 bewertete Top-Titel
+- gewinner: bester Titel inkl. Begruendung und Score 0-10
+- alternative: zweitbester Titel
 
 Antworte NUR als JSON:
-{{"analyse":{{"kern":"...","hook":"...","emotion":"..."}},"kandidaten":[{{"titel":"...","ansatz":"sprachlich|psychologisch|datenbasiert"}}]}}"""
+{{
+  "analyse": {{"kern":"...","hook":"...","emotion":"..."}},
+  "kandidaten":[{{"titel":"...","ansatz":"sprachlich|psychologisch|datenbasiert"}}],
+  "bewertungen":[{{"titel":"...","gesamt":0.0,"schwaeche":"..."}}],
+  "gewinner":{{"titel":"...","laenge":0,"gesamt_score":0.0,"warum_dieser":"..."}},
+  "alternative":{{"titel":"...","laenge":0,"warum":"..."}}
+}}"""
 
 
-def _kreativteam(title, text, category, kicker="", headline=""):
+def _editorial_one_brain(title, text, category, kicker="", headline=""):
     parts = []
     if kicker:
         parts.append(f"Kicker: {kicker}")
@@ -70,89 +70,62 @@ def _kreativteam(title, text, category, kicker="", headline=""):
     if text:
         parts.append(f"\nText:\n{text[:1500]}")
 
-    raw = _llm_call(KREATIV_SYS, "\n".join(parts), temperature=0.8, max_tokens=900)
+    raw = _llm_call(EDITORIAL_ONE_BRAIN_SYS, "\n".join(parts), temperature=0.7, max_tokens=1000)
 
     try:
-        if "{{" not in raw and "{" in raw:
+        if "{" in raw:
             data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
             analyse = data.get("analyse", {})
             kandidaten = data.get("kandidaten", [])
             for k in kandidaten:
-                if "titel" in k:
+                if k.get("titel"):
                     k["laenge"] = len(k["titel"])
-            return analyse, kandidaten
-    except (json.JSONDecodeError, ValueError) as e:
-        log.warning(f"[Kreativteam] JSON-Parse: {e}")
 
-    titles = re.findall(r'"titel"\s*:\s*"([^"]+)"', raw)
-    return {"kern": title}, [{"titel": t, "laenge": len(t), "ansatz": "fallback"} for t in titles[:6]]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CALL 2: CHEFREDAKTEUR
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CHEF_SYS = f"""Du bist der BILD Push-Chefredakteur. Waehle den Titel mit der hoechsten Opening Rate.
-
-Bewertung: Klick-Impuls (40%), Emotion (25%), Klarheit (20%), BILD-DNA (10%), Faktentreue (5%).
-Max {MAX_PUSH_LENGTH} Zeichen. MUSS offenen Loop haben. KEIN Pipe "|".
-
-Antworte NUR als JSON:
-{{"bewertungen":[{{"titel":"...","gesamt":0.0,"schwaeche":"..."}}],"gewinner":{{"titel":"...","laenge":0,"gesamt_score":0.0,"warum_dieser":"..."}},"alternative":{{"titel":"...","laenge":0,"warum":"..."}}}}"""
-
-
-def _chefredakteur(analyse, kandidaten, original_title):
-    if not kandidaten:
-        return {
-            "gewinner": {"titel": original_title, "laenge": len(original_title),
-                         "gesamt_score": 5.0, "warum_dieser": "Keine Kandidaten"},
-            "alternative": {"titel": original_title, "laenge": len(original_title), "warum": "Fallback"},
-            "bewertungen": [],
-        }
-
-    cand_text = "\n".join(
-        f"[{c.get('ansatz','?')}] \"{c['titel']}\" ({len(c.get('titel',''))}Z)"
-        for c in kandidaten if c.get("titel")
-    )
-
-    user = f"""ORIGINAL: "{original_title}"
-KERN: {analyse.get('kern', '')}
-HOOK: {analyse.get('hook', '')}
-EMOTION: {analyse.get('emotion', '')}
-
-KANDIDATEN:
-{cand_text}
-
-Bewerte die besten 3. Waehle oder synthetisiere den optimalen Titel."""
-
-    raw = _llm_call(CHEF_SYS, user, temperature=0.2, max_tokens=800)
-
-    try:
-        if "{" in raw:
-            result = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
-            for key in ("gewinner", "alternative"):
-                entry = result.get(key, {})
-                if entry.get("titel"):
-                    entry["laenge"] = len(entry["titel"])
-            for b in result.get("bewertungen", []):
+            for b in data.get("bewertungen", []):
                 try:
                     b["gesamt"] = round(float(b.get("gesamt", 0)), 1)
                 except (TypeError, ValueError):
                     b["gesamt"] = 0.0
-            w = result.get("gewinner", {})
-            try:
-                w["gesamt_score"] = round(float(w.get("gesamt_score", 0)), 1)
-            except (TypeError, ValueError):
-                w["gesamt_score"] = 0.0
-            return result
-    except (json.JSONDecodeError, ValueError) as e:
-        log.warning(f"[Chef] JSON-Parse: {e}")
 
+            for key in ("gewinner", "alternative"):
+                entry = data.get(key, {})
+                if entry.get("titel"):
+                    entry["laenge"] = len(entry["titel"])
+
+            winner = data.get("gewinner", {})
+            try:
+                winner["gesamt_score"] = round(float(winner.get("gesamt_score", 0)), 1)
+            except (TypeError, ValueError):
+                winner["gesamt_score"] = 0.0
+
+            return {
+                "analyse": analyse,
+                "kandidaten": kandidaten,
+                "bewertungen": data.get("bewertungen", []),
+                "gewinner": data.get("gewinner", {}),
+                "alternative": data.get("alternative", {}),
+            }
+    except (json.JSONDecodeError, ValueError) as e:
+        log.warning(f"[EditorialOneBrain] JSON-Parse: {e}")
+
+    titles = re.findall(r'"titel"\s*:\s*"([^"]+)"', raw)
+    kandidaten = [{"titel": t, "laenge": len(t), "ansatz": "fallback"} for t in titles[:6]]
+    winner_titel = kandidaten[0]["titel"] if kandidaten else title
     return {
-        "gewinner": {"titel": original_title, "laenge": len(original_title),
-                     "gesamt_score": 5.0, "warum_dieser": "Nicht parsbar"},
-        "alternative": {"titel": original_title, "laenge": len(original_title), "warum": "Fallback"},
+        "analyse": {"kern": title},
+        "kandidaten": kandidaten,
         "bewertungen": [],
+        "gewinner": {
+            "titel": winner_titel,
+            "laenge": len(winner_titel),
+            "gesamt_score": 5.0,
+            "warum_dieser": "Fallback wegen nicht parsbarer LLM-Antwort",
+        },
+        "alternative": {
+            "titel": title,
+            "laenge": len(title),
+            "warum": "Fallback",
+        },
     }
 
 
@@ -162,37 +135,57 @@ Bewerte die besten 3. Waehle oder synthetisiere den optimalen Titel."""
 
 def generate_push_title(article_title, article_text="", category="news",
                         kicker="", headline="", model=None):
-    """2-Call Pipeline: Kreativteam → Chefredakteur."""
+    """Editorial-One-Brain Pipeline (Single Call)."""
     t0 = time.monotonic()
     log.info(f"[PushTitle] Start: '{article_title[:60]}' ({category})")
 
-    analyse, kandidaten = _kreativteam(article_title, article_text, category, kicker, headline)
+    one_brain = _editorial_one_brain(article_title, article_text, category, kicker, headline)
+    analyse = one_brain.get("analyse", {})
+    kandidaten = one_brain.get("kandidaten", [])
     t1 = time.monotonic()
-    log.info(f"[PushTitle] Call 1: {t1-t0:.1f}s — {len(kandidaten)} Kandidaten")
-
-    result = _chefredakteur(analyse, kandidaten, article_title)
-    t2 = time.monotonic()
+    log.info(f"[PushTitle] One-Brain: {t1-t0:.1f}s — {len(kandidaten)} Kandidaten")
 
     grouped = {"sprachlich": [], "psychologisch": [], "datenbasiert": []}
     for k in kandidaten:
         a = k.get("ansatz", "sprachlich")
         grouped.setdefault(a, []).append(k)
 
+    result = {
+        "bewertungen": one_brain.get("bewertungen", []),
+        "gewinner": one_brain.get("gewinner", {}),
+        "alternative": one_brain.get("alternative", {}),
+    }
+
+    if not result["gewinner"].get("titel"):
+        result["gewinner"] = {
+            "titel": article_title,
+            "laenge": len(article_title),
+            "gesamt_score": 5.0,
+            "warum_dieser": "Fallback ohne Gewinner",
+        }
+    if not result["alternative"].get("titel"):
+        result["alternative"] = {
+            "titel": article_title,
+            "laenge": len(article_title),
+            "warum": "Fallback",
+        }
+
     result["meta"] = {
         "original_titel": article_title,
         "kategorie": category,
-        "dauer_gesamt_s": round(t2 - t0, 1),
+        "dauer_gesamt_s": round(t1 - t0, 1),
         "dauer_call1_s": round(t1 - t0, 1),
-        "dauer_call2_s": round(t2 - t1, 1),
+        "dauer_call2_s": 0.0,
         "anzahl_kandidaten": len(kandidaten),
         "modell": MODEL,
         "analyse": analyse,
+        "modus": "editorial-one-brain",
     }
     result["alle_kandidaten"] = grouped
 
     w = result.get("gewinner", {})
     log.info(f"[PushTitle] ERGEBNIS: '{w.get('titel', '?')[:80]}' "
-             f"(Score: {w.get('gesamt_score', '?')}/10, {t2-t0:.1f}s)")
+             f"(Score: {w.get('gesamt_score', '?')}/10, {t1-t0:.1f}s)")
     return result
 
 

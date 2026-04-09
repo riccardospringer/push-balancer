@@ -1,5 +1,8 @@
+import js from '@eslint/js'
 import tsParser from '@typescript-eslint/parser'
 import tsPlugin from '@typescript-eslint/eslint-plugin'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
 
 const browserGlobals = {
   AbortController: 'readonly',
@@ -18,6 +21,7 @@ const browserGlobals = {
 }
 
 export default [
+  js.configs.recommended,
   {
     ignores: ['dist/**', 'node_modules/**'],
   },
@@ -36,9 +40,13 @@ export default [
     },
     plugins: {
       '@typescript-eslint': tsPlugin,
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
+      ...reactHooks.configs.recommended.rules,
+      'no-undef': 'off',
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-unused-vars': [
         'error',
@@ -47,6 +55,8 @@ export default [
           varsIgnorePattern: '^_',
         },
       ],
+      'react-hooks/set-state-in-effect': 'off',
+      'react-refresh/only-export-components': 'warn',
     },
   },
 ]

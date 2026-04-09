@@ -42,7 +42,15 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
 
     return (
       <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-        <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</span>
+        <span
+          style={{
+            fontSize: '12px',
+            fontWeight: 500,
+            color: 'var(--text-secondary)',
+          }}
+        >
+          {label}
+        </span>
         {select}
       </label>
     )

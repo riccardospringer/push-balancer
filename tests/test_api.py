@@ -102,6 +102,66 @@ class TestHealthEndpoint:
         assert isinstance(resp.json().get("status"), str)
 
 
+class TestStableFrontendContracts:
+    def test_pushes_contract_returns_collection(self):
+        resp = client.get("/api/pushes")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "pushes" in data
+        assert "channels" in data
+        assert "today" in data
+
+    def test_ml_model_contract_returns_status(self):
+        resp = client.get("/api/ml-model")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "modelVersion" in data
+        assert "trainedAt" in data
+        assert "features" in data
+        assert "advisoryOnly" in data
+
+    def test_ml_model_monitoring_contract_returns_metrics(self):
+        resp = client.get("/api/ml-model/monitoring")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "recentPredictions" in data
+        assert "rollingMAE" in data
+        assert "drift" in data
+
+    def test_research_insights_contract_returns_learnings(self):
+        resp = client.get("/api/research-insights")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "learnings" in data
+        assert "experiments" in data
+
+    def test_articles_contract_returns_collection(self, monkeypatch):
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/politik/test-artikel</loc>
+    <news:news>
+      <news:title>Breaking Test Artikel</news:title>
+      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr(
+            "app.ml.predict.predict_or",
+            lambda *_args, **_kwargs: {"predicted_or": 5.5},
+        )
+
+        resp = client.get("/api/articles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "articles" in data
+        assert data["count"] >= 1
+        assert data["articles"][0]["title"] == "Breaking Test Artikel"
+
+
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
 
 class TestTagesplanEndpoint:

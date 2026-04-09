@@ -14,7 +14,11 @@ export function fmtScore(v: number): string {
 
 export function fmtDate(iso: string): string {
   const d = new Date(iso)
-  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  return d.toLocaleDateString('de-DE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
 }
 
 export function fmtTime(iso: string): string {

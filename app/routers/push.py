@@ -6,6 +6,7 @@ POST /api/predictions/feedback — Prediction-Feedback für ML-Training
 """
 import json
 import logging
+import datetime as dt
 import time
 import threading
 import urllib.error
@@ -16,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.config import PUSH_API_BASE, SYNC_SECRET
-from app.database import push_db_log_prediction
+from app.database import push_db_load_all, push_db_log_prediction
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()
@@ -44,6 +45,18 @@ class PushSyncRequest(BaseModel):
     secret: str = ""   # default "" → leerer Body ergibt 403 statt 422
     messages: list = []
     channels: list = []
+
+
+def _iso_from_ts(ts_value: int | str | float) -> str:
+    ts = int(float(ts_value))
+    return dt.datetime.fromtimestamp(ts).isoformat()
+
+
+def _ratio(value: float | int | None) -> float:
+    if value is None:
+        return 0.0
+    numeric = float(value)
+    return numeric / 100 if numeric > 1 else numeric
 
 
 @router.get("/api/push/{path:path}")
@@ -103,6 +116,62 @@ async def proxy_push_api(path: str, request: Request) -> Response:
     return Response(content=fallback, media_type="application/json; charset=utf-8")
 
 
+@router.get("/api/pushes")
+def get_pushes(limit: int = 100) -> JSONResponse:
+    """Return recent push history as a stable JSON collection for the frontend."""
+    try:
+        rows = push_db_load_all(max_rows=max(50, min(limit, 300)))
+    except Exception as exc:
+        log.warning("[pushes] could not load push history: %s", exc)
+        rows = []
+    pushes = []
+    today_key = dt.datetime.now().strftime("%Y-%m-%d")
+    today_rows = []
+
+    for row in rows[:limit]:
+        sent_at = _iso_from_ts(row.get("ts_num", row.get("ts", 0)))
+        if sent_at.startswith(today_key):
+            today_rows.append(row)
+        pushes.append(
+            {
+                "id": row.get("message_id", ""),
+                "title": row.get("title") or row.get("headline") or "",
+                "channel": row.get("channel") or (row.get("channels") or ["main"])[0],
+                "sentAt": sent_at,
+                "recipients": row.get("total_recipients") or row.get("received") or 0,
+                "opened": row.get("opened") or 0,
+                "openRate": round(_ratio(row.get("or")), 4),
+                "predictedOR": None,
+                "url": row.get("link") or None,
+            }
+        )
+
+    channels = sorted(
+        {
+            push["channel"]
+            for push in pushes
+            if push["channel"]
+        }
+    )
+    today_rates = [_ratio(row.get("or")) for row in today_rows if row.get("or") is not None]
+    today_recipients = [
+        int(row.get("total_recipients") or row.get("received") or 0) for row in today_rows
+    ]
+
+    return JSONResponse(
+        content={
+            "pushes": pushes,
+            "channels": channels,
+            "today": {
+                "count": len(today_rows),
+                "avgOR": round(sum(today_rates) / len(today_rates), 4) if today_rates else 0.0,
+                "topOR": round(max(today_rates), 4) if today_rates else 0.0,
+                "recipients": sum(today_recipients),
+            },
+        }
+    )
+
+
 @router.post("/api/pushes/sync")
 def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     """Empfängt Push-Daten von lokalem Server (Relay für Render).
@@ -120,6 +189,17 @@ def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     log.info("[Sync] Empfangen: %d Messages, %d Channels",
              len(body.messages), len(body.channels))
     return JSONResponse(content={"ok": True, "received": len(body.messages)})
+
+
+@router.post("/api/pushes/refresh")
+def post_push_refresh() -> JSONResponse:
+    """Frontend-safe refresh endpoint for the live pushes view."""
+    try:
+        rows = push_db_load_all(max_rows=50)
+    except Exception as exc:
+        log.warning("[pushes] refresh fallback without DB: %s", exc)
+        rows = []
+    return JSONResponse(content={"ok": True, "synced": len(rows)})
 
 
 @router.post("/api/predictions/feedback")

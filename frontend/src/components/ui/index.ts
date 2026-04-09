@@ -1,13 +1,13 @@
 /**
- * editorial-one-ui Stub-Komponenten
+ * Editorial One UI compatibility layer.
  *
- * Stubs mit kompatiblem API zu @spring-media/editorial-one-ui.
- * Sobald das Paket via privatem Registry verfügbar ist:
+ * The project is configured for GitHub Package Registry via `frontend/.npmrc`.
+ * Once `NPM_TOKEN` is available, replace this file with:
  *
- *   pnpm add @spring-media/editorial-one-ui
- *
- * Dann diese Datei ersetzen durch:
  *   export * from '@spring-media/editorial-one-ui'
+ *
+ * Until then, local fallback components preserve the app contract and keep the
+ * migration surface limited to this module.
  */
 
 export { Button } from './Button'

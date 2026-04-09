@@ -58,9 +58,5 @@ export function CardTitle({ children, style }: CardProps) {
 }
 
 export function CardContent({ children, style }: CardProps) {
-  return (
-    <div style={{ padding: '16px 20px', ...style }}>
-      {children}
-    </div>
-  )
+  return <div style={{ padding: '16px 20px', ...style }}>{children}</div>
 }

@@ -6,7 +6,10 @@ interface TabsContextValue {
   setActive: (v: string) => void
 }
 
-const TabsCtx = createContext<TabsContextValue>({ active: '', setActive: () => {} })
+const TabsCtx = createContext<TabsContextValue>({
+  active: '',
+  setActive: () => {},
+})
 
 interface TabsProps {
   value: string
@@ -23,7 +26,13 @@ export function Tabs({ value, onValueChange, children, style }: TabsProps) {
   )
 }
 
-export function TabsList({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
+export function TabsList({
+  children,
+  style,
+}: {
+  children: ReactNode
+  style?: React.CSSProperties
+}) {
   return (
     <div
       style={{
@@ -38,7 +47,13 @@ export function TabsList({ children, style }: { children: ReactNode; style?: Rea
   )
 }
 
-export function TabsTrigger({ value, children }: { value: string; children: ReactNode }) {
+export function TabsTrigger({
+  value,
+  children,
+}: {
+  value: string
+  children: ReactNode
+}) {
   const { active, setActive } = useContext(TabsCtx)
   const isActive = active === value
   return (
@@ -63,7 +78,13 @@ export function TabsTrigger({ value, children }: { value: string; children: Reac
   )
 }
 
-export function TabsContent({ value, children }: { value: string; children: ReactNode }) {
+export function TabsContent({
+  value,
+  children,
+}: {
+  value: string
+  children: ReactNode
+}) {
   const { active } = useContext(TabsCtx)
   if (active !== value) return null
   return <div style={{ animation: 'fadeIn 0.2s ease' }}>{children}</div>

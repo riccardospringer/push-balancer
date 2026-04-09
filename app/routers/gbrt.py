@@ -23,6 +23,13 @@ _gbrt_error_cache: dict = {"ts": 0, "data": {}}
 _gbrt_error_cache_ttl: int = 300  # 5 Minuten
 
 
+def _as_ratio(value: float | int | None) -> float:
+    if value is None:
+        return 0.0
+    numeric = float(value)
+    return numeric / 100 if numeric > 1 else numeric
+
+
 @router.get("/api/gbrt/status")
 def get_gbrt_status() -> JSONResponse:
     """Liefert GBRT-Modell-Status (Metriken, Feature Importance, Fehleranalyse, letzte Predictions)."""
@@ -152,6 +159,12 @@ def get_gbrt_status() -> JSONResponse:
     return JSONResponse(content={
         "loaded": True,
         "trained": True,
+        "active": True,
+        "modelVersion": f"gbrt-{metrics.get('trained_at', 'untrained')}",
+        "mae": round(_as_ratio(metrics.get("test_mae", metrics.get("val_mae"))), 4),
+        "trainingRows": int(metrics.get("n_train", 0)),
+        "features": feature_names,
+        "lastRetrain": str(metrics.get("trained_at", "")),
         "model": {
             "type": "GBRT",
             "n_trees": n_trees,
@@ -174,6 +187,12 @@ def get_gbrt_status() -> JSONResponse:
         "featureNames": feature_names,
         "featureCount": len(feature_names),
     })
+
+
+@router.get("/api/gbrt-model")
+def get_gbrt_model_status() -> JSONResponse:
+    """Stable GBRT model status contract for the frontend and OpenAPI clients."""
+    return get_gbrt_status()
 
 
 @router.get("/api/gbrt/model.json")
@@ -288,6 +307,12 @@ def post_gbrt_retrain() -> JSONResponse:
     return JSONResponse(content={"ok": True, "message": "GBRT-Retraining gestartet"})
 
 
+@router.post("/api/gbrt-model/retraining-jobs", dependencies=[Depends(require_admin_key)])
+def post_gbrt_model_retraining_job() -> JSONResponse:
+    """Stable GBRT retraining trigger endpoint."""
+    return post_gbrt_retrain()
+
+
 @router.post("/api/gbrt/force-promote", dependencies=[Depends(require_admin_key)])
 def post_gbrt_force_promote() -> JSONResponse:
     """Promotet den GBRT-Challenger manuell zu Champion.
@@ -306,3 +331,9 @@ def post_gbrt_force_promote() -> JSONResponse:
         "message": "GBRT-Challenger wurde manuell zu Champion promotet",
         "nTrees": len(getattr(model, "trees", [])),
     })
+
+
+@router.post("/api/gbrt-model/promotions", dependencies=[Depends(require_admin_key)])
+def post_gbrt_model_promotion() -> JSONResponse:
+    """Stable GBRT promotion endpoint."""
+    return post_gbrt_force_promote()

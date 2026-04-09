@@ -15,6 +15,7 @@ import re
 import ssl
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -55,6 +56,24 @@ _OUTLET_COLORS: dict[str, str] = {
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()
+
+_ARTICLE_CATEGORY_SCORES: dict[str, float] = {
+    "politik": 82.0,
+    "sport": 78.0,
+    "news": 76.0,
+    "wirtschaft": 74.0,
+    "unterhaltung": 66.0,
+    "regional": 62.0,
+    "digital": 68.0,
+}
+_ARTICLE_BREAKING_KEYWORDS = (
+    "EIL",
+    "BREAKING",
+    "LIVE",
+    "EXKLUSIV",
+    "SCHOCK",
+    "WARNUNG",
+)
 
 # ── In-Memory URL-Cache ────────────────────────────────────────────────────
 _url_cache: dict[str, tuple[float, bytes]] = {}
@@ -139,6 +158,69 @@ def _parse_rss_items(xml_bytes: bytes, max_items: int = 30) -> list[dict]:
     return items
 
 
+def _infer_article_category(url: str, title: str) -> str:
+    url_lower = url.lower()
+    title_lower = title.lower()
+    if "/sport/" in url_lower:
+        return "sport"
+    if "/politik/" in url_lower:
+        return "politik"
+    if "/unterhaltung/" in url_lower or "/leute/" in url_lower:
+        return "unterhaltung"
+    if "/geld/" in url_lower or "/wirtschaft/" in url_lower:
+        return "wirtschaft"
+    if "/digital/" in url_lower or "ki" in title_lower:
+        return "digital"
+    if "/regional/" in url_lower:
+        return "regional"
+    return "news"
+
+
+def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[dict[str, Any]]:
+    ns_sitemap = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    ns_news = {"news": "http://www.google.com/schemas/sitemap-news/0.9"}
+    root = ET.fromstring(xml_bytes.decode("utf-8", errors="replace"))
+
+    articles: list[dict[str, Any]] = []
+    for url_el in root.findall("sm:url", ns_sitemap):
+        loc = (url_el.findtext("sm:loc", "", ns_sitemap) or "").strip()
+        news_el = url_el.find("news:news", ns_news)
+        if news_el is None or not loc:
+            continue
+
+        title = (news_el.findtext("news:title", "", ns_news) or "").strip()
+        pub_date = (news_el.findtext("news:publication_date", "", ns_news) or "").strip()
+        if not title:
+            continue
+
+        category = _infer_article_category(loc, title)
+        score = _ARTICLE_CATEGORY_SCORES.get(category, 60.0)
+        title_upper = title.upper()
+        for keyword in _ARTICLE_BREAKING_KEYWORDS:
+            if keyword in title_upper:
+                score += 6.0
+
+        articles.append(
+            {
+                "id": loc,
+                "url": loc,
+                "title": title,
+                "category": category,
+                "pubDate": pub_date,
+                "score": min(score, 100.0),
+                "predictedOR": None,
+                "isBreaking": any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS),
+                "isEilmeldung": "EIL" in title_upper,
+                "isSport": category == "sport",
+                "isPlusArticle": False,
+            }
+        )
+        if len(articles) >= max_items:
+            break
+
+    return articles
+
+
 @router.get("/api/feed")
 def get_feed() -> Response:
     """Proxy zur BILD News-Sitemap (XML)."""
@@ -146,6 +228,62 @@ def get_feed() -> Response:
     if data is None:
         raise HTTPException(status_code=502, detail="BILD Sitemap nicht erreichbar")
     return Response(content=data, media_type="application/xml; charset=utf-8")
+
+
+@router.get("/api/articles")
+def get_articles(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> JSONResponse:
+    """Return article candidates from the BILD sitemap as a typed JSON collection."""
+    data = _fetch_url(BILD_SITEMAP)
+    if data is None:
+        raise HTTPException(status_code=502, detail="BILD sitemap is not reachable")
+
+    try:
+        articles = _extract_sitemap_articles(data, max_items=max(offset + limit, 120))
+    except ET.ParseError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid sitemap XML: {exc}") from exc
+
+    articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
+    selected = articles[offset : offset + limit]
+
+    try:
+        import datetime as _dt
+
+        from app.ml.predict import predict_or
+        from app.research.worker import _research_state
+
+        now = _dt.datetime.now()
+        for article in selected:
+            result = predict_or(
+                {
+                    "title": article["title"],
+                    "headline": article["title"],
+                    "cat": article["category"],
+                    "hour": now.hour,
+                    "ts_num": int(now.timestamp()),
+                    "is_eilmeldung": article["isEilmeldung"],
+                    "link": article["url"],
+                    "channels": [],
+                },
+                _research_state,
+            )
+            predicted_or = (result or {}).get("predicted_or")
+            if predicted_or is not None:
+                article["predictedOR"] = round(float(predicted_or) / 100, 4)
+    except Exception as exc:
+        log.warning("[articles] prediction enrichment failed: %s", exc)
+
+    return JSONResponse(
+        content={
+            "articles": selected,
+            "count": len(articles),
+            "offset": offset,
+            "limit": limit,
+            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+    )
 
 
 def _paginate_feed_dict(

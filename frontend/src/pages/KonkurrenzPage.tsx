@@ -23,16 +23,31 @@ function ItemCard({ item }: { item: CompetitorItem }) {
         transition: 'box-shadow 0.15s',
       }}
       onClick={() => window.open(item.url, '_blank')}
-      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow)')}
-      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.boxShadow = '')}
+      onMouseEnter={(e) =>
+        ((e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow)')
+      }
+      onMouseLeave={(e) =>
+        ((e.currentTarget as HTMLElement).style.boxShadow = '')
+      }
     >
-      <div style={{ marginBottom: '8px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+      <div
+        style={{
+          marginBottom: '8px',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '4px',
+        }}
+      >
         {item.isGap && <Badge variant="amber">Lücke</Badge>}
         {item.isExklusiv && <Badge variant="purple">Exklusiv</Badge>}
         {item.isHot && <Badge variant="red">Hot</Badge>}
         <Badge
           variant="default"
-          style={{ background: item.outletColor + '20', color: item.outletColor, borderColor: item.outletColor + '40' }}
+          style={{
+            background: item.outletColor + '20',
+            color: item.outletColor,
+            borderColor: item.outletColor + '40',
+          }}
         >
           {item.outlet}
         </Badge>
@@ -58,7 +73,9 @@ function ItemCard({ item }: { item: CompetitorItem }) {
 export function KonkurrenzPage() {
   const { konkurrenzMode, setKonkurrenzMode } = useAppStore()
   const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState<'alle' | 'lucken' | 'exklusiv' | 'hot'>('alle')
+  const [filter, setFilter] = useState<'alle' | 'lucken' | 'exklusiv' | 'hot'>(
+    'alle',
+  )
 
   const { data: redaktion, isLoading: rLoading } = useCompetitorRedaktion()
   const { data: sport, isLoading: sLoading } = useCompetitorSport()
@@ -80,14 +97,36 @@ export function KonkurrenzPage() {
   }, [data, filter, search])
 
   return (
-    <div style={{ padding: '16px 24px', maxWidth: '1400px', margin: '0 auto', animation: 'fadeIn 0.2s ease' }}>
-      <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Konkurrenz-Monitor</h1>
+    <div
+      style={{
+        padding: '16px 24px',
+        maxWidth: '1400px',
+        margin: '0 auto',
+        animation: 'fadeIn 0.2s ease',
+      }}
+    >
+      <div
+        style={{
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
+          Konkurrenz-Monitor
+        </h1>
         <div style={{ display: 'flex', gap: '6px' }}>
-          <FilterChip active={konkurrenzMode === 'redaktion'} onClick={() => setKonkurrenzMode('redaktion')}>
+          <FilterChip
+            active={konkurrenzMode === 'redaktion'}
+            onClick={() => setKonkurrenzMode('redaktion')}
+          >
             Redaktion
           </FilterChip>
-          <FilterChip active={konkurrenzMode === 'sport'} onClick={() => setKonkurrenzMode('sport')}>
+          <FilterChip
+            active={konkurrenzMode === 'sport'}
+            onClick={() => setKonkurrenzMode('sport')}
+          >
             Sport
           </FilterChip>
         </div>
@@ -112,7 +151,15 @@ export function KonkurrenzPage() {
 
       {/* Filter Bar */}
       <Card style={{ marginBottom: '16px' }}>
-        <CardContent style={{ padding: '12px 16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <CardContent
+          style={{
+            padding: '12px 16px',
+            display: 'flex',
+            gap: '12px',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+          }}
+        >
           <Input
             placeholder="Suchen…"
             value={search}
@@ -120,12 +167,28 @@ export function KonkurrenzPage() {
             style={{ width: '200px' }}
           />
           {(['alle', 'lucken', 'exklusiv', 'hot'] as const).map((f) => (
-            <FilterChip key={f} active={filter === f} onClick={() => setFilter(f)}>
-              {f === 'alle' ? 'Alle' : f === 'lucken' ? 'Lücken' : f === 'exklusiv' ? 'Exklusiv' : 'Hot'}
+            <FilterChip
+              key={f}
+              active={filter === f}
+              onClick={() => setFilter(f)}
+            >
+              {f === 'alle'
+                ? 'Alle'
+                : f === 'lucken'
+                  ? 'Lücken'
+                  : f === 'exklusiv'
+                    ? 'Exklusiv'
+                    : 'Hot'}
             </FilterChip>
           ))}
           {data?.fetchedAt && (
-            <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontSize: '12px',
+                color: 'var(--text-tertiary)',
+              }}
+            >
               Abgerufen: {fmtDateTime(data.fetchedAt)}
             </span>
           )}
@@ -133,7 +196,9 @@ export function KonkurrenzPage() {
       </Card>
 
       {isLoading && (
-        <div style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}>
+        <div
+          style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}
+        >
           <Spinner size={28} />
         </div>
       )}

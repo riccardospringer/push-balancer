@@ -4,6 +4,7 @@ GET /api/forschung         — Research-Institut-Daten (autonome Analyse)
 GET /api/learnings         — ML-Learnings
 GET /api/research-rules    — Aktive Forschungsregeln
 """
+import json
 import logging
 import time
 
@@ -196,6 +197,29 @@ def get_forschung() -> JSONResponse:
         "lastAnalysis": s.get("last_analysis", 0),
         "loading": False,
     })
+
+
+@router.get("/api/research-insights")
+def get_research_insights() -> JSONResponse:
+    """Stable research insights contract for the frontend and OpenAPI clients."""
+    response = get_forschung()
+    payload = json.loads(response.body.decode("utf-8"))
+    learnings = payload.get("learning", [])[-10:]
+    return JSONResponse(
+        content={
+            "learnings": [
+                {
+                    "id": str(index),
+                    "text": str(item.get("message") or item.get("title") or item),
+                    "impact": "medium",
+                    "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+                for index, item in enumerate(learnings, start=1)
+            ],
+            "experiments": [],
+            "abTest": None,
+        }
+    )
 
 
 @router.get("/api/learnings")

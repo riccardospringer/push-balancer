@@ -20,7 +20,14 @@ export function StatCard({ label, value, sub, accent, style }: StatCardProps) {
         ...style,
       }}
     >
-      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px', fontWeight: 500 }}>
+      <div
+        style={{
+          fontSize: '12px',
+          color: 'var(--text-secondary)',
+          marginBottom: '6px',
+          fontWeight: 500,
+        }}
+      >
         {label}
       </div>
       <div
@@ -35,7 +42,15 @@ export function StatCard({ label, value, sub, accent, style }: StatCardProps) {
         {value}
       </div>
       {sub && (
-        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{sub}</div>
+        <div
+          style={{
+            fontSize: '12px',
+            color: 'var(--text-tertiary)',
+            marginTop: '4px',
+          }}
+        >
+          {sub}
+        </div>
       )}
     </div>
   )

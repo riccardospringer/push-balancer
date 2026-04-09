@@ -9,7 +9,13 @@ interface ModalProps {
   width?: number
 }
 
-export function Modal({ open, onClose, title, children, width = 520 }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  width = 520,
+}: ModalProps) {
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
@@ -58,7 +64,9 @@ export function Modal({ open, onClose, title, children, width = 520 }: ModalProp
               justifyContent: 'space-between',
             }}
           >
-            <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>{title}</h3>
+            <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+              {title}
+            </h3>
             <button
               onClick={onClose}
               style={{

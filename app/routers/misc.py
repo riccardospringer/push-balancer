@@ -8,8 +8,10 @@ POST /api/schwab-approval        — Schwab-Genehmigung
 POST /api/push-title/generate    — Push-Titel-Generator (LLM)
 """
 import concurrent.futures
+import json
 import logging
 import ssl
+import time
 import urllib.request
 from typing import Any
 
@@ -142,6 +144,27 @@ def get_adobe_traffic() -> JSONResponse:
     })
 
 
+@router.get("/api/analytics/adobe-traffic")
+def get_adobe_traffic_analytics() -> JSONResponse:
+    """Stable Adobe traffic contract for the frontend and OpenAPI clients."""
+    response = get_adobe_traffic()
+    payload = json.loads(response.body.decode("utf-8"))
+    return JSONResponse(
+        content={
+            "hourly": payload.get("hourly", []),
+            "topArticles": payload.get("topArticles", []),
+            "fetchedAt": (
+                time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(payload.get("updatedAt", 0)))
+                if payload.get("updatedAt")
+                else ""
+            ),
+            "enabled": payload.get("enabled", False),
+            "loading": payload.get("loading", False),
+            "error": payload.get("error", ""),
+        }
+    )
+
+
 @router.post("/api/schwab-chat")
 def post_schwab_chat(body: SchwabChatRequest) -> JSONResponse:
     """Schwab-Chat: LLM-Dialog für Push-Empfehlungen.
@@ -176,7 +199,7 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
 
 @router.post("/api/push-title/generate")
 def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
-    """Generiert Push-Titel-Varianten via GPT-4o (Kreativteam + Chefredakteur)."""
+    """Generiert Push-Titel via GPT-4o im Editorial-One-Brain-Modus."""
     from app.config import OPENAI_API_KEY
 
     if not body.title:

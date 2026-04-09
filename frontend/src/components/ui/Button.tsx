@@ -23,14 +23,29 @@ const styles: Record<string, React.CSSProperties> = {
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'default', size = 'md', style, children, disabled, ...rest }, ref) => {
+  (
+    { variant = 'default', size = 'md', style, children, disabled, ...rest },
+    ref,
+  ) => {
     const variantStyle: React.CSSProperties =
       variant === 'primary'
-        ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' }
+        ? {
+            background: 'var(--accent)',
+            color: '#fff',
+            borderColor: 'var(--accent)',
+          }
         : variant === 'ghost'
-          ? { background: 'transparent', borderColor: 'transparent', color: 'var(--text-secondary)' }
+          ? {
+              background: 'transparent',
+              borderColor: 'transparent',
+              color: 'var(--text-secondary)',
+            }
           : variant === 'danger'
-            ? { background: 'var(--red-bg)', color: 'var(--red)', borderColor: 'var(--red-border)' }
+            ? {
+                background: 'var(--red-bg)',
+                color: 'var(--red)',
+                borderColor: 'var(--red-border)',
+              }
             : { background: 'var(--white)', color: 'var(--text)' }
 
     const sizeStyle: React.CSSProperties =

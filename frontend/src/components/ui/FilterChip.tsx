@@ -7,7 +7,12 @@ interface FilterChipProps {
   style?: React.CSSProperties
 }
 
-export function FilterChip({ active, onClick, children, style }: FilterChipProps) {
+export function FilterChip({
+  active,
+  onClick,
+  children,
+  style,
+}: FilterChipProps) {
   return (
     <button
       onClick={onClick}

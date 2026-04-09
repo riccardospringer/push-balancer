@@ -52,6 +52,17 @@ pnpm --dir frontend dev
 
 The API starts on `http://localhost:8050` by default, and the Vite frontend on `http://localhost:5173`. For production-like local checks, run `pnpm --dir frontend build`; the generated assets are written to `dist-frontend/` and served by FastAPI.
 
+### Editorial One UI Registry Setup
+
+The frontend is prepared for the private `@spring-media/editorial-one-ui` package via [frontend/.npmrc](/Users/riccardo.longo/push-balancer/frontend/.npmrc). To install the package when access is available:
+
+```bash
+export NPM_TOKEN=ghp_your_token_here
+pnpm --dir frontend info @spring-media/editorial-one-ui
+```
+
+If the package is not yet available in your environment, the app uses the local compatibility layer in [frontend/src/components/ui/index.ts](/Users/riccardo.longo/push-balancer/frontend/src/components/ui/index.ts).
+
 ### macOS: libomp for LightGBM
 
 On macOS, SIP blocks `DYLD_LIBRARY_PATH`. The server auto-loads `~/.local/lib/libomp.dylib` at startup if present. To install:
@@ -229,6 +240,20 @@ Indexes cover `ts_num`, `cat`, `or_val × ts_num`, `hour × or_val`, and `date_i
 ## Deployment (Render)
 
 The service is defined in [`render.yaml`](render.yaml) as a Docker web service.
+
+---
+
+## Privacy & Governance
+
+This repository includes privacy guardrails in [AGENTS.md](/Users/riccardo.longo/push-balancer/AGENTS.md) and a project-specific overview in [PRIVACY.md](/Users/riccardo.longo/push-balancer/PRIVACY.md).
+
+Privacy-relevant implementation work should document:
+
+- purpose
+- data categories and data subjects
+- external recipients or transfers
+- retention and deletion approach
+- safeguards and required approvals
 
 ```yaml
 # render.yaml (excerpt)

@@ -1,4 +1,12 @@
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts'
 import { useAdobeTraffic } from '@/hooks/useApi'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Spinner } from '@/components/ui/Spinner'
@@ -31,11 +39,26 @@ export function AnalysePage() {
         animation: 'fadeIn 0.2s ease',
       }}
     >
-      <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div
+        style={{
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
         <div>
-          <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Traffic-Analyse</h1>
+          <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
+            Traffic-Analyse
+          </h1>
           {data?.fetchedAt && (
-            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '2px 0 0' }}>
+            <p
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                margin: '2px 0 0',
+              }}
+            >
               Adobe Analytics · Abgerufen: {fmtDateTime(data.fetchedAt)}
             </p>
           )}
@@ -43,14 +66,17 @@ export function AnalysePage() {
       </div>
 
       {isLoading && (
-        <div style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}>
+        <div
+          style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}
+        >
           <Spinner size={28} />
         </div>
       )}
 
       {error && (
         <Alert variant="error">
-          Adobe Analytics konnte nicht geladen werden. Sind die Credentials konfiguriert?
+          Adobe Analytics konnte nicht geladen werden. Sind die Credentials
+          konfiguriert?
         </Alert>
       )}
 
@@ -74,7 +100,15 @@ export function AnalysePage() {
                   boxShadow: 'var(--shadow-sm)',
                 }}
               >
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Peak-Stunde</div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Peak-Stunde
+                </div>
                 <div style={{ fontSize: '22px', fontWeight: 700 }}>
                   {String(peakHour.hour).padStart(2, '0')}:00
                 </div>
@@ -88,8 +122,22 @@ export function AnalysePage() {
                   boxShadow: 'var(--shadow-sm)',
                 }}
               >
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Peak Pageviews</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--accent)' }}>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Peak Pageviews
+                </div>
+                <div
+                  style={{
+                    fontSize: '22px',
+                    fontWeight: 700,
+                    color: 'var(--accent)',
+                  }}
+                >
                   {fmtNum(peakHour.pageviews)}
                 </div>
               </div>
@@ -102,8 +150,18 @@ export function AnalysePage() {
                   boxShadow: 'var(--shadow-sm)',
                 }}
               >
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Peak Visitors</div>
-                <div style={{ fontSize: '22px', fontWeight: 700 }}>{fmtNum(peakHour.visitors)}</div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Peak Visitors
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: 700 }}>
+                  {fmtNum(peakHour.visitors)}
+                </div>
               </div>
               <div
                 style={{
@@ -114,7 +172,15 @@ export function AnalysePage() {
                   boxShadow: 'var(--shadow-sm)',
                 }}
               >
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Gesamt PV</div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Gesamt PV
+                </div>
                 <div style={{ fontSize: '22px', fontWeight: 700 }}>
                   {fmtNum(data.hourly.reduce((s, h) => s + h.pageviews, 0))}
                 </div>
@@ -131,8 +197,17 @@ export function AnalysePage() {
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={chartData} barSize={14}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="var(--border)"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="hour"
+                      tick={{ fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
                     <YAxis
                       yAxisId="pv"
                       tick={{ fontSize: 11 }}
@@ -145,7 +220,12 @@ export function AnalysePage() {
                       formatter={(v: number) => fmtNum(v)}
                       contentStyle={{ fontSize: '12px', borderRadius: '6px' }}
                     />
-                    <Bar yAxisId="pv" dataKey="Pageviews" fill="var(--accent)" radius={[3, 3, 0, 0]} />
+                    <Bar
+                      yAxisId="pv"
+                      dataKey="Pageviews"
+                      fill="var(--accent)"
+                      radius={[3, 3, 0, 0]}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -176,13 +256,22 @@ export function AnalysePage() {
                   <tr>
                     <TableHeader>#</TableHeader>
                     <TableHeader>Artikel</TableHeader>
-                    <TableHeader style={{ textAlign: 'right' }}>Pageviews</TableHeader>
+                    <TableHeader style={{ textAlign: 'right' }}>
+                      Pageviews
+                    </TableHeader>
                   </tr>
                 </thead>
                 <tbody>
                   {data.topArticles.map((a, i) => (
-                    <TableRow key={i} onClick={() => window.open(a.url, '_blank')}>
-                      <TableCell style={{ color: 'var(--text-tertiary)', width: '32px' }}>{i + 1}</TableCell>
+                    <TableRow
+                      key={i}
+                      onClick={() => window.open(a.url, '_blank')}
+                    >
+                      <TableCell
+                        style={{ color: 'var(--text-tertiary)', width: '32px' }}
+                      >
+                        {i + 1}
+                      </TableCell>
                       <TableCell>
                         <div
                           style={{
@@ -196,7 +285,13 @@ export function AnalysePage() {
                           {a.title}
                         </div>
                       </TableCell>
-                      <TableCell style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                      <TableCell
+                        style={{
+                          textAlign: 'right',
+                          fontVariantNumeric: 'tabular-nums',
+                          fontWeight: 600,
+                        }}
+                      >
                         {fmtNum(a.pageviews)}
                       </TableCell>
                     </TableRow>

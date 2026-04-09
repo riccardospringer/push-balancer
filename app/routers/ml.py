@@ -12,8 +12,9 @@ POST /api/ml/monitoring/tick        — Manueller Monitoring-Tick
 POST /api/ml/predict-batch          — Batch-Prediction (auch /api/predict-batch)
 """
 import logging
-import time
 import hashlib
+import sqlite3
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 
 from app.auth import require_admin_key
 from app.config import SAFETY_MODE
+from app.database import PUSH_DB_PATH
 from app.database import (
     count_experiments,
     count_monitoring_events,
@@ -31,7 +33,7 @@ from app.database import (
 )
 from app.ml.lightgbm_model import _ml_state, _ml_lock, ml_train_model
 from app.ml.predict import safety_envelope
-from app.research.worker import _research_state
+from app.research.worker import _monitoring_state, _monitoring_state_lock, _research_state
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()
@@ -43,6 +45,109 @@ _predict_cache: dict = {}
 
 class PredictBatchRequest(BaseModel):
     articles: list[dict[str, Any]]
+
+
+def _as_ratio(value: float | int | None) -> float:
+    if value is None:
+        return 0.0
+    numeric = float(value)
+    return numeric / 100 if numeric > 1 else numeric
+
+
+def _format_ts(ts_value: int | float | None) -> str:
+    if not ts_value:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts_value))
+
+
+def _build_ml_status_payload() -> dict[str, Any]:
+    with _ml_lock:
+        state = dict(_ml_state)
+
+    metrics = state.get("metrics") or {}
+    train_count = int(state.get("train_count") or 0)
+    last_train_ts = state.get("last_train_ts") or 0
+    return {
+        "trained": state["model"] is not None,
+        "modelVersion": f"lightgbm-{train_count}" if train_count else "lightgbm-untrained",
+        "trainedAt": _format_ts(last_train_ts),
+        "mae": round(_as_ratio(metrics.get("mae") or metrics.get("test_mae") or metrics.get("val_mae")), 4),
+        "rmse": round(_as_ratio(metrics.get("rmse") or metrics.get("test_rmse") or metrics.get("val_rmse")), 4),
+        "r2": round(float(metrics.get("r2") or metrics.get("test_r2") or metrics.get("val_r2") or 0), 4),
+        "trainingRows": int(metrics.get("n_train") or metrics.get("training_rows") or 0),
+        "features": list(state.get("feature_names") or []),
+        "isEnsemble": bool(metrics.get("stacking_active") or False),
+        "advisoryOnly": True,
+        "actionAllowed": False,
+        "modelLoaded": state["model"] is not None,
+        "trainCount": train_count,
+        "lastTrainTs": last_train_ts,
+        "nextRetrainTs": state.get("next_retrain_ts") or 0,
+        "training": bool(state.get("training")),
+        "metrics": metrics,
+        "shapImportance": state.get("shap_importance") or [],
+        "featureCount": len(state.get("feature_names") or []),
+        "featureNames": list(state.get("feature_names") or []),
+        "stackingActive": bool(metrics.get("stacking_active") or False),
+        "safetyMode": SAFETY_MODE,
+    }
+
+
+def _build_ml_monitoring_payload() -> dict[str, Any]:
+    with _monitoring_state_lock:
+        monitoring = dict(_monitoring_state)
+
+    recent_predictions: list[dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT id, predicted_or, actual_or, predicted_at FROM prediction_log "
+                "ORDER BY predicted_at DESC LIMIT 30"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("[ml] monitoring payload fallback without DB: %s", exc)
+        rows = []
+
+    for row in rows:
+        predicted = _as_ratio(row["predicted_or"])
+        actual = _as_ratio(row["actual_or"]) if row["actual_or"] else None
+        recent_predictions.append(
+            {
+                "id": str(row["id"]),
+                "predictedOR": round(predicted, 4),
+                "actualOR": round(actual, 4) if actual is not None else None,
+                "error": round(abs(predicted - actual), 4) if actual is not None else None,
+                "timestamp": _format_ts(row["predicted_at"]),
+            }
+        )
+
+    try:
+        items = load_monitoring_events(limit=20, offset=0)
+        total = count_monitoring_events()
+    except Exception as exc:
+        log.warning("[ml] monitoring events fallback without DB: %s", exc)
+        items = []
+        total = 0
+    mae_24h = _as_ratio(monitoring.get("mae_24h"))
+    mae_7d = _as_ratio(monitoring.get("mae_7d"))
+    return {
+        "recentPredictions": recent_predictions,
+        "rollingMAE": round(mae_24h, 4),
+        "drift": round(abs(mae_24h - mae_7d), 4),
+        "items": items,
+        "total": total,
+        "offset": 0,
+        "limit": 20,
+        "lastTick": monitoring.get("last_tick") or 0,
+        "calibrationBias": round(_as_ratio(monitoring.get("calibration_bias")), 4),
+        "mae24h": round(mae_24h, 4),
+        "mae7d": round(mae_7d, 4),
+        "safetyMode": SAFETY_MODE,
+    }
 
 
 @router.get("/api/ml/safety-status")
@@ -59,23 +164,7 @@ def get_ml_safety_status() -> JSONResponse:
 @router.get("/api/ml/status")
 def get_ml_status() -> JSONResponse:
     """Liefert den aktuellen ML-Modell-Status (Metriken, Feature Importance, etc.)."""
-    with _ml_lock:
-        s = dict(_ml_state)
-
-    return JSONResponse(content={
-        "trained": s["model"] is not None,
-        "modelLoaded": s["model"] is not None,
-        "trainCount": s["train_count"],
-        "lastTrainTs": s["last_train_ts"],
-        "nextRetrainTs": s["next_retrain_ts"],
-        "training": s["training"],
-        "metrics": s["metrics"],
-        "shapImportance": s["shap_importance"],
-        "featureCount": len(s["feature_names"]),
-        "featureNames": s["feature_names"],
-        "stackingActive": False,
-        "safetyMode": SAFETY_MODE,
-    })
+    return JSONResponse(content=_build_ml_status_payload())
 
 
 @router.get("/api/ml/predict")
@@ -232,15 +321,24 @@ def get_ml_monitoring(
         offset: Startindex (Standard: 0)
         limit:  Max. Anzahl Einträge (Standard: 20, max. 200)
     """
-    total = count_monitoring_events()
-    items = load_monitoring_events(limit=limit, offset=offset)
-    return JSONResponse(content={
-        "items": items,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "safetyMode": SAFETY_MODE,
-    })
+    payload = _build_ml_monitoring_payload()
+    payload["offset"] = offset
+    payload["limit"] = limit
+    payload["items"] = load_monitoring_events(limit=limit, offset=offset)
+    payload["total"] = count_monitoring_events()
+    return JSONResponse(content=payload)
+
+
+@router.get("/api/ml-model")
+def get_ml_model_status() -> JSONResponse:
+    """Stable ML model status contract for the frontend and OpenAPI clients."""
+    return JSONResponse(content=_build_ml_status_payload())
+
+
+@router.get("/api/ml-model/monitoring")
+def get_ml_model_monitoring() -> JSONResponse:
+    """Stable ML monitoring contract for the frontend and OpenAPI clients."""
+    return JSONResponse(content=_build_ml_monitoring_payload())
 
 
 @router.post("/api/ml/retrain", dependencies=[Depends(require_admin_key)])
@@ -260,6 +358,12 @@ def post_ml_retrain() -> JSONResponse:
 
     threading.Thread(target=_do_retrain, daemon=True).start()
     return JSONResponse(content={"ok": True, "message": "LightGBM-Retraining gestartet"})
+
+
+@router.post("/api/ml-model/retraining-jobs", dependencies=[Depends(require_admin_key)])
+def post_ml_model_retraining_job() -> JSONResponse:
+    """Stable retraining trigger endpoint."""
+    return post_ml_retrain()
 
 
 @router.post("/api/ml/monitoring/tick", dependencies=[Depends(require_admin_key)])

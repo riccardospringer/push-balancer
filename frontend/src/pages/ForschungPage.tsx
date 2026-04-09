@@ -1,5 +1,13 @@
 import { useState } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts'
 import {
   useForschung,
   useResearchRules,
@@ -34,14 +42,15 @@ export function ForschungPage() {
     : []
 
   // Prepare chart data from recent predictions
-  const chartData = mlMonitoring?.recentPredictions
-    ?.filter((p) => p.actualOR != null)
-    ?.slice(-30)
-    ?.map((p, i) => ({
-      i,
-      predicted: +(p.predictedOR * 100).toFixed(2),
-      actual: +((p.actualOR ?? 0) * 100).toFixed(2),
-    })) ?? []
+  const chartData =
+    mlMonitoring?.recentPredictions
+      ?.filter((p) => p.actualOR != null)
+      ?.slice(-30)
+      ?.map((p, i) => ({
+        i,
+        predicted: +(p.predictedOR * 100).toFixed(2),
+        actual: +((p.actualOR ?? 0) * 100).toFixed(2),
+      })) ?? []
 
   return (
     <div
@@ -54,14 +63,24 @@ export function ForschungPage() {
       }}
     >
       <div style={{ marginBottom: '20px' }}>
-        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Forschung & ML</h1>
-        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '2px 0 0' }}>
+        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
+          Forschung & ML
+        </h1>
+        <p
+          style={{
+            fontSize: '12px',
+            color: 'var(--text-secondary)',
+            margin: '2px 0 0',
+          }}
+        >
           Modell-Performance, Research-Regeln und Learnings
         </p>
       </div>
 
       {fLoading && (
-        <div style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}>
+        <div
+          style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}
+        >
           <Spinner size={28} />
         </div>
       )}
@@ -84,33 +103,56 @@ export function ForschungPage() {
             value={fmtNum(mlStatus.trainingRows)}
             sub={mlStatus.isEnsemble ? 'Stacking Ensemble' : 'Single LightGBM'}
           />
-          <StatCard label="Modell-Version" value={mlStatus.modelVersion} sub={fmtDateTime(mlStatus.trainedAt)} />
+          <StatCard
+            label="Modell-Version"
+            value={mlStatus.modelVersion}
+            sub={fmtDateTime(mlStatus.trainedAt)}
+          />
         </div>
       )}
 
       {/* Retrain button */}
       {mlStatus && (
-        <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div
+          style={{
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+          }}
+        >
           <Button
             variant="primary"
             onClick={() => retrainMutation.mutate()}
             disabled={retrainMutation.isPending}
           >
-            {retrainMutation.isPending ? <Spinner size={14} color="#fff" /> : null}
+            {retrainMutation.isPending ? (
+              <Spinner size={14} color="#fff" />
+            ) : null}
             Modell neu trainieren
           </Button>
           {retrainMutation.isSuccess && (
             <Alert variant="success" style={{ flex: 1 }}>
-              Training gestartet (Job ID: {retrainMutation.data?.jobId ?? 'unbekannt'})
+              Training gestartet (Job ID:{' '}
+              {retrainMutation.data?.jobId ?? 'unbekannt'})
             </Alert>
           )}
           {retrainMutation.isError && (
-            <Alert variant="error" style={{ flex: 1 }}>Training fehlgeschlagen.</Alert>
+            <Alert variant="error" style={{ flex: 1 }}>
+              Training fehlgeschlagen.
+            </Alert>
           )}
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '16px',
+          marginBottom: '20px',
+        }}
+      >
         {/* Prediction vs Actual Chart */}
         <Card>
           <CardHeader>
@@ -126,7 +168,12 @@ export function ForschungPage() {
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="i" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <XAxis
+                    dataKey="i"
+                    tick={{ fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
                   <YAxis
                     tick={{ fontSize: 11 }}
                     tickLine={false}
@@ -181,7 +228,13 @@ export function ForschungPage() {
           </CardHeader>
           <CardContent>
             {forschung?.abTest ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                }}
+              >
                 <div
                   style={{
                     display: 'flex',
@@ -193,12 +246,21 @@ export function ForschungPage() {
                   }}
                 >
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: '13px' }}>Control</div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    <div style={{ fontWeight: 600, fontSize: '13px' }}>
+                      Control
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '12px',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
                       {forschung.abTest.control.name}
                     </div>
                   </div>
-                  <Badge variant="default">MAE {fmtOR(forschung.abTest.control.mae)}</Badge>
+                  <Badge variant="default">
+                    MAE {fmtOR(forschung.abTest.control.mae)}
+                  </Badge>
                 </div>
                 <div
                   style={{
@@ -211,19 +273,34 @@ export function ForschungPage() {
                   }}
                 >
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: '13px' }}>Treatment</div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    <div style={{ fontWeight: 600, fontSize: '13px' }}>
+                      Treatment
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '12px',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
                       {forschung.abTest.treatment.name}
                     </div>
                   </div>
-                  <Badge variant="default">MAE {fmtOR(forschung.abTest.treatment.mae)}</Badge>
+                  <Badge variant="default">
+                    MAE {fmtOR(forschung.abTest.treatment.mae)}
+                  </Badge>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px' }}
+                >
+                  <span
+                    style={{ fontSize: '12px', color: 'var(--text-secondary)' }}
+                  >
                     p-Wert: {forschung.abTest.pValue.toFixed(3)}
                   </span>
                   {forschung.abTest.winner && (
-                    <Badge variant="green">Gewinner: {forschung.abTest.winner}</Badge>
+                    <Badge variant="green">
+                      Gewinner: {forschung.abTest.winner}
+                    </Badge>
                   )}
                 </div>
               </div>
@@ -242,7 +319,9 @@ export function ForschungPage() {
           <CardHeader>
             <CardTitle>Was funktioniert (Research-Regeln)</CardTitle>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Badge variant="green">Rolling Accuracy {(rules.rollingAccuracy * 100).toFixed(1)} %</Badge>
+              <Badge variant="green">
+                Rolling Accuracy {(rules.rollingAccuracy * 100).toFixed(1)} %
+              </Badge>
               <Badge variant="default">v{rules.version}</Badge>
             </div>
           </CardHeader>
@@ -261,7 +340,12 @@ export function ForschungPage() {
                   <TableCell>
                     <Badge variant="blue">{rule.category}</Badge>
                   </TableCell>
-                  <TableCell style={{ maxWidth: '500px', color: 'var(--text-secondary)' }}>
+                  <TableCell
+                    style={{
+                      maxWidth: '500px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
                     {rule.rule}
                   </TableCell>
                   <TableCell>
@@ -290,12 +374,19 @@ export function ForschungPage() {
                           }}
                         />
                       </div>
-                      <span style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}>
+                      <span
+                        style={{
+                          fontSize: '12px',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
                         {(rule.confidence * 100).toFixed(0)} %
                       </span>
                     </div>
                   </TableCell>
-                  <TableCell style={{ color: 'var(--text-secondary)' }}>{rule.supportCount}</TableCell>
+                  <TableCell style={{ color: 'var(--text-secondary)' }}>
+                    {rule.supportCount}
+                  </TableCell>
                 </TableRow>
               ))}
             </tbody>
@@ -320,7 +411,9 @@ export function ForschungPage() {
                   cursor: 'pointer',
                 }}
               >
-                {showAllRules ? 'Weniger anzeigen' : `Alle ${rules.rules.length} Regeln anzeigen`}
+                {showAllRules
+                  ? 'Weniger anzeigen'
+                  : `Alle ${rules.rules.length} Regeln anzeigen`}
               </button>
             </div>
           )}
@@ -333,7 +426,9 @@ export function ForschungPage() {
           <CardHeader>
             <CardTitle>Was wir gelernt haben</CardTitle>
           </CardHeader>
-          <CardContent style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <CardContent
+            style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
+          >
             {forschung.learnings.map((l) => (
               <div
                 key={l.id}
@@ -349,12 +444,22 @@ export function ForschungPage() {
               >
                 <Badge
                   variant={
-                    l.impact === 'high' ? 'green' : l.impact === 'medium' ? 'amber' : 'default'
+                    l.impact === 'high'
+                      ? 'green'
+                      : l.impact === 'medium'
+                        ? 'amber'
+                        : 'default'
                   }
                 >
                   {l.impact}
                 </Badge>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                <span
+                  style={{
+                    fontSize: '13px',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 1.5,
+                  }}
+                >
                   {l.text}
                 </span>
               </div>
@@ -381,24 +486,56 @@ export function ForschungPage() {
               }}
             >
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '2px' }}>Version</div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '2px',
+                  }}
+                >
+                  Version
+                </div>
                 <div style={{ fontWeight: 600 }}>{gbrtStatus.modelVersion}</div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '2px' }}>MAE</div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '2px',
+                  }}
+                >
+                  MAE
+                </div>
                 <div style={{ fontWeight: 600 }}>{fmtOR(gbrtStatus.mae)}</div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '2px',
+                  }}
+                >
                   Trainings-Rows
                 </div>
-                <div style={{ fontWeight: 600 }}>{fmtNum(gbrtStatus.trainingRows)}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {fmtNum(gbrtStatus.trainingRows)}
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-secondary)',
+                    marginBottom: '2px',
+                  }}
+                >
                   Letztes Training
                 </div>
-                <div style={{ fontWeight: 600 }}>{fmtDateTime(gbrtStatus.lastRetrain)}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {fmtDateTime(gbrtStatus.lastRetrain)}
+                </div>
               </div>
             </div>
           </CardContent>

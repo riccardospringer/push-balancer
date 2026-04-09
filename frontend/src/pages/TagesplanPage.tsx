@@ -1,5 +1,9 @@
 import { useState } from 'react'
-import { useTagesplan, useTagesplanSuggestions, useTagesplanRetro } from '@/hooks/useApi'
+import {
+  useTagesplan,
+  useTagesplanSuggestions,
+  useTagesplanRetro,
+} from '@/hooks/useApi'
 import { useAppStore } from '@/stores/appStore'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -27,7 +31,14 @@ function SlotCard({ slot }: { slot: TagesplanSlot }) {
         position: 'relative',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '8px',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span
             style={{
@@ -67,14 +78,22 @@ function SlotCard({ slot }: { slot: TagesplanSlot }) {
         >
           {slot.pushedTitle}
           {slot.actualOR != null && (
-            <span style={{ marginLeft: '8px', color: 'var(--green)', fontWeight: 600 }}>
+            <span
+              style={{
+                marginLeft: '8px',
+                color: 'var(--green)',
+                fontWeight: 600,
+              }}
+            >
               Ist: {fmtOR(slot.actualOR)}
             </span>
           )}
         </div>
       )}
 
-      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{slot.recommendation}</div>
+      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+        {slot.recommendation}
+      </div>
     </div>
   )
 }
@@ -83,11 +102,14 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
   const { data, isLoading } = useTagesplanRetro(mode)
   const [expandedDay, setExpandedDay] = useState<string | null>(null)
 
-  if (isLoading) return (
-    <div style={{ padding: '24px', display: 'flex', justifyContent: 'center' }}>
-      <Spinner size={20} />
-    </div>
-  )
+  if (isLoading)
+    return (
+      <div
+        style={{ padding: '24px', display: 'flex', justifyContent: 'center' }}
+      >
+        <Spinner size={20} />
+      </div>
+    )
   if (!data?.days?.length) return null
 
   return (
@@ -104,7 +126,10 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
         {data.days.map((day) => {
           const isOpen = expandedDay === day.date
           return (
-            <div key={day.date} style={{ borderTop: '1px solid var(--border-light)' }}>
+            <div
+              key={day.date}
+              style={{ borderTop: '1px solid var(--border-light)' }}
+            >
               <button
                 onClick={() => setExpandedDay(isOpen ? null : day.date)}
                 style={{
@@ -120,16 +145,32 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
                   textAlign: 'left',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '13px' }}>{fmtDate(day.date)}</span>
-                  <Badge variant={day.avgOR >= 0.06 ? 'green' : day.avgOR >= 0.04 ? 'amber' : 'red'}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: '12px' }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: '13px' }}>
+                    {fmtDate(day.date)}
+                  </span>
+                  <Badge
+                    variant={
+                      day.avgOR >= 0.06
+                        ? 'green'
+                        : day.avgOR >= 0.04
+                          ? 'amber'
+                          : 'red'
+                    }
+                  >
                     {fmtOR(day.avgOR)}
                   </Badge>
-                  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                  <span
+                    style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}
+                  >
                     {day.pushedCount} Pushes · MAE {fmtOR(day.mae)}
                   </span>
                 </div>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: '14px' }}>
+                <span
+                  style={{ color: 'var(--text-tertiary)', fontSize: '14px' }}
+                >
                   {isOpen ? '▲' : '▼'}
                 </span>
               </button>
@@ -139,7 +180,8 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
                   style={{
                     padding: '0 20px 16px',
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                    gridTemplateColumns:
+                      'repeat(auto-fill, minmax(200px, 1fr))',
                     gap: '8px',
                   }}
                 >
@@ -151,18 +193,43 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
                         style={{
                           padding: '10px 12px',
                           borderRadius: 'var(--radius)',
-                          background: slot.isGoldenHour ? 'var(--amber-bg)' : 'var(--bg)',
+                          background: slot.isGoldenHour
+                            ? 'var(--amber-bg)'
+                            : 'var(--bg)',
                           border: `1px solid ${slot.isGoldenHour ? 'var(--amber-border)' : 'var(--border-light)'}`,
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                          <span style={{ fontWeight: 700, fontSize: '13px', fontVariantNumeric: 'tabular-nums' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            marginBottom: '4px',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              fontSize: '13px',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
                             {String(slot.hour).padStart(2, '0')}:00
                           </span>
-                          {slot.isGoldenHour && <Badge variant="amber">Golden</Badge>}
-                          {slot.pushed && <Badge variant="green">Gesendet</Badge>}
+                          {slot.isGoldenHour && (
+                            <Badge variant="amber">Golden</Badge>
+                          )}
+                          {slot.pushed && (
+                            <Badge variant="green">Gesendet</Badge>
+                          )}
                         </div>
-                        <div style={{ display: 'flex', gap: '8px', fontSize: '12px' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            gap: '8px',
+                            fontSize: '12px',
+                          }}
+                        >
                           <span style={{ color: 'var(--text-secondary)' }}>
                             Prognose: <strong>{fmtOR(slot.predictedOR)}</strong>
                           </span>
@@ -188,8 +255,16 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
                         )}
                       </div>
                     ))}
-                  {day.slots.filter((s) => s.pushed || s.isGoldenHour).length === 0 && (
-                    <div style={{ gridColumn: '1 / -1', fontSize: '13px', color: 'var(--text-tertiary)', padding: '8px 0' }}>
+                  {day.slots.filter((s) => s.pushed || s.isGoldenHour)
+                    .length === 0 && (
+                    <div
+                      style={{
+                        gridColumn: '1 / -1',
+                        fontSize: '13px',
+                        color: 'var(--text-tertiary)',
+                        padding: '8px 0',
+                      }}
+                    >
                       Keine Push-Daten für diesen Tag
                     </div>
                   )}
@@ -204,13 +279,24 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
 }
 
 export function TagesplanPage() {
-  const { tagesplanMode, tagesplanDate, setTagesplanMode, setTagesplanDate } = useAppStore()
+  const { tagesplanMode, tagesplanDate, setTagesplanMode, setTagesplanDate } =
+    useAppStore()
 
   const { data, isLoading, error } = useTagesplan(tagesplanDate, tagesplanMode)
-  const { data: suggestions } = useTagesplanSuggestions(tagesplanDate, tagesplanMode)
+  const { data: suggestions } = useTagesplanSuggestions(
+    tagesplanDate,
+    tagesplanMode,
+  )
 
   return (
-    <div style={{ padding: '16px 24px', maxWidth: '1400px', margin: '0 auto', animation: 'fadeIn 0.2s ease' }}>
+    <div
+      style={{
+        padding: '16px 24px',
+        maxWidth: '1400px',
+        margin: '0 auto',
+        animation: 'fadeIn 0.2s ease',
+      }}
+    >
       {/* Header */}
       <div
         style={{
@@ -222,13 +308,21 @@ export function TagesplanPage() {
           gap: '12px',
         }}
       >
-        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Tagesplan</h1>
+        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
+          Tagesplan
+        </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{ display: 'flex', gap: '6px' }}>
-            <FilterChip active={tagesplanMode === 'redaktion'} onClick={() => setTagesplanMode('redaktion')}>
+            <FilterChip
+              active={tagesplanMode === 'redaktion'}
+              onClick={() => setTagesplanMode('redaktion')}
+            >
               Redaktion
             </FilterChip>
-            <FilterChip active={tagesplanMode === 'sport'} onClick={() => setTagesplanMode('sport')}>
+            <FilterChip
+              active={tagesplanMode === 'sport'}
+              onClick={() => setTagesplanMode('sport')}
+            >
               Sport
             </FilterChip>
           </div>
@@ -251,7 +345,9 @@ export function TagesplanPage() {
       </div>
 
       {(isLoading || data?.loading) && (
-        <div style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}>
+        <div
+          style={{ padding: '60px', display: 'flex', justifyContent: 'center' }}
+        >
           <Spinner size={28} />
         </div>
       )}
@@ -270,10 +366,18 @@ export function TagesplanPage() {
               marginBottom: '20px',
             }}
           >
-            <StatCard label="Golden Hour" value={`${String(data.goldenHour).padStart(2, '0')}:00`} accent />
+            <StatCard
+              label="Golden Hour"
+              value={`${String(data.goldenHour).padStart(2, '0')}:00`}
+              accent
+            />
             <StatCard label="Ø XOR" value={fmtOR(data.avgOR)} />
             <StatCard label="Pushes heute" value={data.pushedCount} />
-            <StatCard label="MAE Modell" value={fmtOR(data.mae)} sub={`${fmtNum(data.trainedOnRows)} Trainings-Rows`} />
+            <StatCard
+              label="MAE Modell"
+              value={fmtOR(data.mae)}
+              sub={`${fmtNum(data.trainedOnRows)} Trainings-Rows`}
+            />
           </div>
 
           {data.llmReview && (
@@ -282,13 +386,27 @@ export function TagesplanPage() {
                 <CardTitle>KI-Zusammenfassung</CardTitle>
               </CardHeader>
               <CardContent>
-                <p style={{ margin: '0 0 10px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                <p
+                  style={{
+                    margin: '0 0 10px',
+                    color: 'var(--text-secondary)',
+                    lineHeight: 1.6,
+                  }}
+                >
                   {data.llmReview.summary}
                 </p>
                 {data.llmReview.warnings.length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px',
+                    }}
+                  >
                     {data.llmReview.warnings.map((w, i) => (
-                      <Alert key={i} variant="warning">{w}</Alert>
+                      <Alert key={i} variant="warning">
+                        {w}
+                      </Alert>
                     ))}
                   </div>
                 )}
@@ -344,8 +462,15 @@ export function TagesplanPage() {
                       >
                         {s.title}
                       </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                        Slot {String(s.hour).padStart(2, '0')}:00 · Score {s.score.toFixed(1)}
+                      <div
+                        style={{
+                          fontSize: '12px',
+                          color: 'var(--text-tertiary)',
+                          marginTop: '2px',
+                        }}
+                      >
+                        Slot {String(s.hour).padStart(2, '0')}:00 · Score{' '}
+                        {s.score.toFixed(1)}
                       </div>
                     </div>
                     <span
