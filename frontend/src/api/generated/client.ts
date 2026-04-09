@@ -19,6 +19,7 @@ import type {
   TagesplanRetroResponse,
   TagesplanSuggestion,
 } from '@/types/api'
+import { rawClient } from './client-base'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -62,7 +63,7 @@ function buildQuery(params: Record<string, string | number | undefined>) {
 
 export const api = {
   health: async (signal?: AbortSignal): Promise<HealthResponse> => {
-    const payload = await get<{
+    const payload = (await rawClient.getHealth(signal)) as {
       status: string
       uptimeSeconds?: number
       endpoints?: Record<
@@ -71,7 +72,7 @@ export const api = {
       >
       researchLastAnalysis?: number
       researchDataPoints?: number
-    }>('/api/health', signal)
+    }
 
     const status =
       payload.status === 'ok'
@@ -101,19 +102,20 @@ export const api = {
     }
   },
 
-  feed: (signal?: AbortSignal) => get<FeedResponse>('/api/articles', signal),
+  feed: (signal?: AbortSignal) =>
+    rawClient.listArticles({}, signal) as Promise<FeedResponse>,
 
   checkPlus: (urls: string[]) =>
     post<Record<string, boolean>>('/api/check-plus', { urls }),
 
   pushStats: (signal?: AbortSignal) =>
-    get<PushStatsResponse>('/api/pushes', signal),
+    rawClient.listPushes({}, signal) as Promise<PushStatsResponse>,
 
   syncPush: () =>
-    post<{ ok: boolean; synced: number }>('/api/pushes/refresh', {}),
+    rawClient.refreshPushes({}) as Promise<{ ok: boolean; synced: number }>,
 
   mlStatus: (signal?: AbortSignal) =>
-    get<MlStatusResponse>('/api/ml-model', signal),
+    rawClient.getMlModelStatus(signal) as Promise<MlStatusResponse>,
 
   mlSafety: (signal?: AbortSignal) =>
     get<{ safetyMode: string; advisoryOnly: boolean; actionAllowed: boolean }>(
@@ -132,7 +134,7 @@ export const api = {
     post<MlPredictResponse[]>('/api/ml/predict-batch', { articles }),
 
   mlMonitoring: (signal?: AbortSignal) =>
-    get<MlMonitoringResponse>('/api/ml-model/monitoring', signal),
+    rawClient.getMlModelMonitoring(signal) as Promise<MlMonitoringResponse>,
 
   mlExperiments: async (signal?: AbortSignal): Promise<MlExperiment[]> => {
     const payload = await get<{ items?: MlExperiment[] }>(
@@ -151,10 +153,11 @@ export const api = {
     get<{ active: boolean; variant?: string }>('/api/ml/ab-status', signal),
 
   mlRetrain: () =>
-    post<{ ok: boolean; message?: string; jobId?: string }>(
-      '/api/ml-model/retraining-jobs',
-      {},
-    ),
+    rawClient.createMlRetrainingJob({}) as Promise<{
+      ok: boolean
+      message?: string
+      jobId?: string
+    }>,
 
   mlFeedback: (predictionId: string, actualOR: number) =>
     post<{ ok: boolean }>('/api/predictions/feedback', {
@@ -163,7 +166,7 @@ export const api = {
     }),
 
   gbrtStatus: (signal?: AbortSignal) =>
-    get<GbrtStatusResponse>('/api/gbrt-model', signal),
+    rawClient.getGbrtModelStatus(signal) as Promise<GbrtStatusResponse>,
 
   gbrtModelJson: (signal?: AbortSignal) =>
     get<unknown>('/api/gbrt/model.json', signal),
@@ -176,21 +179,22 @@ export const api = {
     }),
 
   gbrtRetrain: () =>
-    post<{ ok: boolean }>('/api/gbrt-model/retraining-jobs', {}),
+    rawClient.createGbrtRetrainingJob({}) as Promise<{ ok: boolean }>,
 
-  gbrtPromote: () => post<{ ok: boolean }>('/api/gbrt-model/promotions', {}),
+  gbrtPromote: () =>
+    rawClient.createGbrtPromotion({}) as Promise<{ ok: boolean }>,
 
   tagesplan: (date?: string, mode?: TagesplanMode, signal?: AbortSignal) =>
-    get<TagesplanResponse>(
-      `/api/tagesplan${buildQuery({ date, mode })}`,
+    rawClient.getDailyPlan(
+      { date, mode },
       signal,
-    ),
+    ) as Promise<TagesplanResponse>,
 
   tagesplanRetro: (mode?: TagesplanMode, signal?: AbortSignal) =>
-    get<TagesplanRetroResponse>(
-      `/api/tagesplan/retro${buildQuery({ mode })}`,
+    rawClient.getDailyPlanRetro(
+      { mode },
       signal,
-    ),
+    ) as Promise<TagesplanRetroResponse>,
 
   tagesplanHistory: (days?: number, signal?: AbortSignal) =>
     get<TagesplanRetroResponse>(
@@ -203,35 +207,36 @@ export const api = {
     mode?: TagesplanMode,
     signal?: AbortSignal,
   ) =>
-    get<TagesplanSuggestion[]>(
-      `/api/tagesplan/suggestions${buildQuery({ date, mode })}`,
-      signal,
-    ),
+    rawClient.listDailyPlanSuggestions({ date, mode }, signal) as Promise<
+      TagesplanSuggestion[]
+    >,
 
   tagesplanLogSuggestions: (suggestions: TagesplanSuggestion[]) =>
     post<{ ok: boolean }>('/api/tagesplan/log-suggestions', { suggestions }),
 
   competitorRedaktion: (signal?: AbortSignal) =>
-    get<CompetitorResponse>('/api/feeds/competitor', signal),
+    rawClient.listEditorialCompetitorItems(
+      signal,
+    ) as Promise<CompetitorResponse>,
 
   competitorSport: (signal?: AbortSignal) =>
-    get<CompetitorResponse>('/api/feeds/competitor/sport', signal),
+    rawClient.listSportCompetitorItems(signal) as Promise<CompetitorResponse>,
 
   competitorXor: (titles: string[]) =>
     post<Record<string, { xor: number }>>('/api/competitors/xor', { titles }),
 
   forschung: (signal?: AbortSignal) =>
-    get<ForschungResponse>('/api/research-insights', signal),
+    rawClient.getResearchInsights(signal) as Promise<ForschungResponse>,
 
   researchRules: async (
     signal?: AbortSignal,
   ): Promise<ResearchRulesResponse> => {
-    const payload = await get<{
+    const payload = (await rawClient.listResearchRules({}, signal)) as {
       version: number
       items?: Array<Record<string, unknown>>
       accuracy?: number
       lastUpdate?: number
-    }>('/api/research-rules', signal)
+    }
 
     return {
       version: payload.version ?? 0,
@@ -255,10 +260,9 @@ export const api = {
   },
 
   adobeTraffic: async (signal?: AbortSignal): Promise<AdobeTrafficResponse> => {
-    const payload = await get<AdobeTrafficResponse>(
-      '/api/analytics/adobe-traffic',
+    const payload = (await rawClient.getAdobeTraffic(
       signal,
-    )
+    )) as AdobeTrafficResponse
     return {
       hourly: payload.hourly ?? [],
       topArticles: payload.topArticles ?? [],
@@ -270,7 +274,7 @@ export const api = {
     get<{ learnings: string[] }>('/api/learnings', signal),
 
   generateTitle: (body: GenerateTitleRequest) =>
-    post<GenerateTitleResponse>('/api/push-title/generate', body),
+    rawClient.generatePushTitle(body) as Promise<GenerateTitleResponse>,
 
   monitoringTick: () => post<{ ok: boolean }>('/api/ml/monitoring/tick', {}),
 }

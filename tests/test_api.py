@@ -274,3 +274,44 @@ class TestPushSyncEndpoint:
             json={"secret": "custom-secret-test", "messages": [], "channels": []},
         )
         assert resp.status_code in (200, 201, 403)  # Akzeptiert je nach Implementierung
+
+
+class TestPushTitleGenerateEndpoint:
+    @pytest.mark.skipif(_using_mock, reason="Nur mit echter App — Mock enthält den Endpoint nicht")
+    def test_generate_push_title_one_brain_response_shape(self, monkeypatch):
+        monkeypatch.setattr("app.config.OPENAI_API_KEY", "test-key")
+
+        mocked_result = {
+            "gewinner": {
+                "titel": "Klarer Gewinner-Titel",
+                "warum_dieser": "Er ist konkret, aktiv und bildstark.",
+            },
+            "alternative": {"titel": "Alternative A"},
+            "alle_kandidaten": {
+                "direkt": [
+                    {"titel": "Alternative A"},
+                    {"titel": "Alternative B"},
+                ],
+                "narrativ": [{"titel": "Alternative C"}],
+            },
+            "meta": {"analyse": {"kern": "Fallback-Reasoning"}},
+        }
+
+        with patch("push_title_agent.generate_push_title", return_value=mocked_result):
+            resp = client.post(
+                "/api/push-title/generate",
+                json={"title": "Ausgangstitel", "category": "news"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["title"] == "Klarer Gewinner-Titel"
+        assert isinstance(data["alternativeTitles"], list)
+        assert data["alternativeTitles"] == [
+            "Alternative A",
+            "Alternative B",
+            "Alternative C",
+        ]
+        assert isinstance(data["reasoning"], str)
+        assert data["reasoning"] == "Er ist konkret, aktiv und bildstark."
+        assert data["advisoryOnly"] is True

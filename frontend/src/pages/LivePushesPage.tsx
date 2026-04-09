@@ -1,13 +1,21 @@
 import { useMemo } from 'react'
 import { usePushStats, useSyncPush } from '@/hooks/useApi'
-import { useAppStore } from '@/stores/appStore'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
-import { StatCard } from '@/components/ui/StatCard'
-import { FilterChip } from '@/components/ui/FilterChip'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
-import { Table, TableHeader, TableRow, TableCell } from '@/components/ui/Table'
+import {
+  Alert,
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  FilterChip,
+  Spinner,
+  StatCard,
+  Table,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from '@spring-media/editorial-one-ui'
+import { useAppStore } from '@/stores/app-store'
 import { fmtOR, fmtNum, fmtDateTime } from '@/lib/format'
 import type { Push } from '@/types/api'
 

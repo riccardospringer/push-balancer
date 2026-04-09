@@ -1,12 +1,15 @@
 import { useCompetitorRedaktion, useCompetitorSport } from '@/hooks/useApi'
-import { useAppStore } from '@/stores/appStore'
-import { Card, CardContent } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
-import { StatCard } from '@/components/ui/StatCard'
-import { FilterChip } from '@/components/ui/FilterChip'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
-import { Input } from '@/components/ui/Input'
+import {
+  Alert,
+  Badge,
+  Card,
+  CardContent,
+  FilterChip,
+  Input,
+  Spinner,
+  StatCard,
+} from '@spring-media/editorial-one-ui'
+import { useAppStore } from '@/stores/app-store'
 import { fmtDateTime } from '@/lib/format'
 import type { CompetitorItem } from '@/types/api'
 import { useMemo, useState } from 'react'

@@ -8,13 +8,16 @@ info:
     It exposes article candidates, live push history, research insights, and advisory
     machine-learning model outputs for editorial workflows.
   contact:
-    name: Axel Springer Editorial Engineering
+    name: Axel Springer National Media & Tech GmbH & Co. KG
     url: https://github.com/riccardospringer/next-push.balancer
     email: push-balancer@axelspringer.com
 
 servers:
   - url: http://localhost:8050
     description: Local development
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: System
@@ -370,6 +373,12 @@ paths:
                 $ref: "#/components/schemas/GenerateTitleResponse"
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Authentication is handled at the infrastructure layer. Clients should send a valid Bearer token when required by the deployed environment.
   parameters:
     Offset:
       name: offset

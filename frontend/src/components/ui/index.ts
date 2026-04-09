@@ -1,13 +1,9 @@
 /**
- * Editorial One UI compatibility layer.
+ * Local UI primitives used by the editorial-one-ui shim.
  *
- * The project is configured for GitHub Package Registry via `frontend/.npmrc`.
- * Once `NPM_TOKEN` is available, replace this file with:
- *
- *   export * from '@spring-media/editorial-one-ui'
- *
- * Until then, local fallback components preserve the app contract and keep the
- * migration surface limited to this module.
+ * App code should prefer imports from `@spring-media/editorial-one-ui`.
+ * This module stays the implementation surface until the private package can be
+ * installed with a valid `NPM_TOKEN`.
  */
 
 export { Button } from './Button'

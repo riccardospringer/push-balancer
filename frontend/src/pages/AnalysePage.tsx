@@ -8,10 +8,18 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { useAdobeTraffic } from '@/hooks/useApi'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
-import { Table, TableHeader, TableRow, TableCell } from '@/components/ui/Table'
+import {
+  Alert,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Spinner,
+  Table,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from '@spring-media/editorial-one-ui'
 import { fmtNum, fmtDateTime } from '@/lib/format'
 
 export function AnalysePage() {

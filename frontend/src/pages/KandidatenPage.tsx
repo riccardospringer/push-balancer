@@ -1,13 +1,19 @@
 import { useState, useMemo } from 'react'
 import { useFeed } from '@/hooks/useApi'
-import { useAppStore } from '@/stores/appStore'
-import { Card, CardContent } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
-import { FilterChip } from '@/components/ui/FilterChip'
-import { Input } from '@/components/ui/Input'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
-import { Table, TableHeader, TableRow, TableCell } from '@/components/ui/Table'
+import {
+  Alert,
+  Badge,
+  Card,
+  CardContent,
+  FilterChip,
+  Input,
+  Spinner,
+  Table,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from '@spring-media/editorial-one-ui'
+import { useAppStore } from '@/stores/app-store'
 import { PushPreviewModal } from '@/components/ui/PushPreviewModal'
 import { fmtOR, fmtScore, scoreVariant, fmtDateTime } from '@/lib/format'
 import type { Article } from '@/types/api'

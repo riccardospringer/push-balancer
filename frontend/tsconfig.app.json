@@ -19,7 +19,10 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@spring-media/editorial-one-ui": [
+        "./src/editorial-one-ui-shim/index.tsx"
+      ]
     }
   },
   "include": ["src"]

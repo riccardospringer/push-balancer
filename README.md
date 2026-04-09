@@ -61,7 +61,13 @@ export NPM_TOKEN=ghp_your_token_here
 pnpm --dir frontend info @spring-media/editorial-one-ui
 ```
 
-If the package is not yet available in your environment, the app uses the local compatibility layer in [frontend/src/components/ui/index.ts](/Users/riccardo.longo/push-balancer/frontend/src/components/ui/index.ts).
+If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`.
+
+When `openapi.yaml` changes, regenerate the frontend base client with:
+
+```bash
+pnpm --dir frontend generate:api-client
+```
 
 ### macOS: libomp for LightGBM
 
@@ -161,61 +167,38 @@ Results are cached and refreshed every 5 minutes in the background. Suggestion s
 
 ## API Endpoints
 
-A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml).
+A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml). The documented, frontend-stable contract currently includes:
 
 ### GET Endpoints
 
 | Endpoint | Description |
 |---|---|
-| `GET /push-balancer.html` | Main dashboard UI |
-| `GET /api/health` | Server health status |
-| `GET /api/feed` | BILD news sitemap (proxied) |
-| `GET /api/push/{id}` | Single push statistics |
-| `GET /api/forschung` | Research state (push history, accuracy, model status) |
-| `GET /api/learnings` | Aggregated OR learnings and baselines |
-| `GET /api/competitors` | All German competitor feeds (aggregated) |
-| `GET /api/competitor/{name}` | Single competitor RSS feed |
-| `GET /api/sport-competitors` | German sport competitor feeds |
-| `GET /api/sport-europa` | European sport feeds |
-| `GET /api/sport-global` | Global sport feeds |
-| `GET /api/international` | All international feeds (aggregated) |
-| `GET /api/international/{name}` | Single international feed |
-| `GET /api/check-plus` | BILD+ paywall check for a URL |
-| `GET /api/adobe/traffic` | Adobe Analytics traffic source breakdown |
-| `GET /api/research-rules` | Active research and tuning rules |
-| `GET /api/ml/status` | LightGBM model metrics and feature importance |
-| `GET /api/ml/predict` | Single OR prediction (LightGBM) |
-| `GET /api/ml/safety-status` | Safety mode status |
-| `GET /api/ml/experiments` | Experiment tracking log |
-| `GET /api/ml/experiments/compare` | Compare two experiments |
-| `GET /api/ml/ab-status` | A/B test status between models |
-| `GET /api/ml/monitoring` | MAE, calibration, drift, and monitoring events |
-| `GET /api/tagesplan` | Daily 18-slot schedule with recommendations |
-| `GET /api/tagesplan/retro` | 7-day retrospective |
-| `GET /api/tagesplan/history` | Full daily plan for a past date |
-| `GET /api/tagesplan/suggestions` | Saved article suggestions per slot |
-| `GET /api/gbrt/status` | GBRT model status and analytics |
-| `GET /api/gbrt/model.json` | GBRT model export for client-side evaluation |
-| `GET /api/gbrt/predict` | Single OR prediction (GBRT) |
+| `GET /api/health` | Service health, endpoint checks, and research metadata |
+| `GET /api/articles` | Article candidates from the BILD sitemap |
+| `GET /api/pushes` | Recent push history with same-day aggregates |
+| `GET /api/feeds/competitor` | Editorial competitor monitoring feed |
+| `GET /api/feeds/competitor/sport` | Sports competitor monitoring feed |
+| `GET /api/research-insights` | Current research learnings and experiment summary |
+| `GET /api/research-rules` | Active research rules with pagination metadata |
+| `GET /api/analytics/adobe-traffic` | Adobe traffic analytics payload |
+| `GET /api/ml-model` | Stable ML model status contract |
+| `GET /api/ml-model/monitoring` | ML monitoring and recent prediction comparisons |
+| `GET /api/gbrt-model` | Stable GBRT model status contract |
+| `GET /api/tagesplan` | Daily planning slots with recommendations |
+| `GET /api/tagesplan/retro` | Retrospective planning summary |
+| `GET /api/tagesplan/suggestions` | Suggested articles for the current plan |
 
 ### POST Endpoints
 
 | Endpoint | Description |
 |---|---|
-| `POST /api/check-plus` | Check multiple URLs for BILD+ paywall |
-| `POST /api/schwab-chat` | Editorial assistant chat (GPT-4o) |
-| `POST /api/schwab-approval` | Approve or reject an editorial suggestion |
-| `POST /api/predictions/feedback` | Submit actual OR for a past prediction |
-| `POST /api/tagesplan/log-suggestions` | Persist article suggestions for a slot |
-| `POST /api/ml/retrain` | Trigger manual LightGBM retrain |
-| `POST /api/ml/monitoring/tick` | Manual monitoring tick |
-| `POST /api/ml/predict-batch` | Batch OR prediction |
-| `POST /api/predict-batch` | Alias for `/api/ml/predict-batch` |
-| `POST /api/competitors/xor` | Batch competitor XOR via word-performance scoring |
+| `POST /api/pushes/refresh` | Refresh the live push view |
+| `POST /api/ml-model/retraining-jobs` | Trigger an ML retraining job |
+| `POST /api/gbrt-model/retraining-jobs` | Trigger a GBRT retraining job |
+| `POST /api/gbrt-model/promotions` | Promote the current GBRT candidate |
 | `POST /api/push-title/generate` | Generate optimized push headline variants |
-| `POST /api/pushes/sync` | Receive push data sync from local server (Render relay) |
-| `POST /api/gbrt/retrain` | Trigger manual GBRT retrain |
-| `POST /api/gbrt/force-promote` | Promote last saved GBRT model as champion |
+
+Legacy or internal helper endpoints still exist for operational compatibility, but the frontend contract should prefer the documented endpoints above.
 
 ---
 

@@ -4,13 +4,18 @@ import {
   useTagesplanSuggestions,
   useTagesplanRetro,
 } from '@/hooks/useApi'
-import { useAppStore } from '@/stores/appStore'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
-import { StatCard } from '@/components/ui/StatCard'
-import { FilterChip } from '@/components/ui/FilterChip'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
+import {
+  Alert,
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  FilterChip,
+  Spinner,
+  StatCard,
+} from '@spring-media/editorial-one-ui'
+import { useAppStore } from '@/stores/app-store'
 import { fmtOR, fmtNum, fmtDate, orColor } from '@/lib/format'
 import type { TagesplanSlot } from '@/types/api'
 

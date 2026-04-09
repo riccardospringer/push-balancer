@@ -16,13 +16,21 @@ import {
   useGbrtStatus,
   useMlRetrain,
 } from '@/hooks/useApi'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
-import { StatCard } from '@/components/ui/StatCard'
-import { Spinner } from '@/components/ui/Spinner'
-import { Alert } from '@/components/ui/Alert'
-import { Button } from '@/components/ui/Button'
-import { Table, TableHeader, TableRow, TableCell } from '@/components/ui/Table'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Spinner,
+  StatCard,
+  Table,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from '@spring-media/editorial-one-ui'
 import { fmtOR, fmtNum, fmtDateTime } from '@/lib/format'
 
 export function ForschungPage() {

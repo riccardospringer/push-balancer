@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { StatusDot } from '@/components/ui/StatusDot'
+import { StatusDot } from '@spring-media/editorial-one-ui'
 import { useHealth } from '@/hooks/useApi'
 
 const TABS = [
