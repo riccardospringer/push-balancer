@@ -36,7 +36,7 @@ from app.config import (
     SNAPSHOT_PATH,
 )
 from app.database import init_db, push_db_count, push_db_upsert
-from app.ml.gbrt import gbrt_load_model, _gbrt_model
+from app.ml.gbrt import gbrt_load_model
 from app.routers import (
     feed,
     forschung,

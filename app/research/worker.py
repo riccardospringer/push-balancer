@@ -762,10 +762,11 @@ def _compute_findings_for_subset(subset_data: list) -> dict:
     or_values = [p["or"] for p in or_pushes]
     sorted_or = sorted(or_values) if or_values else [0]
     median_or = sorted_or[len(sorted_or) // 2]
-    mean_or = median_or
+    mean_or = sum(or_values) / len(or_values) if or_values else 0.0
     std_or = (
-        math.sqrt(sum((x - median_or) ** 2 for x in or_values) / max(1, len(or_values) - 1))
-        if len(or_values) > 1 else 0
+        math.sqrt(sum((x - mean_or) ** 2 for x in or_values) / max(1, len(or_values) - 1))
+        if len(or_values) > 1
+        else 0.0
     )
 
     hours: dict = defaultdict(list)
@@ -1341,17 +1342,6 @@ def _run_analysis_inner() -> None:
     _update_rolling_accuracy_subset(nonsport_data, state, "_nonsport_accuracy")
 
     # ── Basis-Analysen ────────────────────────────────────────────────
-    _or_max_sane = 30.0
-    or_pushes = [p for p in push_data if 0 < p.get("or", 0) <= _or_max_sane]
-    or_values = [p["or"] for p in or_pushes]
-    sorted_or = sorted(or_values) if or_values else [0]
-    median_or = sorted_or[len(sorted_or) // 2]
-    mean_or = median_or
-    std_or = (
-        math.sqrt(sum((x - median_or) ** 2 for x in or_values) / max(1, len(or_values) - 1))
-        if len(or_values) > 1 else 0
-    )
-
     # Stunden-Analyse
     hours: dict = defaultdict(list)
     for p in push_data:
@@ -1371,8 +1361,6 @@ def _run_analysis_inner() -> None:
             cat_or[p.get("cat") or "News"].append(p["or"])
     cat_avgs = {c: sum(v) / len(v) for c, v in cat_or.items() if v}
     state["_cat_avgs_cache"] = cat_avgs
-    best_cat = max(cat_avgs, key=cat_avgs.get) if cat_avgs else "News"
-    worst_cat = min(cat_avgs, key=cat_avgs.get) if cat_avgs else "News"
 
     # Framing-Analyse
     emo_words = {
@@ -1463,13 +1451,6 @@ def _run_analysis_inner() -> None:
     no_colon = [p for p in push_data if ":" not in p.get("title", "") and "|" not in p.get("title", "") and p.get("or", 0) > 0]
     colon_or = sum(p["or"] for p in colon_pushes) / len(colon_pushes) if colon_pushes else 0.0
     no_colon_or = sum(p["or"] for p in no_colon) / len(no_colon) if no_colon else 0.0
-
-    # Top & Flop
-    top_push = max(push_data, key=lambda p: p.get("or", 0)) if push_data else None
-    flop_push = (
-        min([p for p in push_data if p.get("or", 0) > 0], key=lambda p: p["or"])
-        if [p for p in push_data if p.get("or", 0) > 0] else None
-    )
 
     # ── Findings zusammenstellen ──────────────────────────────────────
     findings: dict = {}
@@ -1855,7 +1836,11 @@ def monitoring_tick() -> None:
             h_ts = (r["predicted_at"] // 3600) * 3600
             hourly_buckets.setdefault(h_ts, []).append(abs(r["predicted_or"] - r["actual_or"]))
         mae_trend = [
-            {"ts": h_ts, "mae": round(sum(errs) / len(errs), 4), "n": len(errs)}
+            {
+                "ts": h_ts,
+                "mae": round(sum(hourly_buckets[h_ts]) / len(hourly_buckets[h_ts]), 4),
+                "n": len(hourly_buckets[h_ts]),
+            }
             for h_ts in sorted(hourly_buckets)
             if hourly_buckets[h_ts]
         ][-24:]

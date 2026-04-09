@@ -7,11 +7,9 @@ POST /api/gbrt/retrain          — Manuelles Retraining
 POST /api/gbrt/force-promote    — Challenger zu Champion promoten
 """
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 from app.auth import require_admin_key
 from app.ml.gbrt import _gbrt_lock, _gbrt_model, gbrt_predict, gbrt_train
@@ -187,7 +185,7 @@ def get_gbrt_model_json() -> JSONResponse:
     """
     import os
     from app.config import SERVE_DIR
-    from fastapi.responses import FileResponse, Response
+    from fastapi.responses import Response
 
     model_path = os.path.join(SERVE_DIR, ".gbrt_model.json")
     if os.path.exists(model_path):

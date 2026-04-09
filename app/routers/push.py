@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.config import PUSH_API_BASE, SYNC_SECRET
-from app.database import push_db_log_prediction, push_db_upsert
+from app.database import push_db_log_prediction
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()

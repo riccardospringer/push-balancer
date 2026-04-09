@@ -273,7 +273,6 @@ def predict_heuristic(
         Dict mit predicted_or, basis_method, confidence, q10, q90, methods
         oder None wenn push_data zu klein.
     """
-    import time as _time
 
     state = state or {}
     params = tuning_params or state.get("tuning_params") or {}
@@ -788,7 +787,6 @@ def predict_heuristic(
     # Korrektor 2: Breaking-Regime-Boost
     breaking = mods.get("breaking_regime", {})
     if breaking and isinstance(breaking, dict) and breaking.get("n_breaking", 0) >= 3:
-        threshold = breaking.get("threshold", global_avg * 2)
         if is_emo and push_cat == breaking.get("top_cat", ""):
             boost = min(params["phd_breaking_boost"], breaking.get("regime_boost", 1.0))
             predicted *= boost

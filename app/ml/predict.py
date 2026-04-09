@@ -12,7 +12,6 @@ Fallback-Kette:
 from __future__ import annotations
 
 import logging
-import math
 
 from app.config import SAFETY_MODE
 

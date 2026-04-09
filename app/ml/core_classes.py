@@ -643,7 +643,6 @@ class _SklearnModelWrapper:
             if n_trees > 50:
                 # Nur erste + letzte 25 Bäume vergleichen statt alle zu iterieren
                 lr = self.sklearn_model.learning_rate
-                init = self.sklearn_model.init_.predict(x_arr)[0] if hasattr(self.sklearn_model.init_, 'predict') else self.sklearn_model._raw_predict_init(x_arr)[0]
                 # Schnelle Näherung: Fraction of total prediction from recent trees
                 tree_preds = []
                 for tree_idx in range(max(0, n_trees - 25), n_trees):
@@ -817,8 +816,6 @@ def _isotonic_regression_pava(predicted, actual):
         for idx in block:
             result[idx] = avg
 
-    # Zurueck in Original-Reihenfolge
-    order = [p[0] for p in paired]
     return result
 
 

@@ -14,7 +14,6 @@ import re
 import datetime
 import logging
 from bisect import bisect_left
-from collections import defaultdict
 
 from app.scoring.magnitude import keyword_magnitude_heuristic as _keyword_magnitude_heuristic
 
@@ -389,7 +388,6 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
         feat[f"cat_{c}"] = 1.0 if cat_lower == c else 0.0
 
     # ── Historical-Features (~20, Bayesian-smoothed) ─────────────────────
-    global_n = history_stats.get("global_n", 100)
     bayesian_prior_n = 10  # Shrinkage-Staerke (reduziert von 30: weniger Regression zum Mittelwert)
 
     def _bayesian_avg(group_avg, group_n, prior=global_avg, prior_n=bayesian_prior_n):

@@ -18,7 +18,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET
-from app.research.worker import _research_state
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()

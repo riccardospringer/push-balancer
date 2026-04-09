@@ -1,4 +1,5 @@
-import { ButtonHTMLAttributes, forwardRef, ReactNode } from 'react'
+import { forwardRef } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'default' | 'primary' | 'ghost' | 'danger'

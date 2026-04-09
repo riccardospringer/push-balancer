@@ -100,7 +100,9 @@ export function ForschungPage() {
             Modell neu trainieren
           </Button>
           {retrainMutation.isSuccess && (
-            <Alert variant="success" style={{ flex: 1 }}>Training gestartet (Job ID: {(retrainMutation.data as any)?.jobId})</Alert>
+            <Alert variant="success" style={{ flex: 1 }}>
+              Training gestartet (Job ID: {retrainMutation.data?.jobId ?? 'unbekannt'})
+            </Alert>
           )}
           {retrainMutation.isError && (
             <Alert variant="error" style={{ flex: 1 }}>Training fehlgeschlagen.</Alert>

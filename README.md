@@ -24,6 +24,7 @@ An ML-powered advisory system for optimizing BILD push notification scheduling. 
 
 - Python 3.11+ (3.13 recommended; matches the Docker image)
 - pip
+- Node.js 20+ and `pnpm` 10.x for the React frontend
 - Access to the BILD Push Statistics API (`push-frontend.bildcms.de`) — internal network only
 - Optional: OpenAI API key (GPT-4o title scoring), Adobe Analytics credentials, Football-Data.org key, The Odds API key
 
@@ -38,16 +39,18 @@ cd push-balancer
 
 # 2. Install dependencies
 pip install -r requirements.txt
+pnpm --dir frontend install --frozen-lockfile
 
 # 3. Configure environment variables
 cp .env.example .env
 # Edit .env and fill in the required values (at minimum OPENAI_API_KEY and PUSH_API_BASE)
 
-# 4. Run the server
-python push-balancer-server.py
+# 4. Start backend and frontend
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8050
+pnpm --dir frontend dev
 ```
 
-The server starts on `http://localhost:8050` by default. Open `http://localhost:8050/push-balancer.html` for the dashboard.
+The API starts on `http://localhost:8050` by default, and the Vite frontend on `http://localhost:5173`. For production-like local checks, run `pnpm --dir frontend build`; the generated assets are written to `dist-frontend/` and served by FastAPI.
 
 ### macOS: libomp for LightGBM
 
@@ -207,7 +210,7 @@ A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml).
 
 ## Database
 
-SQLite database at `.push_history.db` (relative to `push-balancer-server.py`). WAL mode is enabled for concurrent reads.
+SQLite database at `.push_history.db` in the repository root by default (override via `DB_PATH`). WAL mode is enabled for concurrent reads.
 
 | Table | Description |
 |---|---|
@@ -278,28 +281,36 @@ Variables are loaded from a `.env` file in the project directory at startup (via
 
 ```
 push-balancer/
-├── push-balancer-server.py   # Main server (HTTP handler + all business logic)
-├── push_title_agent.py       # Push headline generation agent
-├── push-balancer.html        # Dashboard frontend
+├── app/                      # FastAPI application, routers, ML and research modules
+├── frontend/                 # React/Vite client
+├── tests/                    # Pytest suite
+├── push-balancer-server.py   # Legacy monolith kept for compatibility/migration
 ├── push-snapshot.json        # Startup data seed for Render
 ├── requirements.txt
+├── pyproject.toml            # Python test/lint configuration
 ├── Dockerfile
-├── render.yaml
+├── .editorconfig
 └── .push_history.db          # SQLite database (created at runtime, git-ignored)
 ```
 
 ### Adding a Feature
 
-1. Implement business logic in `push-balancer-server.py`.
-2. Add a handler branch in `do_GET` or `do_POST` in `PushBalancerHandler`.
-3. Document the endpoint in `openapi.yaml`.
+1. Implement backend logic in `app/` and prefer a dedicated router/module over extending legacy files.
+2. Add or update the corresponding frontend page/component in `frontend/src/` when the feature is user-facing.
+3. Document API changes in `openapi.yaml`.
 4. If the feature introduces a new environment variable, add it to `.env.example` and the table in this README.
+5. Run the relevant checks before pushing (`pytest`, frontend lint, frontend typecheck/build).
 
 ### Running Tests
 
 ```bash
-# Unit tests (when available)
-python -m pytest tests/
+# Backend tests
+python -m pytest
+
+# Frontend quality gates
+pnpm --dir frontend lint
+pnpm --dir frontend typecheck
+pnpm --dir frontend build
 
 # Manual smoke test
 curl http://localhost:8050/api/health
@@ -319,7 +330,7 @@ curl -X POST http://localhost:8050/api/gbrt/retrain
 ### Linting and Formatting
 
 ```bash
-pip install ruff
-ruff check push-balancer-server.py
-ruff format push-balancer-server.py
+ruff check app tests
+ruff format app tests
+pnpm --dir frontend lint
 ```

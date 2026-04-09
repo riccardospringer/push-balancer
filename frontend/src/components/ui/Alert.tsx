@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 type AlertVariant = 'info' | 'success' | 'warning' | 'error'
 

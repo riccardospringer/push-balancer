@@ -5,9 +5,7 @@ GET /api/learnings         — ML-Learnings
 GET /api/research-rules    — Aktive Forschungsregeln
 """
 import logging
-import math
 import time
-from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse

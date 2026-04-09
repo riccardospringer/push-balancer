@@ -24,23 +24,14 @@ from app.state import (
 )
 from app.ml.lightgbm_model import (
     _ml_state, _ml_lock,
-    ml_train_model as _ml_train_model,
-    unified_train as _unified_train,
-    train_stacking_model as _train_stacking_model,
-    monitoring_tick as _monitoring_tick,
 )
 from app.ml.gbrt import (
     _gbrt_model, _gbrt_feature_names,
-    gbrt_predict as _gbrt_predict,
-    gbrt_train as _gbrt_train,
-    gbrt_check_drift as _gbrt_check_drift,
-    gbrt_online_update as _gbrt_online_update,
 )
 from app.research.worker import _research_state
 from app.ml.features import gbrt_extract_features as _gbrt_extract_features
-from app.ml.stats import gbrt_build_history_stats as _gbrt_build_history_stats
 from app.database import push_db_load_all, push_db_upsert, push_db_count, push_db_max_ts
-from app.config import PUSH_API_BASE, PUSH_DB_PATH, RENDER_SYNC_URL, SYNC_SECRET, BILD_SITEMAP, IS_RENDER
+from app.config import PUSH_DB_PATH, IS_RENDER
 
 # ── Convenience aliases (Monolith-kompatibel) ─────────────────────────────────
 # Auf Render max. 5000 Rows laden (statt 15000) — spart RAM bei jedem Tagesplan-Build
@@ -457,7 +448,6 @@ def _ml_build_tagesplan_inner(now, current_hour, mode="redaktion"):
     ml_shap_texts = {}   # h → shap_explanation
 
     if model is not None and feature_names:
-        rows_by_h = {}
         X_rows = []
         h_order = []
         for sm in slot_meta:

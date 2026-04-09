@@ -59,7 +59,6 @@ def gbrt_load_model() -> bool:
     if os.path.exists(lgbm_path):
         try:
             import joblib
-            import lightgbm as lgb
             from app.ml.core_classes import _LGBMModelWrapper
             data = joblib.load(lgbm_path)
             lgbm_model = data["model"]

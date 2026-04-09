@@ -12,7 +12,7 @@ Admin-Endpoints sind lokal ohne Auth erreichbar (Entwicklungsmodus).
 In Produktionsumgebungen MUSS ADMIN_API_KEY in .env gesetzt sein.
 """
 import logging
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
 from app.config import ADMIN_API_KEY

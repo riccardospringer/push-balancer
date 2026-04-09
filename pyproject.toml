@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+  "ignore:X does not have valid feature names, but LGBMRegressor was fitted with feature names:UserWarning",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+  "dist-frontend",
+  "frontend",
+  "push-balancer-server.py",
+  "push_balancer_server_compat.py",
+  "watchdog",
+]
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

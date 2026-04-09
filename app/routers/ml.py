@@ -14,7 +14,6 @@ POST /api/ml/predict-batch          — Batch-Prediction (auch /api/predict-batc
 import logging
 import time
 import hashlib
-import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query

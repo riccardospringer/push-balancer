@@ -2,6 +2,7 @@
 .env
 *.key
 *.pem
+.python-version
 
 # Datenbanken (lokal, nicht ins Repo)
 *.db
@@ -16,7 +17,9 @@ pushes.db
 __pycache__/
 *.py[cod]
 *.pyo
+.mypy_cache/
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
 dist/
 build/
@@ -48,11 +51,9 @@ catboost_info/
 # Frontend Build-Abhängigkeiten (lokal, nicht ins Repo)
 frontend/node_modules/
 frontend/.pnpm-store/
+frontend/dist/
 
 # Render/Railway Config (ggf. anpassen wenn gewuenscht)
 render.yaml
 ~$*
 *.pptx
-__pycache__/
-*.pyc
-.pytest_cache/

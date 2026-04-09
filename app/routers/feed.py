@@ -10,7 +10,6 @@ GET /api/international           — Internationale Feeds (gecacht)
 GET /api/international/{name}    — Einzelner internationaler Feed
 POST /api/competitors/xor        — Batch-XOR via Wort-Performance-Scoring
 """
-import json
 import logging
 import re
 import ssl
@@ -28,8 +27,6 @@ from app.config import (
     COMPETITOR_FEEDS,
     INTERNATIONAL_FEEDS,
     SPORT_COMPETITOR_FEEDS,
-    SPORT_EUROPA_FEEDS,
-    SPORT_GLOBAL_FEEDS,
 )
 from app.research.worker import _xor_perf_cache, _xor_perf_lock, get_cached_feeds
 
@@ -447,17 +444,14 @@ def post_competitor_xor(body: CompetitorXorRequest) -> JSONResponse:
         wp = {}
         global_avg = 4.77
 
-    import datetime
-    cur_hour = datetime.datetime.now().hour
     simplified: dict = {}
 
     for item in titles:
         if isinstance(item, str):
-            title, cat, hour = item, None, cur_hour
+            title, cat = item, None
         else:
             title = item.get("title", "")
             cat = item.get("cat")
-            hour = item.get("hour", cur_hour)
         if not title:
             continue
 

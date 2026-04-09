@@ -1,4 +1,4 @@
-import { ReactNode, TdHTMLAttributes, ThHTMLAttributes } from 'react'
+import type { ReactNode, TdHTMLAttributes, ThHTMLAttributes } from 'react'
 
 interface TableProps {
   children: ReactNode
