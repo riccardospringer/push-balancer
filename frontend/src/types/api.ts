@@ -31,7 +31,10 @@ export interface Article {
 export interface FeedResponse {
   articles: Article[]
   fetchedAt: string
+  total: number
   count: number
+  offset: number
+  limit: number
 }
 
 // ── Push Statistics ───────────────────────────────────────────────────────────
@@ -50,6 +53,9 @@ export interface Push {
 
 export interface PushStatsResponse {
   pushes: Push[]
+  total: number
+  offset: number
+  limit: number
   today: {
     count: number
     avgOR: number
@@ -176,6 +182,14 @@ export interface TagesplanSuggestion {
   url: string
   score: number
   predictedOR: number
+}
+
+export interface TagesplanSuggestionsResponse {
+  items: TagesplanSuggestion[]
+  total: number
+  offset: number
+  limit: number
+  grouped: Record<string, TagesplanSuggestion[]>
 }
 
 // ── Competitor ────────────────────────────────────────────────────────────────

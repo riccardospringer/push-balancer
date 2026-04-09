@@ -25,8 +25,10 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -155,6 +157,26 @@ def _load_lgbm_model_from_disk() -> None:
         log.info("[ML] LightGBM geladen (R²=%s, Features: %d, Alter: %.1fh)", r2, n_feats, ml_age_h)
     except Exception as e:
         log.warning("[ML] Modell laden fehlgeschlagen: %s", e)
+
+
+def _problem_response(
+    request: Request,
+    status_code: int,
+    title: str,
+    detail: str,
+    problem_type: str,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": problem_type,
+            "title": title,
+            "status": status_code,
+            "detail": detail,
+            "instance": str(request.url.path),
+        },
+        media_type="application/problem+json",
+    )
 
 
 def _seed_push_snapshot() -> None:
@@ -539,12 +561,62 @@ app = FastAPI(
         "Push Balancer is an editorial decision-support API for push notification "
         "planning, research insights, and advisory model outputs."
     ),
-    version="3.0.1",
+    version="3.1.0",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    title_map = {
+        400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
+        404: "Not Found",
+        422: "Unprocessable Content",
+        502: "Bad Gateway",
+        503: "Service Unavailable",
+    }
+    return _problem_response(
+        request=request,
+        status_code=exc.status_code,
+        title=title_map.get(exc.status_code, "HTTP Error"),
+        detail=str(exc.detail),
+        problem_type=f"https://api.editorialsuite.io/problems/http-{exc.status_code}",
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    detail = "; ".join(
+        f"{'.'.join(str(part) for part in error.get('loc', []))}: {error.get('msg', 'Invalid input')}"
+        for error in exc.errors()
+    )
+    return _problem_response(
+        request=request,
+        status_code=422,
+        title="Unprocessable Content",
+        detail=detail or "Request validation failed.",
+        problem_type="https://api.editorialsuite.io/problems/validation-error",
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    log.exception("[API] Unhandled error on %s", request.url.path, exc_info=exc)
+    return _problem_response(
+        request=request,
+        status_code=500,
+        title="Internal Server Error",
+        detail="An unexpected server error occurred.",
+        problem_type="https://api.editorialsuite.io/problems/internal-server-error",
+    )
 
 # ── Security Headers Middleware ────────────────────────────────────────────
 @app.middleware("http")

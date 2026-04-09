@@ -15,7 +15,7 @@ import time
 import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -61,6 +61,56 @@ class PushTitleGenerateRequest(BaseModel):
     url: str = ""
     title: str = ""
     category: str = "news"
+
+
+def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
+    from app.config import OPENAI_API_KEY
+
+    if not body.title:
+        raise HTTPException(status_code=400, detail="title is required")
+
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Push title generation is unavailable because OPENAI_API_KEY is not configured.",
+        )
+
+    from push_title_agent import generate_push_title
+
+    result = generate_push_title(
+        article_title=body.title,
+        article_text="",
+        category=body.category or "news",
+        kicker="",
+        headline="",
+    )
+
+    gewinner = result.get("gewinner", {})
+    alternative = result.get("alternative", {})
+    alle = result.get("alle_kandidaten", {})
+
+    winner_title = gewinner.get("titel", body.title)
+
+    alt_titles: list[str] = []
+    if alternative.get("titel") and alternative["titel"] != winner_title:
+        alt_titles.append(alternative["titel"])
+    for gruppe in alle.values():
+        for kandidat in gruppe:
+            titel = kandidat.get("titel", "")
+            if titel and titel != winner_title and titel not in alt_titles:
+                alt_titles.append(titel)
+
+    reasoning = gewinner.get("warum_dieser", "")
+    if not reasoning:
+        analyse = result.get("meta", {}).get("analyse", {})
+        reasoning = analyse.get("kern", "")
+
+    return {
+        "title": winner_title,
+        "alternativeTitles": alt_titles[:5],
+        "reasoning": reasoning,
+        "advisoryOnly": True,
+    }
 
 
 def _check_bild_plus(url: str) -> bool:
@@ -200,65 +250,23 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
 @router.post("/api/push-title/generate")
 def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
     """Generiert Push-Titel via GPT-4o im Editorial-One-Brain-Modus."""
-    from app.config import OPENAI_API_KEY
-
-    if not body.title:
-        return JSONResponse(status_code=400, content={"error": "title ist erforderlich"})
-
-    if not OPENAI_API_KEY:
-        log.warning("[PushTitle] OPENAI_API_KEY nicht gesetzt")
-        return JSONResponse(status_code=503, content={
-            "title": body.title,
-            "alternativeTitles": [],
-            "reasoning": "OPENAI_API_KEY nicht konfiguriert",
-            "advisoryOnly": True,
-        })
-
     try:
-        from push_title_agent import generate_push_title
-        result = generate_push_title(
-            article_title=body.title,
-            article_text="",
-            category=body.category or "news",
-            kicker="",
-            headline="",
-        )
+        return JSONResponse(content=_build_push_title_response(body))
+    except RuntimeError as exc:
+        log.error("[PushTitle] %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-        gewinner = result.get("gewinner", {})
-        alternative = result.get("alternative", {})
-        alle = result.get("alle_kandidaten", {})
 
-        winner_titel = gewinner.get("titel", body.title)
-
-        alt_titles: list[str] = []
-        if alternative.get("titel") and alternative["titel"] != winner_titel:
-            alt_titles.append(alternative["titel"])
-        for gruppe in alle.values():
-            for k in gruppe:
-                t = k.get("titel", "")
-                if t and t != winner_titel and t not in alt_titles:
-                    alt_titles.append(t)
-
-        reasoning = gewinner.get("warum_dieser", "")
-        if not reasoning:
-            analyse = result.get("meta", {}).get("analyse", {})
-            reasoning = analyse.get("kern", "")
-
-        return JSONResponse(content={
-            "title": winner_titel,
-            "alternativeTitles": alt_titles[:5],
-            "reasoning": reasoning,
-            "advisoryOnly": True,
-        })
-
-    except RuntimeError as e:
-        log.error("[PushTitle] %s", e)
-        return JSONResponse(status_code=503, content={
-            "title": body.title,
-            "alternativeTitles": [],
-            "reasoning": str(e),
-            "advisoryOnly": True,
-        })
+@router.post("/api/push-title-generations")
+def create_push_title_generation(body: PushTitleGenerateRequest) -> JSONResponse:
+    """Resource-style alias for advisory push title generation."""
+    try:
+        return JSONResponse(content=_build_push_title_response(body))
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        log.error("[PushTitle] %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception:
         log.exception("[PushTitle] Endpoint-Fehler")
         return JSONResponse(status_code=500, content={"error": "Push-Title-Generierung fehlgeschlagen"})

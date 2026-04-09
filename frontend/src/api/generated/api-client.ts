@@ -14,7 +14,7 @@ import type {
   TagesplanMode,
   TagesplanResponse,
   TagesplanRetroResponse,
-  TagesplanSuggestion,
+  TagesplanSuggestionsResponse,
 } from '@/types/api'
 import { rawClient } from './api-client-base'
 
@@ -66,7 +66,10 @@ export const api = {
     rawClient.listPushes({}, signal) as Promise<PushStatsResponse>,
 
   syncPush: () =>
-    rawClient.refreshPushes({}) as Promise<{ ok: boolean; synced: number }>,
+    rawClient.createPushRefreshJob({}) as Promise<{
+      ok: boolean
+      synced: number
+    }>,
 
   mlStatus: (signal?: AbortSignal) =>
     rawClient.getMlModelStatus(signal) as Promise<MlStatusResponse>,
@@ -107,9 +110,10 @@ export const api = {
     mode?: TagesplanMode,
     signal?: AbortSignal,
   ) =>
-    rawClient.listDailyPlanSuggestions({ date, mode }, signal) as Promise<
-      TagesplanSuggestion[]
-    >,
+    rawClient.listDailyPlanSuggestions(
+      { date, mode },
+      signal,
+    ) as Promise<TagesplanSuggestionsResponse>,
 
   competitorRedaktion: (signal?: AbortSignal) =>
     rawClient.listEditorialCompetitorItems(
@@ -165,5 +169,5 @@ export const api = {
   },
 
   generateTitle: (body: GenerateTitleRequest) =>
-    rawClient.generatePushTitle(body) as Promise<GenerateTitleResponse>,
+    rawClient.createPushTitleGeneration(body) as Promise<GenerateTitleResponse>,
 }

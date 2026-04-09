@@ -278,6 +278,7 @@ def get_articles(
     return JSONResponse(
         content={
             "articles": selected,
+            "total": len(articles),
             "count": len(articles),
             "offset": offset,
             "limit": limit,

@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Push Balancer API
-  version: 3.0.1
+  version: 3.1.0
   description: |
     Push Balancer is an editorial decision-support API for push notification planning.
     It exposes article candidates, live push history, research insights, and advisory
@@ -55,6 +55,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/articles:
     get:
@@ -74,6 +76,8 @@ paths:
                 $ref: "#/components/schemas/ArticleCollectionResponse"
         "502":
           $ref: "#/components/responses/BadGateway"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
 
   /api/pushes:
     get:
@@ -98,6 +102,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PushCollectionResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
 
   /api/pushes/refresh:
     post:
@@ -112,6 +118,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SyncResponse"
+
+  /api/push-refresh-jobs:
+    post:
+      tags: [Pushes]
+      operationId: createPushRefreshJob
+      summary: Create a push refresh job
+      description: Creates a lightweight refresh job for the live push overview.
+      responses:
+        "200":
+          description: Refresh job result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/feeds/competitor:
     get:
@@ -354,9 +376,9 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/TagesplanSuggestion"
+                $ref: "#/components/schemas/TagesplanSuggestionsResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
 
   /api/push-title/generate:
     post:
@@ -377,6 +399,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GenerateTitleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/push-title-generations:
+    post:
+      tags: [AI]
+      operationId: createPushTitleGeneration
+      summary: Create advisory push title variants
+      description: Creates advisory push title variants for a given article title and category.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateTitleRequest"
+      responses:
+        "200":
+          description: Generated title variants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateTitleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
 components:
   securitySchemes:
@@ -422,21 +472,65 @@ components:
         default: 60
 
   responses:
+    BadRequest:
+      description: The request payload or parameters are invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     BadGateway:
       description: Upstream dependency is currently unavailable.
       content:
-        application/json:
+        application/problem+json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/Problem"
+    InternalServerError:
+      description: An unexpected server-side error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: The requested capability is temporarily unavailable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableContent:
+      description: The request could not be validated.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
 
   schemas:
-    ErrorResponse:
+    Problem:
       type: object
-      required: [error]
+      required: [type, title, status]
       properties:
-        error:
+        type:
           type: string
-          description: Human-readable error summary.
+          format: uri
+          description: URI identifying the problem type.
+          example: "https://api.editorialsuite.io/problems/http-403"
+        title:
+          type: string
+          description: Short human-readable summary of the problem.
+          example: "Forbidden"
+        status:
+          type: integer
+          format: int32
+          description: HTTP status code for the problem response.
+          example: 403
+        detail:
+          type: string
+          description: Human-readable explanation for this specific occurrence.
+          example: "Invalid sync secret"
+        instance:
+          type: string
+          format: uri
+          description: Request path of the failed API call.
+          example: "/api/pushes/sync"
 
     HealthCheck:
       type: object
@@ -482,51 +576,83 @@ components:
       properties:
         id:
           type: string
+          description: Stable article identifier.
+          example: "https://www.bild.de/politik/test-artikel"
         url:
           type: string
           format: uri
+          description: Canonical article URL.
+          example: "https://www.bild.de/politik/test-artikel"
         title:
           type: string
+          description: Editorial article title.
+          example: "Breaking Test Artikel"
         category:
           type: string
+          description: Inferred editorial category.
+          example: "politik"
         pubDate:
           type: string
           format: date-time
+          description: Article publication timestamp.
+          example: "2026-04-09T08:00:00Z"
         score:
           type: number
           format: float
+          description: Heuristic editorial ranking score.
+          example: 88.0
         predictedOR:
           type: number
           format: float
+          description: Advisory predicted opening rate.
+          example: 0.055
         isBreaking:
           type: boolean
+          description: Whether the article looks like breaking news.
         isEilmeldung:
           type: boolean
+          description: Whether the title indicates an urgent bulletin.
         isSport:
           type: boolean
+          description: Whether the article belongs to sport coverage.
         isPlusArticle:
           type: boolean
+          description: Whether the article appears to be paywalled.
 
     ArticleCollectionResponse:
       type: object
-      required: [articles, count, offset, limit, fetchedAt]
+      required: [articles, total, count, offset, limit, fetchedAt]
       properties:
         articles:
           type: array
           items:
             $ref: "#/components/schemas/Article"
+          description: Current page of ranked article candidates.
+        total:
+          type: integer
+          format: int64
+          description: Total number of matching article candidates.
+          example: 142
         count:
           type: integer
           format: int32
+          description: Backward-compatible alias for the total number of matching articles.
+          example: 142
         offset:
           type: integer
           format: int32
+          description: Offset of the first article in this response.
+          example: 0
         limit:
           type: integer
           format: int32
+          description: Page size used for this response.
+          example: 60
         fetchedAt:
           type: string
           format: date-time
+          description: Timestamp when the collection was built.
+          example: "2026-04-09T09:15:00Z"
 
     Push:
       type: object
@@ -576,18 +702,35 @@ components:
 
     PushCollectionResponse:
       type: object
-      required: [pushes, channels, today]
+      required: [pushes, channels, today, total, offset, limit]
       properties:
         pushes:
           type: array
           items:
             $ref: "#/components/schemas/Push"
+          description: Current page of recent push notifications.
         channels:
           type: array
           items:
             type: string
+          description: Distinct channels represented in the current page.
         today:
           $ref: "#/components/schemas/PushDaySummary"
+        total:
+          type: integer
+          format: int64
+          description: Total number of push notifications in this response.
+          example: 100
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first push notification in this response.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size used for this response.
+          example: 100
 
     SyncResponse:
       type: object
@@ -595,9 +738,13 @@ components:
       properties:
         ok:
           type: boolean
+          description: Whether the refresh job completed successfully.
+          example: true
         synced:
           type: integer
           format: int32
+          description: Number of push rows considered by the refresh.
+          example: 50
 
     CompetitorItem:
       type: object
@@ -994,6 +1141,38 @@ components:
           type: number
           format: float
 
+    TagesplanSuggestionsResponse:
+      type: object
+      required: [items, total, offset, limit, grouped]
+      properties:
+        items:
+          type: array
+          description: Flattened page of saved suggestion items.
+          items:
+            $ref: "#/components/schemas/TagesplanSuggestion"
+        total:
+          type: integer
+          format: int64
+          description: Total number of saved suggestion items.
+          example: 24
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first suggestion in this response.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size used for this response.
+          example: 20
+        grouped:
+          type: object
+          description: Suggestions grouped by slot hour for convenience.
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/TagesplanSuggestion"
+
     GenerateTitleRequest:
       type: object
       required: [title]
@@ -1012,11 +1191,17 @@ components:
       properties:
         title:
           type: string
+          description: The recommended advisory push title.
+          example: "Breaking Test Artikel: Das ist jetzt wichtig"
         alternativeTitles:
           type: array
           items:
             type: string
+          description: Alternative advisory variants for editorial review.
         reasoning:
           type: string
+          description: Short explanation for the recommended title.
         advisoryOnly:
           type: boolean
+          description: Always true because the API never sends push notifications autonomously.
+          example: true

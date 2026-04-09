@@ -288,10 +288,11 @@ export function TagesplanPage() {
     useTagesplanStore()
 
   const { data, isLoading, error } = useTagesplan(tagesplanDate, tagesplanMode)
-  const { data: suggestions } = useTagesplanSuggestions(
+  const { data: suggestionsResponse } = useTagesplanSuggestions(
     tagesplanDate,
     tagesplanMode,
   )
+  const suggestions = suggestionsResponse?.items ?? []
 
   return (
     <div

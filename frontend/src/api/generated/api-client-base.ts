@@ -1,5 +1,5 @@
 /*
- * Auto-generated from ../openapi.yaml (OpenAPI 3.0.3, API 3.0.1).
+ * Auto-generated from ../openapi.yaml (OpenAPI 3.0.3, API 3.1.0).
  * Run `pnpm generate:api-client` after changing the API spec.
  */
 
@@ -56,6 +56,9 @@ export const rawClient = {
 
   refreshPushes: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/pushes/refresh', 'POST', { body, signal }),
+
+  createPushRefreshJob: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/push-refresh-jobs', 'POST', { body, signal }),
 
   listEditorialCompetitorItems: (signal?: AbortSignal) =>
     request<unknown>('/api/feeds/competitor', 'GET', { signal }),
@@ -119,6 +122,9 @@ export const rawClient = {
 
   generatePushTitle: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-title/generate', 'POST', { body, signal }),
+
+  createPushTitleGeneration: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/push-title-generations', 'POST', { body, signal }),
 } as const
 
 export interface ListArticlesParams extends QueryParams {

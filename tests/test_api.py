@@ -110,6 +110,9 @@ class TestStableFrontendContracts:
         assert "pushes" in data
         assert "channels" in data
         assert "today" in data
+        assert "total" in data
+        assert "offset" in data
+        assert "limit" in data
 
     def test_ml_model_contract_returns_status(self):
         resp = client.get("/api/ml-model")
@@ -158,8 +161,16 @@ class TestStableFrontendContracts:
         assert resp.status_code == 200
         data = resp.json()
         assert "articles" in data
+        assert "total" in data
         assert data["count"] >= 1
         assert data["articles"][0]["title"] == "Breaking Test Artikel"
+
+    def test_push_refresh_job_alias_returns_sync_result(self):
+        resp = client.post("/api/push-refresh-jobs", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "synced" in data
 
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
@@ -236,6 +247,10 @@ class TestPushSyncEndpoint:
             json={"messages": [], "channels": []},
         )
         assert resp.status_code == 403
+        data = resp.json()
+        assert data["title"] == "Forbidden"
+        assert data["status"] == 403
+        assert "detail" in data
 
     def test_push_sync_correct_secret_returns_200(self):
         """POST /api/pushes/sync mit korrektem secret → 200."""
@@ -315,3 +330,11 @@ class TestPushTitleGenerateEndpoint:
         assert isinstance(data["reasoning"], str)
         assert data["reasoning"] == "Er ist konkret, aktiv und bildstark."
         assert data["advisoryOnly"] is True
+
+    @pytest.mark.skipif(_using_mock, reason="Nur mit echter App — Mock enthält den Endpoint nicht")
+    def test_generate_push_title_alias_requires_title_problem(self):
+        resp = client.post("/api/push-title-generations", json={"category": "news"})
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["title"] == "Bad Request"
+        assert data["status"] == 400
