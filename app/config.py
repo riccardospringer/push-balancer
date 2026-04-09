@@ -33,7 +33,7 @@ PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "http://push-frontend.bildc
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
 
 # ── Sync / Render ──────────────────────────────────────────────────────────
-SYNC_SECRET: str = os.environ.get("PUSH_SYNC_SECRET", "bild-push-sync-2026")
+SYNC_SECRET: str = os.environ.get("PUSH_SYNC_SECRET", "")
 RENDER_SYNC_URL: str = os.environ.get("RENDER_SYNC_URL", "")
 
 # ── Adobe Analytics ────────────────────────────────────────────────────────
@@ -54,7 +54,10 @@ PUSH_DB_PATH: str = os.environ.get(
     "DB_PATH",
     os.path.join(_APP_DIR, ".push_history.db"),
 )
-SNAPSHOT_PATH: str = os.path.join(_APP_DIR, "push-snapshot.json")
+SNAPSHOT_PATH: str = os.environ.get(
+    "PUSH_SNAPSHOT_PATH",
+    os.path.join(_APP_DIR, "push-snapshot.json"),
+)
 
 # ── Railway / Render Domain ────────────────────────────────────────────────
 _railway_domain: str = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
@@ -168,8 +171,7 @@ SAFETY_MODE: str = "ADVISORY_ONLY"
 
 # ── Admin API Key (schützt POST-Endpoints: retrain, force-promote etc.) ────
 # Setze ADMIN_API_KEY in .env auf einen starken Zufallswert.
-# Wenn nicht gesetzt, sind Admin-Endpoints im lokalen Betrieb offen (Legacy).
-# In Produktionsumgebungen MUSS dieser Wert gesetzt werden!
+# Wenn nicht gesetzt, geben Admin-Endpoints 503 zurück.
 ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 
 # ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────

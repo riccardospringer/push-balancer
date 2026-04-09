@@ -2,9 +2,10 @@
 import os
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from app.auth import require_admin_key
 from app.research.worker import _health_state, _research_state
 
 router = APIRouter()
@@ -27,20 +28,45 @@ def _process_rss_mb() -> float:
 def get_health() -> JSONResponse:
     """Liefert Health- und Security-Status aller Endpunkte."""
     uptime = time.time() - _health_state.get("uptime_start", time.time())
+    raw_status = _health_state.get("status", "unhealthy")
+    status = "healthy" if raw_status == "ok" else raw_status
+    if status not in {"healthy", "degraded", "unhealthy"}:
+        status = "unhealthy"
+    endpoints = _health_state.get("endpoints", {})
+    checks = {
+        key: {
+            "ok": bool(value.get("ok")),
+            **({"error": value.get("error")} if value.get("error") else {}),
+        }
+        for key, value in endpoints.items()
+    }
     return JSONResponse(content={
-        "status": _health_state.get("status", "unknown"),
+        "status": status,
+        "uptime": int(uptime),
+        "checks": checks,
+        "research": {
+            "version": len(_research_state.get("push_data", [])),
+            "lastUpdate": (
+                time.strftime(
+                    "%Y-%m-%dT%H:%M:%S",
+                    time.localtime(_research_state.get("last_analysis", 0)),
+                )
+                if _research_state.get("last_analysis")
+                else ""
+            ),
+        },
         "uptimeSeconds": int(uptime),
         "uptimeHuman": f"{int(uptime // 3600)}h {int((uptime % 3600) // 60)}m",
         "lastCheck": _health_state.get("last_check", 0),
         "checksOk": _health_state.get("checks_ok", 0),
         "checksFail": _health_state.get("checks_fail", 0),
-        "endpoints": _health_state.get("endpoints", {}),
+        "endpoints": endpoints,
         "researchDataPoints": len(_research_state.get("push_data", [])),
         "researchLastAnalysis": _research_state.get("last_analysis", 0),
     })
 
 
-@router.get("/api/memory-stats")
+@router.get("/api/memory-stats", dependencies=[Depends(require_admin_key)])
 def get_memory_stats() -> JSONResponse:
     """Zeigt aktuellen RAM-Verbrauch und Puffer-Größen des Prozesses.
 

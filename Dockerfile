@@ -5,11 +5,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY dist-frontend/ ./dist-frontend/
-COPY push-balancer.html .
 COPY push_title_agent.py .
-COPY push-balancer-server.py .
-COPY push_balancer_server_compat.py .
-COPY push-snapshot.json .
 # Non-root user — /data (Render persistent disk) wird via Entrypoint chowned
 RUN adduser --disabled-password --gecos '' appuser && chown -R appuser /app
 EXPOSE 8050

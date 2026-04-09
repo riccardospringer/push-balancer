@@ -27,7 +27,10 @@ class LogSuggestionsRequest(BaseModel):
 
 
 @router.get("/api/tagesplan")
-def get_tagesplan(mode: str = Query(default="redaktion")) -> JSONResponse:
+def get_tagesplan(
+    date: str | None = Query(default=None),
+    mode: str = Query(default="redaktion"),
+) -> JSONResponse:
     """Liefert den ML-gestützten Tagesplan.
 
     Der Tagesplan wird vom Research-Worker alle 5 Min im Hintergrund
@@ -46,6 +49,8 @@ def get_tagesplan(mode: str = Query(default="redaktion")) -> JSONResponse:
             plan = {"slots": [], "loading": True, "mode": mode,
                     "date": datetime.datetime.now().strftime("%d.%m.%Y"),
                     "mlTrained": False, "totalPushesDb": 0}
+        if date:
+            plan["requestedDate"] = date
         return JSONResponse(content=plan)
     except Exception:
         log.exception("[tagesplan] Fehler in get_tagesplan")
@@ -53,7 +58,7 @@ def get_tagesplan(mode: str = Query(default="redaktion")) -> JSONResponse:
 
 
 @router.get("/api/tagesplan/retro")
-def get_tagesplan_retro() -> JSONResponse:
+def get_tagesplan_retro(mode: str = Query(default="redaktion")) -> JSONResponse:
     """Liefert die Retro-Analyse vergangener Slots des heutigen Tages.
 
     Gespeicherte OR-Snapshots werden NIEMALS live überschrieben.
@@ -66,7 +71,8 @@ def get_tagesplan_retro() -> JSONResponse:
     try:
         retro = build_tagesplan_retro()
         if retro is None:
-            return JSONResponse(content={"slots": [], "loading": True})
+            return JSONResponse(content={"slots": [], "loading": True, "mode": mode})
+        retro["mode"] = mode
         return JSONResponse(content=retro)
     except Exception:
         log.exception("[tagesplan] Fehler in get_tagesplan_retro")
@@ -139,6 +145,7 @@ def get_tagesplan_history(
 @router.get("/api/tagesplan/suggestions")
 def get_tagesplan_suggestions(
     date: str | None = Query(default=None),
+    mode: str = Query(default="redaktion"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=200),
 ) -> JSONResponse:
@@ -162,6 +169,7 @@ def get_tagesplan_suggestions(
         "total": total,
         "offset": offset,
         "limit": limit,
+        "mode": mode,
         "grouped": grouped,
     })
 

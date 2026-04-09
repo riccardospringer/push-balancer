@@ -187,6 +187,11 @@ def post_push_sync(body: PushSyncRequest) -> JSONResponse:
 
     Authentifizierung via PUSH_SYNC_SECRET.
     """
+    if not SYNC_SECRET:
+        raise HTTPException(
+            status_code=503,
+            detail="Push sync is disabled because PUSH_SYNC_SECRET is not configured.",
+        )
     if body.secret != SYNC_SECRET:
         raise HTTPException(status_code=403, detail="Invalid sync secret")
 

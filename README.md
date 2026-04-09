@@ -61,7 +61,7 @@ export NPM_TOKEN=ghp_your_token_here
 pnpm --dir frontend info @spring-media/editorial-one-ui
 ```
 
-If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`.
+If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`. This is a temporary fallback and not a full replacement for validating against the real private package.
 
 When `openapi.yaml` changes, regenerate the frontend base client with:
 
@@ -77,7 +77,7 @@ The supported application path for handover and production work is:
 - React frontend in [frontend/](/Users/riccardo.longo/push-balancer/frontend)
 - production assets in [dist-frontend/](/Users/riccardo.longo/push-balancer/dist-frontend)
 
-Legacy files such as `push-balancer.html`, `push-balancer-server.py`, and the compatibility shim remain in the repository for migration and operational fallback only. They are not the target architecture for new work.
+Legacy files may still exist in the repository for migration reference, but the supported runtime path is the FastAPI app plus the React frontend build. The production image no longer bundles the old HTML/monolith artifacts.
 
 ### macOS: libomp for LightGBM
 
@@ -107,7 +107,7 @@ docker run -p 8050:8050 \
   push-balancer
 ```
 
-The Dockerfile is based on `python:3.13-slim` and exposes port `8050`. It bundles the pre-computed `push-snapshot.json` as a startup seed so Render instances have data before the first API poll completes.
+The Dockerfile is based on `python:3.13-slim` and exposes port `8050`. If you need a startup seed, provide a sanitized file via `PUSH_SNAPSHOT_PATH` at runtime instead of committing production data into the repository or image.
 
 ---
 
@@ -263,7 +263,7 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 1. **Direct fetch** (`_push_auto_fetch_worker`): The Render instance tries to fetch `PUSH_API_BASE` directly every 120 seconds.
 2. **Relay sync** (`POST /api/pushes/sync`): The local Mac server posts fresh push data to the Render instance every cycle, authenticated via `PUSH_SYNC_SECRET`. Set `RENDER_SYNC_URL` on the local server to enable this.
-3. **Startup seed**: `push-snapshot.json` is bundled into the Docker image and seeded into SQLite at startup so the instance has baseline data before any live fetch succeeds.
+3. **Optional startup seed**: if you mount a sanitized snapshot file and point `PUSH_SNAPSHOT_PATH` at it, the service seeds SQLite at startup before any live fetch succeeds.
 
 ### CORS
 
@@ -283,14 +283,14 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `ADOBE_CLIENT_SECRET` | No | — | Adobe Analytics OAuth2 client secret |
 | `ADOBE_GLOBAL_COMPANY_ID` | No | `axelsp2` | Adobe Analytics company ID |
 | `BILD_SITEMAP_URL` | No | `https://www.bild.de/sitemap-news.xml` | BILD news sitemap URL |
-| `PUSH_SYNC_SECRET` | No | `bild-push-sync-2026` | Shared secret for the push data relay between local server and Render |
+| `PUSH_SYNC_SECRET` | No | — | Strong random shared secret for the push data relay between local server and Render |
 | `RENDER_SYNC_URL` | No | — | Render deployment URL; if set, the local server relays push data to it (e.g. `https://push-balancer.onrender.com`) |
 | `PORT` | No | `8050` | Server listen port |
 | `BIND_HOST` | No | `0.0.0.0` | Server bind host |
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
-| `ADMIN_API_KEY` | No | — | Admin key for protected retraining and promotion endpoints |
+| `ADMIN_API_KEY` | No | — | Strong random admin key for protected retraining and promotion endpoints; required to enable admin mutations |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
-| `DISABLE_LEGACY_WORKER` | No | `0` | Disables the remaining compatibility worker path in constrained environments |
+| `PUSH_SNAPSHOT_PATH` | No | `push-snapshot.json` | Optional path to a sanitized startup seed file mounted outside the repository |
 | `NPM_TOKEN` | No | — | GitHub Packages token for installing `@spring-media/editorial-one-ui` locally |
 
 Variables are loaded from a `.env` file in the project directory at startup (via a lightweight built-in parser — no `python-dotenv` required).
@@ -306,8 +306,7 @@ push-balancer/
 ├── app/                      # FastAPI application, routers, ML and research modules
 ├── frontend/                 # React/Vite client
 ├── tests/                    # Pytest suite
-├── push-balancer-server.py   # Legacy monolith kept for compatibility/migration
-├── push-snapshot.json        # Startup data seed for Render
+├── push-balancer-server.py   # Legacy monolith kept as migration reference only
 ├── requirements.txt
 ├── pyproject.toml            # Python test/lint configuration
 ├── Dockerfile

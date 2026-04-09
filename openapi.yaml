@@ -16,9 +16,6 @@ servers:
   - url: http://localhost:8050
     description: Local development
 
-security:
-  - bearerAuth: []
-
 tags:
   - name: System
     description: Health and runtime diagnostics
@@ -57,6 +54,26 @@ paths:
                 $ref: "#/components/schemas/HealthResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  /api/memory-stats:
+    get:
+      tags: [System]
+      operationId: getMemoryStats
+      summary: Get internal memory diagnostics
+      description: Returns internal memory and buffer diagnostics for administrative troubleshooting.
+      security:
+        - adminApiKey: []
+      responses:
+        "200":
+          description: Memory diagnostics
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/articles:
     get:
@@ -118,6 +135,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SyncResponse"
+
+  /api/pushes/sync:
+    post:
+      tags: [Pushes]
+      operationId: syncPushRelay
+      summary: Sync push relay payload
+      description: Accepts push relay payloads from a trusted upstream worker using a shared secret.
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/push-refresh-jobs:
     post:
@@ -430,11 +465,6 @@ paths:
 
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: Authentication is handled at the infrastructure layer. Clients should send a valid Bearer token when required by the deployed environment.
     adminApiKey:
       type: apiKey
       in: header
@@ -474,6 +504,18 @@ components:
   responses:
     BadRequest:
       description: The request payload or parameters are invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: The caller is not allowed to perform this action.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Authentication failed or was missing.
       content:
         application/problem+json:
           schema:

@@ -15,6 +15,10 @@ services:
         value: /data/.push_history.db
       - key: OPENAI_API_KEY
         sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: PUSH_SYNC_SECRET
+        sync: false
       - key: FOOTBALL_DATA_KEY
         sync: false
       - key: ODDS_API_KEY
@@ -25,5 +29,3 @@ services:
         sync: false
       - key: ADOBE_GLOBAL_COMPANY_ID
         value: axelsp2
-      - key: DISABLE_LEGACY_WORKER
-        value: "true"

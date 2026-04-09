@@ -7,6 +7,26 @@ const BASE = import.meta.env.VITE_API_BASE ?? ''
 
 type QueryParams = Record<string, string | number | undefined>
 
+export interface ProblemDetails {
+  type?: string
+  title?: string
+  status?: number
+  detail?: string
+  instance?: string
+}
+
+export class ApiError extends Error {
+  status: number
+  problem?: ProblemDetails
+
+  constructor(status: number, message: string, problem?: ProblemDetails) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.problem = problem
+  }
+}
+
 function withQuery(path: string, params: QueryParams = {}) {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
@@ -38,7 +58,17 @@ async function request<T>(
   })
 
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} - ${path}`)
+    let problem: ProblemDetails | undefined
+    try {
+      problem = (await res.json()) as ProblemDetails
+    } catch {
+      problem = undefined
+    }
+    const message =
+      problem?.detail ??
+      problem?.title ??
+      `${res.status} ${res.statusText} - ${path}`
+    throw new ApiError(res.status, message, problem)
   }
 
   return res.json() as Promise<T>
@@ -48,6 +78,9 @@ export const rawClient = {
   getHealth: (signal?: AbortSignal) =>
     request<unknown>('/api/health', 'GET', { signal }),
 
+  getMemoryStats: (signal?: AbortSignal) =>
+    request<unknown>('/api/memory-stats', 'GET', { signal }),
+
   listArticles: (params: ListArticlesParams = {}, signal?: AbortSignal) =>
     request<unknown>(withQuery('/api/articles', params), 'GET', { signal }),
 
@@ -56,6 +89,9 @@ export const rawClient = {
 
   refreshPushes: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/pushes/refresh', 'POST', { body, signal }),
+
+  syncPushRelay: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/pushes/sync', 'POST', { body, signal }),
 
   createPushRefreshJob: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-refresh-jobs', 'POST', { body, signal }),

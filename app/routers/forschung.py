@@ -400,6 +400,7 @@ def get_research_rules(
     total = len(active)
     items = active[offset: offset + limit]
     accuracy = _research_state.get("rolling_accuracy", 0.0)
+    generated_at = _research_state.get("last_analysis", 0)
     return JSONResponse(content={
         "items": items,
         "total": total,
@@ -408,5 +409,31 @@ def get_research_rules(
         "version": _research_state.get("live_rules_version", 0),
         "accuracy": round(accuracy, 1),
         "nPushesAnalyzed": len(_research_state.get("push_data", [])),
-        "lastUpdate": _research_state.get("last_analysis", 0),
+        "lastUpdate": generated_at,
+        "rules": [
+            {
+                "id": str(rule.get("id", index)),
+                "category": str(rule.get("category") or rule.get("cat") or "news"),
+                "rule": str(
+                    rule.get("title")
+                    or rule.get("rule")
+                    or rule.get("message")
+                    or "Research rule"
+                ),
+                "confidence": float(rule.get("confidence") or 0),
+                "supportCount": int(rule.get("supportCount") or rule.get("n") or 0),
+                "createdAt": (
+                    time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(generated_at))
+                    if generated_at
+                    else ""
+                ),
+            }
+            for index, rule in enumerate(items, start=offset + 1)
+        ],
+        "rollingAccuracy": round(float(accuracy), 1),
+        "generatedAt": (
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(generated_at))
+            if generated_at
+            else ""
+        ),
     })

@@ -232,16 +232,29 @@ class TestMlStatusEndpoint:
 # ── POST /api/pushes/sync ───────────────────────────────────────────────────────
 
 class TestPushSyncEndpoint:
-    def test_push_sync_wrong_secret_returns_403(self):
+    @pytest.mark.skipif(_using_mock, reason="Nur mit echter App — Mock nutzt eingebauten Secret")
+    def test_push_sync_without_config_returns_503(self, monkeypatch):
+        monkeypatch.setattr("app.routers.push.SYNC_SECRET", "")
+        resp = client.post(
+            "/api/pushes/sync",
+            json={"secret": "anything", "messages": [], "channels": []},
+        )
+        assert resp.status_code == 503
+
+    def test_push_sync_wrong_secret_returns_403(self, monkeypatch):
         """POST /api/pushes/sync mit falschem secret → 403."""
+        if not _using_mock:
+            monkeypatch.setattr("app.routers.push.SYNC_SECRET", "test-sync-secret")
         resp = client.post(
             "/api/pushes/sync",
             json={"secret": "WRONG_SECRET", "messages": [], "channels": []},
         )
         assert resp.status_code == 403
 
-    def test_push_sync_empty_secret_returns_403(self):
+    def test_push_sync_empty_secret_returns_403(self, monkeypatch):
         """POST /api/pushes/sync ohne secret → 403."""
+        if not _using_mock:
+            monkeypatch.setattr("app.routers.push.SYNC_SECRET", "test-sync-secret")
         resp = client.post(
             "/api/pushes/sync",
             json={"messages": [], "channels": []},
@@ -252,12 +265,14 @@ class TestPushSyncEndpoint:
         assert data["status"] == 403
         assert "detail" in data
 
-    def test_push_sync_correct_secret_returns_200(self):
+    def test_push_sync_correct_secret_returns_200(self, monkeypatch):
         """POST /api/pushes/sync mit korrektem secret → 200."""
+        if not _using_mock:
+            monkeypatch.setattr("app.routers.push.SYNC_SECRET", "test-sync-secret")
         resp = client.post(
             "/api/pushes/sync",
             json={
-                "secret": "bild-push-sync-2026",
+                "secret": "test-sync-secret" if not _using_mock else "bild-push-sync-2026",
                 "messages": [],
                 "channels": [],
             },
@@ -265,12 +280,14 @@ class TestPushSyncEndpoint:
         # 200 oder 201 sind beide akzeptabel
         assert resp.status_code in (200, 201)
 
-    def test_push_sync_correct_secret_response_ok(self):
+    def test_push_sync_correct_secret_response_ok(self, monkeypatch):
         """Korrekter Secret → Response mit 'ok: true'."""
+        if not _using_mock:
+            monkeypatch.setattr("app.routers.push.SYNC_SECRET", "test-sync-secret")
         resp = client.post(
             "/api/pushes/sync",
             json={
-                "secret": "bild-push-sync-2026",
+                "secret": "test-sync-secret" if not _using_mock else "bild-push-sync-2026",
                 "messages": [{"id": "1", "title": "Test"}],
                 "channels": [],
             },
@@ -283,12 +300,12 @@ class TestPushSyncEndpoint:
     def test_push_sync_with_env_secret(self, monkeypatch):
         """Wenn PUSH_SYNC_SECRET per Env gesetzt, wird dieser verwendet."""
         # Nur für echte App relevant
-        monkeypatch.setenv("PUSH_SYNC_SECRET", "custom-secret-test")
+        monkeypatch.setattr("app.routers.push.SYNC_SECRET", "custom-secret-test")
         resp = client.post(
             "/api/pushes/sync",
             json={"secret": "custom-secret-test", "messages": [], "channels": []},
         )
-        assert resp.status_code in (200, 201, 403)  # Akzeptiert je nach Implementierung
+        assert resp.status_code in (200, 201)
 
 
 class TestPushTitleGenerateEndpoint:
