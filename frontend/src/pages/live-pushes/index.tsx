@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { usePushStats, useSyncPush } from '@/hooks/useApi'
+import { usePushStats, useSyncPush } from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -15,8 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
-import { useAppStore } from '@/stores/app-store'
-import { fmtOR, fmtNum, fmtDateTime } from '@/lib/format'
+import { useLivePushFilterStore } from '@/stores/live-push-filter-store'
+import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
 import type { Push } from '@/types/api'
 
 function orVariant(or: number): 'green' | 'amber' | 'red' {
@@ -82,7 +82,7 @@ function PushRow({ push }: { push: Push }) {
 
 export function LivePushesPage() {
   const { data, isLoading, error } = usePushStats()
-  const { liveChannel, setLiveChannel } = useAppStore()
+  const { liveChannel, setLiveChannel } = useLivePushFilterStore()
   const syncMutation = useSyncPush()
 
   const channels = useMemo(() => {

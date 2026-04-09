@@ -16,7 +16,7 @@ import type {
   TagesplanRetroResponse,
   TagesplanSuggestion,
 } from '@/types/api'
-import { rawClient } from './client-base'
+import { rawClient } from './api-client-base'
 
 export const api = {
   health: async (signal?: AbortSignal): Promise<HealthResponse> => {

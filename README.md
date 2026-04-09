@@ -288,6 +288,10 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `PORT` | No | `8050` | Server listen port |
 | `BIND_HOST` | No | `0.0.0.0` | Server bind host |
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
+| `ADMIN_API_KEY` | No | — | Admin key for protected retraining and promotion endpoints |
+| `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
+| `DISABLE_LEGACY_WORKER` | No | `0` | Disables the remaining compatibility worker path in constrained environments |
+| `NPM_TOKEN` | No | — | GitHub Packages token for installing `@spring-media/editorial-one-ui` locally |
 
 Variables are loaded from a `.env` file in the project directory at startup (via a lightweight built-in parser — no `python-dotenv` required).
 
@@ -309,6 +313,32 @@ push-balancer/
 ├── Dockerfile
 ├── .editorconfig
 └── .push_history.db          # SQLite database (created at runtime, git-ignored)
+```
+
+Frontend source layout:
+
+```
+frontend/src/
+├── app.tsx
+├── main.tsx
+├── api/
+├── components/
+│   ├── main-layout/
+│   ├── top-nav/
+│   └── ui/
+├── editorial-one-ui-shim/
+├── hooks/
+├── pages/
+│   ├── analyse/
+│   ├── forschung/
+│   ├── kandidaten/
+│   ├── konkurrenz/
+│   ├── live-pushes/
+│   └── tagesplan/
+├── router/
+├── stores/
+├── types/
+└── utils/
 ```
 
 ### Adding a Feature

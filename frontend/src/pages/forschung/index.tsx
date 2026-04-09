@@ -15,7 +15,7 @@ import {
   useMlMonitoring,
   useGbrtStatus,
   useMlRetrain,
-} from '@/hooks/useApi'
+} from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
-import { fmtOR, fmtNum, fmtDateTime } from '@/lib/format'
+import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
 
 export function ForschungPage() {
   const { data: forschung, isLoading: fLoading } = useForschung()

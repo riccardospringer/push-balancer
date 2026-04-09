@@ -10,7 +10,7 @@ const frontendRoot = path.resolve(__dirname, '..')
 const openapiPath = path.resolve(frontendRoot, '..', 'openapi.yaml')
 const outputPath = path.resolve(
   frontendRoot,
-  'src/api/generated/client-base.ts',
+  'src/api/generated/api-client-base.ts',
 )
 
 const document = YAML.parse(await fs.readFile(openapiPath, 'utf8'))

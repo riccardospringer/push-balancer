@@ -1,4 +1,4 @@
-import { useCompetitorRedaktion, useCompetitorSport } from '@/hooks/useApi'
+import { useCompetitorRedaktion, useCompetitorSport } from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -9,8 +9,8 @@ import {
   Spinner,
   StatCard,
 } from '@spring-media/editorial-one-ui'
-import { useAppStore } from '@/stores/app-store'
-import { fmtDateTime } from '@/lib/format'
+import { useKonkurrenzStore } from '@/stores/konkurrenz-store'
+import { fmtDateTime } from '@/utils/format'
 import type { CompetitorItem } from '@/types/api'
 import { useMemo, useState } from 'react'
 
@@ -74,7 +74,7 @@ function ItemCard({ item }: { item: CompetitorItem }) {
 }
 
 export function KonkurrenzPage() {
-  const { konkurrenzMode, setKonkurrenzMode } = useAppStore()
+  const { konkurrenzMode, setKonkurrenzMode } = useKonkurrenzStore()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'alle' | 'lucken' | 'exklusiv' | 'hot'>(
     'alle',

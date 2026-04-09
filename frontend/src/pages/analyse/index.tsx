@@ -7,7 +7,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { useAdobeTraffic } from '@/hooks/useApi'
+import { useAdobeTraffic } from '@/hooks/use-api'
 import {
   Alert,
   Card,
@@ -20,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
-import { fmtNum, fmtDateTime } from '@/lib/format'
+import { fmtDateTime, fmtNum } from '@/utils/format'
 
 export function AnalysePage() {
   const { data, isLoading, error } = useAdobeTraffic()

@@ -5,7 +5,7 @@ import {
   ThemeProvider,
   theme,
 } from '@spring-media/editorial-one-ui'
-import App from './App'
+import App from './app'
 import '@/editorial-one-ui-shim/fonts.css'
 import './index.css'
 

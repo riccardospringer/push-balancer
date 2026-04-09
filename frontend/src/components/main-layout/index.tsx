@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom'
-import { TopNav } from '@/components/layout/TopNav'
+import { TopNav } from '@/components/top-nav'
 
 export function MainLayout() {
   return (

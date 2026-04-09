@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Modal } from './Modal'
-import { Button } from './Button'
-import { Badge } from './Badge'
-import { Spinner } from './Spinner'
-import { useGenerateTitle } from '@/hooks/useApi'
-import { fmtOR, fmtScore, scoreVariant } from '@/lib/format'
+import { Modal } from './modal'
+import { Button } from './button'
+import { Badge } from './badge'
+import { Spinner } from './spinner'
+import { useGenerateTitle } from '@/hooks/use-api'
+import { fmtOR, fmtScore, scoreVariant } from '@/utils/format'
 import type { Article, GenerateTitleResponse } from '@/types/api'
 
 // ── Helpers ────────────────────────────────────────────────────────────────

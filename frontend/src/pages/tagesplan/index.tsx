@@ -3,7 +3,7 @@ import {
   useTagesplan,
   useTagesplanSuggestions,
   useTagesplanRetro,
-} from '@/hooks/useApi'
+} from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -15,8 +15,8 @@ import {
   Spinner,
   StatCard,
 } from '@spring-media/editorial-one-ui'
-import { useAppStore } from '@/stores/app-store'
-import { fmtOR, fmtNum, fmtDate, orColor } from '@/lib/format'
+import { useTagesplanStore } from '@/stores/tagesplan-store'
+import { fmtDate, fmtNum, fmtOR, orColor } from '@/utils/format'
 import type { TagesplanSlot } from '@/types/api'
 
 function SlotCard({ slot }: { slot: TagesplanSlot }) {
@@ -285,7 +285,7 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
 
 export function TagesplanPage() {
   const { tagesplanMode, tagesplanDate, setTagesplanMode, setTagesplanDate } =
-    useAppStore()
+    useTagesplanStore()
 
   const { data, isLoading, error } = useTagesplan(tagesplanDate, tagesplanMode)
   const { data: suggestions } = useTagesplanSuggestions(

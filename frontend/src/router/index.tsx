@@ -1,11 +1,11 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { MainLayout } from '@/components/main-layout'
-import { AnalysePage } from '@/pages/AnalysePage'
-import { ForschungPage } from '@/pages/ForschungPage'
-import { KandidatenPage } from '@/pages/KandidatenPage'
-import { KonkurrenzPage } from '@/pages/KonkurrenzPage'
-import { LivePushesPage } from '@/pages/LivePushesPage'
-import { TagesplanPage } from '@/pages/TagesplanPage'
+import { AnalysePage } from '@/pages/analyse'
+import { ForschungPage } from '@/pages/forschung'
+import { KandidatenPage } from '@/pages/kandidaten'
+import { KonkurrenzPage } from '@/pages/konkurrenz'
+import { LivePushesPage } from '@/pages/live-pushes'
+import { TagesplanPage } from '@/pages/tagesplan'
 import { NotFoundPage } from './not-found'
 
 export const appRouter = createBrowserRouter(

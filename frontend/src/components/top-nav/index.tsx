@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AppBar, StatusDot, Toolbar } from '@spring-media/editorial-one-ui'
-import { useHealth } from '@/hooks/useApi'
+import { useHealth } from '@/hooks/use-api'
 
 const TABS = [
   { path: '/kandidaten', label: 'Kandidaten' },

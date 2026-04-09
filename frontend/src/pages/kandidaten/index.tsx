@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useFeed } from '@/hooks/useApi'
+import { useFeed } from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -13,9 +13,9 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
-import { useAppStore } from '@/stores/app-store'
-import { PushPreviewModal } from '@/components/ui/PushPreviewModal'
-import { fmtOR, fmtScore, scoreVariant, fmtDateTime } from '@/lib/format'
+import { useKandidatenFilterStore } from '@/stores/kandidaten-filter-store'
+import { PushPreviewModal } from '@/components/ui/push-preview-modal'
+import { fmtDateTime, fmtOR, fmtScore, scoreVariant } from '@/utils/format'
 import type { Article } from '@/types/api'
 
 const CATEGORIES = [
@@ -154,7 +154,7 @@ export function KandidatenPage() {
     kandidatenCategory,
     setKandidatenSearch,
     setKandidatenCategory,
-  } = useAppStore()
+  } = useKandidatenFilterStore()
 
   const [previewArticle, setPreviewArticle] = useState<Article | null>(null)
 
