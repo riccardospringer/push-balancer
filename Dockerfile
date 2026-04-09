@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
+COPY dist-frontend/ ./dist-frontend/
 COPY push-balancer.html .
 COPY push_title_agent.py .
 COPY push-balancer-server.py .

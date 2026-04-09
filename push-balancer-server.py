@@ -12163,6 +12163,19 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._serve_gbrt_model_json()
         elif self.path.startswith("/api/gbrt/predict"):
             self._serve_gbrt_predict()
+        elif self.path == "/dist-frontend" or (self.path.startswith("/dist-frontend/") and not self.path.startswith("/dist-frontend/assets/")):
+            # React SPA — alle Subrouten auf dist-frontend/index.html umleiten
+            fpath = os.path.join(SERVE_DIR, "dist-frontend", "index.html")
+            if os.path.isfile(fpath):
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_error(404)
         else:
             super().do_GET()
 

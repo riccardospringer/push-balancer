@@ -41,8 +41,13 @@ catboost_info/
 
 # Trainierte ML-Modelle (lokal generiert)
 *.joblib
+*.pkl
 *.gbrt_model.json
 .tuning_state.json
+
+# Frontend Build-Abhängigkeiten (lokal, nicht ins Repo)
+frontend/node_modules/
+frontend/.pnpm-store/
 
 # Render/Railway Config (ggf. anpassen wenn gewuenscht)
 render.yaml

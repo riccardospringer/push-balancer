@@ -17,10 +17,11 @@ import hashlib
 import math
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.auth import require_admin_key
 from app.config import SAFETY_MODE
 from app.database import (
     count_experiments,
@@ -153,9 +154,9 @@ def get_ml_predict(
             "safetyMode": result.get("safety_mode") if result else SAFETY_MODE,
         } if result else {}
         return JSONResponse(content=camel_result)
-    except Exception as e:
+    except Exception:
         log.exception("[ml] Fehler in get_ml_predict")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Prediction fehlgeschlagen"})
 
 
 @router.get("/api/ml/experiments")
@@ -179,20 +180,28 @@ def get_ml_experiments_compare(
     a: str = Query(default=""),
     b: str = Query(default=""),
 ) -> JSONResponse:
-    """Vergleicht zwei ML-Experimente.
-
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
-        _serve_ml_experiments_compare() (Zeile 14912) hierher migrieren.
-    """
+    """Vergleicht zwei ML-Experimente anhand ihrer IDs."""
     experiments = load_experiments(limit=100)
     exp_by_id = {e["experiment_id"]: e for e in experiments}
     exp_a = exp_by_id.get(a)
     exp_b = exp_by_id.get(b)
+
+    delta = {}
+    if exp_a and exp_b:
+        for key in ("mae", "r2", "n_train"):
+            va = (exp_a.get("metrics") or {}).get(key)
+            vb = (exp_b.get("metrics") or {}).get(key)
+            if va is not None and vb is not None:
+                try:
+                    delta[key] = round(float(vb) - float(va), 4)
+                except Exception:
+                    pass
+
     return JSONResponse(content={
         "experimentA": exp_a,
         "experimentB": exp_b,
         "comparable": exp_a is not None and exp_b is not None,
+        "delta": delta,
     })
 
 
@@ -235,7 +244,7 @@ def get_ml_monitoring(
     })
 
 
-@router.post("/api/ml/retrain")
+@router.post("/api/ml/retrain", dependencies=[Depends(require_admin_key)])
 def post_ml_retrain() -> JSONResponse:
     """Löst manuelles LightGBM-Retraining aus (asynchron via Thread)."""
     import threading
@@ -254,16 +263,16 @@ def post_ml_retrain() -> JSONResponse:
     return JSONResponse(content={"ok": True, "message": "LightGBM-Retraining gestartet"})
 
 
-@router.post("/api/ml/monitoring/tick")
+@router.post("/api/ml/monitoring/tick", dependencies=[Depends(require_admin_key)])
 def post_monitoring_tick() -> JSONResponse:
     """Manueller Monitoring-Tick (Drift-Check, MAE-Check etc.)."""
     try:
         from app.research.worker import monitoring_tick
         monitoring_tick()
         return JSONResponse(content={"ok": True})
-    except Exception as e:
+    except Exception:
         log.exception("[ml] monitoring_tick Fehler")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Monitoring-Tick fehlgeschlagen"})
 
 
 @router.post("/api/ml/predict-batch")

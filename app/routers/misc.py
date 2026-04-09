@@ -57,10 +57,9 @@ class SchwabApprovalRequest(BaseModel):
 
 
 class PushTitleGenerateRequest(BaseModel):
-    headline: str
-    kicker: str | None = None
-    category: str = "News"
-    target_length: int = 80
+    url: str = ""
+    title: str = ""
+    category: str = "news"
 
 
 def _check_bild_plus(url: str) -> bool:
@@ -178,12 +177,66 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
 
 @router.post("/api/push-title/generate")
 def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
-    """Generiert Push-Titel-Varianten via LLM (GPT-4o).
+    """Generiert Push-Titel-Varianten via GPT-4o (Kreativteam + Chefredakteur)."""
+    from app.config import OPENAI_API_KEY
 
-    LLM-Titelfunktion noch nicht migriert — gibt Stub zurück.
-    """
-    return JSONResponse(content={
-        "ok": False,
-        "message": "LLM-Titelfunktion nicht verfügbar",
-        "titles": [],
-    })
+    if not body.title:
+        return JSONResponse(status_code=400, content={"error": "title ist erforderlich"})
+
+    if not OPENAI_API_KEY:
+        log.warning("[PushTitle] OPENAI_API_KEY nicht gesetzt")
+        return JSONResponse(status_code=503, content={
+            "title": body.title,
+            "alternativeTitles": [],
+            "reasoning": "OPENAI_API_KEY nicht konfiguriert",
+            "advisoryOnly": True,
+        })
+
+    try:
+        from push_title_agent import generate_push_title
+        result = generate_push_title(
+            article_title=body.title,
+            article_text="",
+            category=body.category or "news",
+            kicker="",
+            headline="",
+        )
+
+        gewinner = result.get("gewinner", {})
+        alternative = result.get("alternative", {})
+        alle = result.get("alle_kandidaten", {})
+
+        winner_titel = gewinner.get("titel", body.title)
+
+        alt_titles: list[str] = []
+        if alternative.get("titel") and alternative["titel"] != winner_titel:
+            alt_titles.append(alternative["titel"])
+        for gruppe in alle.values():
+            for k in gruppe:
+                t = k.get("titel", "")
+                if t and t != winner_titel and t not in alt_titles:
+                    alt_titles.append(t)
+
+        reasoning = gewinner.get("warum_dieser", "")
+        if not reasoning:
+            analyse = result.get("meta", {}).get("analyse", {})
+            reasoning = analyse.get("kern", "")
+
+        return JSONResponse(content={
+            "title": winner_titel,
+            "alternativeTitles": alt_titles[:5],
+            "reasoning": reasoning,
+            "advisoryOnly": True,
+        })
+
+    except RuntimeError as e:
+        log.error("[PushTitle] %s", e)
+        return JSONResponse(status_code=503, content={
+            "title": body.title,
+            "alternativeTitles": [],
+            "reasoning": str(e),
+            "advisoryOnly": True,
+        })
+    except Exception:
+        log.exception("[PushTitle] Endpoint-Fehler")
+        return JSONResponse(status_code=500, content={"error": "Push-Title-Generierung fehlgeschlagen"})

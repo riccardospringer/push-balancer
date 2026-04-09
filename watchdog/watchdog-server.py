@@ -832,9 +832,12 @@ if __name__ == "__main__":
     import sys
     import uvicorn
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8095
+    # BIND_HOST default 127.0.0.1 — nur lokal erreichbar.
+    # Auf Render/Railway: BIND_HOST=0.0.0.0 in Umgebungsvariablen setzen.
+    bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=bind_host,
         port=port,
         log_level="info",
     )

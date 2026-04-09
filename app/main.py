@@ -25,7 +25,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -89,12 +89,10 @@ async def lifespan(app: FastAPI):
     _start_background_workers()
 
     # ── 4. ML-Modelle im Hintergrund laden (deferred — kein RAM-Spike beim Start) ──
-    _legacy_disabled = os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
+    # Hinweis: DISABLE_LEGACY_WORKER blockiert nur den Legacy-Monolith (via compat-Shim).
+    # Die neuen app/ml-Modelle (GBRT, LightGBM) sind monolith-unabhängig und laden immer.
 
     def _load_ml_models_background():
-        if _legacy_disabled:
-            log.info("[ML] Monolith deaktiviert (DISABLE_LEGACY_WORKER) — übersprungen")
-            return
         import time as _t
         _t.sleep(2)
         try:
@@ -228,21 +226,21 @@ def _start_background_workers() -> None:
     log.info("[FeedCache] Background-Worker gestartet")
 
     # 6. Research-Worker
-    # Auf Render (oder bei gesetztem DISABLE_LEGACY_WORKER) überspringen:
-    # Der Research-Worker lädt den ~700 KB Legacy-Monolithen in RAM (~150 MB).
-    # Für Memory-limitierte Umgebungen kann er deaktiviert werden.
-    _legacy_worker_disabled = os.environ.get("DISABLE_LEGACY_WORKER", "").lower() in ("1", "true", "yes")
+    # Hinweis: app/research/worker.py nutzt KEINEN Legacy-Monolith (nur stdlib + app.database).
+    # DISABLE_LEGACY_WORKER schützt nur den Compat-Shim. Der Research-Worker läuft immer.
+    # Auf Render: erstes Training bei Zyklus 15 (5 Min) statt Zyklus 1 — vermeidet RAM-Spike direkt beim Start.
+    _is_render = os.environ.get("RENDER", "").lower() == "true"
+    _first_train = 15 if _is_render else 1
 
     def _research_worker():
-        if _legacy_worker_disabled:
-            log.info("[Research] Worker deaktiviert (DISABLE_LEGACY_WORKER=true) — spart ~150 MB RAM")
-            return
-
         time.sleep(2)
         try:
+            from app.research.worker import _residual_corrector, _residual_corrector_lock
             update_residual_corrector()
-            log.info("[ResidualCorrector] Initial geladen: bias=%+.3f, n=%d",
-                     0.0, 0)
+            with _residual_corrector_lock:
+                rc_bias = _residual_corrector["global_bias"]
+                rc_n = _residual_corrector["n_samples"]
+            log.info("[ResidualCorrector] Initial geladen: bias=%+.3f, n=%d", rc_bias, rc_n)
         except Exception as e:
             log.warning("[ResidualCorrector] Initial-Load fehlgeschlagen: %s", e)
 
@@ -266,12 +264,12 @@ def _start_background_workers() -> None:
 
                 if counter % 30 == 0:
                     train_stacking_model(_research_state)
-                if counter == 1 or counter % 1080 == 0:
+                if counter == _first_train or counter % 1080 == 0:
                     try:
                         ml_train_model()
                     except Exception as e:
                         log.warning("[ML] Training-Fehler im Research-Worker: %s", e)
-                if counter == 1 or counter % 360 == 0:
+                if counter == _first_train or counter % 360 == 0:
                     try:
                         gbrt_train()
                     except Exception as e:
@@ -515,6 +513,23 @@ def _start_background_workers() -> None:
     threading.Thread(target=_auto_sug_worker, daemon=True).start()
     log.info("[AutoSug] Worker gestartet (stündlich)")
 
+    # 15. Memory-Cleanup Worker (alle 2 Minuten)
+    def _memory_cleanup_worker():
+        time.sleep(60)
+        log.info("[MemCleanup] Worker gestartet (alle 120s)")
+        while True:
+            try:
+                from app.research.worker import trim_state_buffers
+                freed = trim_state_buffers()
+                if freed > 0:
+                    log.info("[MemCleanup] %d Einträge bereinigt", freed)
+            except Exception as e:
+                log.warning("[MemCleanup] Fehler: %s", e)
+            time.sleep(120)
+
+    threading.Thread(target=_memory_cleanup_worker, daemon=True).start()
+    log.info("[MemCleanup] Worker gestartet (alle 120s)")
+
 
 # ── FastAPI App ────────────────────────────────────────────────────────────
 
@@ -527,6 +542,18 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
+
+# ── Security Headers Middleware ────────────────────────────────────────────
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next) -> Response:
+    """Fügt Standard-Security-Headers zu allen Antworten hinzu."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    return response
+
 
 # ── CORS ────────────────────────────────────────────────────────────────────
 app.add_middleware(

@@ -47,9 +47,9 @@ def get_tagesplan(mode: str = Query(default="redaktion")) -> JSONResponse:
                     "date": datetime.datetime.now().strftime("%d.%m.%Y"),
                     "mlTrained": False, "totalPushesDb": 0}
         return JSONResponse(content=plan)
-    except Exception as e:
+    except Exception:
         log.exception("[tagesplan] Fehler in get_tagesplan")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Interner Fehler"})
 
 
 @router.get("/api/tagesplan/retro")
@@ -68,9 +68,9 @@ def get_tagesplan_retro() -> JSONResponse:
         if retro is None:
             return JSONResponse(content={"slots": [], "loading": True})
         return JSONResponse(content=retro)
-    except Exception as e:
+    except Exception:
         log.exception("[tagesplan] Fehler in get_tagesplan_retro")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Interner Fehler"})
 
 
 @router.get("/api/tagesplan/history")
@@ -131,9 +131,9 @@ def get_tagesplan_history(
             "days": days,
             "loading": False,
         })
-    except Exception as e:
+    except Exception:
         log.exception("[tagesplan] Fehler in get_tagesplan_history")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Interner Fehler"})
 
 
 @router.get("/api/tagesplan/suggestions")
@@ -180,6 +180,6 @@ def log_tagesplan_suggestions(body: LogSuggestionsRequest) -> JSONResponse:
             suggestions=body.suggestions,
         )
         return JSONResponse(content={"ok": True, "saved": len(body.suggestions)})
-    except Exception as e:
+    except Exception:
         log.exception("[tagesplan] Fehler in log_tagesplan_suggestions")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "Interner Fehler"})

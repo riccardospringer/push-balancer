@@ -48,7 +48,7 @@ ADOBE_API_BASE: str = "https://analytics.adobe.io/api"
 IS_RENDER: bool = os.environ.get("RENDER", "").lower() == "true"
 
 # ── Dateipfade ─────────────────────────────────────────────────────────────
-SERVE_DIR: str = _APP_DIR  # Verzeichnis mit HTML/JS/CSS Dateien
+SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
 # DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db
 PUSH_DB_PATH: str = os.environ.get(
     "DB_PATH",
@@ -77,6 +77,16 @@ if _render_domain:
     ALLOWED_ORIGINS.append(f"https://{_render_domain}")
 else:
     ALLOWED_ORIGINS.append("https://push-balancer.onrender.com")
+
+# Tunnel-Wildcards (Cloudflare, localtunnel, ngrok) nur im DEV_MODE.
+# In Produktion sind diese deaktiviert — verhindert CORS-Missbrauch via fremder Tunnel.
+_DEV_MODE_RAW = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
+if _DEV_MODE_RAW:
+    ALLOWED_ORIGINS += [
+        "https://*.trycloudflare.com",
+        "https://*.loca.lt",
+        "https://*.ngrok-free.app",
+    ]
 
 # ── Competitor & International RSS Feeds ──────────────────────────────────
 COMPETITOR_FEEDS: dict[str, str] = {
@@ -155,3 +165,12 @@ MAX_RESPONSE_SIZE: int = 2 * 1024 * 1024  # 2 MB
 
 # ── Safety ─────────────────────────────────────────────────────────────────
 SAFETY_MODE: str = "ADVISORY_ONLY"
+
+# ── Admin API Key (schützt POST-Endpoints: retrain, force-promote etc.) ────
+# Setze ADMIN_API_KEY in .env auf einen starken Zufallswert.
+# Wenn nicht gesetzt, sind Admin-Endpoints im lokalen Betrieb offen (Legacy).
+# In Produktionsumgebungen MUSS dieser Wert gesetzt werden!
+ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
+
+# ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────
+DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")

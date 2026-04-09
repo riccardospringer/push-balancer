@@ -202,17 +202,162 @@ def get_forschung() -> JSONResponse:
 
 @router.get("/api/learnings")
 def get_learnings() -> JSONResponse:
-    """Liefert ML-Learnings aus dem Research-State.
+    """Ehrliche, datenbasierte Learnings aus den letzten Monaten.
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py: _serve_learnings()
-        hierher migrieren.
+    Berechnet Stunden-, Kategorie-, Titellängen-, Wochentag- und Vorhersage-Analysen
+    direkt aus der DB — identisch zur Legacy-Implementierung _serve_learnings().
     """
-    findings = _research_state.get("findings", {})
+    import sqlite3
+    import datetime
+    from collections import defaultdict
+    from app.database import push_db_load_all
+    from app.config import PUSH_DB_PATH
+
+    now_ts = time.time()
+    cutoff_24h = now_ts - 24 * 3600
+    cutoff_90d = now_ts - 90 * 86400
+    cutoff_180d = now_ts - 180 * 86400
+
+    try:
+        raw = push_db_load_all()
+    except Exception as exc:
+        log.warning("[learnings] push_db_load_all fehlgeschlagen: %s", exc)
+        return JSONResponse(content={"ready": False, "n": 0, "error": str(exc)})
+
+    mature = [p for p in raw if p.get("ts_num", 0) < cutoff_24h and 0 < p.get("or", 0) <= 30]
+
+    if len(mature) < 50:
+        return JSONResponse(content={"ready": False, "n": len(mature)})
+
+    # ── Datenbasis: neuere vs ältere Periode ──
+    recent = [p for p in mature if p["ts_num"] >= cutoff_90d]
+    older = [p for p in mature if cutoff_180d <= p["ts_num"] < cutoff_90d]
+
+    def _mean(lst: list) -> float:
+        return sum(lst) / len(lst) if lst else 0.0
+
+    def _median(lst: list) -> float:
+        if not lst:
+            return 0.0
+        s = sorted(lst)
+        n = len(s)
+        return (s[n // 2 - 1] + s[n // 2]) / 2 if n % 2 == 0 else s[n // 2]
+
+    mean_or_recent = _mean([p["or"] for p in recent])
+    mean_or_older = _mean([p["or"] for p in older])
+    or_trend_pp = round(mean_or_recent - mean_or_older, 2) if older else None
+
+    # ── Stunden-Analyse ──
+    by_hour: dict = defaultdict(list)
+    for p in mature:
+        h = p.get("hour", -1)
+        if 0 <= h <= 23:
+            by_hour[h].append(p["or"])
+    hour_stats = {h: {"mean": round(_mean(v), 2), "n": len(v)} for h, v in by_hour.items() if len(v) >= 5}
+    best_hour = max(hour_stats, key=lambda h: hour_stats[h]["mean"], default=None)
+    worst_hour = min(hour_stats, key=lambda h: hour_stats[h]["mean"], default=None)
+
+    # ── Kategorie-Analyse ──
+    by_cat: dict = defaultdict(list)
+    for p in mature:
+        c = p.get("cat", "Unbekannt") or "Unbekannt"
+        by_cat[c].append(p["or"])
+    cat_stats = {c: {"mean": round(_mean(v), 2), "n": len(v)} for c, v in by_cat.items() if len(v) >= 10}
+    cat_ranked = sorted(cat_stats.items(), key=lambda x: x[1]["mean"], reverse=True)
+
+    # ── Titellänge-Analyse ──
+    buckets: dict = {"kurz (1-40)": [], "mittel (41-65)": [], "lang (66+)": []}
+    for p in mature:
+        tl = p.get("title_len", 0) or 0
+        if tl <= 0:
+            continue
+        if tl <= 40:
+            buckets["kurz (1-40)"].append(p["or"])
+        elif tl <= 65:
+            buckets["mittel (41-65)"].append(p["or"])
+        else:
+            buckets["lang (66+)"].append(p["or"])
+    len_stats = {k: {"mean": round(_mean(v), 2), "n": len(v)} for k, v in buckets.items() if v}
+
+    # ── Wochentag-Analyse ──
+    by_dow: dict = defaultdict(list)
+    dow_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    for p in mature:
+        ts = p.get("ts_num", 0)
+        if ts > 0:
+            dow = datetime.datetime.fromtimestamp(ts).weekday()
+            by_dow[dow].append(p["or"])
+    dow_stats = {dow_names[d]: {"mean": round(_mean(v), 2), "n": len(v)} for d, v in by_dow.items() if len(v) >= 5}
+    best_dow = max(dow_stats, key=lambda d: dow_stats[d]["mean"], default=None)
+    worst_dow = min(dow_stats, key=lambda d: dow_stats[d]["mean"], default=None)
+
+    # ── Vorhersage-Genauigkeit aus prediction_log ──
+    pred_accuracy = None
+    pred_n = 0
+    pred_within_2pp = 0
+    pred_off_more_than_3pp = 0
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+        pred_rows = conn.execute(
+            """SELECT predicted_or, actual_or FROM prediction_log
+               WHERE actual_or > 0 AND actual_or < 30 AND predicted_or > 0
+               AND predicted_at > ?""",
+            (int(now_ts) - 90 * 86400,),
+        ).fetchall()
+        conn.close()
+        if pred_rows:
+            errors = [abs(r[0] - r[1]) for r in pred_rows]
+            pred_n = len(errors)
+            pred_accuracy = round(_mean(errors), 2)
+            pred_within_2pp = round(100 * sum(1 for e in errors if e <= 2) / pred_n, 1)
+            pred_off_more_than_3pp = round(100 * sum(1 for e in errors if e > 3) / pred_n, 1)
+    except Exception:
+        pass
+
+    # ── Eilmeldungs-Effekt ──
+    breaking_or = _mean([p["or"] for p in mature if p.get("is_eilmeldung")])
+    nonbreaking_or = _mean([p["or"] for p in mature if not p.get("is_eilmeldung")])
+    n_breaking = sum(1 for p in mature if p.get("is_eilmeldung"))
+
+    # ── Monats-Trend (letzte 6 Monate) ──
+    monthly: dict = defaultdict(list)
+    for p in mature:
+        ts = p.get("ts_num", 0)
+        if ts > cutoff_180d:
+            m = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m")
+            monthly[m].append(p["or"])
+    monthly_trend = [
+        {"month": m, "mean_or": round(_mean(v), 2), "n": len(v)}
+        for m, v in sorted(monthly.items()) if len(v) >= 5
+    ]
+
     return JSONResponse(content={
-        "findings": findings,
+        "ready": True,
+        "n_total": len(mature),
+        "n_recent_90d": len(recent),
+        "mean_or": round(_mean([p["or"] for p in mature]), 2),
+        "mean_or_recent": round(mean_or_recent, 2),
+        "mean_or_older": round(mean_or_older, 2),
+        "or_trend_pp": or_trend_pp,
+        "best_hour": best_hour,
+        "worst_hour": worst_hour,
+        "hour_stats": hour_stats,
+        "cat_ranked": [[c, s] for c, s in cat_ranked],
+        "len_stats": len_stats,
+        "dow_stats": dow_stats,
+        "best_dow": best_dow,
+        "worst_dow": worst_dow,
+        "pred_accuracy_mae": pred_accuracy,
+        "pred_n": pred_n,
+        "pred_within_2pp": pred_within_2pp,
+        "pred_off_more_than_3pp": pred_off_more_than_3pp,
+        "breaking_or": round(breaking_or, 2) if breaking_or else None,
+        "nonbreaking_or": round(nonbreaking_or, 2) if nonbreaking_or else None,
+        "n_breaking": n_breaking,
+        "monthly_trend": monthly_trend,
+        # Zusätzlich: Research-State-Daten für Kompatibilität
+        "findings": _research_state.get("findings", {}),
         "researchMemory": _research_state.get("research_memory", {}),
-        "nPushes": len(_research_state.get("push_data", [])),
         "lastAnalysis": _research_state.get("last_analysis", 0),
     })
 

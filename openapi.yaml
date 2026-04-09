@@ -560,6 +560,8 @@ paths:
       operationId: triggerMlRetrain
       tags: [ml]
       summary: ML-Modell neu trainieren (manuell)
+      security:
+        - adminApiKey: []
       description: |
         Startet asynchron ein Neu-Training des LightGBM-Modells im Hintergrund.
         Wenn bereits ein Training läuft, wird `status: "already_training"` zurückgegeben.
@@ -757,6 +759,8 @@ paths:
       operationId: triggerGbrtRetrain
       tags: [gbrt]
       summary: GBRT-Modell neu trainieren (manuell)
+      security:
+        - adminApiKey: []
       description: |
         Startet asynchron ein Neu-Training des GBRT-Modells im Hintergrund.
         Das Training läuft via Early-Stopping und Kalibrierung.
@@ -785,6 +789,8 @@ paths:
       operationId: forcePromoteGbrt
       tags: [gbrt]
       summary: Gespeichertes GBRT-Modell als Champion laden
+      security:
+        - adminApiKey: []
       description: |
         Lädt das zuletzt in `gbrt_model.json` gespeicherte Modell als aktiven Champion
         in den Speicher. Deaktiviert einen laufenden A/B-Test. Nützlich nach manuellem
@@ -1113,6 +1119,8 @@ paths:
       operationId: triggerMonitoringTick
       tags: [ml]
       summary: Monitoring-Tick manuell auslösen
+      security:
+        - adminApiKey: []
       description: |
         Löst manuell einen Monitoring-Tick aus (MAE-Berechnung, Calibration-Update,
         Drift-Detektion). Normalerweise läuft dies automatisch im Hintergrund.
@@ -2735,3 +2743,12 @@ components:
         Authentication is handled by UAA (Unified Authentication and Authorization).
         All requests from users must include a valid Bearer token issued by UAA.
         Backend-to-backend communication within the Kubernetes cluster requires no token.
+    adminApiKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: |
+        API-Key für Admin-Endpoints (Retrain, Force-Promote, Monitoring-Tick).
+        Wird via X-Admin-Key Header übermittelt.
+        Konfiguration: ADMIN_API_KEY in .env setzen.
+        Generieren: python3 -c "import secrets; print(secrets.token_hex(32))"

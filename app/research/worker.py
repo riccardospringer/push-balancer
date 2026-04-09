@@ -357,7 +357,7 @@ def _update_rolling_accuracy(push_data: list, state: dict) -> None:
 
     state["rolling_accuracy"] = round(accuracy, 1)
     state["basis_mae"] = basis_mae
-    state["accuracy_history"] = history[-200:]
+    state["accuracy_history"] = history[-100:]
     state["baseline_global_mae"] = baseline_global_mae
     state["baseline_cat_mae"] = baseline_cat_mae
     state["basis_vs_baseline"] = {
@@ -1318,10 +1318,13 @@ def _run_analysis_inner() -> None:
 
     if is_new_data:
         _update_rolling_accuracy(push_data, state)
+        _update_rolling_accuracy_subset(sport_data, state, "_sport_accuracy")
+        _update_rolling_accuracy_subset(nonsport_data, state, "_nonsport_accuracy")
         state["live_rules"] = []  # Force regeneration
 
     # Volle Re-Analyse: bei neuen Daten oder alle 60s
     if not is_new_data and state.get("findings") and now - state.get("last_analysis", 0) < 60:
+        _fetch_external_context(state)
         return
 
     state["last_analysis"] = now
@@ -1334,6 +1337,8 @@ def _run_analysis_inner() -> None:
 
     # Rolling Accuracy
     _update_rolling_accuracy(push_data, state)
+    _update_rolling_accuracy_subset(sport_data, state, "_sport_accuracy")
+    _update_rolling_accuracy_subset(nonsport_data, state, "_nonsport_accuracy")
 
     # ── Basis-Analysen ────────────────────────────────────────────────
     _or_max_sane = 30.0
@@ -1592,7 +1597,7 @@ def update_residual_corrector() -> None:
                 hourgroup_bias[g] = max(-MAX_CORRECTION, min(MAX_CORRECTION, bias))
 
         recent_debug: list = []
-        for r in sorted_rows[-50:]:
+        for r in sorted_rows[-25:]:
             cat = r["cat"] or ""
             h = int(r["hour"]) if r["hour"] is not None else -1
             recent_debug.append({
@@ -1619,10 +1624,190 @@ def update_residual_corrector() -> None:
         log.warning("[ResidualCorrector] Berechnungsfehler: %s", exc)
 
 
+# ── RAM-Cleanup ────────────────────────────────────────────────────────────
+
+# Maximale Pufferlängen (halbiert gegenüber ursprünglichen Werten)
+_BUFFER_LIMITS: dict = {
+    "ticker_entries":     100,
+    "research_log":        50,
+    "schwab_decisions":    50,
+    "prediction_feedback": 50,
+    "tuning_history":      50,
+    "live_pulse":          50,
+    "bild_adaptations":    50,
+    "accuracy_history":   100,
+}
+
+# Cleanup-Tracking (wird von /api/memory-stats ausgelesen)
+_cleanup_stats: dict = {
+    "last_cleanup_ts": 0,
+    "items_freed_total": 0,
+    "items_freed_last": 0,
+    "cleanup_runs": 0,
+    "done_runs_pending_cleanup": 0,
+}
+_cleanup_stats_lock = threading.Lock()
+
+
+def trim_state_buffers() -> int:
+    """Kürzt alle unbegrenzt wachsenden Listen in _research_state auf ihre Maximalwerte.
+
+    Gibt die Anzahl der entfernten Einträge zurück.
+    Wird alle 2 Minuten vom Memory-Cleanup-Worker aufgerufen.
+    """
+    freed = 0
+    lock = _research_state.get("analysis_lock")
+    acquire = lock and lock.acquire(blocking=False)
+    try:
+        for key, limit in _BUFFER_LIMITS.items():
+            lst = _research_state.get(key)
+            if isinstance(lst, list) and len(lst) > limit:
+                excess = len(lst) - limit
+                _research_state[key] = lst[-limit:]
+                freed += excess
+    finally:
+        if acquire:
+            try:
+                lock.release()
+            except RuntimeError:
+                pass
+
+    now = time.time()
+    with _cleanup_stats_lock:
+        _cleanup_stats["items_freed_total"] += freed
+        _cleanup_stats["items_freed_last"] = freed
+        _cleanup_stats["last_cleanup_ts"] = now
+        _cleanup_stats["cleanup_runs"] += 1
+        # "done_runs_pending_cleanup" = Einträge in accuracy_history, die durch
+        # den nächsten Cleanup-Lauf noch entfernt werden könnten
+        ah = _research_state.get("accuracy_history", [])
+        limit_ah = _BUFFER_LIMITS["accuracy_history"]
+        _cleanup_stats["done_runs_pending_cleanup"] = max(0, len(ah) - limit_ah)
+
+    if freed > 0:
+        log.debug("[MemCleanup] %d Einträge aus State-Puffern entfernt", freed)
+    return freed
+
+
 _XOR_STOP_WORDS = {
     "der", "die", "das", "und", "oder", "ist", "war", "hat", "ein", "eine",
     "von", "für", "mit", "auf", "an", "im", "zu", "am",
 }
+
+
+# ── Model-Selector ─────────────────────────────────────────────────────────
+
+def _model_selector_update(rows_24h: list | None = None) -> None:
+    """Aktualisiert den Model-Selector basierend auf letzten 100 Predictions.
+
+    Entscheidet ob Unified oder ML-Ensemble als primärer Predictor genutzt wird.
+    Aufgerufen von monitoring_tick().
+    """
+    from app.state import _model_selector_state
+
+    now = time.time()
+    if now - _model_selector_state.get("last_check_ts", 0) < 600:
+        return
+    _model_selector_state["last_check_ts"] = now
+
+    try:
+        from app.ml.lightgbm_model import _unified_state, _unified_lock
+        with _unified_lock:
+            unified_available = _unified_state.get("model") is not None
+    except Exception:
+        unified_available = False
+
+    if not unified_available:
+        _model_selector_state["active_model"] = "ml_ensemble"
+        return
+
+    try:
+        from app.config import PUSH_DB_PATH
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        cutoff = int(now - 86400)
+        rows = conn.execute(
+            "SELECT predicted_or, actual_or, methods_detail "
+            "FROM prediction_log "
+            "WHERE actual_or > 0 AND predicted_or > 0 AND predicted_at > ? "
+            "ORDER BY predicted_at DESC LIMIT 100",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        log.debug("[ModelSelector] DB-Fehler: %s", exc)
+        return
+
+    if len(rows) < 10:
+        return
+
+    import json as _json
+    unified_errors: list = []
+    ensemble_errors: list = []
+    for r in rows:
+        try:
+            detail = _json.loads(r["methods_detail"] or "{}")
+            actual = float(r["actual_or"])
+            u_pred = float(detail.get("unified_predicted", 0) or 0)
+            if u_pred > 0:
+                unified_errors.append(abs(u_pred - actual))
+            e_pred = float(
+                detail.get("ml_ensemble", 0) or
+                detail.get("shadow_gbrt", 0) or
+                detail.get("gbrt_predicted", 0) or 0
+            )
+            if e_pred > 0:
+                ensemble_errors.append(abs(e_pred - actual))
+        except (ValueError, TypeError):
+            continue
+
+    _model_selector_state["evaluated_count"] = len(unified_errors)
+
+    if len(unified_errors) < 30:
+        _model_selector_state["active_model"] = "ml_ensemble"
+        log.info("[ModelSelector] Cold-Start: ml_ensemble (nur %d Unified-Predictions)", len(unified_errors))
+        return
+
+    unified_mae = sum(unified_errors) / len(unified_errors)
+    _model_selector_state["unified_mae_24h"] = round(unified_mae, 4)
+
+    if ensemble_errors:
+        ensemble_mae = sum(ensemble_errors) / len(ensemble_errors)
+        _model_selector_state["ensemble_mae_24h"] = round(ensemble_mae, 4)
+    else:
+        ensemble_mae = float("inf")
+
+    if unified_mae < ensemble_mae * 1.05:
+        if _model_selector_state.get("active_model") != "unified":
+            log.info(
+                "[ModelSelector] Wechsel zu unified: MAE=%.4f < Ensemble=%.4f×1.05",
+                unified_mae, ensemble_mae,
+            )
+        _model_selector_state["active_model"] = "unified"
+        _model_selector_state["consecutive_worse"] = 0
+    else:
+        _model_selector_state["consecutive_worse"] = _model_selector_state.get("consecutive_worse", 0) + 1
+        if _model_selector_state["consecutive_worse"] >= 3 and unified_mae > ensemble_mae * 1.15:
+            _model_selector_state["active_model"] = "ml_ensemble"
+            log.warning(
+                "[ModelSelector] Fallback zu ml_ensemble: Unified MAE=%.4f > Ensemble=%.4f×1.15, "
+                "%d× schlechter → Retrain",
+                unified_mae, ensemble_mae, _model_selector_state["consecutive_worse"],
+            )
+            _model_selector_state["consecutive_worse"] = 0
+            try:
+                from app.ml.lightgbm_model import unified_train
+                threading.Thread(target=unified_train, daemon=True).start()
+            except Exception:
+                pass
+        else:
+            _model_selector_state["active_model"] = "ml_ensemble"
+
+    log.info(
+        "[ModelSelector] active=%s, unified_MAE=%.4f, ensemble_MAE=%.4f, evaluated=%d",
+        _model_selector_state["active_model"], unified_mae, ensemble_mae, len(unified_errors),
+    )
 
 
 def monitoring_tick() -> None:
@@ -1715,12 +1900,21 @@ def monitoring_tick() -> None:
             _research_state["calibration_bias"] = calibration_bias
             _research_state["monitoring_last_ts"] = now_ts
 
-        # MAE-Spike Warnung
+        # MAE-Spike Warnung + DB-Event
         if mae_7d > 0 and mae_24h > mae_7d * 1.15:
             log.warning(
                 "[monitoring_tick] MAE-Spike: mae_24h=%.4f ist %.1f%% über 7d-Baseline=%.4f",
                 mae_24h, (mae_24h / mae_7d - 1) * 100, mae_7d,
             )
+            try:
+                from app.database import log_monitoring_event
+                log_monitoring_event(
+                    "mae_spike", "warning",
+                    f"MAE 24h ({mae_24h:.4f}) ist {(mae_24h / mae_7d - 1) * 100:.1f}% über 7d-Baseline ({mae_7d:.4f})",
+                    {"mae_24h": mae_24h, "mae_7d": mae_7d, "ratio": round(mae_24h / mae_7d, 3)},
+                )
+            except Exception:
+                pass
         elif mae_24h > 2.0:
             log.warning(
                 "[monitoring_tick] MAE verschlechtert: mae_24h=%.4f (Schwellwert 2.0), mae_7d=%.4f",
@@ -1732,12 +1926,22 @@ def monitoring_tick() -> None:
                 mae_24h, mae_7d, calibration_bias, len(rows_24h),
             )
 
-        # Calibration-Shift Warnung
+        # Calibration-Shift Warnung + DB-Event
         if abs(calibration_bias) > 0.5:
             log.warning(
                 "[monitoring_tick] Calibration-Shift: bias=%+.4f (Modell %sschätzt systematisch)",
                 calibration_bias, "über" if calibration_bias > 0 else "unter",
             )
+            try:
+                from app.database import log_monitoring_event
+                log_monitoring_event(
+                    "calibration_shift", "warning",
+                    f"Calibration Bias = {calibration_bias:+.4f} "
+                    f"(Modell {'über' if calibration_bias > 0 else 'unter'}schätzt systematisch)",
+                    {"bias": calibration_bias},
+                )
+            except Exception:
+                pass
 
         # Auto-Retrain Trigger: MAE_24h > MAE_7d × 1.3 für 3 aufeinanderfolgende Ticks
         if mae_7d > 0 and mae_24h > mae_7d * 1.3:
@@ -1754,6 +1958,15 @@ def monitoring_tick() -> None:
                     mae_24h, mae_7d * 1.3,
                 )
                 try:
+                    from app.database import log_monitoring_event
+                    log_monitoring_event(
+                        "auto_retrain", "warning",
+                        f"Auto-Retrain getriggert: MAE_24h={mae_24h:.4f} > MAE_7d×1.3",
+                        {"mae_24h": mae_24h, "mae_7d": mae_7d},
+                    )
+                except Exception:
+                    pass
+                try:
                     from app.ml.lightgbm_model import ml_train_model
                     threading.Thread(target=ml_train_model, daemon=True).start()
                 except Exception as _e:
@@ -1765,6 +1978,12 @@ def monitoring_tick() -> None:
                     log.debug("[AutoRetrain] gbrt_train nicht verfügbar: %s", _e)
         else:
             _auto_retrain_state["consecutive_degraded_ticks"] = 0
+
+        # Model-Selector aktualisieren
+        try:
+            _model_selector_update(rows_24h)
+        except Exception as _mse:
+            log.debug("[ModelSelector] Update-Fehler: %s", _mse)
 
     except Exception as exc:
         log.warning("[research] monitoring_tick Fehler: %s", exc)
