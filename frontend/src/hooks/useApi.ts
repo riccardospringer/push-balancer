@@ -42,14 +42,6 @@ export function useMlMonitoring() {
   })
 }
 
-export function useMlExperiments() {
-  return useQuery({
-    queryKey: ['mlExperiments'],
-    queryFn: ({ signal }) => api.mlExperiments(signal),
-    staleTime: 300_000,
-  })
-}
-
 export function useGbrtStatus() {
   return useQuery({
     queryKey: ['gbrtStatus'],
@@ -117,14 +109,6 @@ export function useAdobeTraffic() {
     queryKey: ['adobeTraffic'],
     queryFn: ({ signal }) => api.adobeTraffic(signal),
     refetchInterval: 300_000,
-  })
-}
-
-export function useLearnings() {
-  return useQuery({
-    queryKey: ['learnings'],
-    queryFn: ({ signal }) => api.learnings(signal),
-    staleTime: 300_000,
   })
 }
 

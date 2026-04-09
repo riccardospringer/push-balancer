@@ -534,9 +534,12 @@ def _start_background_workers() -> None:
 # ── FastAPI App ────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Push Balancer",
-    description="Push-Balancer API — KI-gestützte Push-Optimierung für BILD",
-    version="2.0.0",
+    title="Push Balancer API",
+    description=(
+        "Push Balancer is an editorial decision-support API for push notification "
+        "planning, research insights, and advisory model outputs."
+    ),
+    version="3.0.1",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",

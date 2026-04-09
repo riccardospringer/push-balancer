@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Push Balancer API
-  version: 3.0.0
+  version: 3.0.1
   description: |
     Push Balancer is an editorial decision-support API for push notification planning.
     It exposes article candidates, live push history, research insights, and advisory
@@ -220,6 +220,8 @@ paths:
       operationId: createMlRetrainingJob
       summary: Trigger an ML retraining job
       description: Starts a manual retraining job for the LightGBM model.
+      security:
+        - adminApiKey: []
       responses:
         "200":
           description: Retraining trigger result
@@ -248,6 +250,8 @@ paths:
       operationId: createGbrtRetrainingJob
       summary: Trigger a GBRT retraining job
       description: Starts a manual retraining job for the GBRT model.
+      security:
+        - adminApiKey: []
       responses:
         "200":
           description: Retraining trigger result
@@ -262,6 +266,8 @@ paths:
       operationId: createGbrtPromotion
       summary: Promote the GBRT challenger model
       description: Promotes the currently loaded GBRT challenger to the active model.
+      security:
+        - adminApiKey: []
       responses:
         "200":
           description: Promotion result
@@ -379,6 +385,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Authentication is handled at the infrastructure layer. Clients should send a valid Bearer token when required by the deployed environment.
+    adminApiKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Administrative API key required for protected retraining and promotion endpoints.
   parameters:
     Offset:
       name: offset

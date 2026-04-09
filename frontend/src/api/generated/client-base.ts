@@ -1,5 +1,5 @@
 /*
- * Auto-generated from ../openapi.yaml (OpenAPI 3.0.3, API 3.0.0).
+ * Auto-generated from ../openapi.yaml (OpenAPI 3.0.3, API 3.0.1).
  * Run `pnpm generate:api-client` after changing the API spec.
  */
 

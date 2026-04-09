@@ -7,10 +7,7 @@ import type {
   GenerateTitleRequest,
   GenerateTitleResponse,
   HealthResponse,
-  MlExperiment,
   MlMonitoringResponse,
-  MlPredictRequest,
-  MlPredictResponse,
   MlStatusResponse,
   PushStatsResponse,
   ResearchRulesResponse,
@@ -20,46 +17,6 @@ import type {
   TagesplanSuggestion,
 } from '@/types/api'
 import { rawClient } from './client-base'
-
-const BASE = import.meta.env.VITE_API_BASE ?? ''
-
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    signal,
-    headers: { Accept: 'application/json' },
-  })
-
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} - ${path}`)
-  }
-
-  return res.json() as Promise<T>
-}
-
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-  })
-
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} - ${path}`)
-  }
-
-  return res.json() as Promise<T>
-}
-
-function buildQuery(params: Record<string, string | number | undefined>) {
-  const search = new URLSearchParams()
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== '') {
-      search.set(key, String(value))
-    }
-  })
-  const query = search.toString()
-  return query ? `?${query}` : ''
-}
 
 export const api = {
   health: async (signal?: AbortSignal): Promise<HealthResponse> => {
@@ -105,9 +62,6 @@ export const api = {
   feed: (signal?: AbortSignal) =>
     rawClient.listArticles({}, signal) as Promise<FeedResponse>,
 
-  checkPlus: (urls: string[]) =>
-    post<Record<string, boolean>>('/api/check-plus', { urls }),
-
   pushStats: (signal?: AbortSignal) =>
     rawClient.listPushes({}, signal) as Promise<PushStatsResponse>,
 
@@ -117,40 +71,8 @@ export const api = {
   mlStatus: (signal?: AbortSignal) =>
     rawClient.getMlModelStatus(signal) as Promise<MlStatusResponse>,
 
-  mlSafety: (signal?: AbortSignal) =>
-    get<{ safetyMode: string; advisoryOnly: boolean; actionAllowed: boolean }>(
-      '/api/ml/safety-status',
-      signal,
-    ),
-
-  mlPredict: (body: MlPredictRequest) =>
-    post<MlPredictResponse>('/api/ml/predict', {
-      title: body.title,
-      cat: body.category,
-      hour: body.hour,
-    }),
-
-  mlPredictBatch: (articles: MlPredictRequest[]) =>
-    post<MlPredictResponse[]>('/api/ml/predict-batch', { articles }),
-
   mlMonitoring: (signal?: AbortSignal) =>
     rawClient.getMlModelMonitoring(signal) as Promise<MlMonitoringResponse>,
-
-  mlExperiments: async (signal?: AbortSignal): Promise<MlExperiment[]> => {
-    const payload = await get<{ items?: MlExperiment[] }>(
-      '/api/ml/experiments',
-      signal,
-    )
-    return payload.items ?? []
-  },
-
-  mlCompareExperiments: (ids: string[]) =>
-    post<{ comparison: MlExperiment[] }>('/api/ml/experiments/compare', {
-      ids,
-    }),
-
-  mlAbStatus: (signal?: AbortSignal) =>
-    get<{ active: boolean; variant?: string }>('/api/ml/ab-status', signal),
 
   mlRetrain: () =>
     rawClient.createMlRetrainingJob({}) as Promise<{
@@ -159,24 +81,8 @@ export const api = {
       jobId?: string
     }>,
 
-  mlFeedback: (predictionId: string, actualOR: number) =>
-    post<{ ok: boolean }>('/api/predictions/feedback', {
-      pushId: predictionId,
-      actualOr: actualOR,
-    }),
-
   gbrtStatus: (signal?: AbortSignal) =>
     rawClient.getGbrtModelStatus(signal) as Promise<GbrtStatusResponse>,
-
-  gbrtModelJson: (signal?: AbortSignal) =>
-    get<unknown>('/api/gbrt/model.json', signal),
-
-  gbrtPredict: (body: MlPredictRequest) =>
-    post<MlPredictResponse>('/api/gbrt/predict', {
-      title: body.title,
-      cat: body.category,
-      hour: body.hour,
-    }),
 
   gbrtRetrain: () =>
     rawClient.createGbrtRetrainingJob({}) as Promise<{ ok: boolean }>,
@@ -196,12 +102,6 @@ export const api = {
       signal,
     ) as Promise<TagesplanRetroResponse>,
 
-  tagesplanHistory: (days?: number, signal?: AbortSignal) =>
-    get<TagesplanRetroResponse>(
-      `/api/tagesplan/history${buildQuery({ days })}`,
-      signal,
-    ),
-
   tagesplanSuggestions: (
     date?: string,
     mode?: TagesplanMode,
@@ -211,9 +111,6 @@ export const api = {
       TagesplanSuggestion[]
     >,
 
-  tagesplanLogSuggestions: (suggestions: TagesplanSuggestion[]) =>
-    post<{ ok: boolean }>('/api/tagesplan/log-suggestions', { suggestions }),
-
   competitorRedaktion: (signal?: AbortSignal) =>
     rawClient.listEditorialCompetitorItems(
       signal,
@@ -221,9 +118,6 @@ export const api = {
 
   competitorSport: (signal?: AbortSignal) =>
     rawClient.listSportCompetitorItems(signal) as Promise<CompetitorResponse>,
-
-  competitorXor: (titles: string[]) =>
-    post<Record<string, { xor: number }>>('/api/competitors/xor', { titles }),
 
   forschung: (signal?: AbortSignal) =>
     rawClient.getResearchInsights(signal) as Promise<ForschungResponse>,
@@ -270,11 +164,6 @@ export const api = {
     }
   },
 
-  learnings: (signal?: AbortSignal) =>
-    get<{ learnings: string[] }>('/api/learnings', signal),
-
   generateTitle: (body: GenerateTitleRequest) =>
     rawClient.generatePushTitle(body) as Promise<GenerateTitleResponse>,
-
-  monitoringTick: () => post<{ ok: boolean }>('/api/ml/monitoring/tick', {}),
 }

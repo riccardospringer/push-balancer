@@ -69,6 +69,16 @@ When `openapi.yaml` changes, regenerate the frontend base client with:
 pnpm --dir frontend generate:api-client
 ```
 
+### Supported Runtime Path
+
+The supported application path for handover and production work is:
+
+- FastAPI backend in [app/](/Users/riccardo.longo/push-balancer/app)
+- React frontend in [frontend/](/Users/riccardo.longo/push-balancer/frontend)
+- production assets in [dist-frontend/](/Users/riccardo.longo/push-balancer/dist-frontend)
+
+Legacy files such as `push-balancer.html`, `push-balancer-server.py`, and the compatibility shim remain in the repository for migration and operational fallback only. They are not the target architecture for new work.
+
 ### macOS: libomp for LightGBM
 
 On macOS, SIP blocks `DYLD_LIBRARY_PATH`. The server auto-loads `~/.local/lib/libomp.dylib` at startup if present. To install:
