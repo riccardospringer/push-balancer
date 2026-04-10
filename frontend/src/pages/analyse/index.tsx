@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtNum } from '@/utils/format'
 
 export function AnalysePage() {
@@ -83,8 +84,10 @@ export function AnalysePage() {
 
       {error && (
         <Alert variant="error">
-          Adobe Analytics konnte nicht geladen werden. Sind die Credentials
-          konfiguriert?
+          {getApiErrorMessage(
+            error,
+            'Adobe Analytics konnte nicht geladen werden. Sind die Credentials konfiguriert?',
+          )}
         </Alert>
       )}
 

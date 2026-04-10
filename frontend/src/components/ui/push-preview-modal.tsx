@@ -4,6 +4,7 @@ import { Button } from './button'
 import { Badge } from './badge'
 import { Spinner } from './spinner'
 import { useGenerateTitle } from '@/hooks/use-api'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtOR, fmtScore, scoreVariant } from '@/utils/format'
 import type { Article, GenerateTitleResponse } from '@/types/api'
 
@@ -638,7 +639,10 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
               borderRadius: '5px',
             }}
           >
-            KI-Titel Generierung fehlgeschlagen
+            {getApiErrorMessage(
+              error,
+              'KI-Titel-Generierung fehlgeschlagen.',
+            )}
           </div>
         )}
 

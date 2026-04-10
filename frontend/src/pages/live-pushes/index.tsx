@@ -16,6 +16,7 @@ import {
   TableRow,
 } from '@spring-media/editorial-one-ui'
 import { useLivePushFilterStore } from '@/stores/live-push-filter-store'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
 import type { Push } from '@/types/api'
 
@@ -198,7 +199,10 @@ export function LivePushesPage() {
         {error && (
           <CardContent>
             <Alert variant="error">
-              Push-Daten konnten nicht geladen werden.
+              {getApiErrorMessage(
+                error,
+                'Push-Daten konnten nicht geladen werden.',
+              )}
             </Alert>
           </CardContent>
         )}

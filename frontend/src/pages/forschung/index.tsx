@@ -31,6 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from '@spring-media/editorial-one-ui'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
 
 export function ForschungPage() {
@@ -147,7 +148,10 @@ export function ForschungPage() {
           )}
           {retrainMutation.isError && (
             <Alert variant="error" style={{ flex: 1 }}>
-              Training fehlgeschlagen.
+              {getApiErrorMessage(
+                retrainMutation.error,
+                'Training fehlgeschlagen.',
+              )}
             </Alert>
           )}
         </div>

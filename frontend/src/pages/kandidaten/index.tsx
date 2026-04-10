@@ -15,6 +15,7 @@ import {
 } from '@spring-media/editorial-one-ui'
 import { useKandidatenFilterStore } from '@/stores/kandidaten-filter-store'
 import { PushPreviewModal } from '@/components/ui/push-preview-modal'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtOR, fmtScore, scoreVariant } from '@/utils/format'
 import type { Article } from '@/types/api'
 
@@ -306,7 +307,10 @@ export function KandidatenPage() {
         {error && (
           <CardContent>
             <Alert variant="error">
-              Feed konnte nicht geladen werden. Läuft der Push-Balancer-Server?
+              {getApiErrorMessage(
+                error,
+                'Feed konnte nicht geladen werden. Läuft der Push-Balancer-Server?',
+              )}
             </Alert>
           </CardContent>
         )}

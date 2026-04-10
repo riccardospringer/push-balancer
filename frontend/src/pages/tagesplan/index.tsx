@@ -16,6 +16,7 @@ import {
   StatCard,
 } from '@spring-media/editorial-one-ui'
 import { useTagesplanStore } from '@/stores/tagesplan-store'
+import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDate, fmtNum, fmtOR, orColor } from '@/utils/format'
 import type { TagesplanSlot } from '@/types/api'
 
@@ -358,7 +359,9 @@ export function TagesplanPage() {
         </div>
       )}
       {error && (
-        <Alert variant="error">Tagesplan konnte nicht geladen werden.</Alert>
+        <Alert variant="error">
+          {getApiErrorMessage(error, 'Tagesplan konnte nicht geladen werden.')}
+        </Alert>
       )}
 
       {data && (
