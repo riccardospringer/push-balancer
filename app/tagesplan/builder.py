@@ -1,6 +1,6 @@
 """app/tagesplan/builder.py — Tagesplan-Aufbau (ML-gestützt).
 
-Migriert aus push-balancer-server.py (Zeilen 7995–8532, 8533–8755).
+Migriert aus dem frueheren Monolithen.
 Enthält _ml_build_tagesplan, _ml_build_tagesplan_inner, _build_tagesplan_retro,
 _tagesplan_background_refresh sowie _TP_CACHE_EMPTY und _auto_sug_worker.
 """

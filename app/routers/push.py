@@ -225,7 +225,7 @@ def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
     Dient als Trainings-Label für das ML-Modell.
 
     IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
+        Vollstaendige Handler-Logik aus dem frueheren Monolithen:
         _prediction_feedback() hierher migrieren (enthält auch Online-Bias-Update).
     """
     try:

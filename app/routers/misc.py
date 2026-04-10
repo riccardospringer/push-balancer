@@ -25,7 +25,7 @@ log = logging.getLogger("push-balancer")
 router = APIRouter()
 
 # ── Adobe State (module-level, wird von adobe_traffic_worker befüllt) ─────
-# (Referenz auf den globalen State in push-balancer-server.py)
+# Referenz auf globalen State aus dem frueheren Monolithen
 _adobe_state: dict = {
     "access_token": "",
     "token_expires": 0,
@@ -235,7 +235,7 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
     Das System sendet NIEMALS autonom Pushes.
 
     IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
+        Vollstaendige Handler-Logik aus dem frueheren Monolithen:
         _schwab_approval() hierher migrieren.
     """
     log.info("[Schwab] Approval: decision=%s push_id=%s", body.decision, body.push_id)

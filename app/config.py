@@ -1,6 +1,6 @@
 """app/config.py — Alle Konfigurationswerte aus Umgebungsvariablen.
 
-Entspricht den os.environ.get()-Aufrufen aus push-balancer-server.py.
+Entspricht den frueheren os.environ.get()-Aufrufen aus dem Monolithen.
 Beim Import wird automatisch eine .env-Datei im Projektverzeichnis geladen
 (selbes Verhalten wie im Monolith).
 """

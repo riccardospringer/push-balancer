@@ -1,11 +1,11 @@
 """app/ml/features.py — Feature-Extraktion für GBRT- und LightGBM-Modelle.
 
-Migriert aus push-balancer-server.py (Zeilen 813–1984).
+Migriert aus dem frueheren Monolithen.
 
 Enthält:
 - Alle Konstanten (_GBRT_CATEGORIES, _GBRT_EMOTION_WORDS, _GBRT_TOPIC_CLUSTERS, etc.)
 - _gbrt_extract_features(): ~80 Features für das GBRT/LightGBM-Modell
-- _keyword_magnitude_heuristic() wird aus app.scoring.magnitude importiert
+- keyword_magnitude_heuristic() wird aus app.scoring.magnitude importiert
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""app/ml/core_classes.py — Kern-ML-Klassen (portiert aus push-balancer-server.py).
+"""app/ml/core_classes.py — Kern-ML-Klassen (portiert aus dem frueheren Monolithen).
 
 Enthält die Pure-Python-Implementierungen für GBRT und Hilfsobjekte.
 Keine externen Abhängigkeiten außer stdlib und optional numpy/sklearn.
@@ -703,7 +703,7 @@ class _SklearnModelWrapper:
 class _LGBMModelWrapper:
     """Wrapper um LightGBM-Modell für API-Kompatibilität mit GBRTModel.
 
-    Portiert aus push-balancer-server.py. Wird von gbrt_train() genutzt wenn
+    Portiert aus dem frueheren Monolithen. Wird von gbrt_train() genutzt wenn
     LightGBM verfügbar ist.
     """
 

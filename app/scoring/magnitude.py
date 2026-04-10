@@ -1,10 +1,10 @@
 """app/scoring/magnitude.py — Keyword-basierte Nachrichten-Magnitude-Heuristik.
 
-Extrahiert aus push-balancer-server.py: _keyword_magnitude_heuristic()
+Extrahiert aus dem frueheren Monolithen: _keyword_magnitude_heuristic()
 """
 import re
 
-# ── Emotion-Words (identisch mit push-balancer-server.py) ─────────────────
+# ── Emotion-Words (identisch mit dem frueheren Monolithen) ───────────────
 _GBRT_EMOTION_WORDS: dict = {
     "angst": {"tot", "tod", "sterben", "gestorben", "stirbt", "lebensgefahr", "mord", "tote", "opfer"},
     "katastrophe": {"erdbeben", "tsunami", "explosion", "brand", "feuer", "absturz", "crash",
@@ -17,7 +17,7 @@ _GBRT_EMOTION_WORDS: dict = {
     "empoerung": {"skandal", "verrat", "betrug", "korrupt", "dreist", "frechheit"},
 }
 
-# ── BILD-Kernthemen Topic-Cluster (identisch mit push-balancer-server.py) ──
+# ── BILD-Kernthemen Topic-Cluster (identisch mit dem frueheren Monolithen) ─
 _GBRT_TOPIC_CLUSTERS: dict = {
     "crime": {"mord", "messer", "messerattacke", "vergewaltigung", "raub", "räuber", "einbruch",
               "verhaftet", "festnahme", "täter", "polizei", "überfall", "totschlag", "leiche",
@@ -43,7 +43,7 @@ _GBRT_TOPIC_CLUSTERS: dict = {
 def keyword_magnitude_heuristic(title: str, cat_lower: str, is_eilmeldung: int = 0) -> float:
     """Keyword-basierte Nachrichten-Magnitude 1-10 als LLM-Fallback.
 
-    Extrahiert aus push-balancer-server.py: _keyword_magnitude_heuristic()
+    Extrahiert aus dem frueheren Monolithen: _keyword_magnitude_heuristic()
 
     Fixes (2026-03-17): Diminishing Returns bei Multi-Keyword-Hits,
     Emotion-Word/Magnitude Double-Counting eliminiert.

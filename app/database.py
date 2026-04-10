@@ -1,6 +1,6 @@
 """app/database.py — SQLite-Datenbankfunktionen für den Push Balancer.
 
-Alle DB-Funktionen aus push-balancer-server.py extrahiert und importierbar gemacht.
+Alle DB-Funktionen aus dem frueheren Monolithen extrahiert und importierbar gemacht.
 Die Funktionen sind thread-safe via _push_db_lock (threading.Lock).
 """
 import json

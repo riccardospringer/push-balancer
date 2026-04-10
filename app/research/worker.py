@@ -1,6 +1,6 @@
 """app/research/worker.py — Autonomer Research Worker Thread.
 
-Bündelt den Research-Worker und alle Hilfsfunktionen aus push-balancer-server.py.
+Buendelt den Research-Worker und alle Hilfsfunktionen aus dem frueheren Monolithen.
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """app/ml/heuristic.py — Vollständige 9-Methoden-Heuristik für predictOR.
 
-Migriert aus push-balancer-server.py (_server_predict_or, Zeilen 10311–11181).
+Migriert aus dem frueheren Monolithen (_server_predict_or).
 
 Enthält:
 - DEFAULT_TUNING_PARAMS
@@ -27,7 +27,7 @@ _HEURISTIC_STOPS = {
     "vor", "bei", "zum", "zur", "vom", "dem", "des",
 }
 
-# ── Tuning-Parameter (aus push-balancer-server.py, Zeile 8210) ───────────────
+# ── Tuning-Parameter (aus dem frueheren Monolithen) ────────────────────────
 DEFAULT_TUNING_PARAMS: dict = {
     "m1_conf_cap": 1.20,
     "m2_conf_cap": 1.10,

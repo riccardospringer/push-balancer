@@ -40,4 +40,4 @@ echo ""
 echo "=== Fertig! ==="
 $RAILWAY domain
 echo ""
-echo "Oeffne die URL oben + /push-balancer.html im Browser"
+echo "Oeffne die URL oben im Browser"

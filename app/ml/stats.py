@@ -1,6 +1,6 @@
 """app/ml/stats.py — History-Statistiken für GBRT- und LightGBM-Modelle.
 
-Migriert aus push-balancer-server.py (Zeilen 2130–2338).
+Migriert aus dem frueheren Monolithen.
 
 Enthält:
 - _gbrt_build_history_stats(): Aggregat-Statistiken für Feature Engineering

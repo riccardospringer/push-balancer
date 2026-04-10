@@ -114,7 +114,7 @@ class CompetitorXorRequest(BaseModel):
 
 
 def _parse_rss_items(xml_bytes: bytes, max_items: int = 30) -> list[dict]:
-    """Parst RSS/Atom XML zu kompakten Dicts. Portiert aus push-balancer-server.py."""
+    """Parst RSS/Atom XML zu kompakten Dicts. Portiert aus dem frueheren Monolithen."""
     import xml.etree.ElementTree as ET
     xml_str = xml_bytes.decode("utf-8", errors="replace")
     items: list[dict] = []
@@ -322,7 +322,7 @@ def get_competitors() -> JSONResponse:
     """Liefert alle Competitor-Feeds aus Background-Cache.
 
     Format: { "welt": [{t, l, p, d, c, lt}, ...], "spiegel": [...], ... }
-    (flaches Dict für push-balancer.html Kompatibilität)
+    (flaches Dict fuer Kompatibilitaet mit dem frueheren HTML-Client)
     """
     try:
         parsed = get_cached_feeds("competitors")
@@ -351,7 +351,7 @@ def get_sport_competitors() -> JSONResponse:
     """Liefert Sport-Competitor-Feeds aus Background-Cache.
 
     Format: { "kicker": [{t, l, p, d, c, lt}, ...], ... }
-    (flaches Dict für push-balancer.html Kompatibilität)
+    (flaches Dict fuer Kompatibilitaet mit dem frueheren HTML-Client)
     """
     try:
         parsed = get_cached_feeds("sport_competitors")
@@ -559,7 +559,7 @@ def post_competitor_xor(body: CompetitorXorRequest) -> JSONResponse:
     Ergebnis: <50ms, bessere Differenzierung.
 
     IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py:
+        Vollstaendige Handler-Logik aus dem frueheren Monolithen:
         _serve_competitor_xor() (Zeile 14319) hierher migrieren.
     """
     titles = body.titles

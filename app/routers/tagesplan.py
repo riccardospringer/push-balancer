@@ -27,7 +27,7 @@ class LogSuggestionsRequest(BaseModel):
     # Neues Format (React): {dateIso, slotHour, suggestions:[...]}
     dateIso: str | None = None
     slotHour: int | None = None
-    # Legacy-Format (push-balancer.html): {date_iso, suggestions:[{slot_hour,...}]}
+    # Legacy-Format des frueheren HTML-Clients: {date_iso, suggestions:[{slot_hour,...}]}
     date_iso: str | None = None
     suggestions: list[dict[str, Any]] = []
 
@@ -81,7 +81,7 @@ def get_tagesplan(
     aufgefrischt. Dieser Endpoint gibt den gecachten Plan zurück.
 
     IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py: _serve_tagesplan()
+        Vollstaendige Handler-Logik aus dem frueheren Monolithen: _serve_tagesplan()
         (Zeile 15014) hierher migrieren.
     """
     try:
@@ -109,7 +109,7 @@ def get_tagesplan_retro(mode: str = Query(default="redaktion")) -> JSONResponse:
     Past-Slots zeigen nur den DB-Snapshot.
 
     IMPLEMENTIERUNGSHINWEIS:
-        Vollständige Handler-Logik aus push-balancer-server.py: _serve_tagesplan_retro()
+        Vollstaendige Handler-Logik aus dem frueheren Monolithen: _serve_tagesplan_retro()
         (Zeile 15030) hierher migrieren.
     """
     try:
@@ -235,7 +235,7 @@ async def log_tagesplan_suggestions(request: Request) -> JSONResponse:
         raw = await request.json()
         body = LogSuggestionsRequest(**raw)
 
-        # Legacy-Format aus push-balancer.html
+        # Legacy-Format des frueheren HTML-Clients
         if body.date_iso and body.suggestions:
             saved = _save_suggestions_legacy_flat(body.date_iso, body.suggestions)
             return JSONResponse(content={"ok": True, "saved": saved, "format": "legacy"})

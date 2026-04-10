@@ -1,6 +1,6 @@
 """app/state.py — Zentraler Shared State für alle Module.
 
-Alle globalen State-Variablen aus push-balancer-server.py sind hier
+Alle globalen State-Variablen aus dem frueheren Monolithen sind hier
 als module-level globals definiert. Module importieren von hier statt
 untereinander (verhindert circular imports).
 """

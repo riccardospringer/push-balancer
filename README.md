@@ -79,8 +79,6 @@ The supported application path for handover and production work is:
 - React frontend in [frontend/](/Users/riccardo.longo/push-balancer/frontend)
 - production assets in [dist-frontend/](/Users/riccardo.longo/push-balancer/dist-frontend)
 
-Legacy files may still exist in the repository for migration reference, but the supported runtime path is the FastAPI app plus the React frontend build. The production image no longer bundles the old HTML/monolith artifacts.
-
 ### macOS: libomp for LightGBM
 
 On macOS, SIP blocks `DYLD_LIBRARY_PATH`. The server auto-loads `~/.local/lib/libomp.dylib` at startup if present. To install:
@@ -325,7 +323,6 @@ push-balancer/
 ├── app/                      # FastAPI application, routers, ML and research modules
 ├── frontend/                 # React/Vite client
 ├── tests/                    # Pytest suite
-├── push-balancer-server.py   # Legacy monolith kept as migration reference only
 ├── requirements.txt
 ├── pyproject.toml            # Python test/lint configuration
 ├── Dockerfile

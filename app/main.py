@@ -1,8 +1,8 @@
 """app/main.py — FastAPI Application + Route-Registrierungen + Startup-Events.
 
-Ersetzt den monolithischen BaseHTTPRequestHandler aus push-balancer-server.py.
+Ersetzt den frueheren monolithischen HTTP-Handler.
 
-Startup-Sequenz (identisch zum Monolith):
+Startup-Sequenz (uebernommen aus dem frueheren Monolithen):
 1. DB initialisieren (init_db)
 2. GBRT-Modell von Disk laden
 3. LightGBM-Modell von Disk laden
@@ -127,7 +127,7 @@ def _load_lgbm_model_from_disk() -> None:
     except ImportError:
         return
 
-    # Modellpfad identisch mit push-balancer-server.py
+    # Modellpfad identisch zum frueheren Monolithen
     ml_model_path = os.path.join(SERVE_DIR, ".ml_lgbm_model.pkl")
     if not os.path.exists(ml_model_path):
         log.info("[ML] Kein gespeichertes LightGBM-Modell, wird beim nächsten Training erstellt")
