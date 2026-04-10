@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -228,6 +228,10 @@ def _client_is_on_allowed_network(client_ip: str | None) -> bool:
             log.warning("[Access] Ungültige INTERNAL_ACCESS_ALLOWED_CIDRS-Konfiguration: %s", cidr)
 
     return False
+
+
+def _frontend_index_path() -> str:
+    return os.path.join(SERVE_DIR, "index.html")
 
 
 def _seed_push_snapshot() -> None:
@@ -723,6 +727,15 @@ app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(misc.router, tags=["Misc"])
+
+
+@app.get("/push-balancer.html", include_in_schema=False)
+async def frontend_compat_entrypoint() -> Response:
+    """Liefert den historischen Frontend-Pfad fuer bestehende Bookmarks weiter aus."""
+    index_path = _frontend_index_path()
+    if not os.path.isfile(index_path):
+        raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
+    return FileResponse(index_path, media_type="text/html")
 
 # ── Statische Dateien (HTML, JS, CSS) ─────────────────────────────────────
 # Wird nach den API-Routen gemountet, damit /api/* Priorität hat
