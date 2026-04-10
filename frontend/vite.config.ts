@@ -8,6 +8,10 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@spring-media/editorial-one-ui/fonts.css': path.resolve(
+        __dirname,
+        './src/editorial-one-ui-shim/fonts.css',
+      ),
       '@spring-media/editorial-one-ui': path.resolve(
         __dirname,
         './src/editorial-one-ui-shim/index.tsx',

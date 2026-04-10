@@ -5,8 +5,8 @@ import {
   ThemeProvider,
   theme,
 } from '@spring-media/editorial-one-ui'
+import '@spring-media/editorial-one-ui/fonts.css'
 import App from './app'
-import '@/editorial-one-ui-shim/fonts.css'
 import './index.css'
 
 createRoot(document.getElementById('root')!).render(

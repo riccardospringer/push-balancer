@@ -22,6 +22,9 @@
       "@/*": ["./src/*"],
       "@spring-media/editorial-one-ui": [
         "./src/editorial-one-ui-shim/index.tsx"
+      ],
+      "@spring-media/editorial-one-ui/*": [
+        "./src/editorial-one-ui-shim/*"
       ]
     }
   },

@@ -104,3 +104,28 @@ def test_problem_schema_is_available_for_standardized_errors():
     assert responses["InternalServerError"]["content"]["application/problem+json"][
         "schema"
     ]["$ref"] == "#/components/schemas/Problem"
+
+
+def test_compatibility_operations_are_marked_deprecated():
+    document = load_openapi()
+
+    deprecated_paths = {
+        "/api/push/{path}",
+        "/api/competitors",
+        "/api/sport-competitors",
+        "/api/forschung",
+        "/api/learnings",
+        "/api/adobe/traffic",
+        "/api/ml/status",
+        "/api/ml/monitoring",
+        "/api/ml/retrain",
+        "/api/ml/monitoring/tick",
+        "/api/gbrt/status",
+        "/api/gbrt/model.json",
+        "/api/gbrt/retrain",
+        "/api/gbrt/force-promote",
+    }
+
+    for path in deprecated_paths:
+        operation = next(iter(document["paths"][path].values()))
+        assert operation.get("deprecated") is True, f"{path} should be deprecated"

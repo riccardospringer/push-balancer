@@ -674,6 +674,7 @@ paths:
       operationId: proxyPushApi
       summary: Proxy a push API path for compatibility clients
       description: Proxies a push-statistics API path and falls back to synchronized cache data when the upstream is unavailable.
+      deprecated: true
       parameters:
         - name: path
           in: path
@@ -698,6 +699,7 @@ paths:
       operationId: listCompetitorFeeds
       summary: List cached competitor feeds
       description: Returns the flat competitor feed dictionary retained for compatibility clients.
+      deprecated: true
       responses:
         "200":
           description: Flat competitor feed dictionary.
@@ -740,6 +742,7 @@ paths:
       operationId: listSportCompetitorFeeds
       summary: List cached sport competitor feeds
       description: Returns the flat sport competitor feed dictionary retained for compatibility clients.
+      deprecated: true
       responses:
         "200":
           description: Flat sport competitor feed dictionary.
@@ -894,6 +897,7 @@ paths:
       operationId: getResearchState
       summary: Get the full research state
       description: Returns the current full research-worker state used by legacy research views and diagnostics.
+      deprecated: true
       responses:
         "200":
           description: Full research state payload.
@@ -910,6 +914,7 @@ paths:
       operationId: getResearchLearnings
       summary: Get data-driven learnings
       description: Returns research learnings and statistical summaries derived from historical push-performance data.
+      deprecated: true
       responses:
         "200":
           description: Learnings payload for legacy research views.
@@ -926,6 +931,7 @@ paths:
       operationId: getAdobeTrafficLegacy
       summary: Get compatibility Adobe traffic payload
       description: Returns the Adobe Analytics payload including enablement and loading flags for compatibility clients.
+      deprecated: true
       responses:
         "200":
           description: Legacy Adobe analytics payload.
@@ -958,6 +964,7 @@ paths:
       operationId: getMlLegacyStatus
       summary: Get compatibility ML model status
       description: Returns the detailed ML status payload retained for compatibility clients.
+      deprecated: true
       responses:
         "200":
           description: Legacy ML status payload.
@@ -1088,6 +1095,7 @@ paths:
       operationId: listMlMonitoringEvents
       summary: List ML monitoring events
       description: Returns the legacy monitoring payload including event items and drift metrics.
+      deprecated: true
       parameters:
         - $ref: "#/components/parameters/Offset"
         - $ref: "#/components/parameters/LimitDefault"
@@ -1107,6 +1115,7 @@ paths:
       operationId: createMlLegacyRetrainingJob
       summary: Trigger a legacy ML retraining job
       description: Triggers the legacy LightGBM retraining endpoint retained for operational compatibility.
+      deprecated: true
       security:
         - adminApiKey: []
       responses:
@@ -1127,6 +1136,7 @@ paths:
       operationId: createMlMonitoringTick
       summary: Trigger a manual ML monitoring tick
       description: Triggers the legacy manual monitoring tick endpoint for diagnostics and drift checks.
+      deprecated: true
       security:
         - adminApiKey: []
       responses:
@@ -1201,6 +1211,7 @@ paths:
       operationId: getGbrtLegacyStatus
       summary: Get compatibility GBRT status
       description: Returns the detailed GBRT status payload retained for compatibility clients and diagnostics.
+      deprecated: true
       responses:
         "200":
           description: Legacy GBRT status payload.
@@ -1217,6 +1228,7 @@ paths:
       operationId: getGbrtModelJson
       summary: Get the serialized GBRT model
       description: Returns the serialized GBRT model JSON used by legacy clients for client-side evaluation.
+      deprecated: true
       responses:
         "200":
           description: Serialized GBRT model payload.
@@ -1285,6 +1297,7 @@ paths:
       operationId: createGbrtLegacyRetrainingJob
       summary: Trigger a legacy GBRT retraining job
       description: Triggers the compatibility GBRT retraining endpoint retained for operational clients.
+      deprecated: true
       security:
         - adminApiKey: []
       responses:
@@ -1305,6 +1318,7 @@ paths:
       operationId: createGbrtLegacyPromotion
       summary: Promote the GBRT challenger via compatibility endpoint
       description: Triggers the compatibility GBRT promotion endpoint retained for operational clients.
+      deprecated: true
       security:
         - adminApiKey: []
       responses:
