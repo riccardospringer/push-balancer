@@ -179,6 +179,123 @@ export const rawClient = {
   createPushTitleGeneration: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-title-generations', 'POST', { body, signal }),
 
+  getBildSitemap: (signal?: AbortSignal) =>
+    request<unknown>('/api/feed', 'GET', { signal }),
+
+  proxyPushApi: (signal?: AbortSignal) =>
+    request<unknown>('/api/push/{path}', 'GET', { signal }),
+
+  listCompetitorFeeds: (signal?: AbortSignal) =>
+    request<unknown>('/api/competitors', 'GET', { signal }),
+
+  getCompetitorFeed: (signal?: AbortSignal) =>
+    request<unknown>('/api/competitor/{name}', 'GET', { signal }),
+
+  listSportCompetitorFeeds: (signal?: AbortSignal) =>
+    request<unknown>('/api/sport-competitors', 'GET', { signal }),
+
+  listSportEuropaFeeds: (
+    params: ListSportEuropaFeedsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/sport-europa', params), 'GET', { signal }),
+
+  listSportGlobalFeeds: (
+    params: ListSportGlobalFeedsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/sport-global', params), 'GET', { signal }),
+
+  listInternationalFeeds: (
+    params: ListInternationalFeedsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/international', params), 'GET', { signal }),
+
+  getInternationalFeed: (signal?: AbortSignal) =>
+    request<unknown>('/api/international/{name}', 'GET', { signal }),
+
+  createCompetitorXorAnalysis: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/competitors/xor', 'POST', { body, signal }),
+
+  getResearchState: (signal?: AbortSignal) =>
+    request<unknown>('/api/forschung', 'GET', { signal }),
+
+  getResearchLearnings: (signal?: AbortSignal) =>
+    request<unknown>('/api/learnings', 'GET', { signal }),
+
+  getAdobeTrafficLegacy: (signal?: AbortSignal) =>
+    request<unknown>('/api/adobe/traffic', 'GET', { signal }),
+
+  getMlSafetyStatus: (signal?: AbortSignal) =>
+    request<unknown>('/api/ml/safety-status', 'GET', { signal }),
+
+  getMlLegacyStatus: (signal?: AbortSignal) =>
+    request<unknown>('/api/ml/status', 'GET', { signal }),
+
+  getMlPrediction: (
+    params: GetMlPredictionParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/ml/predict', params), 'GET', { signal }),
+
+  listMlExperiments: (
+    params: ListMlExperimentsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/ml/experiments', params), 'GET', { signal }),
+
+  compareMlExperiments: (
+    params: CompareMlExperimentsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/ml/experiments/compare', params), 'GET', { signal }),
+
+  getMlAbStatus: (signal?: AbortSignal) =>
+    request<unknown>('/api/ml/ab-status', 'GET', { signal }),
+
+  listMlMonitoringEvents: (
+    params: ListMlMonitoringEventsParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/ml/monitoring', params), 'GET', { signal }),
+
+  createMlLegacyRetrainingJob: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/ml/retrain', 'POST', { body, signal }),
+
+  createMlMonitoringTick: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/ml/monitoring/tick', 'POST', { body, signal }),
+
+  createMlBatchPrediction: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/ml/predict-batch', 'POST', { body, signal }),
+
+  createMlBatchPredictionAlias: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/predict-batch', 'POST', { body, signal }),
+
+  getGbrtLegacyStatus: (signal?: AbortSignal) =>
+    request<unknown>('/api/gbrt/status', 'GET', { signal }),
+
+  getGbrtModelJson: (signal?: AbortSignal) =>
+    request<unknown>('/api/gbrt/model.json', 'GET', { signal }),
+
+  getGbrtPrediction: (
+    params: GetGbrtPredictionParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/gbrt/predict', params), 'GET', { signal }),
+
+  createGbrtLegacyRetrainingJob: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/gbrt/retrain', 'POST', { body, signal }),
+
+  createGbrtLegacyPromotion: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/gbrt/force-promote', 'POST', { body, signal }),
+
+  createSchwabChatMessage: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/schwab-chat', 'POST', { body, signal }),
+
+  createSchwabApproval: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/schwab-approval', 'POST', { body, signal }),
+
 } as const
 
 export interface ListArticlesParams extends QueryParams {
@@ -217,5 +334,52 @@ export interface ListDailyPlanHistoryParams extends QueryParams {
 export interface ListDailyPlanSuggestionsParams extends QueryParams {
   date?: string | number
   mode?: string | number
+}
+
+export interface ListSportEuropaFeedsParams extends QueryParams {
+  offset?: string | number
+  limit?: string | number
+}
+
+export interface ListSportGlobalFeedsParams extends QueryParams {
+  offset?: string | number
+  limit?: string | number
+}
+
+export interface ListInternationalFeedsParams extends QueryParams {
+  offset?: string | number
+  limit?: string | number
+}
+
+export interface GetMlPredictionParams extends QueryParams {
+  title?: string | number
+  cat?: string | number
+  hour?: string | number
+  is_eilmeldung?: string | number
+  link?: string | number
+  push_id?: string | number
+}
+
+export interface ListMlExperimentsParams extends QueryParams {
+  offset?: string | number
+  limit?: string | number
+}
+
+export interface CompareMlExperimentsParams extends QueryParams {
+  a?: string | number
+  b?: string | number
+}
+
+export interface ListMlMonitoringEventsParams extends QueryParams {
+  offset?: string | number
+  limit?: string | number
+}
+
+export interface GetGbrtPredictionParams extends QueryParams {
+  title?: string | number
+  cat?: string | number
+  hour?: string | number
+  is_eilmeldung?: string | number
+  plus?: string | number
 }
 

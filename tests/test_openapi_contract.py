@@ -1,9 +1,11 @@
 from pathlib import Path
+import re
 
 import yaml
 
 
 OPENAPI_PATH = Path(__file__).resolve().parents[1] / "openapi.yaml"
+ROUTERS_DIR = Path(__file__).resolve().parents[1] / "app" / "routers"
 
 
 def load_openapi() -> dict:
@@ -15,6 +17,21 @@ def iter_operations(document: dict):
         for method, operation in path_item.items():
             if method in {"get", "post", "put", "patch", "delete"}:
                 yield path, method, operation
+
+
+def normalize_router_path(path: str) -> str:
+    return re.sub(r"\{([^}:]+):[^}]+\}", r"{\1}", path)
+
+
+def load_router_paths() -> set[str]:
+    paths: set[str] = set()
+    pattern = re.compile(r'@router\.(?:get|post|put|patch|delete)\("([^"]+)"')
+    for router_file in ROUTERS_DIR.glob("*.py"):
+        for match in pattern.finditer(router_file.read_text(encoding="utf-8")):
+            route = match.group(1)
+            if route.startswith("/api/"):
+                paths.add(normalize_router_path(route))
+    return paths
 
 
 def test_openapi_uses_supported_version():
@@ -45,6 +62,15 @@ def test_openapi_documents_critical_public_routes():
 
     missing = expected_paths - set(paths)
     assert not missing, f"Missing documented paths: {sorted(missing)}"
+
+
+def test_every_router_path_is_documented_in_openapi():
+    document = load_openapi()
+    openapi_paths = set(document["paths"])
+    router_paths = load_router_paths()
+
+    missing = sorted(router_paths - openapi_paths)
+    assert not missing, f"Undocumented router paths: {missing}"
 
 
 def test_every_operation_has_required_metadata():

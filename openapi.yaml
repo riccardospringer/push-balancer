@@ -21,6 +21,8 @@ tags:
     description: Health and runtime diagnostics
   - name: Articles
     description: Article candidate discovery from the BILD sitemap
+  - name: Feeds
+    description: Sitemap, competitor, and international feed access
   - name: Pushes
     description: Live push history and refresh actions
   - name: Competition
@@ -37,6 +39,8 @@ tags:
     description: Daily plan and retrospective planning data
   - name: AI
     description: Title generation and other AI-assisted capabilities
+  - name: Legacy
+    description: Legacy-compatible helper routes still exposed during migration
 
 paths:
   /api/health:
@@ -648,6 +652,725 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /api/feed:
+    get:
+      tags: [Feeds]
+      operationId: getBildSitemap
+      summary: Get the BILD news sitemap
+      description: Returns the raw BILD news sitemap XML used to build article candidates.
+      responses:
+        "200":
+          description: Raw XML sitemap.
+          content:
+            application/xml:
+              schema:
+                type: string
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/push/{path}:
+    get:
+      tags: [Legacy]
+      operationId: proxyPushApi
+      summary: Proxy a legacy push API path
+      description: Proxies a legacy push-statistics API path and falls back to synchronized cache data when the upstream is unavailable.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Legacy push API path segment to proxy.
+          schema:
+            type: string
+            example: "messages"
+      responses:
+        "200":
+          description: Proxied push API payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/competitors:
+    get:
+      tags: [Feeds]
+      operationId: listCompetitorFeeds
+      summary: List cached competitor feeds
+      description: Returns the legacy flat competitor feed dictionary used by older clients.
+      responses:
+        "200":
+          description: Flat competitor feed dictionary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedMapResponse"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/competitor/{name}:
+    get:
+      tags: [Feeds]
+      operationId: getCompetitorFeed
+      summary: Get a single competitor feed
+      description: Returns the raw XML for a single configured competitor feed.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Competitor feed identifier.
+          schema:
+            type: string
+            example: "welt"
+      responses:
+        "200":
+          description: Raw competitor feed XML.
+          content:
+            application/xml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-competitors:
+    get:
+      tags: [Feeds]
+      operationId: listSportCompetitorFeeds
+      summary: List cached sport competitor feeds
+      description: Returns the legacy flat sport competitor feed dictionary used by older clients.
+      responses:
+        "200":
+          description: Flat sport competitor feed dictionary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedMapResponse"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-europa:
+    get:
+      tags: [Feeds]
+      operationId: listSportEuropaFeeds
+      summary: List sport Europe feeds
+      description: Returns paginated sport-focused Europe feeds from the background cache.
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of feed groups to return.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+            example: 20
+      responses:
+        "200":
+          description: Paginated sport Europe feeds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedGroupCollectionResponse"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/sport-global:
+    get:
+      tags: [Feeds]
+      operationId: listSportGlobalFeeds
+      summary: List sport global feeds
+      description: Returns paginated sport-focused global feeds from the background cache.
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of feed groups to return.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+            example: 20
+      responses:
+        "200":
+          description: Paginated sport global feeds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedGroupCollectionResponse"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/international:
+    get:
+      tags: [Feeds]
+      operationId: listInternationalFeeds
+      summary: List international feeds
+      description: Returns paginated international feeds from the background cache.
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of feed groups to return.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+            example: 20
+      responses:
+        "200":
+          description: Paginated international feeds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedGroupCollectionResponse"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/international/{name}:
+    get:
+      tags: [Feeds]
+      operationId: getInternationalFeed
+      summary: Get a single international feed
+      description: Returns the raw XML for a single configured international feed.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: International feed identifier.
+          schema:
+            type: string
+            example: "bbc"
+      responses:
+        "200":
+          description: Raw international feed XML.
+          content:
+            application/xml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /api/competitors/xor:
+    post:
+      tags: [Competition]
+      operationId: createCompetitorXorAnalysis
+      summary: Create competitor XOR predictions
+      description: Calculates simplified opening-rate predictions for competitor headlines using cached word-performance scoring.
+      requestBody:
+        required: true
+        description: Headlines to score.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompetitorXorRequest"
+      responses:
+        "200":
+          description: Simplified competitor XOR prediction result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompetitorXorResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/forschung:
+    get:
+      tags: [Research]
+      operationId: getResearchState
+      summary: Get the full research state
+      description: Returns the current full research-worker state used by legacy research views and diagnostics.
+      responses:
+        "200":
+          description: Full research state payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/learnings:
+    get:
+      tags: [Research]
+      operationId: getResearchLearnings
+      summary: Get data-driven learnings
+      description: Returns research learnings and statistical summaries derived from historical push-performance data.
+      responses:
+        "200":
+          description: Learnings payload for legacy research views.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/adobe/traffic:
+    get:
+      tags: [Analytics]
+      operationId: getAdobeTrafficLegacy
+      summary: Get legacy Adobe traffic payload
+      description: Returns the legacy Adobe Analytics payload including enablement and loading flags.
+      responses:
+        "200":
+          description: Legacy Adobe analytics payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/safety-status:
+    get:
+      tags: [ML]
+      operationId: getMlSafetyStatus
+      summary: Get ML safety status
+      description: Returns the advisory-only safety guard state for the ML subsystem.
+      responses:
+        "200":
+          description: Safety status payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlSafetyStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/status:
+    get:
+      tags: [ML]
+      operationId: getMlLegacyStatus
+      summary: Get legacy ML model status
+      description: Returns the legacy ML status payload used by earlier clients.
+      responses:
+        "200":
+          description: Legacy ML status payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/predict:
+    get:
+      tags: [ML]
+      operationId: getMlPrediction
+      summary: Predict a single article opening rate
+      description: Returns a single advisory opening-rate prediction for an article using the active ML model stack.
+      parameters:
+        - name: title
+          in: query
+          required: false
+          description: Article title to score.
+          schema:
+            type: string
+        - name: cat
+          in: query
+          required: false
+          description: Editorial category to score.
+          schema:
+            type: string
+        - name: hour
+          in: query
+          required: false
+          description: Local hour of day used for the prediction.
+          schema:
+            type: integer
+            format: int32
+        - name: is_eilmeldung
+          in: query
+          required: false
+          description: Whether the article should be treated as an urgent bulletin.
+          schema:
+            type: integer
+            format: int32
+        - name: link
+          in: query
+          required: false
+          description: Canonical article URL.
+          schema:
+            type: string
+            format: uri
+        - name: push_id
+          in: query
+          required: false
+          description: Optional push identifier used for prediction logging.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Single ML prediction result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlPredictionResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/experiments:
+    get:
+      tags: [ML]
+      operationId: listMlExperiments
+      summary: List ML experiments
+      description: Returns paginated ML experiment runs and their stored metadata.
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/LimitDefault"
+      responses:
+        "200":
+          description: Paginated experiment collection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyCollectionResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/experiments/compare:
+    get:
+      tags: [ML]
+      operationId: compareMlExperiments
+      summary: Compare two ML experiments
+      description: Returns a lightweight comparison between two experiment identifiers.
+      parameters:
+        - name: a
+          in: query
+          required: false
+          description: First experiment identifier.
+          schema:
+            type: string
+        - name: b
+          in: query
+          required: false
+          description: Second experiment identifier.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Experiment comparison payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/ab-status:
+    get:
+      tags: [ML]
+      operationId: getMlAbStatus
+      summary: Get ML A/B test status
+      description: Returns the current legacy A/B test status payload for the challenger flow.
+      responses:
+        "200":
+          description: A/B status payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MlAbStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/monitoring:
+    get:
+      tags: [ML]
+      operationId: listMlMonitoringEvents
+      summary: List ML monitoring events
+      description: Returns the legacy monitoring payload including event items and drift metrics.
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/LimitDefault"
+      responses:
+        "200":
+          description: Monitoring payload with event items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/retrain:
+    post:
+      tags: [ML]
+      operationId: createMlLegacyRetrainingJob
+      summary: Trigger a legacy ML retraining job
+      description: Triggers the legacy LightGBM retraining endpoint retained for operational compatibility.
+      security:
+        - adminApiKey: []
+      responses:
+        "200":
+          description: Retraining trigger result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/monitoring/tick:
+    post:
+      tags: [ML]
+      operationId: createMlMonitoringTick
+      summary: Trigger a manual ML monitoring tick
+      description: Triggers the legacy manual monitoring tick endpoint for diagnostics and drift checks.
+      security:
+        - adminApiKey: []
+      responses:
+        "200":
+          description: Monitoring tick result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcknowledgementResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/ml/predict-batch:
+    post:
+      tags: [ML]
+      operationId: createMlBatchPrediction
+      summary: Create ML batch predictions
+      description: Returns advisory opening-rate predictions for up to 300 articles in one request.
+      requestBody:
+        required: true
+        description: Articles to score in a batch request.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictBatchRequest"
+      responses:
+        "200":
+          description: Batch prediction payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PredictBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/predict-batch:
+    post:
+      tags: [ML]
+      operationId: createMlBatchPredictionAlias
+      summary: Create ML batch predictions via alias
+      description: Legacy alias for the batch prediction endpoint retained for compatibility.
+      requestBody:
+        required: true
+        description: Articles to score in a batch request.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictBatchRequest"
+      responses:
+        "200":
+          description: Batch prediction payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PredictBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/status:
+    get:
+      tags: [GBRT]
+      operationId: getGbrtLegacyStatus
+      summary: Get legacy GBRT status
+      description: Returns the detailed GBRT status payload retained for earlier clients and diagnostics.
+      responses:
+        "200":
+          description: Legacy GBRT status payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/model.json:
+    get:
+      tags: [GBRT]
+      operationId: getGbrtModelJson
+      summary: Get the serialized GBRT model
+      description: Returns the serialized GBRT model JSON used by legacy clients for client-side evaluation.
+      responses:
+        "200":
+          description: Serialized GBRT model payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyJsonObject"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/predict:
+    get:
+      tags: [GBRT]
+      operationId: getGbrtPrediction
+      summary: Predict a single article opening rate with GBRT
+      description: Returns a single advisory opening-rate prediction using the GBRT model.
+      parameters:
+        - name: title
+          in: query
+          required: false
+          description: Article title to score.
+          schema:
+            type: string
+        - name: cat
+          in: query
+          required: false
+          description: Editorial category to score.
+          schema:
+            type: string
+        - name: hour
+          in: query
+          required: false
+          description: Local hour of day used for the prediction.
+          schema:
+            type: integer
+            format: int32
+        - name: is_eilmeldung
+          in: query
+          required: false
+          description: Whether the article should be treated as an urgent bulletin.
+          schema:
+            type: integer
+            format: int32
+        - name: plus
+          in: query
+          required: false
+          description: Whether the article is a paywalled plus article.
+          schema:
+            type: integer
+            format: int32
+      responses:
+        "200":
+          description: Single GBRT prediction result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GbrtPredictionResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/gbrt/retrain:
+    post:
+      tags: [GBRT]
+      operationId: createGbrtLegacyRetrainingJob
+      summary: Trigger a legacy GBRT retraining job
+      description: Triggers the legacy GBRT retraining endpoint retained for operational compatibility.
+      security:
+        - adminApiKey: []
+      responses:
+        "200":
+          description: Retraining trigger result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/gbrt/force-promote:
+    post:
+      tags: [GBRT]
+      operationId: createGbrtLegacyPromotion
+      summary: Promote the GBRT challenger via legacy endpoint
+      description: Triggers the legacy GBRT promotion endpoint retained for operational compatibility.
+      security:
+        - adminApiKey: []
+      responses:
+        "200":
+          description: Promotion result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GbrtPromotionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/schwab-chat:
+    post:
+      tags: [AI]
+      operationId: createSchwabChatMessage
+      summary: Create a Schwab chat message
+      description: Returns the current placeholder response for the not-yet-migrated Schwab chat flow.
+      requestBody:
+        required: true
+        description: Chat message and conversation history.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchwabChatRequest"
+      responses:
+        "200":
+          description: Placeholder Schwab chat response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchwabChatResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/schwab-approval:
+    post:
+      tags: [AI]
+      operationId: createSchwabApproval
+      summary: Store a Schwab approval decision
+      description: Stores an editorial approval or rejection decision for an advisory push recommendation.
+      requestBody:
+        required: true
+        description: Approval decision payload.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchwabApprovalRequest"
+      responses:
+        "200":
+          description: Approval log acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchwabApprovalResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
 components:
   securitySchemes:
     adminApiKey:
@@ -689,6 +1412,12 @@ components:
   responses:
     BadRequest:
       description: The request payload or parameters are invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The requested resource does not exist.
       content:
         application/problem+json:
           schema:
@@ -982,6 +1711,36 @@ components:
           description: Whether the action completed successfully.
           example: true
 
+    LegacyJsonObject:
+      type: object
+      description: Flexible legacy payload that is still exposed for compatibility during migration.
+      additionalProperties: true
+
+    LegacyCollectionResponse:
+      type: object
+      required: [items, total, offset, limit]
+      properties:
+        items:
+          type: array
+          description: Current page of legacy collection items.
+          items:
+            $ref: "#/components/schemas/LegacyJsonObject"
+        total:
+          type: integer
+          format: int64
+          description: Total number of items matching the request.
+          example: 42
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first item in this response.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size used for this response.
+          example: 20
+
     PushSyncRequest:
       type: object
       required: [secret, messages, channels]
@@ -1050,6 +1809,146 @@ components:
       description: Map of article URLs to boolean inspection results.
       additionalProperties:
         type: boolean
+
+    FeedItemCompact:
+      type: object
+      properties:
+        t:
+          type: string
+          description: Compact title field used by legacy feed views.
+          example: "Breaking Test Artikel"
+        l:
+          type: string
+          format: uri
+          description: Compact link field used by legacy feed views.
+          example: "https://www.bild.de/politik/test-artikel"
+        p:
+          type: string
+          description: Publication date string as provided by the source feed.
+          example: "Fri, 10 Apr 2026 08:00:00 GMT"
+        d:
+          type: string
+          description: Short feed description snippet.
+          example: "Kurzbeschreibung"
+        c:
+          type: array
+          description: Feed categories.
+          items:
+            type: string
+        lt:
+          type: boolean
+          description: Whether the item looks like a live ticker.
+          example: false
+
+    FeedMapResponse:
+      type: object
+      description: Flat mapping of feed names to compact feed item arrays.
+      additionalProperties:
+        type: array
+        items:
+          $ref: "#/components/schemas/FeedItemCompact"
+
+    FeedGroup:
+      type: object
+      required: [name, articles]
+      properties:
+        name:
+          type: string
+          description: Feed group identifier.
+          example: "bbc"
+        articles:
+          type: array
+          description: Articles returned for this feed group.
+          items:
+            $ref: "#/components/schemas/FeedItemCompact"
+
+    FeedGroupCollectionResponse:
+      type: object
+      required: [items, total, offset, limit]
+      properties:
+        items:
+          type: array
+          description: Current page of feed groups.
+          items:
+            $ref: "#/components/schemas/FeedGroup"
+        total:
+          type: integer
+          format: int64
+          description: Total number of feed groups matching the request.
+          example: 24
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first feed group in this response.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size used for this response.
+          example: 20
+
+    CompetitorXorRequest:
+      type: object
+      required: [titles]
+      properties:
+        titles:
+          type: array
+          description: Titles or title/category objects to score.
+          items:
+            oneOf:
+              - type: string
+                example: "Breaking Test Artikel"
+              - $ref: "#/components/schemas/LegacyJsonObject"
+
+    CompetitorXorResult:
+      type: object
+      properties:
+        predictedOr:
+          type: number
+          format: float
+          description: Simplified advisory opening-rate prediction.
+          example: 7.2
+        basis:
+          type: string
+          description: Basis used for the simplified score.
+          example: "word_perf"
+        cat:
+          type: string
+          description: Derived editorial category.
+          example: "Politik"
+        isLiveticker:
+          type: boolean
+          description: Whether the title looks like a live ticker.
+          example: false
+        isEilmeldung:
+          type: boolean
+          description: Whether the title looks like an urgent bulletin.
+          example: false
+        wordMatches:
+          type: integer
+          format: int32
+          description: Number of performance-bearing words matched in the cache.
+          example: 3
+
+    CompetitorXorResponse:
+      type: object
+      required: [results, count, elapsedMs]
+      properties:
+        results:
+          type: object
+          description: Prediction result keyed by the submitted title text.
+          additionalProperties:
+            $ref: "#/components/schemas/CompetitorXorResult"
+        count:
+          type: integer
+          format: int32
+          description: Number of scored titles returned.
+          example: 12
+        elapsedMs:
+          type: number
+          format: float
+          description: Server-side execution time in milliseconds.
+          example: 32.5
 
     CompetitorItem:
       type: object
@@ -1221,6 +2120,27 @@ components:
           type: string
           format: date-time
 
+    MlSafetyStatusResponse:
+      type: object
+      required: [safetyMode, advisoryOnly, actionAllowed, message]
+      properties:
+        safetyMode:
+          type: string
+          description: Current ML safety mode.
+          example: "ADVISORY_ONLY"
+        advisoryOnly:
+          type: boolean
+          description: Always true because the system never sends pushes autonomously.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Always false because autonomous action is disabled.
+          example: false
+        message:
+          type: string
+          description: Human-readable explanation of the safety posture.
+          example: "All predictions are advisory only."
+
     MlStatusResponse:
       type: object
       required: [modelVersion, trainedAt, mae, rmse, r2, trainingRows, features, isEnsemble, advisoryOnly, actionAllowed]
@@ -1287,6 +2207,155 @@ components:
           type: number
           format: float
 
+    MlPredictionResponse:
+      type: object
+      properties:
+        predictedOr:
+          type: number
+          format: float
+          description: Predicted opening rate for the article.
+          example: 7.4
+        or:
+          type: number
+          format: float
+          description: Backward-compatible alias for the predicted opening rate.
+          example: 7.4
+        basis:
+          type: string
+          description: Basis or model family used for the prediction.
+          example: "lightgbm"
+        confidence:
+          type: number
+          format: float
+          description: Confidence score for the prediction.
+          example: 0.62
+        q10:
+          type: number
+          format: float
+          description: Lower uncertainty bound.
+          example: 5.8
+        q90:
+          type: number
+          format: float
+          description: Upper uncertainty bound.
+          example: 9.1
+        advisoryOnly:
+          type: boolean
+          description: Always true because the API is advisory only.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Always false because autonomous action is disabled.
+          example: false
+        safetyMode:
+          type: string
+          description: Current safety mode.
+          example: "ADVISORY_ONLY"
+
+    MlAbStatusResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+          description: Whether a challenger comparison is currently active.
+          example: false
+        championMae:
+          type: number
+          format: float
+          nullable: true
+          description: Current champion MAE, if available.
+        challengerMae:
+          type: number
+          format: float
+          nullable: true
+          description: Current challenger MAE, if available.
+        evaluated:
+          type: integer
+          format: int32
+          description: Number of evaluated comparison samples.
+          example: 0
+
+    PredictBatchRequest:
+      type: object
+      required: [articles]
+      properties:
+        articles:
+          type: array
+          description: Articles to score in the batch request.
+          items:
+            $ref: "#/components/schemas/LegacyJsonObject"
+
+    PredictBatchEntry:
+      type: object
+      properties:
+        or:
+          type: number
+          format: float
+          description: Predicted opening rate.
+          example: 7.2
+        predictedOr:
+          type: number
+          format: float
+          description: Backward-compatible alias for the predicted opening rate.
+          example: 7.2
+        basis:
+          type: string
+          description: Basis or model family used for the prediction.
+          example: "lightgbm"
+        confidence:
+          type: number
+          format: float
+          description: Confidence score for the prediction.
+          example: 0.55
+        q10:
+          type: number
+          format: float
+          description: Lower uncertainty bound.
+          example: 5.7
+        q90:
+          type: number
+          format: float
+          description: Upper uncertainty bound.
+          example: 8.9
+        modelType:
+          type: string
+          description: Model family used to compute the prediction.
+          example: "lightgbm"
+
+    PredictBatchResponse:
+      type: object
+      required: [predictions, modelType, count, elapsedMs, cached, computed]
+      properties:
+        predictions:
+          type: object
+          description: Prediction results keyed by article identifier.
+          additionalProperties:
+            $ref: "#/components/schemas/PredictBatchEntry"
+        modelType:
+          type: string
+          description: Dominant model family used for the batch.
+          example: "lightgbm"
+        count:
+          type: integer
+          format: int32
+          description: Number of returned predictions.
+          example: 10
+        elapsedMs:
+          type: number
+          format: float
+          description: Server-side execution time in milliseconds.
+          example: 45.2
+        cached:
+          type: integer
+          format: int32
+          description: Number of predictions returned from cache.
+          example: 4
+        computed:
+          type: integer
+          format: int32
+          description: Number of predictions computed fresh for this request.
+          example: 6
+
     JobResponse:
       type: object
       required: [ok]
@@ -1318,6 +2387,71 @@ components:
             type: string
         lastRetrain:
           type: string
+
+    GbrtPredictionResponse:
+      type: object
+      properties:
+        predictedOr:
+          type: number
+          format: float
+          description: Predicted opening rate for the article.
+          example: 7.1
+        basisMethod:
+          type: string
+          description: Basis or model family used for the prediction.
+          example: "gbrt"
+        confidence:
+          type: number
+          format: float
+          description: Confidence score for the prediction.
+          example: 0.58
+        q10:
+          type: number
+          format: float
+          description: Lower uncertainty bound.
+          example: 5.9
+        q90:
+          type: number
+          format: float
+          description: Upper uncertainty bound.
+          example: 8.6
+        std:
+          type: number
+          format: float
+          description: Estimated standard deviation for the prediction.
+          example: 0.9
+        nTrees:
+          type: integer
+          format: int32
+          description: Number of trees used by the model.
+          example: 120
+        onlineBias:
+          type: number
+          format: float
+          description: Applied online bias correction.
+          example: 0.2
+        features:
+          $ref: "#/components/schemas/LegacyJsonObject"
+        importance:
+          $ref: "#/components/schemas/LegacyJsonObject"
+
+    GbrtPromotionResponse:
+      type: object
+      required: [ok, message, nTrees]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the challenger promotion succeeded.
+          example: true
+        message:
+          type: string
+          description: Human-readable promotion result.
+          example: "GBRT challenger was promoted."
+        nTrees:
+          type: integer
+          format: int32
+          description: Number of trees in the promoted model.
+          example: 120
 
     TagesplanSlot:
       type: object
@@ -1686,6 +2820,67 @@ components:
           type: string
         category:
           type: string
+
+    SchwabChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Chat message to send to the legacy Schwab flow.
+          example: "Welche Push-Idee ist besser?"
+        history:
+          type: array
+          description: Prior conversation history entries.
+          items:
+            $ref: "#/components/schemas/LegacyJsonObject"
+
+    SchwabChatResponse:
+      type: object
+      required: [ok, message]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the not-yet-migrated flow returned a positive result.
+          example: false
+        message:
+          type: string
+          description: Placeholder status message for the current migration state.
+          example: "Chat function is being migrated."
+
+    SchwabApprovalRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          description: Editorial approval decision.
+          example: "approved"
+        push_id:
+          type: string
+          description: Optional push identifier associated with the decision.
+          example: "push-2026-04-10-0815"
+
+    SchwabApprovalResponse:
+      type: object
+      required: [ok, advisoryOnly, actionAllowed, message]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the approval decision was logged successfully.
+          example: true
+        advisoryOnly:
+          type: boolean
+          description: Always true because the system never sends pushes autonomously.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Always false because human action is required.
+          example: false
+        message:
+          type: string
+          description: Human-readable explanation of the logged approval.
+          example: "Decision logged. Push sending still requires manual CMS action."
 
     GenerateTitleResponse:
       type: object
