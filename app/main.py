@@ -270,7 +270,7 @@ def _frontend_index_path() -> str:
 
 
 def _legacy_frontend_path() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "push-balancer.html")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
 
 
 def _load_frontend_html() -> str | None:
