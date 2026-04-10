@@ -120,6 +120,7 @@ def test_compatibility_operations_are_marked_deprecated():
         "/api/ml/monitoring",
         "/api/ml/retrain",
         "/api/ml/monitoring/tick",
+        "/api/predict-batch",
         "/api/gbrt/status",
         "/api/gbrt/model.json",
         "/api/gbrt/retrain",
@@ -129,3 +130,18 @@ def test_compatibility_operations_are_marked_deprecated():
     for path in deprecated_paths:
         operation = next(iter(document["paths"][path].values()))
         assert operation.get("deprecated") is True, f"{path} should be deprecated"
+
+
+def test_frontend_code_uses_editorial_one_package_imports_only():
+    frontend_src = Path(__file__).resolve().parents[1] / "frontend" / "src"
+    violations: list[str] = []
+
+    for source_file in frontend_src.rglob("*.ts*"):
+        if "editorial-one-ui-shim" in source_file.parts:
+            continue
+
+        content = source_file.read_text(encoding="utf-8")
+        if "@/editorial-one-ui-shim" in content or "editorial-one-ui-shim/" in content:
+            violations.append(str(source_file.relative_to(frontend_src.parent)))
+
+    assert not violations, f"Direct shim imports are not allowed: {violations}"

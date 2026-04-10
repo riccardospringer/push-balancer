@@ -65,6 +65,8 @@ pnpm --dir frontend info @spring-media/editorial-one-ui
 
 If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`. This is a temporary fallback and not a full replacement for validating against the real private package.
 
+Application code should never import the shim directly. Use `@spring-media/editorial-one-ui` and `@spring-media/editorial-one-ui/fonts.css`; the Vite and TypeScript aliases keep the local fallback transparent until the private package can be installed.
+
 When `push-balancer-api-v3.1.0.yaml` changes, regenerate the frontend base client with:
 
 ```bash
