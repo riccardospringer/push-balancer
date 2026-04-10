@@ -8,7 +8,7 @@ POST /api/gbrt/force-promote    — Challenger zu Champion promoten
 """
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from app.auth import require_admin_key
@@ -216,18 +216,21 @@ def get_gbrt_model_json() -> JSONResponse:
                 media_type="application/json; charset=utf-8",
                 headers={"Cache-Control": "max-age=300"},
             )
-        except Exception:
+        except Exception as exc:
             log.exception("[gbrt] Fehler beim Lesen der Modell-Datei")
-            return JSONResponse(status_code=500, content={"error": "Modell-Datei konnte nicht gelesen werden"})
+            raise HTTPException(
+                status_code=500,
+                detail="Model file could not be read.",
+            ) from exc
 
     # Fallback: Modell aus RAM serialisieren
     with _gbrt_lock:
         model = _gbrt_model
 
     if model is None:
-        return JSONResponse(
+        raise HTTPException(
             status_code=404,
-            content={"error": "GBRT-Modell nicht vorhanden. Wird beim nächsten Training erstellt."},
+            detail="GBRT model is not available yet.",
         )
 
     try:
@@ -238,9 +241,12 @@ def get_gbrt_model_json() -> JSONResponse:
             "initialPrediction": getattr(model, "initial_prediction", 0.0),
         }
         return JSONResponse(content=serialized, headers={"Cache-Control": "max-age=300"})
-    except Exception:
+    except Exception as exc:
         log.exception("[gbrt] Fehler beim Serialisieren des Modells")
-        return JSONResponse(status_code=500, content={"error": "Modell-Serialisierung fehlgeschlagen"})
+        raise HTTPException(
+            status_code=500,
+            detail="Model serialization failed.",
+        ) from exc
 
 
 @router.get("/api/gbrt/predict")
@@ -272,10 +278,10 @@ def get_gbrt_predict(
 
     result = gbrt_predict(push, _research_state)
     if result is None:
-        return JSONResponse(content={
-            "modelLoaded": False,
-            "error": "Kein GBRT-Modell geladen",
-        })
+        raise HTTPException(
+            status_code=503,
+            detail="No GBRT model is currently loaded.",
+        )
     # Transform interne snake_case Keys zu camelCase an der API-Grenze
     camel_result = {
         "predictedOr": result.get("predicted_or"),
@@ -323,7 +329,10 @@ def post_gbrt_force_promote() -> JSONResponse:
         model = _gbrt_model
 
     if model is None:
-        return JSONResponse(content={"ok": False, "reason": "Kein GBRT-Modell geladen"})
+        raise HTTPException(
+            status_code=503,
+            detail="No GBRT model is currently loaded.",
+        )
 
     log.info("[gbrt] force-promote: Challenger manuell zu Champion promotet")
     return JSONResponse(content={

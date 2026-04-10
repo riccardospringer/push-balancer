@@ -17,7 +17,7 @@ import sqlite3
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -222,6 +222,7 @@ def get_ml_predict(
                 predicted_or=result.get("predicted_or", 0),
                 actual_or=0,
                 basis_method=result.get("basis_method", ""),
+                methods_detail=result.get("methods_detail", {}),
                 confidence=result.get("confidence", 0),
                 q10=result.get("q10", 0),
                 q90=result.get("q90", 0),
@@ -242,9 +243,12 @@ def get_ml_predict(
             "safetyMode": result.get("safety_mode") if result else SAFETY_MODE,
         } if result else {}
         return JSONResponse(content=camel_result)
-    except Exception:
+    except Exception as exc:
         log.exception("[ml] Fehler in get_ml_predict")
-        return JSONResponse(status_code=500, content={"error": "Prediction fehlgeschlagen"})
+        raise HTTPException(
+            status_code=500,
+            detail="Prediction failed.",
+        ) from exc
 
 
 @router.get("/api/ml/experiments")
@@ -373,9 +377,12 @@ def post_monitoring_tick() -> JSONResponse:
         from app.research.worker import monitoring_tick
         monitoring_tick()
         return JSONResponse(content={"ok": True})
-    except Exception:
+    except Exception as exc:
         log.exception("[ml] monitoring_tick Fehler")
-        return JSONResponse(status_code=500, content={"error": "Monitoring-Tick fehlgeschlagen"})
+        raise HTTPException(
+            status_code=500,
+            detail="Monitoring tick failed.",
+        ) from exc
 
 
 @router.post("/api/ml/predict-batch")
@@ -391,9 +398,9 @@ def post_predict_batch(body: PredictBatchRequest) -> JSONResponse:
 
     articles = body.articles
     if len(articles) > 300:
-        return JSONResponse(
+        raise HTTPException(
             status_code=400,
-            content={"error": "articles must be a list with max 300 entries"},
+            detail="articles must be a list with max 300 entries",
         )
 
     t0 = time.monotonic()

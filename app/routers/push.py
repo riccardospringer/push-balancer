@@ -237,6 +237,9 @@ def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
         )
         log.info("[Feedback] Push %s: actual_or=%.2f%%", body.pushId, body.actualOr)
         return JSONResponse(content={"ok": True})
-    except Exception:
+    except Exception as exc:
         log.exception("[Feedback] Fehler in post_prediction_feedback")
-        return JSONResponse(status_code=500, content={"error": "Feedback konnte nicht gespeichert werden"})
+        raise HTTPException(
+            status_code=500,
+            detail="Feedback could not be stored.",
+        ) from exc

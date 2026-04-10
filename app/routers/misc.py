@@ -267,6 +267,9 @@ def create_push_title_generation(body: PushTitleGenerateRequest) -> JSONResponse
     except RuntimeError as exc:
         log.error("[PushTitle] %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         log.exception("[PushTitle] Endpoint-Fehler")
-        return JSONResponse(status_code=500, content={"error": "Push-Title-Generierung fehlgeschlagen"})
+        raise HTTPException(
+            status_code=500,
+            detail="Push title generation failed.",
+        ) from exc
