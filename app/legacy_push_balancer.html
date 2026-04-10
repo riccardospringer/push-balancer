@@ -14560,9 +14560,7 @@ async function loadLearningHistory() {
     let params = `startDate=${startTs}&endDate=${endTs}&sourceTypes=EDITORIAL`;
     let page = 0;
     while (page < 50) {
-      const resp = await resilientFetch(`${PUSH_API}?${params}`);
-      if (!resp.ok) break;
-      const data = await resp.json();
+      const data = await fetchPushJson([PUSH_API, PUSH_API_PROXY], params);
       allMsgs = allMsgs.concat(data.messages || []);
       if (!data.next) break;
       params = data.next;
