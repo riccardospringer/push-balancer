@@ -157,6 +157,8 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
+        assert "/assets/" in resp.text
+        assert "/dist-frontend/assets/" not in resp.text
 
     def test_unknown_frontend_path_falls_back_to_spa_for_allowlisted_clients(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
@@ -209,6 +211,22 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
+
+    def test_prepare_frontend_html_rewrites_legacy_bundle_paths_for_compat_route(self):
+        from app.main import _prepare_frontend_html_for_request
+
+        html = """
+<!doctype html>
+<script type="module" src="/dist-frontend/assets/index-old.js"></script>
+<link rel="stylesheet" href="/dist-frontend/assets/index-old.css">
+"""
+
+        rewritten = _prepare_frontend_html_for_request(html, "/push-balancer.html")
+
+        assert "/dist-frontend/assets/" not in rewritten
+        assert "/assets/index-old.js" in rewritten
+        assert "/assets/index-old.css" in rewritten
+        assert "replaceState" in rewritten
 
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────

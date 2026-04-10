@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -234,15 +234,39 @@ def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
 
-def _frontend_uses_dist_prefix() -> bool:
+def _load_frontend_html() -> str | None:
     index_path = _frontend_index_path()
     if not os.path.isfile(index_path):
-        return False
+        return None
     try:
         with open(index_path, encoding="utf-8") as index_file:
-            return "/dist-frontend/assets/" in index_file.read()
+            return index_file.read()
     except OSError:
-        return False
+        return None
+
+
+def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
+    if "/dist-frontend/assets/" not in html:
+        return html
+
+    rewritten_html = html.replace("/dist-frontend/assets/", "/assets/")
+    if request_path == "/push-balancer.html":
+        bootstrap_script = (
+            "<script>"
+            "window.history.replaceState(window.history.state, '', '/dist-frontend/');"
+            "</script>"
+        )
+        rewritten_html = rewritten_html.replace(
+            '<script type="module"',
+            f"{bootstrap_script}\n    <script type=\"module\"",
+            1,
+        )
+    return rewritten_html
+
+
+def _frontend_uses_dist_prefix() -> bool:
+    html = _load_frontend_html()
+    return bool(html and "/dist-frontend/assets/" in html)
 
 
 def _normalize_frontend_path(path: str) -> str:
@@ -784,10 +808,10 @@ app.include_router(misc.router, tags=["Misc"])
 @app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_compat_entrypoint() -> Response:
     """Liefert den historischen Frontend-Pfad fuer bestehende Bookmarks weiter aus."""
-    index_path = _frontend_index_path()
-    if not os.path.isfile(index_path):
+    html = _load_frontend_html()
+    if not html:
         raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
-    return FileResponse(index_path, media_type="text/html")
+    return HTMLResponse(_prepare_frontend_html_for_request(html, "/push-balancer.html"))
 
 
 @app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
