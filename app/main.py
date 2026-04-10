@@ -18,6 +18,7 @@ Startup-Sequenz (uebernommen aus dem frueheren Monolithen):
 13. Push-Sync-Worker starten (wenn RENDER_SYNC_URL gesetzt)
 14. Auto-Suggestion-Worker starten
 """
+import ipaddress
 import json
 import logging
 import os
@@ -33,6 +34,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import (
     ALLOWED_ORIGINS,
+    INTERNAL_ACCESS_ALLOWED_CIDRS,
+    INTERNAL_ACCESS_ENABLED,
+    INTERNAL_ACCESS_EXEMPT_PATHS,
     PORT,
     SERVE_DIR,
     SNAPSHOT_PATH,
@@ -176,6 +180,49 @@ def _problem_response(
         },
         media_type="application/problem+json",
     )
+
+
+def _path_is_exempt_from_internal_access(path: str) -> bool:
+    for exempt_path in INTERNAL_ACCESS_EXEMPT_PATHS:
+        if path == exempt_path or path.startswith(f"{exempt_path}/"):
+            return True
+    return False
+
+
+def _extract_client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        candidate = forwarded_for.split(",", 1)[0].strip()
+        if candidate:
+            return candidate
+
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+
+    if request.client and request.client.host:
+        return request.client.host
+
+    return None
+
+
+def _client_is_on_allowed_network(client_ip: str | None) -> bool:
+    if not client_ip:
+        return False
+
+    try:
+        parsed_ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+
+    for cidr in INTERNAL_ACCESS_ALLOWED_CIDRS:
+        try:
+            if parsed_ip in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            log.warning("[Access] Ungültige INTERNAL_ACCESS_ALLOWED_CIDRS-Konfiguration: %s", cidr)
+
+    return False
 
 
 def _seed_push_snapshot() -> None:
@@ -626,6 +673,30 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     return response
+
+
+@app.middleware("http")
+async def restrict_internal_access(request: Request, call_next) -> Response:
+    """Beschränkt den Zugriff optional auf definierte interne Netze."""
+    if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
+        return await call_next(request)
+
+    client_ip = _extract_client_ip(request)
+    if _client_is_on_allowed_network(client_ip):
+        return await call_next(request)
+
+    log.warning(
+        "[Access] Blockiere externen Zugriff auf %s von %s",
+        request.url.path,
+        client_ip or "<unknown>",
+    )
+    return _problem_response(
+        request=request,
+        status_code=404,
+        title="Not Found",
+        detail="The requested resource was not found.",
+        problem_type="about:blank",
+    )
 
 
 # ── CORS ────────────────────────────────────────────────────────────────────

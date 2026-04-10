@@ -107,6 +107,38 @@ class TestStableFrontendContracts:
         assert "synced" in data
 
 
+class TestInternalAccessControl:
+    def test_blocks_non_allowlisted_clients_when_enabled(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/api/pushes", headers={"X-Forwarded-For": "203.0.113.7"})
+
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["title"] == "Not Found"
+        assert data["status"] == 404
+
+    def test_allows_allowlisted_clients_when_enabled(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/api/pushes", headers={"X-Forwarded-For": "10.24.8.15"})
+
+        assert resp.status_code == 200
+
+    def test_health_stays_reachable_for_health_checks(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/api/health", headers={"X-Forwarded-For": "203.0.113.7"})
+
+        assert resp.status_code == 200
+
+
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
 
 class TestTagesplanEndpoint:

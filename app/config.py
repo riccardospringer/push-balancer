@@ -180,3 +180,29 @@ ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 
 # ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────
 DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+# ── Interner Zugriff / Netzwerk-Allowlist ─────────────────────────────────
+# Auf Render ist der Browser-Zugriff standardmäßig eingeschränkt, bis
+# die erlaubten AS-/VPN-Egress-CIDRs explizit gesetzt wurden.
+INTERNAL_ACCESS_ENABLED: bool = _env_flag("INTERNAL_ACCESS_ENABLED", IS_RENDER)
+INTERNAL_ACCESS_ALLOWED_CIDRS: list[str] = _csv_env(
+    "INTERNAL_ACCESS_ALLOWED_CIDRS",
+    "127.0.0.1/32,::1/128",
+)
+INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
+    "INTERNAL_ACCESS_EXEMPT_PATHS",
+    "/api/health",
+)
