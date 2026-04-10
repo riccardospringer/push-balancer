@@ -12,6 +12,22 @@ def load_openapi() -> dict:
     return yaml.safe_load(OPENAPI_PATH.read_text(encoding="utf-8"))
 
 
+def load_deprecated_openapi_path_config(document: dict) -> tuple[set[str], set[str]]:
+    exact_paths: set[str] = set()
+    prefixes: set[str] = set()
+
+    for path, _method, operation in iter_operations(document):
+        if operation.get("deprecated") is not True:
+            continue
+
+        if "{" in path:
+            prefixes.add(path.split("{", 1)[0])
+        else:
+            exact_paths.add(path)
+
+    return exact_paths, prefixes
+
+
 def iter_operations(document: dict):
     for path, path_item in document.get("paths", {}).items():
         for method, operation in path_item.items():
@@ -159,6 +175,19 @@ def test_deprecated_operations_document_runtime_deprecation_headers():
         headers = success.get("headers", {})
         assert headers.get("Deprecation", {}).get("$ref") == "#/components/headers/Deprecation"
         assert headers.get("Sunset", {}).get("$ref") == "#/components/headers/Sunset"
+
+
+def test_runtime_deprecated_path_configuration_matches_openapi_contract():
+    from app.main import (
+        _DEPRECATED_COMPATIBILITY_EXACT_PATHS,
+        _DEPRECATED_COMPATIBILITY_PREFIXES,
+    )
+
+    document = load_openapi()
+    exact_paths, prefixes = load_deprecated_openapi_path_config(document)
+
+    assert exact_paths == _DEPRECATED_COMPATIBILITY_EXACT_PATHS
+    assert prefixes == set(_DEPRECATED_COMPATIBILITY_PREFIXES)
 
 
 def test_frontend_code_uses_editorial_one_package_imports_only():

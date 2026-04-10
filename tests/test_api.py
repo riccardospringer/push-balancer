@@ -112,6 +112,14 @@ class TestStableFrontendContracts:
         assert resp.headers.get("Deprecation") == "true"
         assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
 
+    def test_deprecated_compatibility_prefix_route_emits_runtime_headers(self):
+        with patch("app.routers.push.urllib.request.urlopen", side_effect=OSError("offline")):
+            resp = client.get("/api/push/messages")
+
+        assert resp.status_code == 200
+        assert resp.headers.get("Deprecation") == "true"
+        assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
+
     def test_stable_contract_route_has_no_deprecation_headers(self):
         resp = client.get("/api/ml-model")
         assert resp.status_code == 200
