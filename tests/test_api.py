@@ -156,6 +156,7 @@ class TestInternalAccessControl:
 
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+        assert "Push Balancer" in resp.text
 
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
