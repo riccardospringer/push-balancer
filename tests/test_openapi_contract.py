@@ -132,6 +132,35 @@ def test_compatibility_operations_are_marked_deprecated():
         assert operation.get("deprecated") is True, f"{path} should be deprecated"
 
 
+def test_deprecated_operations_document_runtime_deprecation_headers():
+    document = load_openapi()
+
+    deprecated_paths = {
+        "/api/push/{path}",
+        "/api/competitors",
+        "/api/sport-competitors",
+        "/api/forschung",
+        "/api/learnings",
+        "/api/adobe/traffic",
+        "/api/ml/status",
+        "/api/ml/monitoring",
+        "/api/ml/retrain",
+        "/api/ml/monitoring/tick",
+        "/api/predict-batch",
+        "/api/gbrt/status",
+        "/api/gbrt/model.json",
+        "/api/gbrt/retrain",
+        "/api/gbrt/force-promote",
+    }
+
+    for path in deprecated_paths:
+        operation = next(iter(document["paths"][path].values()))
+        success = operation["responses"]["200"]
+        headers = success.get("headers", {})
+        assert headers.get("Deprecation", {}).get("$ref") == "#/components/headers/Deprecation"
+        assert headers.get("Sunset", {}).get("$ref") == "#/components/headers/Sunset"
+
+
 def test_frontend_code_uses_editorial_one_package_imports_only():
     frontend_src = Path(__file__).resolve().parents[1] / "frontend" / "src"
     violations: list[str] = []

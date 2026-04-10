@@ -686,6 +686,11 @@ paths:
       responses:
         "200":
           description: Proxied push API payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -703,6 +708,11 @@ paths:
       responses:
         "200":
           description: Flat competitor feed dictionary.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -746,6 +756,11 @@ paths:
       responses:
         "200":
           description: Flat sport competitor feed dictionary.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -901,6 +916,11 @@ paths:
       responses:
         "200":
           description: Full research state payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -918,6 +938,11 @@ paths:
       responses:
         "200":
           description: Learnings payload for legacy research views.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -935,6 +960,11 @@ paths:
       responses:
         "200":
           description: Legacy Adobe analytics payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -968,6 +998,11 @@ paths:
       responses:
         "200":
           description: Legacy ML status payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1102,6 +1137,11 @@ paths:
       responses:
         "200":
           description: Monitoring payload with event items.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1121,6 +1161,11 @@ paths:
       responses:
         "200":
           description: Retraining trigger result.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1142,6 +1187,11 @@ paths:
       responses:
         "200":
           description: Monitoring tick result.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1167,6 +1217,11 @@ paths:
       responses:
         "200":
           description: Batch prediction payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1195,6 +1250,11 @@ paths:
       responses:
         "200":
           description: Batch prediction payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1216,6 +1276,11 @@ paths:
       responses:
         "200":
           description: Legacy GBRT status payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1233,6 +1298,11 @@ paths:
       responses:
         "200":
           description: Serialized GBRT model payload.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1304,6 +1374,11 @@ paths:
       responses:
         "200":
           description: Retraining trigger result.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1325,6 +1400,11 @@ paths:
       responses:
         "200":
           description: Promotion result.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Sunset:
+              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
@@ -1413,6 +1493,18 @@ components:
         minimum: 1
         maximum: 200
         default: 60
+
+  headers:
+    Deprecation:
+      description: Indicates that the endpoint is deprecated and should no longer be used for new integrations.
+      schema:
+        type: string
+        example: "true"
+    Sunset:
+      description: RFC 7231 HTTP-date after which the deprecated endpoint is expected to be removed.
+      schema:
+        type: string
+        example: "Wed, 31 Dec 2026 23:59:59 GMT"
 
   responses:
     BadRequest:
