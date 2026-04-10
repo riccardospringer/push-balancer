@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const frontendRoot = path.resolve(__dirname, '..')
-const openapiPath = path.resolve(frontendRoot, '..', 'openapi.yaml')
+const openapiPath = path.resolve(frontendRoot, '..', 'push-balancer-api-v3.1.0.yaml')
 const outputPath = path.resolve(
   frontendRoot,
   'src/api/generated/api-client-base.ts',
@@ -56,7 +56,7 @@ for (const [routePath, pathItem] of Object.entries(document.paths ?? {})) {
 
 const lines = [
   '/*',
-  ` * Auto-generated from ../openapi.yaml (OpenAPI ${document.openapi}, API ${document.info?.version ?? '0.0.0'}).`,
+  ` * Auto-generated from ../push-balancer-api-v3.1.0.yaml (OpenAPI ${document.openapi}, API ${document.info?.version ?? '0.0.0'}).`,
   ' * Run `pnpm generate:api-client` after changing the API spec.',
   ' */',
   '',

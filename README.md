@@ -65,7 +65,7 @@ pnpm --dir frontend info @spring-media/editorial-one-ui
 
 If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`. This is a temporary fallback and not a full replacement for validating against the real private package.
 
-When `openapi.yaml` changes, regenerate the frontend base client with:
+When `push-balancer-api-v3.1.0.yaml` changes, regenerate the frontend base client with:
 
 ```bash
 pnpm --dir frontend generate:api-client
@@ -177,7 +177,7 @@ Results are cached and refreshed every 5 minutes in the background. Suggestion s
 
 ## API Endpoints
 
-A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml). The documented, frontend-stable contract currently includes:
+A full OpenAPI specification is maintained in [`push-balancer-api-v3.1.0.yaml`](push-balancer-api-v3.1.0.yaml). The documented, frontend-stable contract currently includes:
 
 ### GET Endpoints
 
@@ -360,7 +360,7 @@ frontend/src/
 
 1. Implement backend logic in `app/` and prefer a dedicated router/module over extending legacy files.
 2. Add or update the corresponding frontend page/component in `frontend/src/` when the feature is user-facing.
-3. Document API changes in `openapi.yaml`.
+3. Document API changes in `push-balancer-api-v3.1.0.yaml`.
 4. If the feature introduces a new environment variable, add it to `.env.example` and the table in this README.
 5. Run the relevant checks before pushing (`pytest`, frontend lint, frontend typecheck/build).
 

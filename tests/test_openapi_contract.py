@@ -4,7 +4,7 @@ import re
 import yaml
 
 
-OPENAPI_PATH = Path(__file__).resolve().parents[1] / "openapi.yaml"
+OPENAPI_PATH = Path(__file__).resolve().parents[1] / "push-balancer-api-v3.1.0.yaml"
 ROUTERS_DIR = Path(__file__).resolve().parents[1] / "app" / "routers"
 
 
