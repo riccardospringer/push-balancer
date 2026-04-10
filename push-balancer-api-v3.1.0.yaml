@@ -39,8 +39,8 @@ tags:
     description: Daily plan and retrospective planning data
   - name: AI
     description: Title generation and other AI-assisted capabilities
-  - name: Legacy
-    description: Legacy-compatible helper routes still exposed during migration
+  - name: Compatibility
+    description: Compatibility routes retained for operational clients and transitional integrations
 
 paths:
   /api/health:
@@ -580,7 +580,7 @@ paths:
       tags: [Planning]
       operationId: createDailyPlanSuggestionsLog
       summary: Store daily plan suggestions
-      description: Stores suggested articles for a daily plan slot in either the current React payload shape or the legacy flat payload shape.
+      description: Stores suggested articles for a daily plan slot in either the current React payload shape or the compatibility flat payload shape.
       requestBody:
         required: true
         description: Daily plan suggestion payload in React or legacy format.
@@ -670,15 +670,15 @@ paths:
 
   /api/push/{path}:
     get:
-      tags: [Legacy]
+      tags: [Compatibility]
       operationId: proxyPushApi
-      summary: Proxy a legacy push API path
-      description: Proxies a legacy push-statistics API path and falls back to synchronized cache data when the upstream is unavailable.
+      summary: Proxy a push API path for compatibility clients
+      description: Proxies a push-statistics API path and falls back to synchronized cache data when the upstream is unavailable.
       parameters:
         - name: path
           in: path
           required: true
-          description: Legacy push API path segment to proxy.
+          description: Push API path segment to proxy for compatibility clients.
           schema:
             type: string
             example: "messages"
@@ -697,7 +697,7 @@ paths:
       tags: [Feeds]
       operationId: listCompetitorFeeds
       summary: List cached competitor feeds
-      description: Returns the legacy flat competitor feed dictionary used by older clients.
+      description: Returns the flat competitor feed dictionary retained for compatibility clients.
       responses:
         "200":
           description: Flat competitor feed dictionary.
@@ -739,7 +739,7 @@ paths:
       tags: [Feeds]
       operationId: listSportCompetitorFeeds
       summary: List cached sport competitor feeds
-      description: Returns the legacy flat sport competitor feed dictionary used by older clients.
+      description: Returns the flat sport competitor feed dictionary retained for compatibility clients.
       responses:
         "200":
           description: Flat sport competitor feed dictionary.
@@ -924,8 +924,8 @@ paths:
     get:
       tags: [Analytics]
       operationId: getAdobeTrafficLegacy
-      summary: Get legacy Adobe traffic payload
-      description: Returns the legacy Adobe Analytics payload including enablement and loading flags.
+      summary: Get compatibility Adobe traffic payload
+      description: Returns the Adobe Analytics payload including enablement and loading flags for compatibility clients.
       responses:
         "200":
           description: Legacy Adobe analytics payload.
@@ -956,8 +956,8 @@ paths:
     get:
       tags: [ML]
       operationId: getMlLegacyStatus
-      summary: Get legacy ML model status
-      description: Returns the legacy ML status payload used by earlier clients.
+      summary: Get compatibility ML model status
+      description: Returns the detailed ML status payload retained for compatibility clients.
       responses:
         "200":
           description: Legacy ML status payload.
@@ -1173,7 +1173,7 @@ paths:
       tags: [ML]
       operationId: createMlBatchPredictionAlias
       summary: Create ML batch predictions via alias
-      description: Legacy alias for the batch prediction endpoint retained for compatibility.
+      description: Compatibility alias for the batch prediction endpoint retained for operational clients.
       requestBody:
         required: true
         description: Articles to score in a batch request.
@@ -1199,8 +1199,8 @@ paths:
     get:
       tags: [GBRT]
       operationId: getGbrtLegacyStatus
-      summary: Get legacy GBRT status
-      description: Returns the detailed GBRT status payload retained for earlier clients and diagnostics.
+      summary: Get compatibility GBRT status
+      description: Returns the detailed GBRT status payload retained for compatibility clients and diagnostics.
       responses:
         "200":
           description: Legacy GBRT status payload.
@@ -1284,7 +1284,7 @@ paths:
       tags: [GBRT]
       operationId: createGbrtLegacyRetrainingJob
       summary: Trigger a legacy GBRT retraining job
-      description: Triggers the legacy GBRT retraining endpoint retained for operational compatibility.
+      description: Triggers the compatibility GBRT retraining endpoint retained for operational clients.
       security:
         - adminApiKey: []
       responses:
@@ -1303,8 +1303,8 @@ paths:
     post:
       tags: [GBRT]
       operationId: createGbrtLegacyPromotion
-      summary: Promote the GBRT challenger via legacy endpoint
-      description: Triggers the legacy GBRT promotion endpoint retained for operational compatibility.
+      summary: Promote the GBRT challenger via compatibility endpoint
+      description: Triggers the compatibility GBRT promotion endpoint retained for operational clients.
       security:
         - adminApiKey: []
       responses:
@@ -1709,7 +1709,7 @@ components:
 
     LegacyJsonObject:
       type: object
-      description: Flexible legacy payload that is still exposed for compatibility during migration.
+      description: Flexible compatibility payload that remains exposed for operational clients.
       additionalProperties: true
 
     LegacyCollectionResponse:
@@ -1718,7 +1718,7 @@ components:
       properties:
         items:
           type: array
-          description: Current page of legacy collection items.
+          description: Current page of compatibility collection items.
           items:
             $ref: "#/components/schemas/LegacyJsonObject"
         total:
@@ -2779,11 +2779,11 @@ components:
         date_iso:
           type: string
           format: date
-          description: Planning date for the legacy flat suggestion payload.
+          description: Planning date for the compatibility flat suggestion payload.
           example: "2026-04-10"
         suggestions:
           type: array
-          description: Flat list of legacy suggestion rows.
+          description: Flat list of compatibility suggestion rows.
           items:
             $ref: "#/components/schemas/LogSuggestionLegacyItem"
 
@@ -2823,7 +2823,7 @@ components:
       properties:
         message:
           type: string
-          description: Chat message to send to the legacy Schwab flow.
+          description: Chat message to send to the compatibility Schwab flow.
           example: "Welche Push-Idee ist besser?"
         history:
           type: array
@@ -2841,7 +2841,7 @@ components:
           example: false
         message:
           type: string
-          description: Placeholder status message for the current migration state.
+          description: Status message for the currently unavailable compatibility flow.
           example: "Chat function is being migrated."
 
     SchwabApprovalRequest:

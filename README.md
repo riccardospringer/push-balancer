@@ -213,7 +213,7 @@ A full OpenAPI specification is maintained in [`push-balancer-api-v3.1.0.yaml`](
 | `POST /api/tagesplan/log-suggestions` | Persist daily-plan suggestion snapshots |
 | `POST /api/push-title-generations` | Generate advisory push headline variants |
 
-Legacy or internal helper endpoints still exist for operational compatibility, but the frontend contract should prefer the documented endpoints above.
+Additional compatibility and operational helper endpoints still exist, but the frontend contract should prefer the documented endpoints above.
 
 Protected mutation endpoints require the `X-Admin-Key` header and remain unavailable when `ADMIN_API_KEY` is not configured.
 
@@ -284,6 +284,10 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`, `RENDER_EXTERNAL_HOSTNAME`, and the local network IP. The Render hostname `push-balancer.onrender.com` is always included.
 
+### Internal Network Access
+
+Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to restrict the app to AS/VPN egress IPs. On Render this protection is enabled by default, so non-exempt routes stay closed until the AS network CIDRs are configured. Keep `/api/health` in `INTERNAL_ACCESS_EXEMPT_PATHS` unless your platform health check uses a different route.
+
 ---
 
 ## Environment Variables
@@ -304,6 +308,9 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `BIND_HOST` | No | `0.0.0.0` | Server bind host |
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
 | `ADMIN_API_KEY` | No | — | Strong random admin key for protected retraining and promotion endpoints; required to enable admin mutations |
+| `INTERNAL_ACCESS_ENABLED` | No | `true` on Render, `false` locally | Restrict non-exempt routes to the CIDRs listed in `INTERNAL_ACCESS_ALLOWED_CIDRS` |
+| `INTERNAL_ACCESS_ALLOWED_CIDRS` | No | `127.0.0.1/32,::1/128` | Comma-separated AS/VPN egress CIDRs or individual IPs in `/32` or `/128` notation |
+| `INTERNAL_ACCESS_EXEMPT_PATHS` | No | `/api/health` | Comma-separated route list that remains reachable without the internal allowlist |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
 | `PUSH_DB_MAX_DAYS` | No | `90` | Maximum age of push rows loaded from SQLite into memory for analysis/runtime paths |
 | `PUSH_DB_MAX_ROWS` | No | `15000` locally, lower on Render | Maximum number of push rows loaded from SQLite into memory |
