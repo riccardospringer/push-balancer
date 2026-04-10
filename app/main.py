@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -234,13 +234,32 @@ def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
 
-def _is_frontend_navigation_request(request: Request) -> bool:
-    path = request.url.path
-    if request.method != "GET":
+def _frontend_uses_dist_prefix() -> bool:
+    index_path = _frontend_index_path()
+    if not os.path.isfile(index_path):
+        return False
+    try:
+        with open(index_path, encoding="utf-8") as index_file:
+            return "/dist-frontend/assets/" in index_file.read()
+    except OSError:
+        return False
+
+
+def _normalize_frontend_path(path: str) -> str:
+    if path == "/dist-frontend":
+        return "/"
+    if path.startswith("/dist-frontend/"):
+        stripped = path[len("/dist-frontend"):]
+        return stripped or "/"
+    return path
+
+
+def _is_frontend_navigation_request(method: str, path: str) -> bool:
+    if method != "GET":
         return False
     if path.startswith("/api"):
         return False
-    if path.startswith("/dist-frontend/"):
+    if path.startswith("/assets/"):
         return False
     return True
 
@@ -698,9 +717,17 @@ async def add_security_headers(request: Request, call_next) -> Response:
 @app.middleware("http")
 async def restrict_internal_access(request: Request, call_next) -> Response:
     """Beschränkt den Zugriff optional auf definierte interne Netze."""
-    frontend_navigation = _is_frontend_navigation_request(request)
+    original_path = request.scope.get("path", request.url.path)
+    normalized_path = _normalize_frontend_path(original_path)
+    request.scope["path"] = normalized_path
+    frontend_navigation = _is_frontend_navigation_request(request.method, normalized_path)
+    legacy_frontend_redirect = (
+        original_path == "/push-balancer.html" and _frontend_uses_dist_prefix()
+    )
 
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
+        if legacy_frontend_redirect:
+            return RedirectResponse(url="/dist-frontend/", status_code=307)
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()
@@ -710,6 +737,8 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
 
     client_ip = _extract_client_ip(request)
     if _client_is_on_allowed_network(client_ip):
+        if legacy_frontend_redirect:
+            return RedirectResponse(url="/dist-frontend/", status_code=307)
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()

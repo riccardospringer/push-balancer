@@ -162,12 +162,42 @@ class TestInternalAccessControl:
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr("app.main._frontend_uses_dist_prefix", lambda: False)
 
         resp = client.get("/legacy/bookmark", headers={"CF-Connecting-IP": "145.243.163.23"})
 
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
+
+    def test_legacy_frontend_path_redirects_to_dist_frontend_when_bundle_uses_prefix(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr("app.main._frontend_uses_dist_prefix", lambda: True)
+
+        resp = client.get(
+            "/push-balancer.html",
+            headers={"CF-Connecting-IP": "145.243.163.23"},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/dist-frontend/"
+
+    def test_dist_frontend_asset_prefix_is_rewritten_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        asset_name = "index-gyA-gi38.js"
+        resp = client.get(
+            f"/dist-frontend/assets/{asset_name}",
+            headers={"CF-Connecting-IP": "145.243.163.23"},
+        )
+
+        assert resp.status_code == 200
+        assert "javascript" in resp.headers.get("content-type", "")
 
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
