@@ -1,8 +1,7 @@
-"""app/ml/lightgbm_model.py — LightGBM-Training + Stacking Ensemble.
+"""app/ml/lightgbm_model.py — LightGBM-Training + Unified-Stacking-State.
 
-Globaler ML-State und Training für LightGBM + Stacking Ensemble
-(LightGBM + XGBoost + CatBoost → Ridge Meta-Learner).
-Migration über Compat-Shim — direkte Migration folgt schrittweise.
+Trainiert das native LightGBM-Modell und synchronisiert daraus den
+Unified/Stacking-State für die predictOR-Pipeline im app/-Runtimepfad.
 """
 from __future__ import annotations
 
@@ -194,22 +193,53 @@ def _ml_train_model_impl() -> None:
 
 
 def unified_train() -> None:
-    """Unified Ensemble Training — nutzt ml_train_model() als Basis.
-
-    XGBoost/CatBoost wurden aus requirements.txt entfernt.
-    Das LightGBM-Modell dient als alleiniger Basis-Learner.
-    """
-    log.info("[lightgbm] unified_train: delegiert an ml_train_model()")
+    """Aktualisiert den Unified-State auf Basis des trainierten LightGBM-Modells."""
     ml_train_model()
+
+    with _ml_lock:
+        model = _ml_state.get("model")
+        feature_names = list(_ml_state.get("feature_names") or [])
+        stats = _ml_state.get("stats")
+        calibrator = _ml_state.get("calibrator")
+        metrics = dict(_ml_state.get("metrics") or {})
+        train_count = int(_ml_state.get("train_count") or 0)
+        last_train_ts = int(_ml_state.get("last_train_ts") or 0)
+
+    with _unified_lock:
+        _unified_state["model"] = model
+        _unified_state["feature_names"] = feature_names
+        _unified_state["stats"] = stats
+        _unified_state["calibrator"] = calibrator
+        _unified_state["conformal_radius"] = _ml_state.get("conformal_radius", 1.0)
+        _unified_state["metrics"] = {
+            **metrics,
+            "stacking_active": bool(model is not None),
+            "stacking_mode": "single_lightgbm",
+        }
+        _unified_state["train_count"] = train_count
+        _unified_state["last_train_ts"] = last_train_ts
+        _unified_state["base_models"] = {"lightgbm": bool(model is not None)}
+        _unified_state["meta_model"] = {"type": "passthrough"}
+        _unified_state["stacking_active"] = bool(model is not None)
+        _unified_state["training"] = False
+
+    with _ml_lock:
+        _ml_state["metrics"] = {
+            **metrics,
+            "stacking_active": bool(model is not None),
+        }
+
+    log.info(
+        "[lightgbm] unified_train: stacking_active=%s, feature_count=%d",
+        bool(model is not None),
+        len(feature_names),
+    )
 
 
 def train_stacking_model(research_state: dict) -> None:
-    """Stacking Meta-Learner — entfällt (XGBoost/CatBoost nicht mehr installiert).
-
-    Mit nur einem Basis-Learner ergibt Stacking keinen Mehrwert.
-    ml_train_model() liefert das einzige aktive Modell.
-    """
-    log.debug("[lightgbm] train_stacking_model: kein Stacking ohne XGBoost/CatBoost, übersprungen")
+    """API-kompatibler Stacking-Train-Entry: delegiert auf unified_train()."""
+    _ = research_state
+    unified_train()
 
 
 def monitoring_tick() -> None:

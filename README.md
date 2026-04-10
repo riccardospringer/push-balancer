@@ -307,7 +307,10 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
 | `ADMIN_API_KEY` | No | — | Strong random admin key for protected retraining and promotion endpoints; required to enable admin mutations |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
+| `PUSH_DB_MAX_DAYS` | No | `90` | Maximum age of push rows loaded from SQLite into memory for analysis/runtime paths |
+| `PUSH_DB_MAX_ROWS` | No | `15000` locally, lower on Render | Maximum number of push rows loaded from SQLite into memory |
 | `PUSH_SNAPSHOT_PATH` | No | — | Optional path to a sanitized startup seed file mounted outside the repository |
+| `DISABLE_LEGACY_WORKER` | No | `0` | Disables only the legacy monolith/compat worker path, not the active FastAPI runtime |
 | `NPM_TOKEN` | No | — | GitHub Packages token for installing `@spring-media/editorial-one-ui` locally |
 
 Variables are loaded from a `.env` file in the project directory at startup (via a lightweight built-in parser — no `python-dotenv` required).
@@ -364,6 +367,12 @@ frontend/src/
 3. Document API changes in `openapi.yaml`.
 4. If the feature introduces a new environment variable, add it to `.env.example` and the table in this README.
 5. Run the relevant checks before pushing (`pytest`, frontend lint, frontend typecheck/build).
+
+### Runtime guardrails
+
+- The active runtime uses bounded SQLite loads via `PUSH_DB_MAX_DAYS` and `PUSH_DB_MAX_ROWS` to avoid loading the full history into memory on smaller instances.
+- The Tagesplan prediction path includes a guard against saturated OR forecasts when a model output looks incorrectly back-transformed.
+- `DISABLE_LEGACY_WORKER` only affects the old compat path; the FastAPI runtime and its background workers remain the supported production path.
 
 ### Running Tests
 

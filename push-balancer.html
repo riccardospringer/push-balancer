@@ -18176,28 +18176,6 @@ function renderTagesplan(data, mlStatus, savedSuggestions) {
       const _hasSaved = savedSlot.length > 0;
       if (_hasSaved) {
         recArticles = savedSlot.map(sg => ({title: sg.title, link: sg.link, category: sg.category || sg.best_cat, score: sg.score, expected_or: sg.expected_or}));
-        // Migration: Erkennung korrupter Slot-Level-Duplikate (alle Artikel gleiche OR)
-        // Einmalig individuell per predictOR berechnen und in DB aktualisieren
-        const _allSameOR = recArticles.length > 1 && recArticles.every(r => Math.abs((r.expected_or || 0) - (recArticles[0].expected_or || 0)) < 0.01);
-        if (_allSameOR && typeof predictOR === 'function') {
-          let _anyFixed = false;
-          for (const r of recArticles) {
-            if (!r.title) continue;
-            // Erst im aktuellen Pool suchen (beste Qualitaet)
-            let _art = (typeof articles !== 'undefined' && articles.length > 0) ? articles.find(a => a.title === r.title || (a.link && r.link && a.link === r.link)) : null;
-            // Sonst synthetisches Artikel-Objekt fuer predictOR
-            if (!_art) _art = {title: r.title, link: r.link || '', category: r.category || 'news', score: r.score || 50};
-            const _p = predictOR(_art);
-            if (_p && _p.or > 0) { r.expected_or = Math.round(_p.or * 100) / 100; _anyFixed = true; }
-          }
-          // Reparierte Werte in DB zurueckschreiben
-          if (_anyFixed) {
-            if (!_slotSuggestions[s.hour]) _slotSuggestions[s.hour] = [];
-            recArticles.forEach((r, i) => {
-              _slotSuggestions[s.hour].push({slot_hour: s.hour, suggestion_num: i + 1, title: r.title, link: r.link, category: r.category, score: r.score || 0, expected_or: r.expected_or || 0, best_cat: r.category || 'news'});
-            });
-          }
-        }
       }
 
       // Pruefe ob gepushter Artikel = Vorschlag (URL- oder Titel-Match)

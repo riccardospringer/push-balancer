@@ -7740,12 +7740,30 @@ def _ml_build_tagesplan_inner(now, current_hour, mode="redaktion"):
                 except Exception:
                     preds.append(0.0)
 
-        for i, h in enumerate(h_order):
-            pred_val = float(preds[i])
-            # ML-Modell nutzt Log-Transform, GBRT nicht
+        raw_pred_vals = [float(p) for p in preds]
+        transformed_vals = []
+        for pred_val in raw_pred_vals:
+            # Legacy-LightGBM nutzte log1p(y), neuere Modelle ggf. direkt OR-Prozentpunkte.
             if not _using_gbrt_fallback:
                 pred_val = math.expm1(pred_val)
-            ml_predictions[h] = round(max(0.01, min(20.0, pred_val)), 2)
+            transformed_vals.append(round(max(0.01, min(20.0, pred_val)), 2))
+
+        # Auto-Guard: Wenn fast alles auf 20.0 gekappt wird, war die Rücktransformation
+        # sehr wahrscheinlich falsch. Dann rohe Modellwerte als OR verwenden.
+        if not _using_gbrt_fallback and transformed_vals:
+            cap20_ratio = sum(1 for v in transformed_vals if abs(v - 20.0) < 1e-9) / len(transformed_vals)
+            raw_clamped = [round(max(0.01, min(20.0, v)), 2) for v in raw_pred_vals]
+            raw_span = (max(raw_clamped) - min(raw_clamped)) if raw_clamped else 0.0
+            if len(transformed_vals) >= 6 and cap20_ratio >= 0.8 and raw_span >= 0.2:
+                log.warning(
+                    "[Tagesplan] Detektiert gesättigte OR-Prognosen (%.0f%% bei 20.0). "
+                    "Nutze rohe Modellwerte statt expm1-Rücktransformation.",
+                    cap20_ratio * 100,
+                )
+                transformed_vals = raw_clamped
+
+        for i, h in enumerate(h_order):
+            ml_predictions[h] = transformed_vals[i]
 
         # SHAP: 1x Explainer, 1x Batch statt 18x Einzeln (~50s -> ~3s)
         try:

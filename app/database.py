@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 
-from app.config import PUSH_DB_PATH, IS_RENDER
+from app.config import PUSH_DB_PATH, IS_RENDER, PUSH_DB_MAX_DAYS, PUSH_DB_MAX_ROWS
 
 log = logging.getLogger("push-balancer")
 
@@ -358,55 +358,60 @@ def push_db_upsert(parsed_pushes: list) -> int:
     return count
 
 
-def push_db_load_all(min_ts: int = 0, max_days: int = 90, max_rows: int = 15000) -> list:
+def push_db_load_all(
+    min_ts: int = 0,
+    max_days: int | None = None,
+    max_rows: int | None = None,
+) -> list:
     """Lädt Pushes aus SQLite, optional gefiltert nach min_ts (Unix-Timestamp).
 
-    max_days: Maximales Alter der geladenen Pushes (default: 90 Tage).
+    max_days: Maximales Alter der geladenen Pushes (Default aus Config).
               Verhindert, dass die gesamte ~239 MB DB in RAM geladen wird.
-    max_rows: Absolutes Zeilenlimit als OOM-Sicherheitsnetz (default: 15000).
+    max_rows: Absolutes Zeilenlimit als OOM-Sicherheitsnetz (Default aus Config).
     Filtert SportBILD und AutoBILD Links heraus.
     """
     import time as _time
-    cutoff = max(min_ts, int(_time.time()) - max_days * 86400)
+    effective_max_days = max_days if max_days is not None else PUSH_DB_MAX_DAYS
+    effective_max_rows = max_rows if max_rows is not None else PUSH_DB_MAX_ROWS
+    cutoff = max(min_ts, int(_time.time()) - effective_max_days * 86400)
     conn = sqlite3.connect(PUSH_DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA cache_size = -4096")   # 4 MB max page cache
     conn.execute("PRAGMA mmap_size = 0")         # kein memory-mapped I/O
     conn.row_factory = sqlite3.Row
+    result = []
     try:
-        rows = conn.execute(
+        cur = conn.execute(
             "SELECT * FROM pushes WHERE ts_num > ? AND link NOT LIKE '%sportbild.%' AND link NOT LIKE '%autobild.%' ORDER BY ts_num DESC LIMIT ?",
-            (cutoff, max_rows),
-        ).fetchall()
+            (cutoff, effective_max_rows),
+        )
+        for r in cur:
+            keys = r.keys()
+            result.append({
+                "message_id": r["message_id"],
+                "or": r["or_val"],
+                "ts": str(r["ts_num"]),
+                "ts_num": r["ts_num"],
+                "title": r["title"],
+                "headline": r["headline"],
+                "kicker": r["kicker"],
+                "cat": r["cat"],
+                "link": r["link"],
+                "type": r["type"],
+                "hour": r["hour"],
+                "title_len": r["title_len"],
+                "opened": r["opened"],
+                "received": r["received"],
+                "channel": r["channel"],
+                "channels": json.loads(r["channels"] or "[]"),
+                "is_eilmeldung": bool(r["is_eilmeldung"]),
+                "target_stats": json.loads(r["target_stats"] or "{}") if "target_stats" in keys else {},
+                "app_list": json.loads(r["app_list"] or "[]") if "app_list" in keys else [],
+                "n_apps": r["n_apps"] if "n_apps" in keys else 0,
+                "total_recipients": r["total_recipients"] if "total_recipients" in keys else 0,
+            })
     finally:
         conn.close()
-
-    result = []
-    for r in rows:
-        keys = r.keys()
-        result.append({
-            "message_id": r["message_id"],
-            "or": r["or_val"],
-            "ts": str(r["ts_num"]),
-            "ts_num": r["ts_num"],
-            "title": r["title"],
-            "headline": r["headline"],
-            "kicker": r["kicker"],
-            "cat": r["cat"],
-            "link": r["link"],
-            "type": r["type"],
-            "hour": r["hour"],
-            "title_len": r["title_len"],
-            "opened": r["opened"],
-            "received": r["received"],
-            "channel": r["channel"],
-            "channels": json.loads(r["channels"] or "[]"),
-            "is_eilmeldung": bool(r["is_eilmeldung"]),
-            "target_stats": json.loads(r["target_stats"] or "{}") if "target_stats" in keys else {},
-            "app_list": json.loads(r["app_list"] or "[]") if "app_list" in keys else [],
-            "n_apps": r["n_apps"] if "n_apps" in keys else 0,
-            "total_recipients": r["total_recipients"] if "total_recipients" in keys else 0,
-        })
     return result
 
 
