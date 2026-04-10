@@ -145,3 +145,35 @@ def test_frontend_code_uses_editorial_one_package_imports_only():
             violations.append(str(source_file.relative_to(frontend_src.parent)))
 
     assert not violations, f"Direct shim imports are not allowed: {violations}"
+
+
+def test_stable_openapi_schemas_include_descriptions_and_examples():
+    document = load_openapi()
+    schemas = document["components"]["schemas"]
+
+    required_schema_properties = {
+        "Push": {"id", "title", "channel", "sentAt", "recipients", "opened", "openRate", "predictedOR", "url"},
+        "PushDaySummary": {"count", "avgOR", "topOR", "recipients"},
+        "ResearchRule": {"id", "category", "rule", "confidence", "supportCount", "createdAt"},
+        "ResearchRulesResponse": {"version", "rules", "rollingAccuracy", "generatedAt"},
+        "AdobeTrafficEntry": {"hour", "pageviews", "visitors"},
+        "AdobeTrafficArticle": {"title", "url", "pageviews"},
+        "AdobeTrafficResponse": {"hourly", "topArticles", "fetchedAt"},
+        "MlStatusResponse": {"modelVersion", "trainedAt", "mae", "rmse", "r2", "trainingRows", "features", "isEnsemble", "advisoryOnly", "actionAllowed"},
+        "MlMonitoringPrediction": {"id", "predictedOR", "actualOR", "error", "timestamp"},
+        "MlMonitoringResponse": {"recentPredictions", "rollingMAE", "drift"},
+        "JobResponse": {"ok", "message", "jobId"},
+        "GbrtStatusResponse": {"active", "modelVersion", "mae", "trainingRows", "features", "lastRetrain"},
+    }
+
+    for schema_name, property_names in required_schema_properties.items():
+        properties = schemas[schema_name]["properties"]
+        for property_name in property_names:
+            property_schema = properties[property_name]
+            assert property_schema.get("description"), (
+                f"{schema_name}.{property_name} misses description"
+            )
+            if property_schema.get("type") in {"string", "integer", "number", "boolean"}:
+                assert "example" in property_schema, (
+                    f"{schema_name}.{property_name} misses example"
+                )

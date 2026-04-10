@@ -1627,28 +1627,46 @@ components:
       properties:
         id:
           type: string
+          description: Unique identifier of the push notification event.
+          example: "push-2026-04-09-081500"
         title:
           type: string
+          description: Headline text that was sent to end users.
+          example: "Eilmeldung: Regierung beschliesst neues Entlastungspaket"
         channel:
           type: string
+          description: Delivery channel or app surface used for the push.
+          example: "bild-app"
         sentAt:
           type: string
           format: date-time
+          description: Timestamp when the push notification was sent.
+          example: "2026-04-09T08:15:00Z"
         recipients:
           type: integer
           format: int32
+          description: Number of addressed recipients for this push.
+          example: 125000
         opened:
           type: integer
           format: int32
+          description: Number of measured opens attributed to this push.
+          example: 9625
         openRate:
           type: number
           format: float
+          description: Observed opening rate in percent.
+          example: 7.7
         predictedOR:
           type: number
           format: float
+          description: Advisory predicted opening rate in percent, if available.
+          example: 7.4
         url:
           type: string
           format: uri
+          description: Canonical article URL associated with the push, if available.
+          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
 
     PushDaySummary:
       type: object
@@ -1657,15 +1675,23 @@ components:
         count:
           type: integer
           format: int32
+          description: Number of pushes sent on the current day.
+          example: 18
         avgOR:
           type: number
           format: float
+          description: Average observed opening rate for today's pushes.
+          example: 6.8
         topOR:
           type: number
           format: float
+          description: Highest observed opening rate for today's pushes.
+          example: 11.4
         recipients:
           type: integer
           format: int32
+          description: Total addressed recipients across today's pushes.
+          example: 1985000
 
     PushCollectionResponse:
       type: object
@@ -1683,6 +1709,7 @@ components:
           description: Distinct channels represented in the current page.
         today:
           $ref: "#/components/schemas/PushDaySummary"
+          description: Same-day aggregate statistics for the returned push history.
         total:
           type: integer
           format: int64
@@ -2056,19 +2083,31 @@ components:
       properties:
         id:
           type: string
+          description: Stable identifier of the derived research rule.
+          example: "rule-politik-prime-time"
         category:
           type: string
+          description: Editorial category the rule applies to.
+          example: "Politik"
         rule:
           type: string
+          description: Human-readable rule text derived from research data.
+          example: "Politik pushes perform above average between 07:00 and 09:00."
         confidence:
           type: number
           format: float
+          description: Confidence score for the rule between 0 and 1.
+          example: 0.81
         supportCount:
           type: integer
           format: int32
+          description: Number of supporting historical observations.
+          example: 43
         createdAt:
           type: string
           format: date-time
+          description: Timestamp when the rule snapshot was generated.
+          example: "2026-04-09T06:00:00Z"
 
     ResearchRulesResponse:
       type: object
@@ -2077,16 +2116,23 @@ components:
         version:
           type: integer
           format: int32
+          description: Monotonic version number of the generated rules snapshot.
+          example: 12
         rules:
           type: array
+          description: Derived research rules in the current snapshot.
           items:
             $ref: "#/components/schemas/ResearchRule"
         rollingAccuracy:
           type: number
           format: float
+          description: Rolling accuracy score of the current rule set.
+          example: 0.74
         generatedAt:
           type: string
           format: date-time
+          description: Timestamp when the rules snapshot was generated.
+          example: "2026-04-09T06:00:00Z"
 
     AdobeTrafficEntry:
       type: object
@@ -2095,12 +2141,18 @@ components:
         hour:
           type: integer
           format: int32
+          description: Hour of day in local newsroom time.
+          example: 9
         pageviews:
           type: integer
           format: int32
+          description: Number of pageviews attributed to that hour bucket.
+          example: 18500
         visitors:
           type: integer
           format: int32
+          description: Number of unique visitors attributed to that hour bucket.
+          example: 11200
 
     AdobeTrafficArticle:
       type: object
@@ -2108,12 +2160,18 @@ components:
       properties:
         title:
           type: string
+          description: Article headline in the Adobe traffic ranking.
+          example: "Bundestag debattiert ueber neues Entlastungspaket"
         url:
           type: string
           format: uri
+          description: Canonical URL of the ranked article.
+          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
         pageviews:
           type: integer
           format: int32
+          description: Number of pageviews attributed to the article.
+          example: 28400
 
     AdobeTrafficResponse:
       type: object
@@ -2121,15 +2179,19 @@ components:
       properties:
         hourly:
           type: array
+          description: Hourly Adobe Analytics traffic breakdown.
           items:
             $ref: "#/components/schemas/AdobeTrafficEntry"
         topArticles:
           type: array
+          description: Top-performing articles in the current Adobe snapshot.
           items:
             $ref: "#/components/schemas/AdobeTrafficArticle"
         fetchedAt:
           type: string
           format: date-time
+          description: Timestamp when the Adobe snapshot was fetched.
+          example: "2026-04-09T09:30:00Z"
 
     MlSafetyStatusResponse:
       type: object
@@ -2158,31 +2220,50 @@ components:
       properties:
         modelVersion:
           type: string
+          description: Version identifier of the active ML model bundle.
+          example: "lgbm-2026-04-09-0600"
         trainedAt:
           type: string
           format: date-time
+          description: Timestamp when the active ML model bundle was trained.
+          example: "2026-04-09T06:00:00Z"
         mae:
           type: number
           format: float
+          description: Mean absolute error of the active model evaluation.
+          example: 1.34
         rmse:
           type: number
           format: float
+          description: Root mean squared error of the active model evaluation.
+          example: 1.92
         r2:
           type: number
           format: float
+          description: Coefficient of determination of the active model evaluation.
+          example: 0.41
         trainingRows:
           type: integer
           format: int32
+          description: Number of training rows used to fit the active model.
+          example: 18450
         features:
           type: array
+          description: Ordered feature names exposed by the active model bundle.
           items:
             type: string
         isEnsemble:
           type: boolean
+          description: Whether the active ML prediction path is an ensemble.
+          example: true
         advisoryOnly:
           type: boolean
+          description: Whether the model output is limited to advisory use.
+          example: true
         actionAllowed:
           type: boolean
+          description: Whether autonomous downstream actions are permitted.
+          example: false
 
     MlMonitoringPrediction:
       type: object
@@ -2190,18 +2271,28 @@ components:
       properties:
         id:
           type: string
+          description: Identifier of the monitored prediction record.
+          example: "pred-2026-04-09-081500"
         predictedOR:
           type: number
           format: float
+          description: Predicted opening rate for the monitored event.
+          example: 7.3
         actualOR:
           type: number
           format: float
+          description: Observed opening rate, if the result is already known.
+          example: 6.9
         error:
           type: number
           format: float
+          description: Signed prediction error in percentage points, if available.
+          example: -0.4
         timestamp:
           type: string
           format: date-time
+          description: Timestamp when the prediction record was created.
+          example: "2026-04-09T08:15:00Z"
 
     MlMonitoringResponse:
       type: object
@@ -2209,14 +2300,19 @@ components:
       properties:
         recentPredictions:
           type: array
+          description: Recently logged prediction records for monitoring.
           items:
             $ref: "#/components/schemas/MlMonitoringPrediction"
         rollingMAE:
           type: number
           format: float
+          description: Rolling mean absolute error over the latest monitored predictions.
+          example: 1.48
         drift:
           type: number
           format: float
+          description: Drift score summarizing recent model instability.
+          example: 0.12
 
     MlPredictionResponse:
       type: object
@@ -2373,10 +2469,16 @@ components:
       properties:
         ok:
           type: boolean
+          description: Whether the requested job was accepted successfully.
+          example: true
         message:
           type: string
+          description: Human-readable status message for the job request.
+          example: "Retraining job scheduled."
         jobId:
           type: string
+          description: Identifier of the scheduled job, if available.
+          example: "job-ml-retrain-2026-04-09-0600"
 
     GbrtStatusResponse:
       type: object
@@ -2384,20 +2486,31 @@ components:
       properties:
         active:
           type: boolean
+          description: Whether the GBRT model is currently available for predictions.
+          example: true
         modelVersion:
           type: string
+          description: Version identifier of the active GBRT model.
+          example: "gbrt-2026-04-09-0600"
         mae:
           type: number
           format: float
+          description: Mean absolute error of the active GBRT model.
+          example: 1.57
         trainingRows:
           type: integer
           format: int32
+          description: Number of rows used to train the active GBRT model.
+          example: 18450
         features:
           type: array
+          description: Ordered feature names exposed by the GBRT model.
           items:
             type: string
         lastRetrain:
           type: string
+          description: Timestamp of the last successful GBRT retraining run.
+          example: "2026-04-09T06:00:00Z"
 
     GbrtPredictionResponse:
       type: object
