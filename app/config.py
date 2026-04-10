@@ -7,6 +7,7 @@ Beim Import wird automatisch eine .env-Datei im Projektverzeichnis geladen
 import os
 import socket
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("push-balancer")
 
@@ -31,6 +32,36 @@ OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
+
+
+def push_api_base_candidates() -> list[str]:
+    """Return preferred Push API base URLs with a safe https fallback."""
+    candidates: list[str] = []
+
+    def _add(url: str) -> None:
+        normalized = url.rstrip("/")
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    _add(PUSH_API_BASE)
+
+    parsed = urlsplit(PUSH_API_BASE)
+    hostname = (parsed.hostname or "").lower()
+    if hostname == "push-frontend.bildcms.de":
+        alternate_scheme = "https" if parsed.scheme == "http" else "http"
+        _add(
+            urlunsplit(
+                (
+                    alternate_scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
+        )
+
+    return candidates
 
 # ── Sync / Render ──────────────────────────────────────────────────────────
 SYNC_SECRET: str = os.environ.get("PUSH_SYNC_SECRET", "")

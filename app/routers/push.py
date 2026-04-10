@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from app.config import PUSH_API_BASE, SYNC_SECRET
+from app.config import SYNC_SECRET, push_api_base_candidates
 from app.database import push_db_load_all, push_db_log_prediction
 
 log = logging.getLogger("push-balancer")
@@ -128,24 +128,27 @@ async def proxy_push_api(path: str, request: Request) -> Response:
     """
     full_path = f"/push/{path}"
     query = str(request.url.query)
-    url = f"{PUSH_API_BASE}{full_path}"
-    if query:
-        url = f"{url}?{query}"
+    last_error: Exception | None = None
+    for base_url in push_api_base_candidates():
+        url = f"{base_url}{full_path}"
+        if query:
+            url = f"{url}?{query}"
 
-    # 1. Direkt zur BILD Push-API
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; PushBalancer/2.0)",
-            "Accept": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-            data = resp.read()
-        return Response(
-            content=data,
-            media_type="application/json; charset=utf-8",
-        )
-    except Exception as e:
-        log.info("[Proxy] Push-API direkt nicht erreichbar, prüfe Sync-Cache: %s", e)
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; PushBalancer/2.0)",
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+                data = resp.read()
+            return Response(
+                content=data,
+                media_type="application/json; charset=utf-8",
+            )
+        except Exception as exc:
+            last_error = exc
+
+    log.info("[Proxy] Push-API direkt nicht erreichbar, prüfe Sync-Cache: %s", last_error)
 
     # 2. Sync-Cache
     with _push_sync_lock:

@@ -240,6 +240,19 @@ class TestInternalAccessControl:
         assert "replaceState" in rewritten
 
 
+class TestPushApiBaseCandidates:
+    def test_prefers_https_and_keeps_http_fallback_for_bildcms(self, monkeypatch):
+        import app.config as config
+
+        monkeypatch.setattr(config, "PUSH_API_BASE", "http://push-frontend.bildcms.de")
+        candidates = config.push_api_base_candidates()
+
+        assert candidates == [
+            "http://push-frontend.bildcms.de",
+            "https://push-frontend.bildcms.de",
+        ]
+
+
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
 
 class TestTagesplanEndpoint:

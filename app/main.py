@@ -556,7 +556,7 @@ def _start_background_workers() -> None:
         log.info("[Adobe] Deaktiviert (ADOBE_CLIENT_ID/SECRET nicht gesetzt)")
 
     # 12. Push-Auto-Fetch Worker
-    from app.config import PUSH_API_BASE
+    from app.config import push_api_base_candidates
     import ssl as _ssl_mod2
     try:
         import certifi as _certifi2
@@ -573,47 +573,56 @@ def _start_background_workers() -> None:
             try:
                 end_ts = int(time.time())
                 start_ts = end_ts - 3 * 86400
-                url = (f"{PUSH_API_BASE}/push/statistics/message"
-                       f"?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL")
-                req = _ur.Request(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
-                    "Accept": "application/json",
-                })
                 all_msgs = []
-                with _ur.urlopen(req, timeout=20, context=_auto_ssl) as resp:
-                    data = json.loads(resp.read())
-                    all_msgs = data.get("messages", [])
-                    next_params = data.get("next")
-                    page = 0
-                    while next_params and page < 10:
-                        url2 = f"{PUSH_API_BASE}/push/statistics/message?{next_params}"
-                        req2 = _ur.Request(url2, headers={
+                channels = []
+                last_error = None
+                for base_url in push_api_base_candidates():
+                    try:
+                        url = (f"{base_url}/push/statistics/message"
+                               f"?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL")
+                        req = _ur.Request(url, headers={
                             "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
                             "Accept": "application/json",
                         })
-                        with _ur.urlopen(req2, timeout=15, context=_auto_ssl) as resp2:
-                            d2 = json.loads(resp2.read())
-                            all_msgs.extend(d2.get("messages", []))
-                            next_params = d2.get("next")
-                        page += 1
-                channels = []
-                try:
-                    ch_url = f"{PUSH_API_BASE}/push/statistics/message/channels?sourceTypes=EDITORIAL"
-                    ch_req = _ur.Request(ch_url, headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
-                        "Accept": "application/json",
-                    })
-                    with _ur.urlopen(ch_req, timeout=10, context=_auto_ssl) as ch_resp:
-                        channels = json.loads(ch_resp.read())
-                except Exception:
-                    pass
+                        with _ur.urlopen(req, timeout=20, context=_auto_ssl) as resp:
+                            data = json.loads(resp.read())
+                            all_msgs = data.get("messages", [])
+                            next_params = data.get("next")
+                            page = 0
+                            while next_params and page < 10:
+                                url2 = f"{base_url}/push/statistics/message?{next_params}"
+                                req2 = _ur.Request(url2, headers={
+                                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                                    "Accept": "application/json",
+                                })
+                                with _ur.urlopen(req2, timeout=15, context=_auto_ssl) as resp2:
+                                    d2 = json.loads(resp2.read())
+                                    all_msgs.extend(d2.get("messages", []))
+                                    next_params = d2.get("next")
+                                page += 1
+
+                        try:
+                            ch_url = f"{base_url}/push/statistics/message/channels?sourceTypes=EDITORIAL"
+                            ch_req = _ur.Request(ch_url, headers={
+                                "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                                "Accept": "application/json",
+                            })
+                            with _ur.urlopen(ch_req, timeout=10, context=_auto_ssl) as ch_resp:
+                                channels = json.loads(ch_resp.read())
+                        except Exception:
+                            pass
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                if last_error and not all_msgs and not channels:
+                    raise last_error
                 with _push_sync_lock:
                     _push_sync_cache["messages"] = all_msgs
                     _push_sync_cache["channels"] = channels
                     _push_sync_cache["ts"] = time.time()
                 log.info("[AutoFetch] OK: %d Push-Messages geladen", len(all_msgs))
             except Exception as e:
-                log.warning("[AutoFetch] Fehler: %s", e)
+                log.warning("[AutoFetch] Fehler: %s", locals().get("last_error", e) or e)
             time.sleep(120)
 
     threading.Thread(target=_push_auto_fetch_worker, daemon=True).start()
