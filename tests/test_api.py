@@ -355,3 +355,21 @@ class TestPushTitleGenerateEndpoint:
         data = resp.json()
         assert data["title"] == "Bad Request"
         assert data["status"] == 400
+
+    @pytest.mark.skipif(_using_mock, reason="Nur mit echter App — Mock enthält den Endpoint nicht")
+    def test_schwab_chat_returns_not_implemented_problem(self):
+        resp = client.post("/api/schwab-chat", json={"message": "Hallo", "history": []})
+        assert resp.status_code == 501
+        data = resp.json()
+        assert data["title"] == "HTTP Error"
+        assert data["status"] == 501
+        assert "not implemented" in data["detail"].lower()
+
+    @pytest.mark.skipif(_using_mock, reason="Nur mit echter App — Mock enthält den Endpoint nicht")
+    def test_ml_ab_status_returns_not_implemented_problem(self):
+        resp = client.get("/api/ml/ab-status")
+        assert resp.status_code == 501
+        data = resp.json()
+        assert data["title"] == "HTTP Error"
+        assert data["status"] == 501
+        assert "not implemented" in data["detail"].lower()

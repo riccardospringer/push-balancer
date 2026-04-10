@@ -297,21 +297,16 @@ def get_ml_experiments_compare(
     })
 
 
-_ab_state: dict = {
-    "active": False,
-    "championMae": None,
-    "challengerMae": None,
-    "evaluated": 0,
-}
-
-
 @router.get("/api/ml/ab-status")
 def get_ml_ab_status() -> JSONResponse:
     """Liefert A/B-Test-Status des GBRT Challenger-Modells.
 
-    A/B-Testing noch nicht migriert — gibt lokalen Stub-State zurück.
+    A/B-Testing ist im FastAPI-Refactor noch nicht migriert.
     """
-    return JSONResponse(content=_ab_state)
+    raise HTTPException(
+        status_code=501,
+        detail="ML A/B status is not implemented in the current FastAPI runtime.",
+    )
 
 
 @router.get("/api/ml/monitoring")

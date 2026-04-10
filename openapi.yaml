@@ -1077,16 +1077,10 @@ paths:
       tags: [ML]
       operationId: getMlAbStatus
       summary: Get ML A/B test status
-      description: Returns the current legacy A/B test status payload for the challenger flow.
+      description: Returns a not-implemented response because the A/B status flow is not yet migrated into the FastAPI runtime.
       responses:
-        "200":
-          description: A/B status payload.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MlAbStatusResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
 
   /api/ml/monitoring:
     get:
@@ -1330,7 +1324,7 @@ paths:
       tags: [AI]
       operationId: createSchwabChatMessage
       summary: Create a Schwab chat message
-      description: Returns the current placeholder response for the not-yet-migrated Schwab chat flow.
+      description: Returns a not-implemented response because the Schwab chat flow is not yet migrated into the FastAPI runtime.
       requestBody:
         required: true
         description: Chat message and conversation history.
@@ -1339,12 +1333,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SchwabChatRequest"
       responses:
-        "200":
-          description: Placeholder Schwab chat response.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SchwabChatResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
@@ -1418,6 +1408,12 @@ components:
             $ref: "#/components/schemas/Problem"
     NotFound:
       description: The requested resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotImplemented:
+      description: The requested capability is not implemented in the current runtime.
       content:
         application/problem+json:
           schema:

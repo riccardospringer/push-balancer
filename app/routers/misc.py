@@ -219,12 +219,12 @@ def get_adobe_traffic_analytics() -> JSONResponse:
 def post_schwab_chat(body: SchwabChatRequest) -> JSONResponse:
     """Schwab-Chat: LLM-Dialog für Push-Empfehlungen.
 
-    Chat-Funktion noch nicht migriert — gibt Stub zurück.
+    Die Chat-Funktion ist im FastAPI-Refactor noch nicht migriert.
     """
-    return JSONResponse(content={
-        "ok": False,
-        "message": "Chat-Funktion wird migriert",
-    })
+    raise HTTPException(
+        status_code=501,
+        detail="Schwab chat is not implemented in the current FastAPI runtime.",
+    )
 
 
 @router.post("/api/schwab-approval")
