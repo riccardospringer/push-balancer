@@ -1506,9 +1506,11 @@ components:
         ok:
           type: boolean
           description: Indicates whether the check is healthy.
+          example: true
         error:
           type: string
           description: Optional error summary.
+          example: ""
 
     HealthResponse:
       type: object
@@ -1518,10 +1520,12 @@ components:
           type: string
           enum: [healthy, degraded, unhealthy]
           description: Overall service health.
+          example: "healthy"
         uptime:
           type: integer
           format: int64
           description: Service uptime in seconds.
+          example: 86400
         checks:
           type: object
           additionalProperties:
@@ -1529,13 +1533,18 @@ components:
           description: Named check results.
         research:
           type: object
+          description: Optional metadata about the current research worker state.
           properties:
             version:
               type: integer
               format: int32
+              description: Monotonic version of the currently loaded research state.
+              example: 42
             lastUpdate:
               type: string
               format: date-time
+              description: Timestamp of the latest successful research state refresh.
+              example: "2026-04-09T09:25:00Z"
 
     Article:
       type: object
@@ -1576,15 +1585,19 @@ components:
         isBreaking:
           type: boolean
           description: Whether the article looks like breaking news.
+          example: true
         isEilmeldung:
           type: boolean
           description: Whether the title indicates an urgent bulletin.
+          example: false
         isSport:
           type: boolean
           description: Whether the article belongs to sport coverage.
+          example: false
         isPlusArticle:
           type: boolean
           description: Whether the article appears to be paywalled.
+          example: false
 
     ArticleCollectionResponse:
       type: object
@@ -2052,14 +2065,22 @@ components:
       properties:
         id:
           type: string
+          description: Stable identifier of the research learning item.
+          example: "learning-prime-time-politik"
         text:
           type: string
+          description: Human-readable learning derived from historical performance data.
+          example: "Politik pushes perform strongest before 09:00 on weekdays."
         impact:
           type: string
           enum: [high, medium, low]
+          description: Editorial impact level assigned to the learning.
+          example: "high"
         createdAt:
           type: string
           format: date-time
+          description: Timestamp when the learning item was generated.
+          example: "2026-04-09T06:00:00Z"
 
     ResearchInsightsResponse:
       type: object
@@ -2067,15 +2088,18 @@ components:
       properties:
         learnings:
           type: array
+          description: Current set of research learnings for editorial users.
           items:
             $ref: "#/components/schemas/LearningItem"
         experiments:
           type: array
+          description: Experiment snapshots and metadata included with the insights response.
           items:
             type: object
         abTest:
           nullable: true
           type: object
+          description: Optional A/B test snapshot when an experiment comparison is active.
 
     ResearchRule:
       type: object

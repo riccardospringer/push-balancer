@@ -152,8 +152,12 @@ def test_stable_openapi_schemas_include_descriptions_and_examples():
     schemas = document["components"]["schemas"]
 
     required_schema_properties = {
+        "HealthCheck": {"ok", "error"},
+        "HealthResponse": {"status", "uptime", "checks"},
         "Push": {"id", "title", "channel", "sentAt", "recipients", "opened", "openRate", "predictedOR", "url"},
         "PushDaySummary": {"count", "avgOR", "topOR", "recipients"},
+        "LearningItem": {"id", "text", "impact", "createdAt"},
+        "ResearchInsightsResponse": {"learnings", "experiments", "abTest"},
         "ResearchRule": {"id", "category", "rule", "confidence", "supportCount", "createdAt"},
         "ResearchRulesResponse": {"version", "rules", "rollingAccuracy", "generatedAt"},
         "AdobeTrafficEntry": {"hour", "pageviews", "visitors"},
@@ -177,3 +181,13 @@ def test_stable_openapi_schemas_include_descriptions_and_examples():
                 assert "example" in property_schema, (
                     f"{schema_name}.{property_name} misses example"
                 )
+
+    research_properties = schemas["HealthResponse"]["properties"]["research"]["properties"]
+    for property_name in {"version", "lastUpdate"}:
+        property_schema = research_properties[property_name]
+        assert property_schema.get("description"), (
+            f"HealthResponse.research.{property_name} misses description"
+        )
+        assert "example" in property_schema, (
+            f"HealthResponse.research.{property_name} misses example"
+        )
