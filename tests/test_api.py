@@ -158,6 +158,17 @@ class TestInternalAccessControl:
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
 
+    def test_unknown_frontend_path_falls_back_to_spa_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/legacy/bookmark", headers={"CF-Connecting-IP": "145.243.163.23"})
+
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        assert "Push Balancer" in resp.text
+
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
 

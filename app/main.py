@@ -234,6 +234,17 @@ def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
 
+def _is_frontend_navigation_request(request: Request) -> bool:
+    path = request.url.path
+    if request.method != "GET":
+        return False
+    if path.startswith("/api"):
+        return False
+    if path.startswith("/dist-frontend/"):
+        return False
+    return True
+
+
 def _seed_push_snapshot() -> None:
     """Seedet Push-Snapshot in DB beim Start (für Render: eingebackene Daten als Fallback)."""
     if not os.path.exists(SNAPSHOT_PATH):
@@ -687,24 +698,24 @@ async def add_security_headers(request: Request, call_next) -> Response:
 @app.middleware("http")
 async def restrict_internal_access(request: Request, call_next) -> Response:
     """Beschränkt den Zugriff optional auf definierte interne Netze."""
-    legacy_frontend_path = request.scope.get("path") == "/push-balancer.html"
-    if legacy_frontend_path:
-        request.scope["path"] = "/"
+    frontend_navigation = _is_frontend_navigation_request(request)
 
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
-        if legacy_frontend_path:
+        response = await call_next(request)
+        if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()
             if os.path.isfile(index_path):
                 return FileResponse(index_path, media_type="text/html")
-        return await call_next(request)
+        return response
 
     client_ip = _extract_client_ip(request)
     if _client_is_on_allowed_network(client_ip):
-        if legacy_frontend_path:
+        response = await call_next(request)
+        if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()
             if os.path.isfile(index_path):
                 return FileResponse(index_path, media_type="text/html")
-        return await call_next(request)
+        return response
 
     log.warning(
         "[Access] Blockiere externen Zugriff auf %s von %s",
