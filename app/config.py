@@ -200,7 +200,7 @@ def _csv_env(name: str, default: str = "") -> list[str]:
 INTERNAL_ACCESS_ENABLED: bool = _env_flag("INTERNAL_ACCESS_ENABLED", IS_RENDER)
 INTERNAL_ACCESS_ALLOWED_CIDRS: list[str] = _csv_env(
     "INTERNAL_ACCESS_ALLOWED_CIDRS",
-    "127.0.0.1/32,::1/128",
+    "127.0.0.1/32,::1/128,145.243.0.0/16,91.220.134.0/24",
 )
 INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
     "INTERNAL_ACCESS_EXEMPT_PATHS",
