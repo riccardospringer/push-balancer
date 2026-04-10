@@ -169,8 +169,9 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
-        assert "nav-tab" in resp.text
-        assert "/api/forschung" in resp.text
+        assert "/assets/" in resp.text
+        assert "/dist-frontend/assets/" not in resp.text
+        assert "replaceState" in resp.text
 
     def test_unknown_frontend_path_falls_back_to_spa_for_allowlisted_clients(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
@@ -183,29 +184,6 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
-
-    def test_legacy_frontend_path_redirects_to_dist_frontend_when_bundle_uses_prefix(self, monkeypatch):
-        import os
-
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
-        monkeypatch.setattr("app.main._frontend_uses_dist_prefix", lambda: True)
-        legacy_path = os.path.join(os.getcwd(), "push-balancer.html")
-        original_isfile = os.path.isfile
-        monkeypatch.setattr(
-            "app.main.os.path.isfile",
-            lambda path: False if path == legacy_path else original_isfile(path),
-        )
-
-        resp = client.get(
-            "/push-balancer.html",
-            headers={"CF-Connecting-IP": "145.243.163.23"},
-            follow_redirects=False,
-        )
-
-        assert resp.status_code == 307
-        assert resp.headers["location"] == "/dist-frontend/"
 
     def test_dist_frontend_asset_prefix_is_rewritten_for_allowlisted_clients(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)

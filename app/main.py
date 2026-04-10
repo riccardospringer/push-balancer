@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import (
@@ -267,11 +267,6 @@ def _client_is_on_allowed_network(client_ip: str | None) -> bool:
 
 def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
-
-
-def _legacy_frontend_path() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "push-balancer.html")
-
 
 def _load_frontend_html() -> str | None:
     index_path = _frontend_index_path()
@@ -785,15 +780,8 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     normalized_path = _normalize_frontend_path(original_path)
     request.scope["path"] = normalized_path
     frontend_navigation = _is_frontend_navigation_request(request.method, normalized_path)
-    legacy_frontend_redirect = (
-        original_path == "/push-balancer.html"
-        and not os.path.isfile(_legacy_frontend_path())
-        and _frontend_uses_dist_prefix()
-    )
 
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
-        if legacy_frontend_redirect:
-            return RedirectResponse(url="/dist-frontend/", status_code=307)
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()
@@ -803,8 +791,6 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
 
     client_ip = _extract_client_ip(request)
     if _client_is_on_allowed_network(client_ip):
-        if legacy_frontend_redirect:
-            return RedirectResponse(url="/dist-frontend/", status_code=307)
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             index_path = _frontend_index_path()
@@ -850,10 +836,6 @@ app.include_router(misc.router, tags=["Misc"])
 @app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_compat_entrypoint() -> Response:
     """Liefert die historische interne Push-Balancer-Oberflaeche aus."""
-    legacy_path = _legacy_frontend_path()
-    if os.path.isfile(legacy_path):
-        return FileResponse(legacy_path, media_type="text/html")
-
     html = _load_frontend_html()
     if not html:
         raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
