@@ -807,7 +807,10 @@ app.include_router(misc.router, tags=["Misc"])
 
 @app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_compat_entrypoint() -> Response:
-    """Liefert den historischen Frontend-Pfad fuer bestehende Bookmarks weiter aus."""
+    """Liefert den historischen Frontend-Pfad fuer bestehende Bookmarks weiter aus.
+
+    Dieser Einstiegspfad bleibt fuer das interne AS/VPN-Setup stabil.
+    """
     html = _load_frontend_html()
     if not html:
         raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
