@@ -268,6 +268,10 @@ def _client_is_on_allowed_network(client_ip: str | None) -> bool:
 def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
+
+def _legacy_frontend_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
+
 def _load_frontend_html() -> str | None:
     index_path = _frontend_index_path()
     if not os.path.isfile(index_path):
@@ -296,12 +300,6 @@ def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
             1,
         )
     return rewritten_html
-
-
-def _frontend_uses_dist_prefix() -> bool:
-    html = _load_frontend_html()
-    return bool(html and "/dist-frontend/assets/" in html)
-
 
 def _normalize_frontend_path(path: str) -> str:
     if path == "/dist-frontend":
@@ -836,6 +834,10 @@ app.include_router(misc.router, tags=["Misc"])
 @app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_compat_entrypoint() -> Response:
     """Liefert die historische interne Push-Balancer-Oberflaeche aus."""
+    legacy_path = _legacy_frontend_path()
+    if os.path.isfile(legacy_path):
+        return FileResponse(legacy_path, media_type="text/html")
+
     html = _load_frontend_html()
     if not html:
         raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
