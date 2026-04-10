@@ -2007,24 +2007,41 @@ components:
       properties:
         title:
           type: string
+          description: Headline of the monitored competitor article.
+          example: "Regierung plant neues Milliardenpaket"
         url:
           type: string
           format: uri
+          description: Canonical URL of the competitor article.
+          example: "https://www.welt.de/politik/deutschland/article123456789/paket.html"
         pubDate:
           type: string
           format: date-time
+          description: Publication timestamp of the competitor article.
+          example: "2026-04-09T08:05:00Z"
         outlet:
           type: string
+          description: Primary outlet name assigned to the item.
+          example: "welt"
         outletColor:
           type: string
+          description: Color token used to highlight the outlet in the UI.
+          example: "#0057B8"
         isGap:
           type: boolean
+          description: Whether the item is classified as a competitor gap opportunity.
+          example: true
         isExklusiv:
           type: boolean
+          description: Whether the item appears to be an exclusive competitor story.
+          example: false
         isHot:
           type: boolean
+          description: Whether the item is marked as especially urgent or fast-moving.
+          example: true
         outlets:
           type: array
+          description: All outlets associated with this clustered competitor item.
           items:
             type: string
 
@@ -2035,15 +2052,23 @@ components:
         total:
           type: integer
           format: int32
+          description: Total number of competitor items in the current snapshot.
+          example: 27
         gaps:
           type: integer
           format: int32
+          description: Number of items classified as gap opportunities.
+          example: 6
         exklusiv:
           type: integer
           format: int32
+          description: Number of items flagged as exclusive stories.
+          example: 4
         hot:
           type: integer
           format: int32
+          description: Number of items flagged as hot or urgent.
+          example: 8
 
     CompetitorResponse:
       type: object
@@ -2051,13 +2076,17 @@ components:
       properties:
         items:
           type: array
+          description: Grouped and enriched competitor items for editorial monitoring.
           items:
             $ref: "#/components/schemas/CompetitorItem"
         summary:
           $ref: "#/components/schemas/CompetitorSummary"
+          description: Aggregate counts for the current competitor snapshot.
         fetchedAt:
           type: string
           format: date-time
+          description: Timestamp when the competitor snapshot was assembled.
+          example: "2026-04-09T09:20:00Z"
 
     LearningItem:
       type: object

@@ -154,6 +154,9 @@ def test_stable_openapi_schemas_include_descriptions_and_examples():
     required_schema_properties = {
         "HealthCheck": {"ok", "error"},
         "HealthResponse": {"status", "uptime", "checks"},
+        "CompetitorItem": {"title", "url", "pubDate", "outlet", "outletColor", "isGap", "isExklusiv", "isHot", "outlets"},
+        "CompetitorSummary": {"total", "gaps", "exklusiv", "hot"},
+        "CompetitorResponse": {"items", "summary", "fetchedAt"},
         "Push": {"id", "title", "channel", "sentAt", "recipients", "opened", "openRate", "predictedOR", "url"},
         "PushDaySummary": {"count", "avgOR", "topOR", "recipients"},
         "LearningItem": {"id", "text", "impact", "createdAt"},
