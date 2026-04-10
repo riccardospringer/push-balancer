@@ -8243,15 +8243,42 @@ let liveRefreshInterval = null;
 let liveCountdown = 30;
 let liveCountdownTimer = null;
 
-const PUSH_API = API_BASE + '/api/push/statistics/message';
-const CHANNEL_API = API_BASE + '/api/push/statistics/message/channels';
+const PUSH_API = 'https://push-frontend.bildcms.de/push/statistics/message';
+const PUSH_API_PROXY = API_BASE + '/api/push/statistics/message';
+const CHANNEL_API = 'https://push-frontend.bildcms.de/push/statistics/message/channels';
+const CHANNEL_API_PROXY = API_BASE + '/api/push/statistics/message/channels';
 
 let channelMap = {};  // id → name
 let liveChannelFilter = 'all';  // 'all' or channel name
 
+async function fetchPushJson(candidates, params = '') {
+  let lastError = null;
+  let fallbackPayload = null;
+  for (const base of candidates) {
+    const url = params ? `${base}?${params}` : base;
+    try {
+      const resp = await resilientFetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (data && data._fallback) {
+        fallbackPayload = data;
+        continue;
+      }
+      return data;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (fallbackPayload) return fallbackPayload;
+  throw lastError || new Error('Push API unreachable');
+}
+
 async function fetchChannels() {
   try {
-    const data = await resilientFetch(`${CHANNEL_API}?sourceTypes=EDITORIAL`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    const data = await fetchPushJson(
+      [CHANNEL_API, CHANNEL_API_PROXY],
+      'sourceTypes=EDITORIAL'
+    );
     data.forEach(ch => { channelMap[ch.id] = ch.title; });
   } catch (e) { console.warn('Channel fetch failed:', e); }
 }
@@ -8274,9 +8301,7 @@ async function fetchLivePushes() {
     let page = 0;
 
     while (page < 20) {
-      const resp = await resilientFetch(`${PUSH_API}?${params}`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json() || {};
+      const data = await fetchPushJson([PUSH_API, PUSH_API_PROXY], params) || {};
       // Fallback-Erkennung: Push-API nicht erreichbar (Render ohne VPN)
       if (data._fallback) {
         el.innerHTML = '<div class="error-state" style="padding:40px;text-align:center;color:#666">'
@@ -14223,9 +14248,10 @@ async function fetchHistoricalComparison() {
   const lastWeekStart = lastWeekEnd - 86400;
 
   try {
-    const resp = await resilientFetch(`${API_BASE}/api/push/statistics/message?startDate=${lastWeekStart}&endDate=${lastWeekEnd}&sourceTypes=EDITORIAL`);
-    if (!resp.ok) return;
-    const data = await resp.json();
+    const data = await fetchPushJson(
+      [PUSH_API, PUSH_API_PROXY],
+      `startDate=${lastWeekStart}&endDate=${lastWeekEnd}&sourceTypes=EDITORIAL`
+    );
     historicalPushes = data.messages || [];
   } catch (e) { console.warn('Historical fetch failed:', e); }
 }
