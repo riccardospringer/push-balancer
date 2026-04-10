@@ -108,6 +108,15 @@ class TestStableFrontendContracts:
 
 
 class TestInternalAccessControl:
+    def test_allows_cf_connecting_ip_when_allowlisted(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/api/pushes", headers={"CF-Connecting-IP": "145.243.163.23"})
+
+        assert resp.status_code == 200
+
     def test_blocks_non_allowlisted_clients_when_enabled(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])

@@ -190,15 +190,20 @@ def _path_is_exempt_from_internal_access(path: str) -> bool:
 
 
 def _extract_client_ip(request: Request) -> str | None:
+    for header_name in (
+        "cf-connecting-ip",
+        "true-client-ip",
+        "x-real-ip",
+    ):
+        header_value = request.headers.get(header_name, "").strip()
+        if header_value:
+            return header_value
+
     forwarded_for = request.headers.get("x-forwarded-for", "")
     if forwarded_for:
         candidate = forwarded_for.split(",", 1)[0].strip()
         if candidate:
             return candidate
-
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
 
     if request.client and request.client.host:
         return request.client.host
