@@ -2637,25 +2637,43 @@ components:
         hour:
           type: integer
           format: int32
+          description: Local hour of day represented by this planning slot.
+          example: 9
         label:
           type: string
+          description: Human-readable label for the planning slot.
+          example: "09:00"
         predictedOR:
           type: number
           format: float
+          description: Predicted opening rate for the recommended slot content.
+          example: 7.6
         actualOR:
           type: number
           format: float
+          description: Observed opening rate after publication, if already available.
+          example: 7.1
         pushed:
           type: boolean
+          description: Whether a push notification has already been sent for this slot.
+          example: true
         pushedTitle:
           type: string
+          description: Title of the push that was actually sent for this slot, if any.
+          example: "Eilmeldung: Regierung beschliesst neues Entlastungspaket"
         pushedAt:
           type: string
           format: date-time
+          description: Timestamp when the actual push was sent for this slot.
+          example: "2026-04-09T09:03:00Z"
         isGoldenHour:
           type: boolean
+          description: Whether this slot is identified as the best-performing hour of the day.
+          example: true
         recommendation:
           type: string
+          description: Recommended article title or guidance for the slot.
+          example: "Politik-Aufmacher mit Entlastungspaket priorisieren"
 
     TagesplanResponse:
       type: object
@@ -2664,33 +2682,51 @@ components:
         date:
           type: string
           format: date
+          description: Planning date represented by the current daily plan.
+          example: "2026-04-09"
         mode:
           type: string
+          description: Current planning mode used to assemble the Tagesplan.
+          example: "live"
         slots:
           type: array
+          description: Ordered daily planning slots from morning to late evening.
           items:
             $ref: "#/components/schemas/TagesplanSlot"
         goldenHour:
           type: integer
           format: int32
+          description: Hour of day currently identified as the strongest editorial slot.
+          example: 9
         avgOR:
           type: number
           format: float
+          description: Average predicted or observed opening rate across the plan.
+          example: 6.9
         pushedCount:
           type: integer
           format: int32
+          description: Number of slots that already have an actual push assigned.
+          example: 5
         mae:
           type: number
           format: float
+          description: Current mean absolute error for the planning model context.
+          example: 1.48
         trainedOnRows:
           type: integer
           format: int32
+          description: Number of training rows used by the active planning model.
+          example: 18450
         pushedToday:
           type: array
+          description: Already sent push events included as contextual objects for the day.
           items:
             type: object
         loading:
           type: boolean
+          description: Whether the frontend should treat the current plan as still loading.
+          example: false
 
     TagesplanRetroDay:
       type: object
@@ -2699,17 +2735,26 @@ components:
         date:
           type: string
           format: date
+          description: Retrospective day represented by this entry.
+          example: "2026-04-08"
         avgOR:
           type: number
           format: float
+          description: Average observed opening rate for this retrospective day.
+          example: 6.1
         pushedCount:
           type: integer
           format: int32
+          description: Number of pushes sent on this retrospective day.
+          example: 14
         mae:
           type: number
           format: float
+          description: Mean absolute prediction error for this retrospective day.
+          example: 1.42
         slots:
           type: array
+          description: Slot-level retrospective entries for the given day.
           items:
             $ref: "#/components/schemas/TagesplanSlot"
 
@@ -2720,12 +2765,18 @@ components:
         avgOR:
           type: number
           format: float
+          description: Average observed opening rate across the retrospective window.
+          example: 6.4
         totalPushes:
           type: integer
           format: int32
+          description: Total number of pushes covered by the retrospective window.
+          example: 97
         avgMAE:
           type: number
           format: float
+          description: Average mean absolute error across the retrospective window.
+          example: 1.56
 
     TagesplanRetroResponse:
       type: object
@@ -2733,6 +2784,7 @@ components:
       properties:
         days:
           type: array
+          description: Retrospective day entries in the requested lookback window.
           items:
             $ref: "#/components/schemas/TagesplanRetroDay"
         summary:
@@ -2804,17 +2856,27 @@ components:
         hour:
           type: integer
           format: int32
+          description: Slot hour this suggestion belongs to.
+          example: 9
         title:
           type: string
+          description: Suggested article title for the slot.
+          example: "Regierung beschliesst neues Entlastungspaket"
         url:
           type: string
           format: uri
+          description: Canonical article URL of the suggested story.
+          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
         score:
           type: number
           format: float
+          description: Heuristic candidate ranking score for the suggestion.
+          example: 88.0
         predictedOR:
           type: number
           format: float
+          description: Predicted opening rate for the suggestion.
+          example: 7.6
 
     TagesplanSuggestionsResponse:
       type: object
@@ -2993,10 +3055,16 @@ components:
         url:
           type: string
           format: uri
+          description: Canonical article URL used as additional title-generation context.
+          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
         title:
           type: string
+          description: Source article title for which advisory push variants should be generated.
+          example: "Regierung beschliesst neues Entlastungspaket"
         category:
           type: string
+          description: Optional editorial category used to steer the generated variants.
+          example: "Politik"
 
     SchwabChatRequest:
       type: object
