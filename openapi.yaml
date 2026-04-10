@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 
 info:
   title: Push Balancer API
@@ -135,6 +135,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SyncResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/pushes/sync:
     post:
@@ -142,15 +144,24 @@ paths:
       operationId: syncPushRelay
       summary: Sync push relay payload
       description: Accepts push relay payloads from a trusted upstream worker using a shared secret.
+      requestBody:
+        required: true
+        description: Push relay payload sent by the trusted upstream synchronizer.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushSyncRequest"
       responses:
         "200":
           description: Sync result
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/PushSyncResponse"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -170,6 +181,31 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /api/predictions/feedback:
+    post:
+      tags: [Pushes]
+      operationId: createPredictionFeedback
+      summary: Create prediction feedback
+      description: Stores an observed opening rate for a previously predicted push notification.
+      requestBody:
+        required: true
+        description: Feedback payload for a previously predicted push notification.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictionFeedbackRequest"
+      responses:
+        "200":
+          description: Feedback was stored successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcknowledgementResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /api/feeds/competitor:
     get:
       tags: [Competition]
@@ -183,6 +219,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CompetitorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/feeds/competitor/sport:
     get:
@@ -197,6 +235,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CompetitorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/research-insights:
     get:
@@ -211,6 +251,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ResearchInsightsResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/research-rules:
     get:
@@ -228,6 +270,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ResearchRulesResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/check-plus:
+    get:
+      tags: [Analytics]
+      operationId: checkPlusByUrl
+      summary: Check a single article URL for BILD Plus
+      description: Checks whether a single BILD article URL appears to be behind the BILD Plus paywall.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: Full BILD article URL to inspect.
+          schema:
+            type: string
+            format: uri
+            example: "https://www.bild.de/politik/test-artikel"
+      responses:
+        "200":
+          description: Map of the requested URL to its paywall status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UrlBooleanMap"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+    post:
+      tags: [Analytics]
+      operationId: checkPlusBatch
+      summary: Check multiple article URLs for BILD Plus
+      description: Checks up to twenty BILD article URLs for BILD Plus paywall detection in one request.
+      requestBody:
+        required: true
+        description: Batch of BILD article URLs to inspect.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckPlusRequest"
+      responses:
+        "200":
+          description: Map of requested URLs to their paywall status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UrlBooleanMap"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
 
   /api/analytics/adobe-traffic:
     get:
@@ -242,6 +332,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AdobeTrafficResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/ml-model:
     get:
@@ -256,6 +348,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MlStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/ml-model/monitoring:
     get:
@@ -270,6 +364,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MlMonitoringResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/ml-model/retraining-jobs:
     post:
@@ -286,6 +382,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/gbrt-model:
     get:
@@ -300,6 +400,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GbrtStatusResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/gbrt-model/retraining-jobs:
     post:
@@ -316,6 +418,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/gbrt-model/promotions:
     post:
@@ -332,6 +438,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/tagesplan:
     get:
@@ -361,6 +471,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TagesplanResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/tagesplan/retro:
     get:
@@ -383,6 +495,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TagesplanRetroResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/history:
+    get:
+      tags: [Planning]
+      operationId: listDailyPlanHistory
+      summary: List daily plan history
+      description: Returns historical push-planning performance grouped by day and slot hour.
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: Number of trailing days to include in the history view.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 90
+            default: 7
+            example: 7
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of historical slot items to return.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 1000
+            default: 200
+            example: 200
+      responses:
+        "200":
+          description: Historical daily plan performance data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TagesplanHistoryResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/tagesplan/suggestions:
     get:
@@ -414,6 +568,37 @@ paths:
                 $ref: "#/components/schemas/TagesplanSuggestionsResponse"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/tagesplan/log-suggestions:
+    post:
+      tags: [Planning]
+      operationId: createDailyPlanSuggestionsLog
+      summary: Store daily plan suggestions
+      description: Stores suggested articles for a daily plan slot in either the current React payload shape or the legacy flat payload shape.
+      requestBody:
+        required: true
+        description: Daily plan suggestion payload in React or legacy format.
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/LogSuggestionsReactRequest"
+                - $ref: "#/components/schemas/LogSuggestionsLegacyRequest"
+      responses:
+        "200":
+          description: Suggestion log result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestionsLogResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/push-title/generate:
     post:
@@ -787,6 +972,84 @@ components:
           format: int32
           description: Number of push rows considered by the refresh.
           example: 50
+
+    AcknowledgementResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the action completed successfully.
+          example: true
+
+    PushSyncRequest:
+      type: object
+      required: [secret, messages, channels]
+      properties:
+        secret:
+          type: string
+          description: Shared secret used to authenticate the upstream push synchronizer.
+          example: "sync-shared-secret"
+        messages:
+          type: array
+          description: Raw push message objects from the upstream synchronizer.
+          items:
+            type: object
+        channels:
+          type: array
+          description: Channel metadata accompanying the synchronized push messages.
+          items:
+            type: object
+
+    PushSyncResponse:
+      type: object
+      required: [ok, received]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the push sync payload was accepted.
+          example: true
+        received:
+          type: integer
+          format: int32
+          description: Number of synchronized push messages accepted from the payload.
+          example: 24
+
+    PredictionFeedbackRequest:
+      type: object
+      required: [pushId, actualOr]
+      properties:
+        pushId:
+          type: string
+          description: Identifier of the push notification that received a prediction.
+          example: "push-2026-04-10-0815"
+        actualOr:
+          type: number
+          format: float
+          description: Observed opening rate for the push notification.
+          example: 0.0875
+        title:
+          type: string
+          description: Optional push title for audit and training traceability.
+          example: "Breaking Test Artikel: Das ist jetzt wichtig"
+
+    CheckPlusRequest:
+      type: object
+      required: [urls]
+      properties:
+        urls:
+          type: array
+          description: BILD article URLs to inspect for a BILD Plus paywall.
+          items:
+            type: string
+            format: uri
+            example: "https://www.bild.de/politik/test-artikel"
+
+    UrlBooleanMap:
+      type: object
+      description: Map of article URLs to boolean inspection results.
+      additionalProperties:
+        type: boolean
 
     CompetitorItem:
       type: object
@@ -1164,6 +1427,65 @@ components:
         summary:
           $ref: "#/components/schemas/TagesplanRetroSummary"
 
+    TagesplanHistoryItem:
+      type: object
+      required: [date, hour, avgOr, nPushes]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Local publication date for the historical slot aggregate.
+          example: "2026-04-09"
+        hour:
+          type: integer
+          format: int32
+          description: Local hour of day represented by the slot aggregate.
+          example: 8
+        avgOr:
+          type: number
+          format: float
+          description: Average observed opening rate for the slot.
+          example: 0.071
+        nPushes:
+          type: integer
+          format: int32
+          description: Number of pushes contributing to the aggregate.
+          example: 3
+
+    TagesplanHistoryResponse:
+      type: object
+      required: [items, total, offset, limit, days, loading]
+      properties:
+        items:
+          type: array
+          description: Current page of historical daily plan slot aggregates.
+          items:
+            $ref: "#/components/schemas/TagesplanHistoryItem"
+        total:
+          type: integer
+          format: int64
+          description: Total number of historical slot aggregates matching the requested range.
+          example: 42
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first historical slot aggregate in this response.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size used for this response.
+          example: 200
+        days:
+          type: integer
+          format: int32
+          description: Number of trailing days requested.
+          example: 7
+        loading:
+          type: boolean
+          description: Whether the frontend should treat the history as still loading.
+          example: false
+
     TagesplanSuggestion:
       type: object
       required: [hour, title, url, score, predictedOR]
@@ -1214,6 +1536,144 @@ components:
             type: array
             items:
               $ref: "#/components/schemas/TagesplanSuggestion"
+
+    LogSuggestionReactItem:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Suggested article title.
+          example: "Breaking Test Artikel"
+        link:
+          type: string
+          format: uri
+          description: Suggested article URL.
+          example: "https://www.bild.de/politik/test-artikel"
+        cat:
+          type: string
+          description: Editorial category shorthand.
+          example: "politik"
+        category:
+          type: string
+          description: Editorial category alias.
+          example: "politik"
+        score:
+          type: number
+          format: float
+          description: Heuristic score for the suggestion.
+          example: 88.0
+        expected_or:
+          type: number
+          format: float
+          description: Expected opening rate for the suggestion.
+          example: 0.071
+        predicted_or:
+          type: number
+          format: float
+          description: Predicted opening rate alias.
+          example: 0.071
+        best_cat:
+          type: string
+          description: Best-performing category hint for the suggestion.
+          example: "politik"
+
+    LogSuggestionsReactRequest:
+      type: object
+      required: [dateIso, slotHour, suggestions]
+      properties:
+        dateIso:
+          type: string
+          format: date
+          description: Planning date for the saved slot suggestions.
+          example: "2026-04-10"
+        slotHour:
+          type: integer
+          format: int32
+          description: Planned slot hour for the saved suggestions.
+          example: 8
+        suggestions:
+          type: array
+          description: Suggested articles for the selected slot.
+          items:
+            $ref: "#/components/schemas/LogSuggestionReactItem"
+
+    LogSuggestionLegacyItem:
+      type: object
+      properties:
+        slot_hour:
+          type: integer
+          format: int32
+          description: Slot hour represented by the legacy suggestion row.
+          example: 8
+        suggestion_num:
+          type: integer
+          format: int32
+          description: Position of the suggestion within the slot.
+          example: 1
+        title:
+          type: string
+          description: Suggested article title.
+          example: "Breaking Test Artikel"
+        link:
+          type: string
+          format: uri
+          description: Suggested article URL.
+          example: "https://www.bild.de/politik/test-artikel"
+        category:
+          type: string
+          description: Editorial category.
+          example: "politik"
+        cat:
+          type: string
+          description: Editorial category shorthand alias.
+          example: "politik"
+        score:
+          type: number
+          format: float
+          description: Heuristic score for the suggestion.
+          example: 88.0
+        expected_or:
+          type: number
+          format: float
+          description: Expected opening rate for the suggestion.
+          example: 0.071
+        best_cat:
+          type: string
+          description: Best-performing category hint for the suggestion.
+          example: "politik"
+
+    LogSuggestionsLegacyRequest:
+      type: object
+      required: [date_iso, suggestions]
+      properties:
+        date_iso:
+          type: string
+          format: date
+          description: Planning date for the legacy flat suggestion payload.
+          example: "2026-04-10"
+        suggestions:
+          type: array
+          description: Flat list of legacy suggestion rows.
+          items:
+            $ref: "#/components/schemas/LogSuggestionLegacyItem"
+
+    SuggestionsLogResponse:
+      type: object
+      required: [ok, saved, format]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the suggestions were stored successfully.
+          example: true
+        saved:
+          type: integer
+          format: int32
+          description: Number of suggestion rows persisted by the request.
+          example: 2
+        format:
+          type: string
+          description: Payload format that was accepted by the endpoint.
+          example: "react"
 
     GenerateTitleRequest:
       type: object

@@ -1,5 +1,5 @@
 /*
- * Auto-generated from ../openapi.yaml (OpenAPI 3.0.3, API 3.1.0).
+ * Auto-generated from ../openapi.yaml (OpenAPI 3.1.0, API 3.1.0).
  * Run `pnpm generate:api-client` after changing the API spec.
  */
 
@@ -48,13 +48,9 @@ async function request<T>(
     signal: options.signal,
     headers: {
       Accept: 'application/json',
-      ...(options.body !== undefined
-        ? { 'Content-Type': 'application/json' }
-        : {}),
+      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
-    ...(options.body !== undefined
-      ? { body: JSON.stringify(options.body) }
-      : {}),
+    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   })
 
   if (!res.ok) {
@@ -81,10 +77,16 @@ export const rawClient = {
   getMemoryStats: (signal?: AbortSignal) =>
     request<unknown>('/api/memory-stats', 'GET', { signal }),
 
-  listArticles: (params: ListArticlesParams = {}, signal?: AbortSignal) =>
+  listArticles: (
+    params: ListArticlesParams = {},
+    signal?: AbortSignal,
+  ) =>
     request<unknown>(withQuery('/api/articles', params), 'GET', { signal }),
 
-  listPushes: (params: ListPushesParams = {}, signal?: AbortSignal) =>
+  listPushes: (
+    params: ListPushesParams = {},
+    signal?: AbortSignal,
+  ) =>
     request<unknown>(withQuery('/api/pushes', params), 'GET', { signal }),
 
   refreshPushes: (body: unknown = {}, signal?: AbortSignal) =>
@@ -95,6 +97,9 @@ export const rawClient = {
 
   createPushRefreshJob: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-refresh-jobs', 'POST', { body, signal }),
+
+  createPredictionFeedback: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/predictions/feedback', 'POST', { body, signal }),
 
   listEditorialCompetitorItems: (signal?: AbortSignal) =>
     request<unknown>('/api/feeds/competitor', 'GET', { signal }),
@@ -109,9 +114,16 @@ export const rawClient = {
     params: ListResearchRulesParams = {},
     signal?: AbortSignal,
   ) =>
-    request<unknown>(withQuery('/api/research-rules', params), 'GET', {
-      signal,
-    }),
+    request<unknown>(withQuery('/api/research-rules', params), 'GET', { signal }),
+
+  checkPlusByUrl: (
+    params: CheckPlusByUrlParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/check-plus', params), 'GET', { signal }),
+
+  checkPlusBatch: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/check-plus', 'POST', { body, signal }),
 
   getAdobeTraffic: (signal?: AbortSignal) =>
     request<unknown>('/api/analytics/adobe-traffic', 'GET', { signal }),
@@ -129,38 +141,44 @@ export const rawClient = {
     request<unknown>('/api/gbrt-model', 'GET', { signal }),
 
   createGbrtRetrainingJob: (body: unknown = {}, signal?: AbortSignal) =>
-    request<unknown>('/api/gbrt-model/retraining-jobs', 'POST', {
-      body,
-      signal,
-    }),
+    request<unknown>('/api/gbrt-model/retraining-jobs', 'POST', { body, signal }),
 
   createGbrtPromotion: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/gbrt-model/promotions', 'POST', { body, signal }),
 
-  getDailyPlan: (params: GetDailyPlanParams = {}, signal?: AbortSignal) =>
+  getDailyPlan: (
+    params: GetDailyPlanParams = {},
+    signal?: AbortSignal,
+  ) =>
     request<unknown>(withQuery('/api/tagesplan', params), 'GET', { signal }),
 
   getDailyPlanRetro: (
     params: GetDailyPlanRetroParams = {},
     signal?: AbortSignal,
   ) =>
-    request<unknown>(withQuery('/api/tagesplan/retro', params), 'GET', {
-      signal,
-    }),
+    request<unknown>(withQuery('/api/tagesplan/retro', params), 'GET', { signal }),
+
+  listDailyPlanHistory: (
+    params: ListDailyPlanHistoryParams = {},
+    signal?: AbortSignal,
+  ) =>
+    request<unknown>(withQuery('/api/tagesplan/history', params), 'GET', { signal }),
 
   listDailyPlanSuggestions: (
     params: ListDailyPlanSuggestionsParams = {},
     signal?: AbortSignal,
   ) =>
-    request<unknown>(withQuery('/api/tagesplan/suggestions', params), 'GET', {
-      signal,
-    }),
+    request<unknown>(withQuery('/api/tagesplan/suggestions', params), 'GET', { signal }),
+
+  createDailyPlanSuggestionsLog: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/tagesplan/log-suggestions', 'POST', { body, signal }),
 
   generatePushTitle: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-title/generate', 'POST', { body, signal }),
 
   createPushTitleGeneration: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-title-generations', 'POST', { body, signal }),
+
 } as const
 
 export interface ListArticlesParams extends QueryParams {
@@ -177,6 +195,10 @@ export interface ListResearchRulesParams extends QueryParams {
   limit?: string | number
 }
 
+export interface CheckPlusByUrlParams extends QueryParams {
+  url?: string | number
+}
+
 export interface GetDailyPlanParams extends QueryParams {
   date?: string | number
   mode?: string | number
@@ -186,7 +208,14 @@ export interface GetDailyPlanRetroParams extends QueryParams {
   mode?: string | number
 }
 
+export interface ListDailyPlanHistoryParams extends QueryParams {
+  days?: string | number
+  offset?: string | number
+  limit?: string | number
+}
+
 export interface ListDailyPlanSuggestionsParams extends QueryParams {
   date?: string | number
   mode?: string | number
 }
+
