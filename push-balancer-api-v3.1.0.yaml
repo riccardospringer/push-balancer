@@ -2424,11 +2424,13 @@ components:
           format: float
           nullable: true
           description: Current champion MAE, if available.
+          example: 1.34
         challengerMae:
           type: number
           format: float
           nullable: true
           description: Current challenger MAE, if available.
+          example: 1.41
         evaluated:
           type: integer
           format: int32
@@ -3143,6 +3145,7 @@ components:
         reasoning:
           type: string
           description: Short explanation for the recommended title.
+          example: "The recommended variant is shorter, clearer, and emphasizes the strongest news angle."
         advisoryOnly:
           type: boolean
           description: Always true because the API never sends push notifications autonomously.

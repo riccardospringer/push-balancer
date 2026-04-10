@@ -687,6 +687,9 @@ async def add_security_headers(request: Request, call_next) -> Response:
 @app.middleware("http")
 async def restrict_internal_access(request: Request, call_next) -> Response:
     """Beschränkt den Zugriff optional auf definierte interne Netze."""
+    if request.scope.get("path") == "/push-balancer.html":
+        request.scope["path"] = "/"
+
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
         return await call_next(request)
 
