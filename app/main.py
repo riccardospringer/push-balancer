@@ -269,6 +269,10 @@ def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
 
+def _legacy_frontend_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "push-balancer.html")
+
+
 def _load_frontend_html() -> str | None:
     index_path = _frontend_index_path()
     if not os.path.isfile(index_path):
@@ -297,6 +301,8 @@ def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
             1,
         )
     return rewritten_html
+
+
 def _normalize_frontend_path(path: str) -> str:
     return path
 
@@ -821,13 +827,23 @@ app.include_router(push.router, tags=["Push"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(misc.router, tags=["Misc"])
 
+
+def _legacy_frontend_response() -> Response:
+    legacy_path = _legacy_frontend_path()
+    if not os.path.isfile(legacy_path):
+        raise HTTPException(status_code=404, detail="Legacy frontend entrypoint not found.")
+
+    response = FileResponse(legacy_path, media_type="text/html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 @app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_compat_entrypoint() -> Response:
     """Liefert die historische interne Push-Balancer-Oberflaeche aus."""
-    html = _load_frontend_html()
-    if not html:
-        raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
-    return HTMLResponse(_prepare_frontend_html_for_request(html, "/push-balancer.html"))
+    return _legacy_frontend_response()
 
 
 @app.get("/dist-frontend", include_in_schema=False)
@@ -840,10 +856,7 @@ async def frontend_dist_entrypoint(asset_path: str = "") -> Response:
         candidate_path = os.path.normpath(os.path.join(SERVE_DIR, normalized_asset_path))
         if candidate_path.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate_path):
             return FileResponse(candidate_path)
-    index_path = _frontend_index_path()
-    if not os.path.isfile(index_path):
-        raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
-    return FileResponse(index_path, media_type="text/html")
+    return _legacy_frontend_response()
 
 # ── Statische Dateien (HTML, JS, CSS) ─────────────────────────────────────
 # Wird nach den API-Routen gemountet, damit /api/* Priorität hat
