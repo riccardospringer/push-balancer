@@ -12,7 +12,6 @@ extend-exclude = [
   "dist-frontend",
   "frontend",
   "push-balancer-server.py",
-  "push_balancer_server_compat.py",
   "watchdog",
 ]
 

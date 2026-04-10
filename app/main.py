@@ -91,8 +91,7 @@ async def lifespan(app: FastAPI):
     _start_background_workers()
 
     # ── 4. ML-Modelle im Hintergrund laden (deferred — kein RAM-Spike beim Start) ──
-    # Hinweis: DISABLE_LEGACY_WORKER blockiert nur den Legacy-Monolith (via compat-Shim).
-    # Die neuen app/ml-Modelle (GBRT, LightGBM) sind monolith-unabhängig und laden immer.
+    # Die aktiven app/ml-Modelle (GBRT, LightGBM) laden unabhängig vom Legacy-Referenzcode.
 
     def _load_ml_models_background():
         import time as _t
@@ -248,8 +247,7 @@ def _start_background_workers() -> None:
     log.info("[FeedCache] Background-Worker gestartet")
 
     # 6. Research-Worker
-    # Hinweis: app/research/worker.py nutzt KEINEN Legacy-Monolith (nur stdlib + app.database).
-    # DISABLE_LEGACY_WORKER schützt nur den Compat-Shim. Der Research-Worker läuft immer.
+    # app/research/worker.py nutzt den modularen app/-Pfad und läuft unabhängig vom Legacy-Referenzcode.
     # Auf Render: erstes Training bei Zyklus 15 (5 Min) statt Zyklus 1 — vermeidet RAM-Spike direkt beim Start.
     _is_render = os.environ.get("RENDER", "").lower() == "true"
     _first_train = 15 if _is_render else 1

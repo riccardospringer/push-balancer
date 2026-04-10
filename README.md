@@ -310,7 +310,6 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `PUSH_DB_MAX_DAYS` | No | `90` | Maximum age of push rows loaded from SQLite into memory for analysis/runtime paths |
 | `PUSH_DB_MAX_ROWS` | No | `15000` locally, lower on Render | Maximum number of push rows loaded from SQLite into memory |
 | `PUSH_SNAPSHOT_PATH` | No | — | Optional path to a sanitized startup seed file mounted outside the repository |
-| `DISABLE_LEGACY_WORKER` | No | `0` | Disables only the legacy monolith/compat worker path, not the active FastAPI runtime |
 | `NPM_TOKEN` | No | — | GitHub Packages token for installing `@spring-media/editorial-one-ui` locally |
 
 Variables are loaded from a `.env` file in the project directory at startup (via a lightweight built-in parser — no `python-dotenv` required).
@@ -372,7 +371,6 @@ frontend/src/
 
 - The active runtime uses bounded SQLite loads via `PUSH_DB_MAX_DAYS` and `PUSH_DB_MAX_ROWS` to avoid loading the full history into memory on smaller instances.
 - The Tagesplan prediction path includes a guard against saturated OR forecasts when a model output looks incorrectly back-transformed.
-- `DISABLE_LEGACY_WORKER` only affects the old compat path; the FastAPI runtime and its background workers remain the supported production path.
 
 ### Running Tests
 

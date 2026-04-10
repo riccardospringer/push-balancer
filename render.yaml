@@ -13,8 +13,6 @@ services:
         value: http://push-frontend.bildcms.de
       - key: DB_PATH
         value: /data/.push_history.db
-      - key: DISABLE_LEGACY_WORKER
-        value: "true"
       - key: PUSH_DB_MAX_ROWS
         value: "5000"
       - key: OPENAI_API_KEY
