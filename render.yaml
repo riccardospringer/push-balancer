@@ -10,7 +10,7 @@ services:
       sizeGB: 1
     envVars:
       - key: PUSH_API_BASE
-        value: http://push-frontend.bildcms.de
+        value: https://push-frontend.bildcms.de
       - key: DB_PATH
         value: /data/.push_history.db
       - key: PUSH_DB_MAX_ROWS

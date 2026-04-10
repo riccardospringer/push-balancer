@@ -29,7 +29,7 @@ ALLOW_INSECURE_SSL: bool = os.environ.get("ALLOW_INSECURE_SSL", "0") == "1"
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI_API_KEY", "")
 
 # ── BILD APIs ──────────────────────────────────────────────────────────────
-PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "http://push-frontend.bildcms.de")
+PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
 
 # ── Sync / Render ──────────────────────────────────────────────────────────
