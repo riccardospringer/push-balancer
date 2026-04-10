@@ -217,6 +217,8 @@ A full OpenAPI specification is maintained in [`push-balancer-api-v3.1.0.yaml`](
 
 Additional compatibility and operational helper endpoints still exist, but the frontend contract should prefer the documented endpoints above.
 
+Compatibility endpoints are also marked at runtime with `Deprecation: true` and a `Sunset` header so downstream clients can detect that they should migrate to the stable contract.
+
 Protected mutation endpoints require the `X-Admin-Key` header and remain unavailable when `ADMIN_API_KEY` is not configured.
 
 ---

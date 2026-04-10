@@ -106,6 +106,18 @@ class TestStableFrontendContracts:
         assert data["ok"] is True
         assert "synced" in data
 
+    def test_deprecated_compatibility_route_emits_runtime_headers(self):
+        resp = client.get("/api/ml/status")
+        assert resp.status_code == 200
+        assert resp.headers.get("Deprecation") == "true"
+        assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
+
+    def test_stable_contract_route_has_no_deprecation_headers(self):
+        resp = client.get("/api/ml-model")
+        assert resp.status_code == 200
+        assert "Deprecation" not in resp.headers
+        assert "Sunset" not in resp.headers
+
 
 class TestInternalAccessControl:
     def test_allows_cf_connecting_ip_when_allowlisted(self, monkeypatch):

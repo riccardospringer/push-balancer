@@ -182,6 +182,41 @@ def _problem_response(
     )
 
 
+_DEPRECATED_COMPATIBILITY_EXACT_PATHS = {
+    "/api/competitors",
+    "/api/sport-competitors",
+    "/api/forschung",
+    "/api/learnings",
+    "/api/adobe/traffic",
+    "/api/ml/status",
+    "/api/ml/monitoring",
+    "/api/ml/retrain",
+    "/api/ml/monitoring/tick",
+    "/api/predict-batch",
+    "/api/gbrt/status",
+    "/api/gbrt/model.json",
+    "/api/gbrt/retrain",
+    "/api/gbrt/force-promote",
+}
+_DEPRECATED_COMPATIBILITY_PREFIXES = (
+    "/api/push/",
+)
+_DEPRECATION_SUNSET = "Wed, 31 Dec 2026 23:59:59 GMT"
+
+
+def _is_deprecated_compatibility_path(path: str) -> bool:
+    return path in _DEPRECATED_COMPATIBILITY_EXACT_PATHS or any(
+        path.startswith(prefix) for prefix in _DEPRECATED_COMPATIBILITY_PREFIXES
+    )
+
+
+def _apply_runtime_headers(path: str, response: Response) -> Response:
+    if _is_deprecated_compatibility_path(path):
+        response.headers["Deprecation"] = "true"
+        response.headers["Sunset"] = _DEPRECATION_SUNSET
+    return response
+
+
 def _path_is_exempt_from_internal_access(path: str) -> bool:
     for exempt_path in INTERNAL_ACCESS_EXEMPT_PATHS:
         if path == exempt_path or path.startswith(f"{exempt_path}/"):
@@ -735,7 +770,8 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    return response
+    request_path = request.scope.get("path", request.url.path)
+    return _apply_runtime_headers(request_path, response)
 
 
 @app.middleware("http")
