@@ -25,6 +25,26 @@ The service supports editorial planning for push notifications. It predicts open
 - Adobe Analytics API when configured
 - OpenAI API when configured for title generation
 
+## Runtime safeguards in this repository
+
+- Production snapshots and raw analytics dumps must not be committed to git or baked into the Docker image.
+- `PUSH_SNAPSHOT_PATH` is only for sanitized startup seed files mounted at runtime.
+- `ADMIN_API_KEY` protects admin mutation endpoints and they should remain disabled when the key is unset.
+- `PUSH_SYNC_SECRET` protects relay sync and must be set on both sides before `POST /api/pushes/sync` is exposed.
+- Secrets such as `OPENAI_API_KEY`, Adobe credentials, `ADMIN_API_KEY`, `PUSH_SYNC_SECRET`, and `NPM_TOKEN` are runtime-only values.
+
+## External transfer notes
+
+- OpenAI is only contacted when title generation is explicitly configured and invoked.
+- Adobe Analytics is only contacted when the Adobe credentials are configured.
+- Both integrations should be treated as external recipients and reviewed when payload scope changes.
+
+## Retention and deletion
+
+- SQLite data lives in the local database configured via `DB_PATH`.
+- Daily plan suggestion snapshots are persisted for retrospective analysis and should be reviewed when retention needs change.
+- Any new persisted data category should document retention and deletion behavior in the corresponding handover or PR note.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples

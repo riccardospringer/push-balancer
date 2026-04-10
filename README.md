@@ -43,7 +43,9 @@ pnpm --dir frontend install --frozen-lockfile
 
 # 3. Configure environment variables
 cp .env.example .env
-# Edit .env and fill in the required values (at minimum OPENAI_API_KEY and PUSH_API_BASE)
+# Edit .env and fill in the required values
+# Minimal setup: PUSH_API_BASE
+# Optional features: OPENAI_API_KEY, Adobe credentials, admin keys, sports APIs
 
 # 4. Start backend and frontend
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8050
@@ -190,12 +192,14 @@ A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml). Th
 | `GET /api/feeds/competitor/sport` | Sports competitor monitoring feed |
 | `GET /api/research-insights` | Current research learnings and experiment summary |
 | `GET /api/research-rules` | Active research rules with pagination metadata |
+| `GET /api/check-plus` | Check a single BILD URL for a paywall indication |
 | `GET /api/analytics/adobe-traffic` | Adobe traffic analytics payload |
 | `GET /api/ml-model` | Stable ML model status contract |
 | `GET /api/ml-model/monitoring` | ML monitoring and recent prediction comparisons |
 | `GET /api/gbrt-model` | Stable GBRT model status contract |
 | `GET /api/tagesplan` | Daily planning slots with recommendations |
 | `GET /api/tagesplan/retro` | Retrospective planning summary |
+| `GET /api/tagesplan/history` | Historical slot-level planning aggregates |
 | `GET /api/tagesplan/suggestions` | Suggested articles for the current plan |
 
 ### POST Endpoints
@@ -203,12 +207,17 @@ A full OpenAPI specification is maintained in [`openapi.yaml`](openapi.yaml). Th
 | Endpoint | Description |
 |---|---|
 | `POST /api/pushes/refresh` | Refresh the live push view |
+| `POST /api/predictions/feedback` | Store observed OR feedback for a predicted push |
+| `POST /api/check-plus` | Check multiple BILD URLs for a paywall indication |
 | `POST /api/ml-model/retraining-jobs` | Trigger an ML retraining job |
 | `POST /api/gbrt-model/retraining-jobs` | Trigger a GBRT retraining job |
 | `POST /api/gbrt-model/promotions` | Promote the current GBRT candidate |
-| `POST /api/push-title/generate` | Generate optimized push headline variants |
+| `POST /api/tagesplan/log-suggestions` | Persist daily-plan suggestion snapshots |
+| `POST /api/push-title-generations` | Generate advisory push headline variants |
 
 Legacy or internal helper endpoints still exist for operational compatibility, but the frontend contract should prefer the documented endpoints above.
+
+Protected mutation endpoints require the `X-Admin-Key` header and remain unavailable when `ADMIN_API_KEY` is not configured.
 
 ---
 
@@ -248,6 +257,14 @@ Privacy-relevant implementation work should document:
 - retention and deletion approach
 - safeguards and required approvals
 
+Operational privacy rules in this repository:
+
+- Do not commit production snapshots, raw push exports, or analytics dumps.
+- Use `PUSH_SNAPSHOT_PATH` only for sanitized startup seeds mounted outside the repository.
+- Keep `OPENAI_API_KEY`, `ADMIN_API_KEY`, `PUSH_SYNC_SECRET`, Adobe credentials, and `NPM_TOKEN` out of source control.
+- Admin mutation endpoints stay disabled unless `ADMIN_API_KEY` is explicitly configured.
+- Relay sync stays disabled unless `PUSH_SYNC_SECRET` is configured on both sides.
+
 ```yaml
 # render.yaml (excerpt)
 services:
@@ -275,7 +292,7 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OPENAI_API_KEY` | Yes | — | OpenAI API key for GPT-4o title scoring and editorial assistant |
+| `OPENAI_API_KEY` | No | — | OpenAI API key for GPT-4o title scoring and editorial assistant features |
 | `PUSH_API_BASE` | Yes | `http://push-frontend.bildcms.de` | Base URL of the BILD Push Statistics API (internal network) |
 | `FOOTBALL_DATA_KEY` | No | — | API key for Football-Data.org (Bundesliga, Champions League fixtures) |
 | `ODDS_API_KEY` | No | — | API key for The Odds API (betting odds as sport context signal) |
@@ -290,7 +307,7 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
 | `ADMIN_API_KEY` | No | — | Strong random admin key for protected retraining and promotion endpoints; required to enable admin mutations |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
-| `PUSH_SNAPSHOT_PATH` | No | `push-snapshot.json` | Optional path to a sanitized startup seed file mounted outside the repository |
+| `PUSH_SNAPSHOT_PATH` | No | — | Optional path to a sanitized startup seed file mounted outside the repository |
 | `NPM_TOKEN` | No | — | GitHub Packages token for installing `@spring-media/editorial-one-ui` locally |
 
 Variables are loaded from a `.env` file in the project directory at startup (via a lightweight built-in parser — no `python-dotenv` required).
@@ -368,10 +385,19 @@ curl "http://localhost:8050/api/ml/predict?title=Scholz%20tritt%20zurück&cat=po
 
 ```bash
 # LightGBM
-curl -X POST http://localhost:8050/api/ml/retrain
+curl -X POST \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  http://localhost:8050/api/ml-model/retraining-jobs
 
 # GBRT
-curl -X POST http://localhost:8050/api/gbrt/retrain
+curl -X POST \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  http://localhost:8050/api/gbrt-model/retraining-jobs
+
+# Promote GBRT challenger
+curl -X POST \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  http://localhost:8050/api/gbrt-model/promotions
 ```
 
 ### Linting and Formatting
