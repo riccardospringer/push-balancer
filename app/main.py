@@ -789,6 +789,21 @@ async def frontend_compat_entrypoint() -> Response:
         raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
     return FileResponse(index_path, media_type="text/html")
 
+
+@app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
+async def frontend_dist_entrypoint(asset_path: str = "") -> Response:
+    """Kompatibilitaetspfad fuer legacy gebaute Frontend-Bundles mit /dist-frontend-Prefix."""
+    normalized_asset_path = asset_path.lstrip("/")
+    if normalized_asset_path:
+        candidate_path = os.path.normpath(os.path.join(SERVE_DIR, normalized_asset_path))
+        if candidate_path.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate_path):
+            return FileResponse(candidate_path)
+
+    index_path = _frontend_index_path()
+    if not os.path.isfile(index_path):
+        raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
+    return FileResponse(index_path, media_type="text/html")
+
 # ── Statische Dateien (HTML, JS, CSS) ─────────────────────────────────────
 # Wird nach den API-Routen gemountet, damit /api/* Priorität hat
 if os.path.isdir(SERVE_DIR):
