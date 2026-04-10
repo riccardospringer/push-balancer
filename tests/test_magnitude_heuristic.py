@@ -1,32 +1,11 @@
-"""test_magnitude_heuristic.py — Tests für _keyword_magnitude_heuristic().
+"""test_magnitude_heuristic.py — Tests für keyword_magnitude_heuristic().
 
 Testet das Keyword-basierte Scoring als LLM-Fallback:
   - Basis-Score, Clipping, Eilmeldung, Terror/Krieg-Keywords
   - Sport-spezifische Boni (verletzt, entlassen, transfer, überblick-Malus)
   - Kategorie-Adjustierungen (unterhaltung, politik/news)
 """
-import sys
-
-import pytest
-
-# Modul bereits via conftest geladen
-import importlib.util
-from pathlib import Path
-
-_SERVER_PATH = str(Path(__file__).parent.parent / "push-balancer-server.py")
-
-
-def _get_fn():
-    if "pbserver" in sys.modules:
-        return sys.modules["pbserver"]._keyword_magnitude_heuristic
-    spec = importlib.util.spec_from_file_location("pbserver", _SERVER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["pbserver"] = mod
-    spec.loader.exec_module(mod)
-    return mod._keyword_magnitude_heuristic
-
-
-heuristic = _get_fn()
+from app.scoring.magnitude import keyword_magnitude_heuristic as heuristic
 
 
 # ── Basis ────────────────────────────────────────────────────────────────────

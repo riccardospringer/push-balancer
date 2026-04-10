@@ -1,19 +1,15 @@
 """test_sport_scoring.py — Tests für Sport-Kategorisierung.
 
-Testet die is_sport-Logik, die in _score_push_llm und _keyword_magnitude_heuristic
+Testet die is_sport-Logik, die in der modularen Heuristik- und Scoring-Pipeline
 zur Anwendung kommt, sowie URL-basierte Kategorieerkennung.
 
 Da die Sport-Kategorie-Logik direkt in der Inline-Bedingung lebt
 (nicht als eigene Funktion), testen wir sie über:
-1. _keyword_magnitude_heuristic: sport-spezifische Pfade werden nur für cat=="sport" aktiv
+1. keyword_magnitude_heuristic: sport-spezifische Pfade werden nur für cat=="sport" aktiv
 2. is_sport-Formel als extrahierte Hilfsfunktion (lokal nachgebaut für isolierten Test)
 """
-import sys
-
 import pytest
-
-# Modul bereits via conftest geladen
-_server = sys.modules.get("pbserver")
+from app.scoring.magnitude import keyword_magnitude_heuristic
 
 
 # ── is_sport Logik (aus _score_push_llm extrahiert) ──────────────────────────
@@ -24,7 +20,7 @@ SPORT_CATEGORIES = frozenset(
 
 
 def _is_sport_category(category: str) -> bool:
-    """Repliziert die is_sport-Bedingung aus push-balancer-server.py."""
+    """Repliziert die is_sport-Bedingung aus der modularen Sport-Erkennung."""
     return (category or "").lower() in SPORT_CATEGORIES
 
 
@@ -92,13 +88,10 @@ class TestSportUrl:
 # ── Heuristic-Pfad: Sport vs. Nicht-Sport ────────────────────────────────────
 
 class TestMagnitudeHeuristicSportPath:
-    """Über _keyword_magnitude_heuristic prüfen, ob Sport-Pfad korrekt aktiviert wird."""
+    """Prüft über keyword_magnitude_heuristic den Sport-spezifischen Pfad."""
 
     def _heuristic(self, title, cat, is_eilmeldung=0):
-        mod = sys.modules.get("pbserver")
-        if mod is None:
-            pytest.skip("Server-Modul nicht geladen")
-        return mod._keyword_magnitude_heuristic(title, cat, is_eilmeldung)
+        return keyword_magnitude_heuristic(title, cat, is_eilmeldung)
 
     def test_verletzung_only_boosts_in_sport(self):
         """'verletzt' boost gilt für 'sport', nicht für 'politik'."""
