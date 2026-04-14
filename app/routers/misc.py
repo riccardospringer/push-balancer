@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET
+from app.push_titles import build_push_title_suggestions, infer_content_type
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()
@@ -64,53 +65,55 @@ class PushTitleGenerateRequest(BaseModel):
 
 
 def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
-    from app.config import OPENAI_API_KEY
-
     if not body.title:
         raise HTTPException(status_code=400, detail="title is required")
-
-    if not OPENAI_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="Push title generation is unavailable because OPENAI_API_KEY is not configured.",
+    try:
+        return build_push_title_suggestions(
+            title=body.title,
+            category=body.category or "news",
+            url=body.url,
         )
-
-    from push_title_agent import generate_push_title
-
-    result = generate_push_title(
-        article_title=body.title,
-        article_text="",
-        category=body.category or "news",
-        kicker="",
-        headline="",
-    )
-
-    gewinner = result.get("gewinner", {})
-    alternative = result.get("alternative", {})
-    alle = result.get("alle_kandidaten", {})
-
-    winner_title = gewinner.get("titel", body.title)
-
-    alt_titles: list[str] = []
-    if alternative.get("titel") and alternative["titel"] != winner_title:
-        alt_titles.append(alternative["titel"])
-    for gruppe in alle.values():
-        for kandidat in gruppe:
-            titel = kandidat.get("titel", "")
-            if titel and titel != winner_title and titel not in alt_titles:
-                alt_titles.append(titel)
-
-    reasoning = gewinner.get("warum_dieser", "")
-    if not reasoning:
-        analyse = result.get("meta", {}).get("analyse", {})
-        reasoning = analyse.get("kern", "")
-
-    return {
-        "title": winner_title,
-        "alternativeTitles": alt_titles[:5],
-        "reasoning": reasoning,
-        "advisoryOnly": True,
-    }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        article_type = infer_content_type(body.url, body.title)
+        log.exception("[PushTitle] Lokaler Vorschlagsdienst fehlgeschlagen")
+        fallback_title = body.title if article_type != "video" else f"Im Video: {body.title}"[:78]
+        return {
+            "title": fallback_title,
+            "alternativeTitles": [body.title] if body.title != fallback_title else [],
+            "reasoning": f"Robuster Notfall-Fallback nach internem Fehler: {exc}",
+            "advisoryOnly": True,
+            "contentType": article_type,
+            "gewinner": {
+                "titel": fallback_title,
+                "laenge": len(fallback_title),
+                "gesamt_score": 6.0,
+                "warum_dieser": "Robuster Notfall-Fallback ohne externe KI-Abhaengigkeit.",
+            },
+            "alternative": {
+                "titel": body.title,
+                "laenge": len(body.title),
+                "warum": "Originaltitel als sichere Rueckfalloption.",
+            },
+            "alle_kandidaten": {
+                "fallback": [{"titel": fallback_title}],
+            },
+            "meta": {
+                "content_type": article_type,
+                "analyse": {
+                    "kern": body.title,
+                    "hook": body.category or "news",
+                    "emotion": "fallback",
+                },
+                "anzahl_kandidaten": 1,
+                "dauer_gesamt_s": 0.0,
+                "dauer_call1_s": 0.0,
+                "dauer_call2_s": 0.0,
+                "modell": "local-emergency-fallback",
+                "modus": "local-emergency-fallback",
+            },
+        }
 
 
 def _check_bild_plus(url: str) -> bool:

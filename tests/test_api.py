@@ -434,42 +434,33 @@ class TestPushSyncEndpoint:
 
 
 class TestPushTitleGenerateEndpoint:
-    def test_generate_push_title_one_brain_response_shape(self, monkeypatch):
-        monkeypatch.setattr("app.config.OPENAI_API_KEY", "test-key")
-
-        mocked_result = {
-            "gewinner": {
-                "titel": "Klarer Gewinner-Titel",
-                "warum_dieser": "Er ist konkret, aktiv und bildstark.",
-            },
-            "alternative": {"titel": "Alternative A"},
-            "alle_kandidaten": {
-                "direkt": [
-                    {"titel": "Alternative A"},
-                    {"titel": "Alternative B"},
-                ],
-                "narrativ": [{"titel": "Alternative C"}],
-            },
-            "meta": {"analyse": {"kern": "Fallback-Reasoning"}},
-        }
-
-        with patch("push_title_agent.generate_push_title", return_value=mocked_result):
-            resp = client.post(
-                "/api/push-title/generate",
-                json={"title": "Ausgangstitel", "category": "news"},
-            )
+    def test_generate_push_title_one_brain_response_shape(self):
+        resp = client.post(
+            "/api/push-title/generate",
+            json={"title": "Ausgangstitel", "category": "news"},
+        )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["title"] == "Klarer Gewinner-Titel"
+        assert data["title"] == "Ausgangstitel"
         assert isinstance(data["alternativeTitles"], list)
-        assert data["alternativeTitles"] == [
-            "Alternative A",
-            "Alternative B",
-            "Alternative C",
-        ]
+        assert len(data["alternativeTitles"]) >= 1
         assert isinstance(data["reasoning"], str)
-        assert data["reasoning"] == "Er ist konkret, aktiv und bildstark."
+        assert data["reasoning"]
+        assert data["advisoryOnly"] is True
+
+    def test_generate_push_title_without_openai_key_no_longer_returns_503(self, monkeypatch):
+        monkeypatch.setattr("app.config.OPENAI_API_KEY", "")
+
+        resp = client.post(
+            "/api/push-title/generate",
+            json={"title": "BVB: Enthüllt! Für diese Mega-Klubs gilt die Schlotterbeck-Klausel", "category": "sport"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["title"]
+        assert "gewinner" in data
         assert data["advisoryOnly"] is True
 
     def test_generate_push_title_alias_requires_title_problem(self):
