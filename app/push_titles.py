@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import re
 
 MAX_TITLE_LENGTH = 78
@@ -21,6 +20,7 @@ _WEAK_PHRASES = (
     "so reagiert das netz",
 )
 _HYPE_WORDS = ("mega", "hammer", "krass", "irre", "sensation", "wahnsinn")
+_GENERIC_PRONOUNS = (" sie ", " er ", " ihr ", " ihm ", " ihnen ", " ihn ")
 _STOPWORDS = {
     "der", "die", "das", "ein", "eine", "einer", "einem", "einen", "und", "oder", "fuer", "für",
     "mit", "ohne", "auf", "im", "in", "am", "an", "zu", "zum", "zur", "bei", "nach", "vor",
@@ -97,6 +97,32 @@ def _split_subject_detail(title: str) -> tuple[str, str]:
     return "", compact
 
 
+def _is_weak_subject(subject: str) -> bool:
+    lowered = f" {subject.lower()} "
+    return (
+        not subject
+        or subject.startswith("„")
+        or subject.startswith('"')
+        or any(pronoun in lowered for pronoun in _GENERIC_PRONOUNS)
+        or len(re.findall(r"[A-Za-zÄÖÜäöüß0-9-]+", subject)) > 6
+    )
+
+
+def _compact_fact(detail: str) -> str:
+    compact = _clean(detail)
+    compact = re.sub(r"^(jetzt|nun|plötzlich|ploetzlich)\s+", "", compact, flags=re.I)
+    compact = re.sub(r"^„[^“]+“:\s*", "", compact)
+    compact = re.sub(r'^"[^"]+":\s*', "", compact)
+    compact = re.sub(r"^(so|darum|deshalb)\s+", "", compact, flags=re.I)
+    compact = re.sub(
+        r"^(rechnet|plant|warnt|greift|schliesst|schließt|fordert|kritisiert|attackiert)\s+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+)(.*)$",
+        r"\2 \1\3",
+        compact,
+        flags=re.I,
+    )
+    return _clean(compact)
+
+
 def _extract_focus_term(detail: str, subject: str) -> str:
     tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9-]+", f"{subject} {detail}")
     candidates = [token for token in tokens if token.lower() not in _STOPWORDS and len(token) > 3]
@@ -132,6 +158,9 @@ def _build_brief(title: str, category: str = "news", url: str = "") -> TitleBrie
     detail = _strip_noise_prefixes(detail or original)
     if not detail:
         detail = original
+    if _is_weak_subject(subject):
+        subject = ""
+    detail = _compact_fact(detail)
 
     content_type = infer_content_type(url, original)
     is_breaking = any(marker in original.lower() for marker in _BREAKING_MARKERS)
@@ -176,6 +205,7 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     audience_value = brief.audience_value
 
     candidates: list[tuple[str, str]] = []
+    compact_fact = _compact_fact(detail)
 
     if brief.content_type == "video":
         candidates.extend(
@@ -195,10 +225,13 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     else:
         candidates.extend(
             [
-                (detail, "direkt"),
+                (compact_fact, "direkt"),
                 (audience_value, "konsequenz"),
             ]
         )
+
+    if compact_fact and compact_fact != detail:
+        candidates.append((compact_fact, "fakt"))
 
     if focus:
         candidates.extend(
@@ -270,6 +303,14 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score -= 0.5
         weaknesses.append("wirkt als Frage schwächer und weniger konkret")
 
+    if candidate.startswith("„") or candidate.startswith('"'):
+        score -= 1.8
+        weaknesses.append("beginnt mit einem anonymen Zitat statt mit der eigentlichen Nachricht")
+
+    if any(pronoun in f" {lowered} " for pronoun in _GENERIC_PRONOUNS):
+        score -= 1.2
+        weaknesses.append("enthaelt ein Pronomen ohne klaren Bezug")
+
     if any(phrase in lowered for phrase in _WEAK_PHRASES):
         score -= 1.1
         weaknesses.append("enthaelt zu viel generischen Nutzwert-Text")
@@ -292,6 +333,15 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
     if brief.category == "sport" and any(token in lowered for token in ("bvb", "fc", "tor", "trainer", "klubs", "klausel", "transfer")):
         score += 0.7
         strengths.append("transportiert einen sporttypischen Trigger")
+
+    if re.match(r"^[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+ .*?(rechnet|plant|schliesst|schließt|greift|betrifft|gilt|warnt|droht|kommt|fordert)\b", candidate):
+        score += 1.1
+        strengths.append("startet mit Akteur und klarer Aktion")
+
+    category_prefix = f"{_category_prefix(brief.category).lower()}:"
+    if lowered.startswith(category_prefix):
+        score -= 0.4
+        weaknesses.append("nutzt nur einen Ressort-Prefix statt direkt mit der Nachricht zu starten")
 
     score += max(-0.6, 0.6 - abs(((IDEAL_MIN_LENGTH + IDEAL_MAX_LENGTH) / 2) - length) / 20)
     return round(max(0.0, min(score, 10.0)), 1), strengths, weaknesses
