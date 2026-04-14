@@ -360,12 +360,25 @@ def _normalize_frontend_path(path: str) -> str:
     return path
 
 
+def _frontend_html_assets_are_available(html: str) -> bool:
+    asset_pattern = re.compile(r'(?:/dist-frontend/assets/|/assets/)([^"\'?#]+)')
+    asset_dir = _frontend_assets_dir()
+
+    for asset_name in asset_pattern.findall(html):
+        if not os.path.isfile(os.path.join(asset_dir, asset_name)):
+            return False
+    return True
+
+
 def _frontend_html_response(request_path: str) -> Response | None:
     html = _load_frontend_html()
     if html is None:
         return None
 
     prepared_html = _prepare_frontend_html_for_request(html, request_path)
+    if not _frontend_html_assets_are_available(prepared_html):
+        return None
+
     response = HTMLResponse(prepared_html)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
@@ -920,7 +933,7 @@ async def frontend_root_entrypoint() -> Response:
     frontend_response = _frontend_html_response("/")
     if frontend_response is not None:
         return frontend_response
-    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
+    return _legacy_frontend_response()
 
 
 @app.get("/push-balancer.html", include_in_schema=False)

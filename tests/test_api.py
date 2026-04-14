@@ -274,6 +274,22 @@ class TestInternalAccessControl:
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
         assert "Push Balancer" in resp.text
 
+    def test_root_falls_back_to_legacy_frontend_when_bundle_assets_are_unavailable(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr(
+            "app.main._frontend_html_assets_are_available",
+            lambda html: False,
+        )
+
+        resp = client.get("/", headers={"CF-Connecting-IP": "145.243.163.23"})
+
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        assert 'data-tab="live"' in resp.text
+        assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
+
 
 class TestPushApiBaseCandidates:
     def test_prefers_https_and_keeps_http_fallback_for_bildcms(self, monkeypatch):
