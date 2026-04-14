@@ -930,9 +930,6 @@ def _legacy_frontend_response() -> Response:
 
 @app.get("/", include_in_schema=False)
 async def frontend_root_entrypoint() -> Response:
-    frontend_response = _frontend_html_response("/")
-    if frontend_response is not None:
-        return frontend_response
     return _legacy_frontend_response()
 
 

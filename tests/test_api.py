@@ -273,6 +273,7 @@ class TestInternalAccessControl:
         assert "text/html" in resp.headers.get("content-type", "")
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
         assert "Push Balancer" in resp.text
+        assert 'data-tab="live"' in resp.text
 
     def test_root_falls_back_to_legacy_frontend_when_bundle_assets_are_unavailable(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
