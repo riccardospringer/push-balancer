@@ -442,12 +442,14 @@ class TestPushTitleGenerateEndpoint:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["title"] == "Ausgangstitel"
+        assert data["title"]
+        assert len(data["title"]) <= 78
         assert isinstance(data["alternativeTitles"], list)
         assert len(data["alternativeTitles"]) >= 1
         assert isinstance(data["reasoning"], str)
         assert data["reasoning"]
         assert data["advisoryOnly"] is True
+        assert data["meta"]["modus"] == "local-editorial-chain"
 
     def test_generate_push_title_without_openai_key_no_longer_returns_503(self, monkeypatch):
         monkeypatch.setattr("app.config.OPENAI_API_KEY", "")
@@ -462,6 +464,39 @@ class TestPushTitleGenerateEndpoint:
         assert data["title"]
         assert "gewinner" in data
         assert data["advisoryOnly"] is True
+
+    def test_generate_push_title_uses_llm_chain_when_key_is_present(self, monkeypatch):
+        monkeypatch.setattr("app.routers.misc.OPENAI_API_KEY", "test-key")
+
+        mocked_result = {
+            "title": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel",
+            "alternativeTitles": ["Schlotterbeck-Klausel: Diese Klubs sind betroffen"],
+            "reasoning": "Hohe Klarheit und konkreter Leserwert.",
+            "advisoryOnly": True,
+            "gewinner": {
+                "titel": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel",
+                "warum_dieser": "Hohe Klarheit und konkreter Leserwert.",
+            },
+            "alternative": {"titel": "Schlotterbeck-Klausel: Diese Klubs sind betroffen"},
+            "alle_kandidaten": {
+                "konsequenz": [
+                    {"titel": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel"}
+                ]
+            },
+            "meta": {"modus": "editorial-prompt-chain"},
+        }
+
+        with patch("push_title_agent.generate_push_title", return_value=mocked_result):
+            resp = client.post(
+                "/api/push-title/generate",
+                json={"title": "Ausgangstitel", "category": "sport"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["title"] == "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel"
+        assert data["alternativeTitles"] == ["Schlotterbeck-Klausel: Diese Klubs sind betroffen"]
+        assert data["meta"]["modus"] == "editorial-prompt-chain"
 
     def test_generate_push_title_alias_requires_title_problem(self):
         resp = client.post("/api/push-title-generations", json={"category": "news"})

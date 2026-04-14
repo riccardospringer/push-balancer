@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET
+from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET, OPENAI_API_KEY
 from app.push_titles import build_push_title_suggestions, infer_content_type
 
 log = logging.getLogger("push-balancer")
@@ -67,6 +67,42 @@ class PushTitleGenerateRequest(BaseModel):
 def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
     if not body.title:
         raise HTTPException(status_code=400, detail="title is required")
+
+    if OPENAI_API_KEY:
+        try:
+            from push_title_agent import generate_push_title
+
+            llm_result = generate_push_title(
+                article_title=body.title,
+                article_text="",
+                category=body.category or "news",
+                kicker="",
+                headline="",
+            )
+            if llm_result.get("gewinner"):
+                gewinner = llm_result["gewinner"]
+                alternative = llm_result.get("alternative", {})
+                all_candidates = llm_result.get("alle_kandidaten", {})
+                alt_titles: list[str] = []
+                for title in llm_result.get("alternativeTitles", []):
+                    if title and title != gewinner.get("titel") and title not in alt_titles:
+                        alt_titles.append(title)
+                for gruppe in all_candidates.values():
+                    for kandidat in gruppe:
+                        titel = kandidat.get("titel", "")
+                        if titel and titel != gewinner.get("titel") and titel not in alt_titles:
+                            alt_titles.append(titel)
+
+                return {
+                    **llm_result,
+                    "title": llm_result.get("title") or gewinner.get("titel", body.title),
+                    "alternativeTitles": alt_titles[:5],
+                    "reasoning": llm_result.get("reasoning") or gewinner.get("warum_dieser", ""),
+                    "advisoryOnly": True,
+                }
+        except Exception:
+            log.exception("[PushTitle] LLM-Chain Pfad fehlgeschlagen, falle lokal zurueck")
+
     try:
         return build_push_title_suggestions(
             title=body.title,
