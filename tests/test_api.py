@@ -239,6 +239,41 @@ class TestInternalAccessControl:
         assert "/assets/index-old.css" in rewritten
         assert "replaceState" in rewritten
 
+    def test_load_frontend_html_repairs_missing_hashed_assets(self, monkeypatch, tmp_path):
+        from app.main import _load_frontend_html
+
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "index-new.js").write_text("console.log('ok');", encoding="utf-8")
+        (assets_dir / "index-new.css").write_text("body{}", encoding="utf-8")
+        (tmp_path / "index.html").write_text(
+            """
+<!doctype html>
+<script type="module" src="/dist-frontend/assets/index-old.js"></script>
+<link rel="stylesheet" href="/dist-frontend/assets/index-old.css">
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("app.main.SERVE_DIR", str(tmp_path))
+
+        repaired_html = _load_frontend_html()
+
+        assert repaired_html is not None
+        assert "/dist-frontend/assets/index-new.js" in repaired_html
+        assert "/dist-frontend/assets/index-new.css" in repaired_html
+
+    def test_root_serves_frontend_html_with_no_cache_headers(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/", headers={"CF-Connecting-IP": "145.243.163.23"})
+
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
+        assert "Push Balancer" in resp.text
+
 
 class TestPushApiBaseCandidates:
     def test_prefers_https_and_keeps_http_fallback_for_bildcms(self, monkeypatch):

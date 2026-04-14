@@ -22,6 +22,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -269,8 +270,60 @@ def _frontend_index_path() -> str:
     return os.path.join(SERVE_DIR, "index.html")
 
 
+def _frontend_assets_dir() -> str:
+    return os.path.join(SERVE_DIR, "assets")
+
+
 def _legacy_frontend_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
+
+
+def _find_replacement_asset_name(asset_name: str) -> str | None:
+    asset_dir = _frontend_assets_dir()
+    if not os.path.isdir(asset_dir):
+        return None
+
+    candidate_path = os.path.join(asset_dir, asset_name)
+    if os.path.isfile(candidate_path):
+        return asset_name
+
+    stem, ext = os.path.splitext(asset_name)
+    if "-" not in stem:
+        return None
+
+    asset_prefix = stem.split("-", 1)[0]
+    matching_candidates: list[tuple[float, str]] = []
+    try:
+        for entry in os.scandir(asset_dir):
+            if not entry.is_file():
+                continue
+            entry_stem, entry_ext = os.path.splitext(entry.name)
+            if entry_ext != ext or "-" not in entry_stem:
+                continue
+            if entry_stem.split("-", 1)[0] != asset_prefix:
+                continue
+            matching_candidates.append((entry.stat().st_mtime, entry.name))
+    except OSError:
+        return None
+
+    if not matching_candidates:
+        return None
+
+    matching_candidates.sort(reverse=True)
+    return matching_candidates[0][1]
+
+
+def _repair_frontend_asset_references(html: str) -> str:
+    asset_pattern = re.compile(r'((?:/dist-frontend/assets/|/assets/))([^"\'?#]+)')
+
+    def _replace(match: re.Match[str]) -> str:
+        prefix, asset_name = match.groups()
+        replacement_name = _find_replacement_asset_name(asset_name)
+        if not replacement_name:
+            return match.group(0)
+        return f"{prefix}{replacement_name}"
+
+    return asset_pattern.sub(_replace, html)
 
 
 def _load_frontend_html() -> str | None:
@@ -279,7 +332,7 @@ def _load_frontend_html() -> str | None:
         return None
     try:
         with open(index_path, encoding="utf-8") as index_file:
-            return index_file.read()
+            return _repair_frontend_asset_references(index_file.read())
     except OSError:
         return None
 
@@ -305,6 +358,19 @@ def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
 
 def _normalize_frontend_path(path: str) -> str:
     return path
+
+
+def _frontend_html_response(request_path: str) -> Response | None:
+    html = _load_frontend_html()
+    if html is None:
+        return None
+
+    prepared_html = _prepare_frontend_html_for_request(html, request_path)
+    response = HTMLResponse(prepared_html)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def _is_frontend_navigation_request(method: str, path: str) -> bool:
@@ -788,18 +854,18 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            index_path = _frontend_index_path()
-            if os.path.isfile(index_path):
-                return FileResponse(index_path, media_type="text/html")
+            frontend_response = _frontend_html_response(normalized_path)
+            if frontend_response is not None:
+                return frontend_response
         return response
 
     client_ip = _extract_client_ip(request)
     if _client_is_on_allowed_network(client_ip):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            index_path = _frontend_index_path()
-            if os.path.isfile(index_path):
-                return FileResponse(index_path, media_type="text/html")
+            frontend_response = _frontend_html_response(normalized_path)
+            if frontend_response is not None:
+                return frontend_response
         return response
 
     log.warning(
@@ -847,6 +913,14 @@ def _legacy_frontend_response() -> Response:
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+
+@app.get("/", include_in_schema=False)
+async def frontend_root_entrypoint() -> Response:
+    frontend_response = _frontend_html_response("/")
+    if frontend_response is not None:
+        return frontend_response
+    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
 
 
 @app.get("/push-balancer.html", include_in_schema=False)
