@@ -11,12 +11,25 @@ Enthält:
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import logging
 import math
 import re
+import threading
+import time
 from collections import defaultdict
 
+from app.cost_controls import allow_calls
+
 log = logging.getLogger("push-balancer")
+
+_OPENAI_PREDICTION_CACHE: dict[str, dict] = {}
+_OPENAI_PREDICTION_CACHE_LOCK = threading.Lock()
+_OPENAI_PREDICTION_CACHE_MAX_ENTRIES = 512
+_OPENAI_PREDICTION_CLIENT = None
+_OPENAI_PREDICTION_CLIENT_KEY = ""
+_OPENAI_PREDICTION_CLIENT_LOCK = threading.Lock()
 
 # ── Stop-Words (identisch mit features.py _TOPIC_STOPS) ──────────────────────
 _HEURISTIC_STOPS = {
@@ -61,6 +74,72 @@ _SPORT_BOOST_ENTITIES = frozenset({
     "bundesliga", "dfb", "nationalmannschaft", "nagelsmann", "tuchel", "flick",
     "lewandowski", "haaland", "bellingham", "mbappe", "mbappé",
 })
+
+
+def _get_openai_prediction_client(api_key: str):
+    """Liefert einen wiederverwendbaren OpenAI-Client für optionales LLM-Scoring."""
+    global _OPENAI_PREDICTION_CLIENT, _OPENAI_PREDICTION_CLIENT_KEY
+    with _OPENAI_PREDICTION_CLIENT_LOCK:
+        if _OPENAI_PREDICTION_CLIENT is None or _OPENAI_PREDICTION_CLIENT_KEY != api_key:
+            import openai as _oai
+
+            _OPENAI_PREDICTION_CLIENT = _oai.OpenAI(api_key=api_key)
+            _OPENAI_PREDICTION_CLIENT_KEY = api_key
+        return _OPENAI_PREDICTION_CLIENT
+
+
+def _prediction_llm_cache_key(
+    *,
+    push_title: str,
+    push_cat: str,
+    push_hour: int,
+    push_weekday: int,
+    baseline_or: float,
+    examples: list[str],
+    model: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "title": push_title,
+            "cat": push_cat,
+            "hour": push_hour,
+            "weekday": push_weekday,
+            "baseline_or": round(baseline_or, 2),
+            "examples": examples,
+            "model": model,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _prediction_llm_cache_get(cache_key: str, ttl_s: int) -> dict | None:
+    if ttl_s <= 0:
+        return None
+
+    now = time.time()
+    with _OPENAI_PREDICTION_CACHE_LOCK:
+        entry = _OPENAI_PREDICTION_CACHE.get(cache_key)
+        if not entry:
+            return None
+        if now - float(entry.get("ts", 0)) > ttl_s:
+            _OPENAI_PREDICTION_CACHE.pop(cache_key, None)
+            return None
+        value = entry.get("value")
+        return dict(value) if isinstance(value, dict) else None
+
+
+def _prediction_llm_cache_set(cache_key: str, value: dict) -> None:
+    with _OPENAI_PREDICTION_CACHE_LOCK:
+        if len(_OPENAI_PREDICTION_CACHE) >= _OPENAI_PREDICTION_CACHE_MAX_ENTRIES:
+            oldest_key = min(
+                _OPENAI_PREDICTION_CACHE,
+                key=lambda key: _OPENAI_PREDICTION_CACHE[key].get("ts", 0),
+            )
+            _OPENAI_PREDICTION_CACHE.pop(oldest_key, None)
+        _OPENAI_PREDICTION_CACHE[cache_key] = {"ts": time.time(), "value": dict(value)}
 
 
 def _context_topic_match(push_title: str, trends: list) -> float:
@@ -635,37 +714,84 @@ def predict_heuristic(
     m8 = global_avg
     conf_m8 = 0.0
     try:
-        from app.config import OPENAI_API_KEY
-        if OPENAI_API_KEY and push_title_raw:
-            import openai as _oai
-            _client = _oai.OpenAI(api_key=OPENAI_API_KEY)
+        from app.config import (
+            OPENAI_API_KEY,
+            PAID_EXTERNAL_APIS_ENABLED,
+            OPENAI_PREDICTION_SCORING_CACHE_TTL_S,
+            OPENAI_PREDICTION_SCORING_ENABLED,
+            OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY,
+            OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR,
+            OPENAI_PREDICTION_SCORING_MAX_TOKENS,
+            OPENAI_PREDICTION_SCORING_MODEL,
+            OPENAI_PREDICTION_SCORING_TIMEOUT_S,
+        )
+
+        if (
+            PAID_EXTERNAL_APIS_ENABLED
+            and OPENAI_PREDICTION_SCORING_ENABLED
+            and OPENAI_API_KEY
+            and push_title_raw
+        ):
             _m8_examples = []
             if sim_scores:
                 for _sim, _or, _title in sim_scores[:5]:
                     _m8_examples.append(f"  - \"{_title}\" → OR {_or:.1f}% (Ähnlichkeit {_sim:.0%})")
-            _prompt = (
-                f"Du bist ein Experte für Push-Benachrichtigungen der BILD-Zeitung (~8 Mio Abonnenten).\n"
-                f"Analysiere diesen Push-Titel und prognostiziere die Opening-Rate (OR) in Prozent.\n\n"
-                f"Push-Titel: \"{push_title_raw}\"\n"
-                f"Kategorie: {push_cat}\n"
-                f"Uhrzeit: {push_hour}:00 Uhr\n"
-                f"Wochentag: {['Mo','Di','Mi','Do','Fr','Sa','So'][push_weekday]}\n\n"
-                f"Historischer Durchschnitt: {round(m4, 1) if m4 != global_avg else round(global_avg, 1)}%\n"
-                + (("\nÄhnliche historische Pushes:\n" + "\n".join(_m8_examples)) if _m8_examples else "")
-                + "\n\nAntworte NUR in diesem JSON-Format (kein anderer Text):\n"
-                + '{"or_prognose": <float>, "reasoning": "<1 Satz>"}'
+            _baseline_or = round(m4, 1) if m4 != global_avg else round(global_avg, 1)
+            _cache_key = _prediction_llm_cache_key(
+                push_title=push_title_raw,
+                push_cat=push_cat,
+                push_hour=push_hour,
+                push_weekday=push_weekday,
+                baseline_or=_baseline_or,
+                examples=_m8_examples,
+                model=OPENAI_PREDICTION_SCORING_MODEL,
             )
-            _resp = _client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": _prompt}],
-                max_tokens=100,
-                temperature=0.3,
+            _data = _prediction_llm_cache_get(
+                _cache_key,
+                OPENAI_PREDICTION_SCORING_CACHE_TTL_S,
             )
-            import json as _json
-            _text = _resp.choices[0].message.content.strip()
-            _jmatch = re.search(r"\{.*\}", _text, re.DOTALL)
-            if _jmatch:
-                _data = _json.loads(_jmatch.group())
+            if _data is None:
+                if not allow_calls(
+                    [
+                        (
+                            "openai_prediction_scoring_hour",
+                            OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR,
+                            3600,
+                        ),
+                        (
+                            "openai_prediction_scoring_day",
+                            OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY,
+                            86400,
+                        ),
+                    ]
+                ):
+                    raise RuntimeError("OPENAI_PREDICTION_SCORING budget exhausted or disabled")
+                _prompt = (
+                    f"Du bist ein Experte für Push-Benachrichtigungen der BILD-Zeitung (~8 Mio Abonnenten).\n"
+                    f"Analysiere diesen Push-Titel und prognostiziere die Opening-Rate (OR) in Prozent.\n\n"
+                    f"Push-Titel: \"{push_title_raw}\"\n"
+                    f"Kategorie: {push_cat}\n"
+                    f"Uhrzeit: {push_hour}:00 Uhr\n"
+                    f"Wochentag: {['Mo','Di','Mi','Do','Fr','Sa','So'][push_weekday]}\n\n"
+                    f"Historischer Durchschnitt: {_baseline_or}%\n"
+                    + (("\nÄhnliche historische Pushes:\n" + "\n".join(_m8_examples)) if _m8_examples else "")
+                    + "\n\nAntworte NUR in diesem JSON-Format (kein anderer Text):\n"
+                    + '{"or_prognose": <float>, "reasoning": "<1 Satz>"}'
+                )
+                _client = _get_openai_prediction_client(OPENAI_API_KEY)
+                _resp = _client.chat.completions.create(
+                    model=OPENAI_PREDICTION_SCORING_MODEL,
+                    messages=[{"role": "user", "content": _prompt}],
+                    max_tokens=OPENAI_PREDICTION_SCORING_MAX_TOKENS,
+                    temperature=0.1,
+                    timeout=OPENAI_PREDICTION_SCORING_TIMEOUT_S,
+                )
+                _text = _resp.choices[0].message.content.strip()
+                _jmatch = re.search(r"\{.*\}", _text, re.DOTALL)
+                if _jmatch:
+                    _data = json.loads(_jmatch.group())
+                    _prediction_llm_cache_set(_cache_key, _data)
+            if _data:
                 _m8_or = float(_data.get("or_prognose", 0))
                 if 0.5 <= _m8_or <= 50:
                     m8 = _m8_or

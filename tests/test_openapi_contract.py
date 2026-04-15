@@ -12,22 +12,6 @@ def load_openapi() -> dict:
     return yaml.safe_load(OPENAPI_PATH.read_text(encoding="utf-8"))
 
 
-def load_deprecated_openapi_path_config(document: dict) -> tuple[set[str], set[str]]:
-    exact_paths: set[str] = set()
-    prefixes: set[str] = set()
-
-    for path, _method, operation in iter_operations(document):
-        if operation.get("deprecated") is not True:
-            continue
-
-        if "{" in path:
-            prefixes.add(path.split("{", 1)[0])
-        else:
-            exact_paths.add(path)
-
-    return exact_paths, prefixes
-
-
 def iter_operations(document: dict):
     for path, path_item in document.get("paths", {}).items():
         for method, operation in path_item.items():
@@ -122,10 +106,10 @@ def test_problem_schema_is_available_for_standardized_errors():
     ]["$ref"] == "#/components/schemas/Problem"
 
 
-def test_compatibility_operations_are_marked_deprecated():
+def test_removed_compatibility_operations_are_absent_from_openapi():
     document = load_openapi()
 
-    deprecated_paths = {
+    removed_paths = {
         "/api/push/{path}",
         "/api/competitors",
         "/api/sport-competitors",
@@ -143,51 +127,24 @@ def test_compatibility_operations_are_marked_deprecated():
         "/api/gbrt/force-promote",
     }
 
-    for path in deprecated_paths:
-        operation = next(iter(document["paths"][path].values()))
-        assert operation.get("deprecated") is True, f"{path} should be deprecated"
+    remaining = removed_paths & set(document["paths"])
+    assert not remaining, f"Removed compatibility paths still documented: {sorted(remaining)}"
 
 
-def test_deprecated_operations_document_runtime_deprecation_headers():
+def test_runtime_no_longer_contains_compatibility_deprecation_helpers():
+    main_py = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert "_DEPRECATED_COMPATIBILITY_EXACT_PATHS" not in main_py
+    assert "_DEPRECATED_COMPATIBILITY_PREFIXES" not in main_py
+    assert "_apply_runtime_headers" not in main_py
+    assert '@app.get("/push-balancer.html"' not in main_py
+
+
+def test_openapi_no_longer_defines_deprecation_headers():
     document = load_openapi()
-
-    deprecated_paths = {
-        "/api/push/{path}",
-        "/api/competitors",
-        "/api/sport-competitors",
-        "/api/forschung",
-        "/api/learnings",
-        "/api/adobe/traffic",
-        "/api/ml/status",
-        "/api/ml/monitoring",
-        "/api/ml/retrain",
-        "/api/ml/monitoring/tick",
-        "/api/predict-batch",
-        "/api/gbrt/status",
-        "/api/gbrt/model.json",
-        "/api/gbrt/retrain",
-        "/api/gbrt/force-promote",
-    }
-
-    for path in deprecated_paths:
-        operation = next(iter(document["paths"][path].values()))
-        success = operation["responses"]["200"]
-        headers = success.get("headers", {})
-        assert headers.get("Deprecation", {}).get("$ref") == "#/components/headers/Deprecation"
-        assert headers.get("Sunset", {}).get("$ref") == "#/components/headers/Sunset"
-
-
-def test_runtime_deprecated_path_configuration_matches_openapi_contract():
-    from app.main import (
-        _DEPRECATED_COMPATIBILITY_EXACT_PATHS,
-        _DEPRECATED_COMPATIBILITY_PREFIXES,
-    )
-
-    document = load_openapi()
-    exact_paths, prefixes = load_deprecated_openapi_path_config(document)
-
-    assert exact_paths == _DEPRECATED_COMPATIBILITY_EXACT_PATHS
-    assert prefixes == set(_DEPRECATED_COMPATIBILITY_PREFIXES)
+    headers = document.get("components", {}).get("headers", {})
+    assert "Deprecation" not in headers
+    assert "Sunset" not in headers
 
 
 def test_frontend_code_uses_editorial_one_package_imports_only():
@@ -205,13 +162,123 @@ def test_frontend_code_uses_editorial_one_package_imports_only():
     assert not violations, f"Direct shim imports are not allowed: {violations}"
 
 
+def test_frontend_entrypoint_imports_public_editorial_one_package_names():
+    main_tsx = (
+        Path(__file__).resolve().parents[1] / "frontend" / "src" / "main.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "@spring-media/editorial-one-ui" in main_tsx
+    assert "@spring-media/editorial-one-ui/fonts.css" in main_tsx
+    assert "editorial-one-ui-shim" not in main_tsx
+
+
+def test_frontend_shim_aliases_stay_configured_in_vite_and_tsconfig():
+    repo_root = Path(__file__).resolve().parents[1]
+    vite_config = (repo_root / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+    tsconfig = (repo_root / "frontend" / "tsconfig.app.json").read_text(encoding="utf-8")
+
+    assert "@spring-media/editorial-one-ui/fonts.css" in vite_config
+    assert "./src/editorial-one-ui-shim/fonts.css" in vite_config
+    assert "@spring-media/editorial-one-ui" in vite_config
+    assert "./src/editorial-one-ui-shim/index.tsx" in vite_config
+
+    assert '"@spring-media/editorial-one-ui"' in tsconfig
+    assert '"./src/editorial-one-ui-shim/index.tsx"' in tsconfig
+    assert '"@spring-media/editorial-one-ui/*"' in tsconfig
+    assert '"./src/editorial-one-ui-shim/*"' in tsconfig
+
+
+def test_frontend_package_does_not_claim_real_editorial_one_dependency_without_tokenized_install():
+    package_json = (
+        Path(__file__).resolve().parents[1] / "frontend" / "package.json"
+    ).read_text(encoding="utf-8")
+
+    assert '"@spring-media/editorial-one-ui"' not in package_json
+
+
+def test_runtime_environment_variables_are_documented_for_handover():
+    repo_root = Path(__file__).resolve().parents[1]
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    env_example = (repo_root / ".env.example").read_text(encoding="utf-8")
+    render_config = yaml.safe_load((repo_root / "render.yaml").read_text(encoding="utf-8"))
+
+    documented_everywhere = {
+        "PAID_EXTERNAL_APIS_ENABLED",
+        "BACKGROUND_AUTOMATIONS_ENABLED",
+        "HEALTH_ACTIVE_CHECKS_ENABLED",
+        "ECONOMY_MODE",
+        "PUSH_LIVE_FETCH_ENABLED",
+        "LIVE_FEED_FALLBACK_ENABLED",
+        "RESEARCH_EXTERNAL_CONTEXT_ENABLED",
+        "ARTICLE_PREDICTION_ENRICHMENT_ENABLED",
+        "TAGESPLAN_ON_DEMAND_BUILD_ENABLED",
+        "OPENAI_TITLE_GENERATION_ENABLED",
+        "OPENAI_TITLE_GENERATION_MODEL",
+        "OPENAI_TITLE_GENERATION_TIMEOUT_S",
+        "OPENAI_TITLE_GENERATION_MAX_TOKENS",
+        "OPENAI_BACKFILL_ENABLED",
+        "OPENAI_PREDICTION_SCORING_ENABLED",
+        "OPENAI_PREDICTION_SCORING_MODEL",
+        "OPENAI_PREDICTION_SCORING_TIMEOUT_S",
+        "OPENAI_PREDICTION_SCORING_MAX_TOKENS",
+        "OPENAI_PREDICTION_SCORING_CACHE_TTL_S",
+        "PUSH_API_BASE",
+        "DB_PATH",
+        "PUSH_DB_MAX_ROWS",
+        "ADMIN_API_KEY",
+        "INTERNAL_ACCESS_ENABLED",
+        "INTERNAL_ACCESS_ALLOWED_CIDRS",
+        "INTERNAL_ACCESS_EXEMPT_PATHS",
+        "PUSH_SYNC_SECRET",
+        "ADOBE_TRAFFIC_ENABLED",
+        "NPM_TOKEN",
+    }
+
+    render_env_keys = {
+        item["key"]
+        for service in render_config.get("services", [])
+        for item in service.get("envVars", [])
+        if "key" in item
+    }
+
+    for variable in documented_everywhere:
+        assert variable in readme, f"{variable} missing from README handover docs"
+        assert f"{variable}=" in env_example, f"{variable} missing from .env.example"
+        if variable != "NPM_TOKEN":
+            assert variable in render_env_keys, f"{variable} missing from render.yaml"
+
+
+def test_repo_does_not_track_legacy_frontend_html_artifacts():
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert not (repo_root / "push-balancer.html").exists()
+    assert not (repo_root / "app" / "legacy_push_balancer.html").exists()
+
+
+def test_dockerfile_does_not_copy_removed_legacy_frontend_html():
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY push-balancer.html ./push-balancer.html" not in dockerfile
+
+
+def test_app_main_uses_spa_compat_frontend_without_file_based_legacy_helper():
+    app_main = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_legacy_frontend_path" not in app_main
+    assert "_legacy_frontend_response" not in app_main
+
+
 def test_stable_openapi_schemas_include_descriptions_and_examples():
     document = load_openapi()
     schemas = document["components"]["schemas"]
 
     required_schema_properties = {
         "HealthCheck": {"ok", "error"},
-        "HealthResponse": {"status", "uptime", "checks"},
+        "HealthResponse": {"status", "uptime", "checks", "costControls"},
         "CompetitorItem": {"title", "url", "pubDate", "outlet", "outletColor", "isGap", "isExklusiv", "isHot", "outlets"},
         "CompetitorSummary": {"total", "gaps", "exklusiv", "hot"},
         "CompetitorResponse": {"items", "summary", "fetchedAt"},
@@ -258,4 +325,20 @@ def test_stable_openapi_schemas_include_descriptions_and_examples():
         )
         assert "example" in property_schema, (
             f"HealthResponse.research.{property_name} misses example"
+        )
+
+    cost_control_properties = schemas["HealthResponse"]["properties"]["costControls"]["properties"]
+    for property_name in {
+        "paidExternalApisEnabled",
+        "openaiTitleGenerationEnabled",
+        "openaiPredictionScoringEnabled",
+        "openaiBackfillEnabled",
+        "adobeTrafficEnabled",
+    }:
+        property_schema = cost_control_properties[property_name]
+        assert property_schema.get("description"), (
+            f"HealthResponse.costControls.{property_name} misses description"
+        )
+        assert "example" in property_schema, (
+            f"HealthResponse.costControls.{property_name} misses example"
         )

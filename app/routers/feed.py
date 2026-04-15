@@ -1,9 +1,7 @@
 """app/routers/feed.py — Feed- und Competitor-Endpunkte.
 
 GET /api/feed                    — BILD Sitemap (XML-Proxy)
-GET /api/competitors             — Alle Competitor-Feeds (gecacht)
 GET /api/competitor/{name}       — Einzelner Competitor-Feed
-GET /api/sport-competitors       — Sport-Competitor-Feeds
 GET /api/sport-europa            — Sport-Europa-Feeds
 GET /api/sport-global            — Sport-Global-Feeds
 GET /api/international           — Internationale Feeds (gecacht)
@@ -23,11 +21,15 @@ from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
 
 from app.config import (
+    ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
     BILD_SITEMAP,
     CACHE_TTL,
     COMPETITOR_FEEDS,
     INTERNATIONAL_FEEDS,
+    LIVE_FEED_FALLBACK_ENABLED,
     SPORT_COMPETITOR_FEEDS,
+    SPORT_EUROPA_FEEDS,
+    SPORT_GLOBAL_FEEDS,
 )
 from app.research.worker import _xor_perf_cache, _xor_perf_lock, get_cached_feeds
 
@@ -73,6 +75,20 @@ _ARTICLE_BREAKING_KEYWORDS = (
     "EXKLUSIV",
     "SCHOCK",
     "WARNUNG",
+)
+
+_VIDEO_URL_MARKERS = (
+    "/video/",
+    "/videos/",
+    "-video-",
+)
+_VIDEO_TITLE_MARKERS = (
+    "video",
+    "im video",
+    "hier sehen sie",
+    "hier seht ihr",
+    "aufnahmen",
+    "clip",
 )
 
 # ── In-Memory URL-Cache ────────────────────────────────────────────────────
@@ -176,6 +192,85 @@ def _infer_article_category(url: str, title: str) -> str:
     return "news"
 
 
+def _infer_article_type(url: str, title: str) -> str:
+    text = f"{url} {title}".lower()
+    if any(marker in url.lower() for marker in _VIDEO_URL_MARKERS):
+        return "video"
+    if any(marker in text for marker in _VIDEO_TITLE_MARKERS):
+        return "video"
+    return "editorial"
+
+
+def _parse_pub_timestamp(pub_date: str) -> float:
+    import datetime
+    from email.utils import parsedate_to_datetime
+
+    if not pub_date:
+        return 0.0
+
+    try:
+        normalized = pub_date.replace("Z", "+00:00")
+        return datetime.datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        pass
+
+    try:
+        return parsedate_to_datetime(pub_date).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _build_article_score(category: str, title: str, pub_date: str, article_type: str) -> tuple[float, str]:
+    now_ts = time.time()
+    pub_ts = _parse_pub_timestamp(pub_date)
+    age_hours = max(0.0, (now_ts - pub_ts) / 3600) if pub_ts > 0 else 6.0
+    title_upper = title.upper()
+    title_lower = title.lower()
+
+    base = {
+        "politik": 58.0,
+        "sport": 62.0,
+        "news": 56.0,
+        "wirtschaft": 54.0,
+        "unterhaltung": 50.0,
+        "regional": 49.0,
+        "digital": 51.0,
+    }.get(category, 50.0)
+
+    score = base
+    reasons: list[str] = []
+
+    if age_hours <= 1:
+        score += 18.0
+        reasons.append("sehr frisch")
+    elif age_hours <= 3:
+        score += 12.0
+        reasons.append("frisch")
+    elif age_hours <= 8:
+        score += 6.0
+    elif age_hours >= 24:
+        score -= 8.0
+        reasons.append("älter")
+
+    if any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS):
+        score += 8.0
+        reasons.append("breaking")
+
+    if "liveticker" in title_lower or "live" in title_lower:
+        score += 4.0
+        reasons.append("live")
+
+    if category == "sport":
+        score += 3.0
+        reasons.append("sport-fit")
+
+    if article_type == "video":
+        score -= 9.0
+        reasons.append("video-abschlag")
+
+    return max(18.0, min(score, 100.0)), ", ".join(reasons[:3])
+
+
 def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[dict[str, Any]]:
     ns_sitemap = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     ns_news = {"news": "http://www.google.com/schemas/sitemap-news/0.9"}
@@ -194,11 +289,9 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
             continue
 
         category = _infer_article_category(loc, title)
-        score = _ARTICLE_CATEGORY_SCORES.get(category, 60.0)
+        article_type = _infer_article_type(loc, title)
+        score, score_reason = _build_article_score(category, title, pub_date, article_type)
         title_upper = title.upper()
-        for keyword in _ARTICLE_BREAKING_KEYWORDS:
-            if keyword in title_upper:
-                score += 6.0
 
         articles.append(
             {
@@ -208,11 +301,14 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
                 "category": category,
                 "pubDate": pub_date,
                 "score": min(score, 100.0),
+                "scoreReason": score_reason,
                 "predictedOR": None,
                 "isBreaking": any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS),
                 "isEilmeldung": "EIL" in title_upper,
                 "isSport": category == "sport",
+                "isVideo": article_type == "video",
                 "isPlusArticle": False,
+                "type": article_type,
             }
         )
         if len(articles) >= max_items:
@@ -248,32 +344,33 @@ def get_articles(
     articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
     selected = articles[offset : offset + limit]
 
-    try:
-        import datetime as _dt
+    if ARTICLE_PREDICTION_ENRICHMENT_ENABLED:
+        try:
+            import datetime as _dt
 
-        from app.ml.predict import predict_or
-        from app.research.worker import _research_state
+            from app.ml.predict import predict_or
+            from app.research.worker import _research_state
 
-        now = _dt.datetime.now()
-        for article in selected:
-            result = predict_or(
-                {
-                    "title": article["title"],
-                    "headline": article["title"],
-                    "cat": article["category"],
-                    "hour": now.hour,
-                    "ts_num": int(now.timestamp()),
-                    "is_eilmeldung": article["isEilmeldung"],
-                    "link": article["url"],
-                    "channels": [],
-                },
-                _research_state,
-            )
-            predicted_or = (result or {}).get("predicted_or")
-            if predicted_or is not None:
-                article["predictedOR"] = round(float(predicted_or) / 100, 4)
-    except Exception as exc:
-        log.warning("[articles] prediction enrichment failed: %s", exc)
+            now = _dt.datetime.now()
+            for article in selected:
+                result = predict_or(
+                    {
+                        "title": article["title"],
+                        "headline": article["title"],
+                        "cat": article["category"],
+                        "hour": now.hour,
+                        "ts_num": int(now.timestamp()),
+                        "is_eilmeldung": article["isEilmeldung"],
+                        "link": article["url"],
+                        "channels": [],
+                    },
+                    _research_state,
+                )
+                predicted_or = (result or {}).get("predicted_or")
+                if predicted_or is not None:
+                    article["predictedOR"] = round(float(predicted_or) / 100, 4)
+        except Exception as exc:
+            log.warning("[articles] prediction enrichment failed: %s", exc)
 
     return JSONResponse(
         content={
@@ -304,6 +401,8 @@ def _paginate_feed_dict(
 
 def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
     """Fetcht alle Feeds parallel via ThreadPool als Live-Fallback."""
+    if not LIVE_FEED_FALLBACK_ENABLED:
+        return {}
     import concurrent.futures
     result: dict = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
@@ -317,7 +416,6 @@ def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
     return result
 
 
-@router.get("/api/competitors")
 def get_competitors() -> JSONResponse:
     """Liefert alle Competitor-Feeds aus Background-Cache.
 
@@ -346,7 +444,6 @@ def get_competitor(name: str) -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
-@router.get("/api/sport-competitors")
 def get_sport_competitors() -> JSONResponse:
     """Liefert Sport-Competitor-Feeds aus Background-Cache.
 
@@ -355,6 +452,8 @@ def get_sport_competitors() -> JSONResponse:
     """
     try:
         parsed = get_cached_feeds("sport_competitors")
+        if not parsed:
+            parsed = _fetch_feeds_live(SPORT_COMPETITOR_FEEDS)
         return JSONResponse(content=parsed or {})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport competitor feeds error: {e}")
@@ -368,6 +467,8 @@ def get_sport_europa(
     """Liefert Sport-Europa-Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("sport_europa")
+        if not parsed:
+            parsed = _fetch_feeds_live(SPORT_EUROPA_FEEDS)
         return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport Europa feeds error: {e}")
@@ -381,6 +482,8 @@ def get_sport_global(
     """Liefert Sport-Global-Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("sport_global")
+        if not parsed:
+            parsed = _fetch_feeds_live(SPORT_GLOBAL_FEEDS)
         return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sport Global feeds error: {e}")
@@ -394,6 +497,8 @@ def get_international(
     """Liefert alle internationalen Feeds aus Background-Cache (paginiert)."""
     try:
         parsed = get_cached_feeds("international")
+        if not parsed:
+            parsed = _fetch_feeds_live(INTERNATIONAL_FEEDS)
         return JSONResponse(content=_paginate_feed_dict(parsed or {}, offset, limit))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"International feeds error: {e}")
@@ -541,9 +646,16 @@ def get_feeds_competitor() -> JSONResponse:
 def get_feeds_competitor_sport() -> JSONResponse:
     """Aufbereitete Sport-Competitor-Feeds im CompetitorResponse-Format."""
     try:
-        parsed = get_cached_feeds("sport_competitors")
-        if not parsed:
-            parsed = _fetch_feeds_live(SPORT_COMPETITOR_FEEDS)
+        parsed: dict[str, list[dict]] = {}
+        for feed_type, configured_feeds in (
+            ("sport_competitors", SPORT_COMPETITOR_FEEDS),
+            ("sport_europa", SPORT_EUROPA_FEEDS),
+            ("sport_global", SPORT_GLOBAL_FEEDS),
+        ):
+            cached = get_cached_feeds(feed_type)
+            live = cached if cached else _fetch_feeds_live(configured_feeds)
+            if isinstance(live, dict):
+                parsed.update(live)
         return JSONResponse(content=_build_competitor_response(parsed or {}, _OUTLET_COLORS))
     except Exception as e:
         log.exception("[feed] Fehler in get_feeds_competitor_sport")

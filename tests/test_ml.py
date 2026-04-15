@@ -4,6 +4,7 @@ Stellt sicher, dass alle Imports und Kernfunktionen ohne Laufzeitfehler ausführ
 """
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -180,3 +181,205 @@ def test_predict_or_safety_envelope():
             "ts_num": int(time.time()) - 3600}
     result = predict_or(push, research_state={"global_avg": 5.2})
     assert result["safety_mode"] == "ADVISORY_ONLY"
+
+
+def test_predict_heuristic_skips_openai_by_default(sample_pushes_ml, monkeypatch):
+    import app.config as config
+    import app.ml.heuristic as heuristic
+
+    calls = {"count": 0}
+
+    class _DummyOpenAI:
+        def __init__(self, *args, **kwargs):
+            calls["count"] += 1
+
+    with heuristic._OPENAI_PREDICTION_CACHE_LOCK:
+        heuristic._OPENAI_PREDICTION_CACHE.clear()
+    heuristic._OPENAI_PREDICTION_CLIENT = None
+    heuristic._OPENAI_PREDICTION_CLIENT_KEY = ""
+
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", False)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_ENABLED", False)
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=_DummyOpenAI))
+
+    push = {
+        "title": "Neue Nachricht zur Lage in Berlin",
+        "cat": "news",
+        "hour": 12,
+        "ts_num": max(p["ts_num"] for p in sample_pushes_ml) + 3600,
+        "is_eilmeldung": False,
+    }
+
+    result = heuristic.predict_heuristic(push, sample_pushes_ml, state={})
+
+    assert result is not None
+    assert calls["count"] == 0
+    assert "gpt_content_scoring" not in result["methods"]
+
+
+def test_predict_heuristic_caches_openai_results_when_enabled(sample_pushes_ml, monkeypatch):
+    import app.config as config
+    import app.ml.heuristic as heuristic
+
+    calls = {"count": 0}
+
+    class _DummyCompletions:
+        def create(self, **kwargs):
+            calls["count"] += 1
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(
+                            content='{"or_prognose": 6.4, "reasoning": "Solider Testtitel."}'
+                        )
+                    )
+                ]
+            )
+
+    class _DummyClient:
+        def __init__(self, *args, **kwargs):
+            self.chat = types.SimpleNamespace(completions=_DummyCompletions())
+
+    with heuristic._OPENAI_PREDICTION_CACHE_LOCK:
+        heuristic._OPENAI_PREDICTION_CACHE.clear()
+    heuristic._OPENAI_PREDICTION_CLIENT = None
+    heuristic._OPENAI_PREDICTION_CLIENT_KEY = ""
+
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MODEL", "test-mini")
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MAX_TOKENS", 32)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_CACHE_TTL_S", 3600)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=_DummyClient))
+
+    push = {
+        "title": "Neue Nachricht zur Lage in Berlin",
+        "cat": "news",
+        "hour": 12,
+        "ts_num": max(p["ts_num"] for p in sample_pushes_ml) + 3600,
+        "is_eilmeldung": False,
+    }
+
+    result1 = heuristic.predict_heuristic(push, sample_pushes_ml, state={})
+    result2 = heuristic.predict_heuristic(push, sample_pushes_ml, state={})
+
+    assert result1 is not None
+    assert result2 is not None
+    assert calls["count"] == 1
+    assert result1["methods"]["gpt_content_scoring"] == 6.4
+    assert result2["methods"]["gpt_content_scoring"] == 6.4
+
+
+def test_research_external_context_uses_local_defaults_when_disabled(monkeypatch):
+    import app.research.worker as worker
+
+    monkeypatch.setattr("app.config.RESEARCH_EXTERNAL_CONTEXT_ENABLED", False)
+    worker._external_context_cache = {
+        "weather": {},
+        "trends": [],
+        "holiday": "",
+        "last_fetch": 0,
+    }
+    state = {}
+
+    result = worker._fetch_external_context(state)
+
+    assert result["weather"]["weather_desc"] == "disabled"
+    assert state["external_context"]["mode"] == "local-defaults"
+    assert state["external_context"]["trends_count"] == 0
+
+
+def test_predict_heuristic_skips_openai_when_budget_is_zero(sample_pushes_ml, monkeypatch):
+    import app.config as config
+    import app.ml.heuristic as heuristic
+
+    calls = {"count": 0}
+
+    class _DummyOpenAI:
+        def __init__(self, *args, **kwargs):
+            calls["count"] += 1
+
+    with heuristic._OPENAI_PREDICTION_CACHE_LOCK:
+        heuristic._OPENAI_PREDICTION_CACHE.clear()
+    heuristic._OPENAI_PREDICTION_CLIENT = None
+    heuristic._OPENAI_PREDICTION_CLIENT_KEY = ""
+
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR", 0)
+    monkeypatch.setattr(config, "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY", 0)
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=_DummyOpenAI))
+
+    push = {
+        "title": "Neue Nachricht zur Lage in Berlin",
+        "cat": "news",
+        "hour": 12,
+        "ts_num": max(p["ts_num"] for p in sample_pushes_ml) + 3600,
+        "is_eilmeldung": False,
+    }
+
+    result = heuristic.predict_heuristic(push, sample_pushes_ml, state={})
+
+    assert result is not None
+    assert calls["count"] == 0
+    assert "gpt_content_scoring" not in result["methods"]
+
+
+def test_generate_push_title_local_fallback_without_openai(monkeypatch):
+    from push_title_agent import generate_push_title
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "false")
+
+    result = generate_push_title(
+        article_title="Breaking Test: Wichtige Entscheidung im Bundestag",
+        category="politik",
+    )
+
+    assert result["gewinner"]["titel"]
+    assert result["meta"]["modus"] == "local-fallback"
+    assert result["meta"]["modell"] == "local-fallback"
+    assert isinstance(result["alle_kandidaten"], dict)
+
+
+def test_generate_push_title_local_fallback_marks_video_context(monkeypatch):
+    from push_title_agent import generate_push_title
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "false")
+
+    result = generate_push_title(
+        article_title="Spektakuläre Szenen aus dem Derby",
+        category="sport",
+        article_type="video",
+    )
+
+    assert result["meta"]["content_type"] == "video"
+    assert "video" in result["gewinner"]["warum_dieser"].lower()
+
+
+def test_generate_push_title_local_fallback_when_budget_is_zero(monkeypatch):
+    from push_title_agent import generate_push_title
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", "0")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", "0")
+
+    result = generate_push_title(
+        article_title="Breaking Test: Wichtige Entscheidung im Bundestag",
+        category="politik",
+    )
+
+    assert result["gewinner"]["titel"]
+    assert result["meta"]["modus"] == "local-fallback"
+    assert result["meta"]["modell"] == "local-fallback"

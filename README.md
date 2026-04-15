@@ -26,7 +26,7 @@ An ML-powered advisory system for optimizing BILD push notification scheduling. 
 - pip
 - Node.js 20+ and `pnpm` 10.x for the React frontend
 - Access to the BILD Push Statistics API (`push-frontend.bildcms.de`) — internal network only
-- Optional: OpenAI API key (GPT-4o title scoring), Adobe Analytics credentials, Football-Data.org key, The Odds API key
+- Optional: OpenAI API key (manual title generation only when explicitly enabled; prediction-time LLM scoring stays off by default), Adobe Analytics credentials, Football-Data.org key, The Odds API key
 
 ---
 
@@ -46,6 +46,7 @@ cp .env.example .env
 # Edit .env and fill in the required values
 # Minimal setup: PUSH_API_BASE
 # Optional features: OPENAI_API_KEY, Adobe credentials, admin keys, sports APIs
+# Cost guard: all paid external APIs are globally disabled unless explicitly enabled, and each feature has its own additional opt-in
 
 # 4. Start backend and frontend
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8050
@@ -56,16 +57,21 @@ The API starts on `http://localhost:8050` by default, and the Vite frontend on `
 
 ### Editorial One UI Registry Setup
 
-The frontend is prepared for the private `@spring-media/editorial-one-ui` package via [frontend/.npmrc](/Users/riccardo.longo/push-balancer/frontend/.npmrc). To install the package when access is available:
+The frontend is prepared for the private `@spring-media/editorial-one-ui` package via [frontend/.npmrc](/Users/riccardo.longo/push-balancer/frontend/.npmrc). The committed `.npmrc` only declares the `spring-media` registry, so local builds stay quiet even when no token is present. As soon as the package is installed locally, Vite resolves the real package automatically; otherwise it transparently falls back to the local shim. Render is unaffected because the deployment only serves the prebuilt [dist-frontend/](/Users/riccardo.longo/push-balancer/dist-frontend) assets. To install the real private package when access is available:
 
 ```bash
 export NPM_TOKEN=ghp_your_token_here
+pnpm config set //npm.pkg.github.com/:_authToken "$NPM_TOKEN"
 pnpm --dir frontend info @spring-media/editorial-one-ui
 ```
 
 If the package is not yet available in your environment, the app uses the local shim in [frontend/src/editorial-one-ui-shim/index.tsx](/Users/riccardo.longo/push-balancer/frontend/src/editorial-one-ui-shim/index.tsx) while app code already imports `@spring-media/editorial-one-ui`. This is a temporary fallback and not a full replacement for validating against the real private package.
 
 Application code should never import the shim directly. Use `@spring-media/editorial-one-ui` and `@spring-media/editorial-one-ui/fonts.css`; the Vite and TypeScript aliases keep the local fallback transparent until the private package can be installed.
+
+### GitHub Ownership
+
+The intended long-term home for this project is the `spring-media` GitHub organization rather than personal namespaces. If you create or migrate the repository there, prefer a canonical org URL such as `https://github.com/spring-media/push-balancer` and update the local `spring-media` remote to match.
 
 When `push-balancer-api-v3.1.0.yaml` changes, regenerate the frontend base client with:
 
@@ -128,12 +134,12 @@ The OR prediction uses a 9-method ensemble resolved in priority order:
 | 5 | **TF-IDF Similarity** | Cosine similarity against historical pushes |
 | 6 | **Sentence Embeddings** | Semantic similarity via transformer model |
 | 7 | **Category×Hour Baseline** | Historical average OR per category and hour |
-| 8 | **GPT-4o LLM Scoring** | 5-dimension title quality scores (magnitude, clickability, relevance, urgency, emotionality) |
+| 8 | **Optional LLM Scoring** | Opt-in quality check for prediction heuristics; disabled by default and cached when enabled |
 | 9 | **Keyword Heuristic** | Rule-based fallback when no model is available |
 
 The Stacking Ensemble is only activated when its MAE is within 2% of the single LightGBM baseline (safety gate). An Online Residual Corrector applies real-time bias correction per category and hour group.
 
-**Features include:** title length, emotional word counts, BILD topic clusters (crime, royals, costs, health, auto, relationships, extreme weather), temporal features (hour sin/cos, weekday, prime time, Bundesliga windows), historical OR baselines, TF-IDF and embedding similarities, GPT-4o LLM scores, and sport-specific magnitude signals.
+**Features include:** title length, emotional word counts, BILD topic clusters (crime, royals, costs, health, auto, relationships, extreme weather), temporal features (hour sin/cos, weekday, prime time, Bundesliga windows), historical OR baselines, TF-IDF and embedding similarities, optional cached LLM scores, and sport-specific magnitude signals.
 
 ### Research Worker
 
@@ -298,12 +304,36 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OPENAI_API_KEY` | No | — | OpenAI API key for GPT-4o title scoring and editorial assistant features |
+| `PAID_EXTERNAL_APIS_ENABLED` | No | `false` | Master kill switch for all paid external API usage in the active runtime; local fallbacks stay available |
+| `BACKGROUND_AUTOMATIONS_ENABLED` | No | `false` | Disables autonomous background polling, research loops, training ticks, push auto-fetch, and cache warmups; endpoints fall back to on-demand work where available |
+| `HEALTH_ACTIVE_CHECKS_ENABLED` | No | `false` | Disables continuous outbound health probes; `/api/health` still reports passive runtime status |
+| `ECONOMY_MODE` | No | `true` on Render, otherwise `false` | Render-first low-cost profile that keeps the service usable while avoiding expensive live fetches and external context lookups by default |
+| `PUSH_LIVE_FETCH_ENABLED` | No | `false` in economy mode | Allows direct live polling of the internal Push Statistics API; when disabled the service uses cache/DB fallbacks only |
+| `LIVE_FEED_FALLBACK_ENABLED` | No | `false` in economy mode | Allows live competitor/international feed fetches on cache miss; when disabled those endpoints return cached data or empty results |
+| `RESEARCH_EXTERNAL_CONTEXT_ENABLED` | No | `false` in economy mode | Allows live weather and trend fetches for research analysis; when disabled research uses local defaults |
+| `ARTICLE_PREDICTION_ENRICHMENT_ENABLED` | No | `false` in economy mode | Controls whether `/api/articles` enriches each item with on-the-fly OR predictions |
+| `TAGESPLAN_ON_DEMAND_BUILD_ENABLED` | No | `false` in economy mode | Controls whether `/api/tagesplan` builds a fresh plan on request; when disabled it returns a lightweight loading payload |
+| `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
+| `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
+| `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-4o-mini` | Model used for manual title generation when enabled |
+| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `8.0` | Timeout for manual title generation requests |
+| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `320` | Max completion tokens for manual title generation |
+| `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR` | No | `0` | Hard hourly budget for paid title generation; `0` keeps the local fallback active |
+| `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY` | No | `0` | Hard daily budget for paid title generation; `0` keeps the local fallback active |
+| `OPENAI_BACKFILL_ENABLED` | No | `false` | Keeps the dormant LLM backfill worker disabled unless it is explicitly needed |
+| `OPENAI_PREDICTION_SCORING_ENABLED` | No | `false` | Hard cost guard for OR prediction: only when set to `1`/`true` may the runtime use OpenAI during prediction |
+| `OPENAI_PREDICTION_SCORING_MODEL` | No | `gpt-4o-mini` | Model used for opt-in prediction scoring |
+| `OPENAI_PREDICTION_SCORING_TIMEOUT_S` | No | `4.0` | Timeout for opt-in prediction scoring requests |
+| `OPENAI_PREDICTION_SCORING_MAX_TOKENS` | No | `60` | Max completion tokens for opt-in prediction scoring |
+| `OPENAI_PREDICTION_SCORING_CACHE_TTL_S` | No | `3600` | Cache lifetime in seconds for identical opt-in prediction scoring prompts |
+| `OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR` | No | `0` | Hard hourly budget for paid prediction scoring; `0` disables OpenAI scoring entirely |
+| `OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY` | No | `0` | Hard daily budget for paid prediction scoring; `0` disables OpenAI scoring entirely |
 | `PUSH_API_BASE` | Yes | `http://push-frontend.bildcms.de` | Base URL of the BILD Push Statistics API (internal network) |
-| `FOOTBALL_DATA_KEY` | No | — | API key for Football-Data.org (Bundesliga, Champions League fixtures) |
-| `ODDS_API_KEY` | No | — | API key for The Odds API (betting odds as sport context signal) |
+| `FOOTBALL_DATA_KEY` | No | — | Reserved for future sport integrations; currently not used by the active FastAPI runtime |
+| `ODDS_API_KEY` | No | — | Reserved for future betting-context integrations; currently not used by the active FastAPI runtime |
 | `ADOBE_CLIENT_ID` | No | — | Adobe Analytics OAuth2 client ID |
 | `ADOBE_CLIENT_SECRET` | No | — | Adobe Analytics OAuth2 client secret |
+| `ADOBE_TRAFFIC_ENABLED` | No | `false` | Hard cost guard for Adobe traffic fetching and related background work |
 | `ADOBE_GLOBAL_COMPANY_ID` | No | `axelsp2` | Adobe Analytics company ID |
 | `BILD_SITEMAP_URL` | No | `https://www.bild.de/sitemap-news.xml` | BILD news sitemap URL |
 | `PUSH_SYNC_SECRET` | No | — | Strong random shared secret for the push data relay between local server and Render |

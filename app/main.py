@@ -35,6 +35,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import (
     ALLOWED_ORIGINS,
+    BACKGROUND_AUTOMATIONS_ENABLED,
+    HEALTH_ACTIVE_CHECKS_ENABLED,
     INTERNAL_ACCESS_ALLOWED_CIDRS,
     INTERNAL_ACCESS_ENABLED,
     INTERNAL_ACCESS_EXEMPT_PATHS,
@@ -360,25 +362,12 @@ def _normalize_frontend_path(path: str) -> str:
     return path
 
 
-def _frontend_html_assets_are_available(html: str) -> bool:
-    asset_pattern = re.compile(r'(?:/dist-frontend/assets/|/assets/)([^"\'?#]+)')
-    asset_dir = _frontend_assets_dir()
-
-    for asset_name in asset_pattern.findall(html):
-        if not os.path.isfile(os.path.join(asset_dir, asset_name)):
-            return False
-    return True
-
-
 def _frontend_html_response(request_path: str) -> Response | None:
     html = _load_frontend_html()
     if html is None:
         return None
 
     prepared_html = _prepare_frontend_html_for_request(html, request_path)
-    if not _frontend_html_assets_are_available(prepared_html):
-        return None
-
     response = HTMLResponse(prepared_html)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
@@ -430,39 +419,42 @@ def _start_background_workers() -> None:
     from app.tagesplan.builder import build_tagesplan
 
     # 5. Feed-Cache Worker
-    def _feed_cache_worker():
-        from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS, SPORT_COMPETITOR_FEEDS, SPORT_EUROPA_FEEDS, SPORT_GLOBAL_FEEDS
-        from app.research.worker import _feed_cache, _feed_cache_lock
-        from app.routers.feed import _fetch_url, _parse_rss_items
-        _FEED_CACHE_TTL = 300
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _feed_cache_worker():
+            from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS, SPORT_COMPETITOR_FEEDS, SPORT_EUROPA_FEEDS, SPORT_GLOBAL_FEEDS
+            from app.research.worker import _feed_cache, _feed_cache_lock
+            from app.routers.feed import _fetch_url, _parse_rss_items
+            _FEED_CACHE_TTL = 300
 
-        _FEED_TYPE_MAP = {
-            "competitors":       COMPETITOR_FEEDS,
-            "international":     INTERNATIONAL_FEEDS,
-            "sport_competitors": SPORT_COMPETITOR_FEEDS,
-            "sport_europa":      SPORT_EUROPA_FEEDS,
-            "sport_global":      SPORT_GLOBAL_FEEDS,
-        }
+            _FEED_TYPE_MAP = {
+                "competitors":       COMPETITOR_FEEDS,
+                "international":     INTERNATIONAL_FEEDS,
+                "sport_competitors": SPORT_COMPETITOR_FEEDS,
+                "sport_europa":      SPORT_EUROPA_FEEDS,
+                "sport_global":      SPORT_GLOBAL_FEEDS,
+            }
 
-        log.info("[FeedCache] Background-Worker gestartet (alle %ds)", _FEED_CACHE_TTL)
-        while True:
-            for feed_type, feeds in _FEED_TYPE_MAP.items():
-                parsed: dict = {}
-                for name, url in feeds.items():
-                    try:
-                        xml_bytes = _fetch_url(url)
-                        parsed[name] = _parse_rss_items(xml_bytes) if xml_bytes else []
-                    except Exception as e:
-                        log.debug("[FeedCache] %s/%s Fehler: %s", feed_type, name, e)
-                        parsed[name] = []
-                with _feed_cache_lock:
-                    _feed_cache[feed_type]["data"] = parsed
-                    _feed_cache[feed_type]["ts"] = time.time()
-            log.debug("[FeedCache] Alle Feeds aktualisiert")
-            time.sleep(_FEED_CACHE_TTL)
+            log.info("[FeedCache] Background-Worker gestartet (alle %ds)", _FEED_CACHE_TTL)
+            while True:
+                for feed_type, feeds in _FEED_TYPE_MAP.items():
+                    parsed: dict = {}
+                    for name, url in feeds.items():
+                        try:
+                            xml_bytes = _fetch_url(url)
+                            parsed[name] = _parse_rss_items(xml_bytes) if xml_bytes else []
+                        except Exception as e:
+                            log.debug("[FeedCache] %s/%s Fehler: %s", feed_type, name, e)
+                            parsed[name] = []
+                    with _feed_cache_lock:
+                        _feed_cache[feed_type]["data"] = parsed
+                        _feed_cache[feed_type]["ts"] = time.time()
+                log.debug("[FeedCache] Alle Feeds aktualisiert")
+                time.sleep(_FEED_CACHE_TTL)
 
-    threading.Thread(target=_feed_cache_worker, daemon=True).start()
-    log.info("[FeedCache] Background-Worker gestartet")
+        threading.Thread(target=_feed_cache_worker, daemon=True).start()
+        log.info("[FeedCache] Background-Worker gestartet")
+    else:
+        log.info("[FeedCache] Deaktiviert, Endpunkte nutzen Live-Fallback nur bei Bedarf")
 
     # 6. Research-Worker
     # app/research/worker.py nutzt den modularen app/-Pfad und läuft unabhängig vom Legacy-Referenzcode.
@@ -470,118 +462,124 @@ def _start_background_workers() -> None:
     _is_render = os.environ.get("RENDER", "").lower() == "true"
     _first_train = 15 if _is_render else 1
 
-    def _research_worker():
-        time.sleep(2)
-        try:
-            from app.research.worker import _residual_corrector, _residual_corrector_lock
-            update_residual_corrector()
-            with _residual_corrector_lock:
-                rc_bias = _residual_corrector["global_bias"]
-                rc_n = _residual_corrector["n_samples"]
-            log.info("[ResidualCorrector] Initial geladen: bias=%+.3f, n=%d", rc_bias, rc_n)
-        except Exception as e:
-            log.warning("[ResidualCorrector] Initial-Load fehlgeschlagen: %s", e)
-
-        log.info("[Research] Autonomer Research-Worker gestartet (20s Intervall)")
-        while True:
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _research_worker():
+            time.sleep(2)
             try:
-                run_autonomous_analysis()
-                n = len(_research_state.get("push_data", []))
-                if n > 0 and _research_state.get("_worker_first_log", True):
-                    log.info("[Research] Erste Analyse fertig: %d Pushes, Accuracy %.1f%%",
-                             n, _research_state.get("rolling_accuracy", 0))
-                    _research_state["_worker_first_log"] = False
+                from app.research.worker import _residual_corrector, _residual_corrector_lock
+                update_residual_corrector()
+                with _residual_corrector_lock:
+                    rc_bias = _residual_corrector["global_bias"]
+                    rc_n = _residual_corrector["n_samples"]
+                log.info("[ResidualCorrector] Initial geladen: bias=%+.3f, n=%d", rc_bias, rc_n)
             except Exception as e:
-                import traceback
-                log.warning("[Research] Worker-Fehler: %s\n%s", e, traceback.format_exc())
+                log.warning("[ResidualCorrector] Initial-Load fehlgeschlagen: %s", e)
 
-            # Periodische Tasks
-            try:
-                counter = _research_state.get("_stacking_counter", 0) + 1
-                _research_state["_stacking_counter"] = counter
+            log.info("[Research] Autonomer Research-Worker gestartet (20s Intervall)")
+            while True:
+                try:
+                    run_autonomous_analysis()
+                    n = len(_research_state.get("push_data", []))
+                    if n > 0 and _research_state.get("_worker_first_log", True):
+                        log.info("[Research] Erste Analyse fertig: %d Pushes, Accuracy %.1f%%",
+                                 n, _research_state.get("rolling_accuracy", 0))
+                        _research_state["_worker_first_log"] = False
+                except Exception as e:
+                    import traceback
+                    log.warning("[Research] Worker-Fehler: %s\n%s", e, traceback.format_exc())
 
-                if counter % 30 == 0:
-                    train_stacking_model(_research_state)
-                if counter == _first_train or counter % 1080 == 0:
-                    try:
-                        ml_train_model()
-                    except Exception as e:
-                        log.warning("[ML] Training-Fehler im Research-Worker: %s", e)
-                if counter == _first_train or counter % 360 == 0:
-                    try:
-                        gbrt_train()
-                    except Exception as e:
-                        log.warning("[GBRT] Training-Fehler: %s", e)
-                if counter == 5 or counter % 1440 == 0:
-                    try:
-                        unified_train()
-                    except Exception as e:
-                        log.warning("[Unified] Training-Fehler: %s", e)
-                if counter % 60 == 0 and counter > 3:
-                    try:
-                        gbrt_check_drift(_research_state)
-                    except Exception as e:
-                        log.warning("[GBRT] Drift-Check-Fehler: %s", e)
-                if counter % 90 == 0 and counter > 5:
-                    try:
-                        gbrt_online_update()
-                    except Exception as e:
-                        log.warning("[GBRT] Online-Update-Fehler: %s", e)
-                if counter == 5 or (counter % 60 == 0 and counter > 5):
-                    try:
-                        monitoring_tick()
-                    except Exception as e:
-                        log.warning("[Monitoring] Tick-Fehler: %s", e)
-                if counter % 15 == 0:
-                    try:
-                        build_tagesplan(background=True)
-                    except Exception as e:
-                        log.debug("[Tagesplan] Background-Refresh: %s", e)
-            except Exception as e:
-                import traceback
-                log.warning("[Research] Periodic-Task-Fehler: %s\n%s", e, traceback.format_exc())
+                # Periodische Tasks
+                try:
+                    counter = _research_state.get("_stacking_counter", 0) + 1
+                    _research_state["_stacking_counter"] = counter
 
-            time.sleep(20)
+                    if counter % 30 == 0:
+                        train_stacking_model(_research_state)
+                    if counter == _first_train or counter % 1080 == 0:
+                        try:
+                            ml_train_model()
+                        except Exception as e:
+                            log.warning("[ML] Training-Fehler im Research-Worker: %s", e)
+                    if counter == _first_train or counter % 360 == 0:
+                        try:
+                            gbrt_train()
+                        except Exception as e:
+                            log.warning("[GBRT] Training-Fehler: %s", e)
+                    if counter == 5 or counter % 1440 == 0:
+                        try:
+                            unified_train()
+                        except Exception as e:
+                            log.warning("[Unified] Training-Fehler: %s", e)
+                    if counter % 60 == 0 and counter > 3:
+                        try:
+                            gbrt_check_drift(_research_state)
+                        except Exception as e:
+                            log.warning("[GBRT] Drift-Check-Fehler: %s", e)
+                    if counter % 90 == 0 and counter > 5:
+                        try:
+                            gbrt_online_update()
+                        except Exception as e:
+                            log.warning("[GBRT] Online-Update-Fehler: %s", e)
+                    if counter == 5 or (counter % 60 == 0 and counter > 5):
+                        try:
+                            monitoring_tick()
+                        except Exception as e:
+                            log.warning("[Monitoring] Tick-Fehler: %s", e)
+                    if counter % 15 == 0:
+                        try:
+                            build_tagesplan(background=True)
+                        except Exception as e:
+                            log.debug("[Tagesplan] Background-Refresh: %s", e)
+                except Exception as e:
+                    import traceback
+                    log.warning("[Research] Periodic-Task-Fehler: %s\n%s", e, traceback.format_exc())
 
-    threading.Thread(target=_research_worker, daemon=True).start()
-    log.info("[Research] Autonomer Research-Worker gestartet")
+                time.sleep(20)
+
+        threading.Thread(target=_research_worker, daemon=True).start()
+        log.info("[Research] Autonomer Research-Worker gestartet")
+    else:
+        log.info("[Research] Deaktiviert, Analyse wird nur bei Bedarf berechnet")
 
     # 7. Health-Checker
-    def _health_checker():
-        from app.research.worker import _health_state
-        import urllib.request
+    if HEALTH_ACTIVE_CHECKS_ENABLED:
+        def _health_checker():
+            from app.research.worker import _health_state
+            import urllib.request
 
-        _health_state["uptime_start"] = time.time()
-        time.sleep(5)
-        log.info("[Health] Checker gestartet (60s Intervall)")
-        while True:
-            try:
-                endpoints = {}
-                for name, url in [("bild_sitemap", "https://www.bild.de/sitemap-news.xml")]:
-                    try:
-                        req = urllib.request.Request(url, headers={"User-Agent": "HealthCheck/1.0"})
-                        import ssl as _ssl
+            _health_state["uptime_start"] = time.time()
+            time.sleep(5)
+            log.info("[Health] Checker gestartet (60s Intervall)")
+            while True:
+                try:
+                    endpoints = {}
+                    for name, url in [("bild_sitemap", "https://www.bild.de/sitemap-news.xml")]:
                         try:
-                            import certifi
-                            ctx = _ssl.create_default_context(cafile=certifi.where())
-                        except ImportError:
-                            ctx = _ssl.create_default_context()
-                        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-                            status = resp.status
-                        endpoints[name] = {"ok": status == 200, "status": status}
-                        _health_state["checks_ok"] = _health_state.get("checks_ok", 0) + 1
-                    except Exception as e:
-                        endpoints[name] = {"ok": False, "error": str(e)[:100]}
-                        _health_state["checks_fail"] = _health_state.get("checks_fail", 0) + 1
-                _health_state["endpoints"] = endpoints
-                _health_state["last_check"] = time.time()
-                _health_state["status"] = "ok" if all(v.get("ok") for v in endpoints.values()) else "degraded"
-            except Exception as e:
-                log.warning("[Health] Checker-Fehler: %s", e)
-            time.sleep(60)
+                            req = urllib.request.Request(url, headers={"User-Agent": "HealthCheck/1.0"})
+                            import ssl as _ssl
+                            try:
+                                import certifi
+                                ctx = _ssl.create_default_context(cafile=certifi.where())
+                            except ImportError:
+                                ctx = _ssl.create_default_context()
+                            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                                status = resp.status
+                            endpoints[name] = {"ok": status == 200, "status": status}
+                            _health_state["checks_ok"] = _health_state.get("checks_ok", 0) + 1
+                        except Exception as e:
+                            endpoints[name] = {"ok": False, "error": str(e)[:100]}
+                            _health_state["checks_fail"] = _health_state.get("checks_fail", 0) + 1
+                    _health_state["endpoints"] = endpoints
+                    _health_state["last_check"] = time.time()
+                    _health_state["status"] = "ok" if all(v.get("ok") for v in endpoints.values()) else "degraded"
+                except Exception as e:
+                    log.warning("[Health] Checker-Fehler: %s", e)
+                time.sleep(60)
 
-    threading.Thread(target=_health_checker, daemon=True).start()
-    log.info("[Health] Checker gestartet")
+        threading.Thread(target=_health_checker, daemon=True).start()
+        log.info("[Health] Checker gestartet")
+    else:
+        log.info("[Health] Aktive Außenchecks deaktiviert")
 
     # 8. Embedding-Modell im Hintergrund laden
     def _load_embedding_model():
@@ -591,37 +589,44 @@ def _start_background_workers() -> None:
     log.info("[Embeddings] Modell wird im Hintergrund geladen")
 
     # 9. LLM-Backfill Thread
-    def _llm_backfill():
-        from app.config import OPENAI_API_KEY
-        if not OPENAI_API_KEY:
-            log.info("[LLM-Backfill] Kein OPENAI_API_KEY, überspringe Backfill")
-            return
-        log.info("[LLM-Backfill] LLM-Backfill noch nicht migriert, übersprungen")
+    from app.config import OPENAI_BACKFILL_ENABLED, PAID_EXTERNAL_APIS_ENABLED
+    if PAID_EXTERNAL_APIS_ENABLED and OPENAI_BACKFILL_ENABLED:
+        def _llm_backfill():
+            from app.config import OPENAI_API_KEY
+            if not OPENAI_API_KEY:
+                log.info("[LLM-Backfill] Kein OPENAI_API_KEY, überspringe Backfill")
+                return
+            log.info("[LLM-Backfill] LLM-Backfill noch nicht migriert, übersprungen")
 
-    threading.Thread(target=_llm_backfill, daemon=True).start()
-    log.info("[LLM-Backfill] Scoring-Thread gestartet")
+        threading.Thread(target=_llm_backfill, daemon=True).start()
+        log.info("[LLM-Backfill] Scoring-Thread gestartet")
+    else:
+        log.info("[LLM-Backfill] Deaktiviert (PAID_EXTERNAL_APIS_ENABLED/OPENAI_BACKFILL_ENABLED nicht gesetzt)")
 
     # 10. Preload Caches
-    def _preload_caches():
-        from app.routers.feed import _fetch_url
-        from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
-        # Kurz warten bis ML-Modelle von Disk geladen sind (~2s) + kleiner Puffer
-        time.sleep(5)
-        try:
-            # background=True: blockiert bis der Plan fertig berechnet ist (kein fire-and-forget)
-            build_tagesplan(background=True)
-            log.info("[Preload] Tagesplan vorberechnet")
-        except Exception as e:
-            log.warning("[Preload] Tagesplan-Fehler: %s", e)
-        try:
-            for url in list(COMPETITOR_FEEDS.values()) + list(INTERNATIONAL_FEEDS.values()):
-                _fetch_url(url)
-            log.info("[Preload] Competitor + International Feeds gecacht")
-        except Exception as e:
-            log.warning("[Preload] Feed-Cache-Fehler: %s", e)
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _preload_caches():
+            from app.routers.feed import _fetch_url
+            from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
+            # Kurz warten bis ML-Modelle von Disk geladen sind (~2s) + kleiner Puffer
+            time.sleep(5)
+            try:
+                # background=True: blockiert bis der Plan fertig berechnet ist (kein fire-and-forget)
+                build_tagesplan(background=True)
+                log.info("[Preload] Tagesplan vorberechnet")
+            except Exception as e:
+                log.warning("[Preload] Tagesplan-Fehler: %s", e)
+            try:
+                for url in list(COMPETITOR_FEEDS.values()) + list(INTERNATIONAL_FEEDS.values()):
+                    _fetch_url(url)
+                log.info("[Preload] Competitor + International Feeds gecacht")
+            except Exception as e:
+                log.warning("[Preload] Feed-Cache-Fehler: %s", e)
 
-    threading.Thread(target=_preload_caches, daemon=True).start()
-    log.info("[Preload] Caches werden im Hintergrund aufgebaut")
+        threading.Thread(target=_preload_caches, daemon=True).start()
+        log.info("[Preload] Caches werden im Hintergrund aufgebaut")
+    else:
+        log.info("[Preload] Deaktiviert, Warmups laufen nur bei Bedarf")
 
     # 11. Adobe Analytics Traffic Worker
     from app.routers.misc import _adobe_state
@@ -643,69 +648,72 @@ def _start_background_workers() -> None:
     except ImportError:
         _auto_ssl = _ssl_mod2.create_default_context()
 
-    def _push_auto_fetch_worker():
-        import urllib.request as _ur
-        from app.routers.push import _push_sync_cache, _push_sync_lock
-        time.sleep(5)
-        log.info("[AutoFetch] Push-Daten-Worker gestartet (alle 120s)")
-        while True:
-            try:
-                end_ts = int(time.time())
-                start_ts = end_ts - 3 * 86400
-                all_msgs = []
-                channels = []
-                last_error = None
-                for base_url in push_api_base_candidates():
-                    try:
-                        url = (f"{base_url}/push/statistics/message"
-                               f"?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL")
-                        req = _ur.Request(url, headers={
-                            "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
-                            "Accept": "application/json",
-                        })
-                        with _ur.urlopen(req, timeout=20, context=_auto_ssl) as resp:
-                            data = json.loads(resp.read())
-                            all_msgs = data.get("messages", [])
-                            next_params = data.get("next")
-                            page = 0
-                            while next_params and page < 10:
-                                url2 = f"{base_url}/push/statistics/message?{next_params}"
-                                req2 = _ur.Request(url2, headers={
-                                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
-                                    "Accept": "application/json",
-                                })
-                                with _ur.urlopen(req2, timeout=15, context=_auto_ssl) as resp2:
-                                    d2 = json.loads(resp2.read())
-                                    all_msgs.extend(d2.get("messages", []))
-                                    next_params = d2.get("next")
-                                page += 1
-
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _push_auto_fetch_worker():
+            import urllib.request as _ur
+            from app.routers.push import _push_sync_cache, _push_sync_lock
+            time.sleep(5)
+            log.info("[AutoFetch] Push-Daten-Worker gestartet (alle 120s)")
+            while True:
+                try:
+                    end_ts = int(time.time())
+                    start_ts = end_ts - 3 * 86400
+                    all_msgs = []
+                    channels = []
+                    last_error = None
+                    for base_url in push_api_base_candidates():
                         try:
-                            ch_url = f"{base_url}/push/statistics/message/channels?sourceTypes=EDITORIAL"
-                            ch_req = _ur.Request(ch_url, headers={
+                            url = (f"{base_url}/push/statistics/message"
+                                   f"?startDate={start_ts}&endDate={end_ts}&sourceTypes=EDITORIAL")
+                            req = _ur.Request(url, headers={
                                 "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
                                 "Accept": "application/json",
                             })
-                            with _ur.urlopen(ch_req, timeout=10, context=_auto_ssl) as ch_resp:
-                                channels = json.loads(ch_resp.read())
-                        except Exception:
-                            pass
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                if last_error and not all_msgs and not channels:
-                    raise last_error
-                with _push_sync_lock:
-                    _push_sync_cache["messages"] = all_msgs
-                    _push_sync_cache["channels"] = channels
-                    _push_sync_cache["ts"] = time.time()
-                log.info("[AutoFetch] OK: %d Push-Messages geladen", len(all_msgs))
-            except Exception as e:
-                log.warning("[AutoFetch] Fehler: %s", locals().get("last_error", e) or e)
-            time.sleep(120)
+                            with _ur.urlopen(req, timeout=20, context=_auto_ssl) as resp:
+                                data = json.loads(resp.read())
+                                all_msgs = data.get("messages", [])
+                                next_params = data.get("next")
+                                page = 0
+                                while next_params and page < 10:
+                                    url2 = f"{base_url}/push/statistics/message?{next_params}"
+                                    req2 = _ur.Request(url2, headers={
+                                        "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                                        "Accept": "application/json",
+                                    })
+                                    with _ur.urlopen(req2, timeout=15, context=_auto_ssl) as resp2:
+                                        d2 = json.loads(resp2.read())
+                                        all_msgs.extend(d2.get("messages", []))
+                                        next_params = d2.get("next")
+                                    page += 1
 
-    threading.Thread(target=_push_auto_fetch_worker, daemon=True).start()
-    log.info("[AutoFetch] Push-Daten werden direkt von bildcms.de geholt (alle 120s)")
+                            try:
+                                ch_url = f"{base_url}/push/statistics/message/channels?sourceTypes=EDITORIAL"
+                                ch_req = _ur.Request(ch_url, headers={
+                                    "User-Agent": "Mozilla/5.0 (compatible; PushBalancer-AutoFetch/1.0)",
+                                    "Accept": "application/json",
+                                })
+                                with _ur.urlopen(ch_req, timeout=10, context=_auto_ssl) as ch_resp:
+                                    channels = json.loads(ch_resp.read())
+                            except Exception:
+                                pass
+                            break
+                        except Exception as exc:
+                            last_error = exc
+                    if last_error and not all_msgs and not channels:
+                        raise last_error
+                    with _push_sync_lock:
+                        _push_sync_cache["messages"] = all_msgs
+                        _push_sync_cache["channels"] = channels
+                        _push_sync_cache["ts"] = time.time()
+                    log.info("[AutoFetch] OK: %d Push-Messages geladen", len(all_msgs))
+                except Exception as e:
+                    log.warning("[AutoFetch] Fehler: %s", locals().get("last_error", e) or e)
+                time.sleep(120)
+
+        threading.Thread(target=_push_auto_fetch_worker, daemon=True).start()
+        log.info("[AutoFetch] Push-Daten werden direkt von bildcms.de geholt (alle 120s)")
+    else:
+        log.info("[AutoFetch] Deaktiviert, Live-Refresh nur auf Anfrage")
 
     # 13. Push-Sync Worker (zu Render)
     from app.config import RENDER_SYNC_URL, SYNC_SECRET
@@ -741,41 +749,49 @@ def _start_background_workers() -> None:
                 log.warning("[Sync] Fehler: %s", e)
             time.sleep(60)
 
-    if RENDER_SYNC_URL:
+    if BACKGROUND_AUTOMATIONS_ENABLED and RENDER_SYNC_URL:
         threading.Thread(target=_push_sync_worker, daemon=True).start()
         log.info("[Sync] Worker gestartet")
+    elif RENDER_SYNC_URL:
+        log.info("[Sync] Deaktiviert, da BACKGROUND_AUTOMATIONS_ENABLED=false")
 
     # 14. Auto-Suggestion Worker
-    def _auto_sug_worker():
-        time.sleep(30)
-        log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
-        while True:
-            try:
-                from app.tagesplan.builder import _auto_save_suggestions
-                _auto_save_suggestions()
-            except Exception as e:
-                log.warning("[AutoSug] Worker-Fehler: %s", e)
-            time.sleep(600)
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _auto_sug_worker():
+            time.sleep(30)
+            log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
+            while True:
+                try:
+                    from app.tagesplan.builder import _auto_save_suggestions
+                    _auto_save_suggestions()
+                except Exception as e:
+                    log.warning("[AutoSug] Worker-Fehler: %s", e)
+                time.sleep(600)
 
-    threading.Thread(target=_auto_sug_worker, daemon=True).start()
-    log.info("[AutoSug] Worker gestartet (stündlich)")
+        threading.Thread(target=_auto_sug_worker, daemon=True).start()
+        log.info("[AutoSug] Worker gestartet (stündlich)")
+    else:
+        log.info("[AutoSug] Deaktiviert, Vorschläge werden bei Bedarf erzeugt")
 
     # 15. Memory-Cleanup Worker (alle 2 Minuten)
-    def _memory_cleanup_worker():
-        time.sleep(60)
-        log.info("[MemCleanup] Worker gestartet (alle 120s)")
-        while True:
-            try:
-                from app.research.worker import trim_state_buffers
-                freed = trim_state_buffers()
-                if freed > 0:
-                    log.info("[MemCleanup] %d Einträge bereinigt", freed)
-            except Exception as e:
-                log.warning("[MemCleanup] Fehler: %s", e)
-            time.sleep(120)
+    if BACKGROUND_AUTOMATIONS_ENABLED:
+        def _memory_cleanup_worker():
+            time.sleep(60)
+            log.info("[MemCleanup] Worker gestartet (alle 120s)")
+            while True:
+                try:
+                    from app.research.worker import trim_state_buffers
+                    freed = trim_state_buffers()
+                    if freed > 0:
+                        log.info("[MemCleanup] %d Einträge bereinigt", freed)
+                except Exception as e:
+                    log.warning("[MemCleanup] Fehler: %s", e)
+                time.sleep(120)
 
-    threading.Thread(target=_memory_cleanup_worker, daemon=True).start()
-    log.info("[MemCleanup] Worker gestartet (alle 120s)")
+        threading.Thread(target=_memory_cleanup_worker, daemon=True).start()
+        log.info("[MemCleanup] Worker gestartet (alle 120s)")
+    else:
+        log.info("[MemCleanup] Deaktiviert, da keine Autoloops laufen")
 
 
 # ── FastAPI App ────────────────────────────────────────────────────────────
@@ -930,7 +946,10 @@ def _legacy_frontend_response() -> Response:
 
 @app.get("/", include_in_schema=False)
 async def frontend_root_entrypoint() -> Response:
-    return _legacy_frontend_response()
+    frontend_response = _frontend_html_response("/")
+    if frontend_response is not None:
+        return frontend_response
+    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
 
 
 @app.get("/push-balancer.html", include_in_schema=False)

@@ -1,7 +1,6 @@
 """app/routers/forschung.py — Forschungs-Endpunkte.
 
-GET /api/forschung         — Research-Institut-Daten (autonome Analyse)
-GET /api/learnings         — ML-Learnings
+GET /api/research-insights — Verdichtete Research-Insights
 GET /api/research-rules    — Aktive Forschungsregeln
 """
 import json
@@ -17,13 +16,26 @@ log = logging.getLogger("push-balancer")
 router = APIRouter()
 
 
-@router.get("/api/forschung")
+def _warm_research_state_if_needed(max_age_s: int = 600) -> None:
+    """Berechnet Research-Daten nur auf Anfrage, wenn kein frischer State vorliegt."""
+    if _research_state.get("push_data") and time.time() - _research_state.get("last_analysis", 0) < max_age_s:
+        return
+    try:
+        from app.research.worker import run_autonomous_analysis
+
+        run_autonomous_analysis()
+    except Exception as exc:
+        log.warning("[forschung] on-demand research warmup failed: %s", exc)
+
+
 def get_forschung() -> JSONResponse:
     """Liefert Research-Institut-Daten mit autonomer Push-Analyse.
 
     Der Research-Worker analysiert Daten im Hintergrund alle 20s.
     Dieser Endpoint gibt den vollständigen aktuellen State zurück.
     """
+    _warm_research_state_if_needed()
+
     if not _research_state.get("push_data"):
         return JSONResponse(content={
             "accuracy": 0, "accuracyTrend": 0, "accuracyTarget": 99.5,
@@ -222,7 +234,6 @@ def get_research_insights() -> JSONResponse:
     )
 
 
-@router.get("/api/learnings")
 def get_learnings() -> JSONResponse:
     """Ehrliche, datenbasierte Learnings aus den letzten Monaten.
 

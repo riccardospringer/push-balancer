@@ -6,17 +6,17 @@ GET  /api/tagesplan/history           — Historische Tagesplan-Daten
 GET  /api/tagesplan/suggestions       — Gespeicherte Slot-Vorschläge
 POST /api/tagesplan/log-suggestions   — Speichert Slot-Vorschläge
 """
-import datetime
 import logging
 import sqlite3
 import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config import PUSH_DB_PATH
+from app.config import PUSH_DB_PATH, TAGESPLAN_ON_DEMAND_BUILD_ENABLED
 from app.database import load_tagesplan_suggestions, save_tagesplan_suggestions
 from app.tagesplan.builder import build_tagesplan, build_tagesplan_retro
 
@@ -31,204 +31,6 @@ class LogSuggestionsRequest(BaseModel):
     # Legacy-Format des frueheren HTML-Clients: {date_iso, suggestions:[{slot_hour,...}]}
     date_iso: str | None = None
     suggestions: list[dict[str, Any]] = []
-
-
-def _fallback_plan(date: str | None = None, mode: str = "redaktion") -> dict[str, Any]:
-    """Stabiler Minimal-Tagesplan für Fehlerfälle."""
-    today_label = date or datetime.datetime.now().strftime("%d.%m.%Y")
-    slots = [
-        {
-            "hour": hour,
-            "best_cat": "sport" if mode == "sport" else "news",
-            "expected_or": 0.0,
-            "hist_or": None,
-            "n_historical": 0,
-            "confidence": "niedrig",
-            "mood": "",
-            "mood_reasons": [],
-            "color": "gray",
-            "is_now": hour == datetime.datetime.now().hour,
-            "is_past": hour < datetime.datetime.now().hour,
-            "shap": {},
-            "shap_explanation": "",
-            "has_ml": False,
-            "best_historical": [],
-            "pushed_this_hour": [],
-            "must_have": False,
-        }
-        for hour in range(6, 24)
-    ]
-    return {
-        "date": today_label,
-        "slots": slots,
-        "loading": True,
-        "mode": mode,
-        "golden_hour": None,
-        "golden_cat": "sport" if mode == "sport" else "news",
-        "golden_or": 0.0,
-        "best_hour": None,
-        "best_cat": "sport" if mode == "sport" else "news",
-        "best_or": 0.0,
-        "ml_metrics": {},
-        "ml_trained": False,
-        "avg_or_today": None,
-        "total_pushes_db": 0,
-        "already_pushed_today": [],
-        "n_pushed_today": 0,
-        "must_have_hours": [],
-    }
-
-
-def _normalize_suggestion_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    """Bringt DB-Zeilen in eine stabile API-Form für Legacy- und React-Clients."""
-    items: list[dict[str, Any]] = []
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        hour = int(row.get("slot_hour") or row.get("hour") or 0)
-        item = {
-            "id": row.get("id"),
-            "date_iso": row.get("date_iso"),
-            "hour": hour,
-            "slot_hour": hour,
-            "suggestion_num": row.get("suggestion_num", 0),
-            "title": row.get("article_title") or row.get("title") or "",
-            "url": row.get("article_link") or row.get("url") or "",
-            "link": row.get("article_link") or row.get("link") or "",
-            "category": row.get("article_category") or row.get("category") or row.get("cat") or "",
-            "cat": row.get("article_category") or row.get("category") or row.get("cat") or "",
-            "score": float(row.get("article_score") or row.get("score") or 0.0),
-            "predictedOR": float(row.get("expected_or") or row.get("predictedOR") or 0.0),
-            "expected_or": float(row.get("expected_or") or row.get("predictedOR") or 0.0),
-            "best_cat": row.get("best_cat") or "",
-            "captured_at": row.get("captured_at"),
-        }
-        items.append(item)
-        grouped.setdefault(str(hour), []).append(item)
-    return items, grouped
-
-
-def _build_history_plan(date_iso: str, mode: str = "redaktion") -> dict[str, Any]:
-    """Liefert einen schlanken, stabilen Rückblick-Tagesplan für ein Datum."""
-    try:
-        suggestions_raw = load_tagesplan_suggestions(date_iso=date_iso)
-    except Exception:
-        log.exception("[tagesplan] Konnte Verlaufsvorschlaege nicht laden")
-        suggestions_raw = []
-    suggestion_items, suggestion_map = _normalize_suggestion_rows(suggestions_raw)
-
-    slots_by_hour: dict[int, dict[str, Any]] = {
-        hour: {
-            "hour": hour,
-            "best_cat": "sport" if mode == "sport" else "news",
-            "expected_or": 0.0,
-            "hist_or": None,
-            "n_historical": 0,
-            "confidence": "niedrig",
-            "mood": "",
-            "mood_reasons": [],
-            "color": "gray",
-            "is_now": False,
-            "is_past": True,
-            "shap": {},
-            "shap_explanation": "",
-            "has_ml": False,
-            "best_historical": [],
-            "pushed_this_hour": [],
-            "must_have": False,
-        }
-        for hour in range(6, 24)
-    }
-
-    for hour_str, bucket in suggestion_map.items():
-        if not bucket:
-            continue
-        hour = int(hour_str)
-        slot = slots_by_hour.get(hour)
-        if not slot:
-            continue
-        slot["best_cat"] = bucket[0].get("best_cat") or bucket[0].get("category") or slot["best_cat"]
-        slot["expected_or"] = max(float(item.get("expected_or") or 0.0) for item in bucket)
-
-    rows: list[sqlite3.Row] = []
-    try:
-        with sqlite3.connect(PUSH_DB_PATH, timeout=10) as conn:
-            conn.row_factory = sqlite3.Row
-            query = """
-                SELECT
-                    hour,
-                    title,
-                    LOWER(TRIM(cat)) AS cat,
-                    or_val,
-                    link,
-                    is_eilmeldung
-                FROM pushes
-                WHERE date(ts_num, 'unixepoch', 'localtime') = ?
-            """
-            params: list[Any] = [date_iso]
-            if mode == "sport":
-                query += """
-                  AND LOWER(TRIM(cat)) IN
-                    ('sport','fussball','bundesliga','formel1','formel-1','tennis','boxen','motorsport')
-                """
-            query += " ORDER BY hour, ts_num"
-            rows = conn.execute(query, params).fetchall()
-    except Exception:
-        log.exception("[tagesplan] Konnte Verlaufspushes nicht laden")
-        rows = []
-
-    pushed_today: list[dict[str, Any]] = []
-    weekday_label = date_iso
-    try:
-        dt = datetime.datetime.strptime(date_iso, "%Y-%m-%d")
-        weekday_label = f"{['Mo','Di','Mi','Do','Fr','Sa','So'][dt.weekday()]}, {dt.strftime('%d.%m.%Y')}"
-    except Exception:
-        pass
-
-    for row in rows:
-        hour = int(row["hour"] if row["hour"] is not None else -1)
-        push_item = {
-            "hour": hour,
-            "title": row["title"] or "",
-            "cat": row["cat"] or "news",
-            "or": round(float(row["or_val"] or 0.0), 2),
-            "actual_or": round(float(row["or_val"] or 0.0), 2),
-            "link": row["link"] or "",
-            "is_eilmeldung": bool(row["is_eilmeldung"]),
-        }
-        pushed_today.append(push_item)
-        if hour in slots_by_hour:
-            slots_by_hour[hour]["pushed_this_hour"].append(push_item)
-            actual_or = push_item["actual_or"]
-            if actual_or >= 5.5:
-                slots_by_hour[hour]["color"] = "green"
-            elif actual_or >= 3.0:
-                slots_by_hour[hour]["color"] = "yellow"
-
-    return {
-        "date": weekday_label,
-        "date_iso": date_iso,
-        "weekday": weekday_label.split(",")[0],
-        "is_history": True,
-        "loading": False,
-        "mode": mode,
-        "slots": [slots_by_hour[hour] for hour in range(6, 24)],
-        "already_pushed_today": pushed_today,
-        "n_pushed_today": len(pushed_today),
-        "golden_hour": None,
-        "golden_cat": "sport" if mode == "sport" else "news",
-        "golden_or": 0.0,
-        "best_hour": None,
-        "best_cat": "sport" if mode == "sport" else "news",
-        "best_or": 0.0,
-        "ml_metrics": {},
-        "ml_trained": False,
-        "avg_or_today": None,
-        "total_pushes_db": len(pushed_today),
-        "must_have_hours": [],
-        "suggestions": suggestion_map,
-        "grouped": suggestion_map,
-        "items": suggestion_items,
-    }
 
 
 def _save_suggestions_legacy_flat(date_iso: str, suggestions: list[dict[str, Any]]) -> int:
@@ -269,6 +71,45 @@ def _save_suggestions_legacy_flat(date_iso: str, suggestions: list[dict[str, Any
     return saved
 
 
+def _empty_tagesplan_payload(mode: str) -> dict[str, Any]:
+    return {
+        "slots": [],
+        "loading": True,
+        "mode": mode,
+        "date": datetime.now().strftime("%d.%m.%Y"),
+        "mlTrained": False,
+        "totalPushesDb": 0,
+    }
+
+
+def _normalize_suggestion_row(row: dict[str, Any]) -> dict[str, Any]:
+    score = round(float(row.get("article_score", 0.0) or 0.0), 1)
+    predicted_or = round(float(row.get("expected_or", 0.0) or 0.0), 2)
+    title = row.get("article_title") or ""
+    url = row.get("article_link") or ""
+    category = row.get("article_category") or ""
+    best_cat = row.get("best_cat") or category
+    hour = int(row.get("slot_hour", 0) or 0)
+    return {
+        # React-format
+        "hour": hour,
+        "title": title,
+        "url": url,
+        "score": score,
+        "predictedOR": predicted_or,
+        # Legacy-format
+        "slot_hour": hour,
+        "link": url,
+        "category": category,
+        "cat": category,
+        "expected_or": predicted_or,
+        "best_cat": best_cat,
+        "suggestion_num": int(row.get("suggestion_num", 0) or 0),
+        "date_iso": row.get("date_iso"),
+        "captured_at": row.get("captured_at"),
+    }
+
+
 @router.get("/api/tagesplan")
 def get_tagesplan(
     date: str | None = Query(default=None),
@@ -286,17 +127,27 @@ def get_tagesplan(
     try:
         if mode not in ("redaktion", "sport"):
             mode = "redaktion"
+        if not TAGESPLAN_ON_DEMAND_BUILD_ENABLED:
+            plan = _empty_tagesplan_payload(mode)
+            plan["economyMode"] = True
+            if date:
+                plan["requestedDate"] = date
+            return JSONResponse(content=plan)
         plan = build_tagesplan(background=False, mode=mode)
         if plan is None:
-            plan = _fallback_plan(mode=mode)
+            plan = _empty_tagesplan_payload(mode)
+        if date:
+            plan["requestedDate"] = date
+        return JSONResponse(content=plan)
+    except sqlite3.OperationalError as exc:
+        log.warning("[tagesplan] DB nicht erreichbar, liefere Loading-Fallback: %s", exc)
+        plan = _empty_tagesplan_payload(mode if mode in ("redaktion", "sport") else "redaktion")
         if date:
             plan["requestedDate"] = date
         return JSONResponse(content=plan)
     except Exception as exc:
         log.exception("[tagesplan] Fehler in get_tagesplan")
-        fallback = _fallback_plan(date=date, mode=mode)
-        fallback["error"] = "Daily plan could not be loaded."
-        return JSONResponse(content=fallback)
+        raise HTTPException(status_code=500, detail="Daily plan could not be loaded.") from exc
 
 
 @router.get("/api/tagesplan/retro")
@@ -318,29 +169,14 @@ def get_tagesplan_retro(mode: str = Query(default="redaktion")) -> JSONResponse:
         return JSONResponse(content=retro)
     except Exception as exc:
         log.exception("[tagesplan] Fehler in get_tagesplan_retro")
-        return JSONResponse(
-            content={
-                "days": [],
-                "summary": {
-                    "total_pushes": 0,
-                    "avg_or_7d": 0,
-                    "best_day": None,
-                    "worst_day": None,
-                    "prediction_mae_7d": None,
-                    "top_hour": None,
-                    "top_hour_avg_or": 0,
-                    "category_breakdown": {},
-                },
-                "mode": mode,
-                "loading": True,
-                "error": "Daily plan retrospective data could not be loaded.",
-            }
-        )
+        raise HTTPException(
+            status_code=500,
+            detail="Daily plan retrospective data could not be loaded.",
+        ) from exc
 
 
 @router.get("/api/tagesplan/history")
 def get_tagesplan_history(
-    date: str | None = Query(default=None),
     days: int = Query(default=7, ge=1, le=90),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=1000),
@@ -357,8 +193,6 @@ def get_tagesplan_history(
     from app.database import PUSH_DB_PATH
 
     try:
-        if date:
-            return JSONResponse(content=_build_history_plan(date, mode="redaktion"))
         cutoff_ts = int(
             (datetime.datetime.now() - datetime.timedelta(days=days)).timestamp()
         )
@@ -423,10 +257,11 @@ def get_tagesplan_suggestions(
     """
     try:
         all_rows = load_tagesplan_suggestions(date_iso=date)
-        normalized_rows, grouped_all = _normalize_suggestion_rows(all_rows)
+        normalized_rows = [_normalize_suggestion_row(row) for row in all_rows]
         total = len(normalized_rows)
         items = normalized_rows[offset: offset + limit]
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        # Grouped view (nach slot_hour) für Frontend-Kompatibilität
+        grouped: dict[str, list] = {}
         for row in items:
             key = str(row.get("slot_hour", ""))
             grouped.setdefault(key, []).append(row)
@@ -440,8 +275,8 @@ def get_tagesplan_suggestions(
             "suggestions": grouped,
             "loading": False,
         })
-    except Exception as exc:
-        log.exception("[tagesplan] Fehler in get_tagesplan_suggestions")
+    except sqlite3.OperationalError as exc:
+        log.warning("[tagesplan] Suggestions-DB nicht erreichbar, liefere leeres Fallback: %s", exc)
         return JSONResponse(content={
             "items": [],
             "total": 0,
@@ -451,8 +286,13 @@ def get_tagesplan_suggestions(
             "grouped": {},
             "suggestions": {},
             "loading": True,
-            "error": "Daily plan suggestions could not be loaded.",
         })
+    except Exception as exc:
+        log.exception("[tagesplan] Fehler in get_tagesplan_suggestions")
+        raise HTTPException(
+            status_code=500,
+            detail="Daily plan suggestions could not be loaded.",
+        ) from exc
 
 
 @router.post("/api/tagesplan/log-suggestions")

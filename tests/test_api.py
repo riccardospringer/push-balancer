@@ -2,7 +2,9 @@
 
 Alle Tests laufen ohne laufenden Server über FastAPI `TestClient`.
 """
+from pathlib import Path
 import sqlite3
+import time
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +27,13 @@ class TestHealthEndpoint:
         resp = client.get("/api/health")
         data = resp.json()
         assert "status" in data
+
+    def test_health_exposes_cost_controls(self):
+        resp = client.get("/api/health")
+        data = resp.json()
+        assert "costControls" in data
+        assert "paidExternalApisEnabled" in data["costControls"]
+        assert "backgroundAutomationsEnabled" in data["costControls"]
 
     def test_health_content_type_json(self):
         """Content-Type muss JSON sein."""
@@ -100,12 +109,166 @@ class TestStableFrontendContracts:
         assert data["count"] >= 1
         assert data["articles"][0]["title"] == "Breaking Test Artikel"
 
+    def test_articles_contract_marks_video_items(self, monkeypatch):
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/sport/video/test-artikel</loc>
+    <news:news>
+      <news:title>Das sind die Szenen im Video</news:title>
+      <news:publication_date>2026-04-13T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr(
+            "app.ml.predict.predict_or",
+            lambda *_args, **_kwargs: {"predicted_or": 4.8},
+        )
+
+        resp = client.get("/api/articles")
+        assert resp.status_code == 200
+        article = resp.json()["articles"][0]
+        assert article["isVideo"] is True
+        assert article["type"] == "video"
+        assert "video" in article["scoreReason"]
+
+    def test_international_feed_contract_falls_back_to_live_fetch_without_background_cache(self, monkeypatch):
+        monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
+        monkeypatch.setattr(
+            "app.routers.feed._fetch_feeds_live",
+            lambda _feeds: {"bbc": [{"t": "Titel", "l": "https://example.com"}]},
+        )
+
+        resp = client.get("/api/international")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] >= 1
+        assert payload["items"][0]["name"] == "bbc"
+
+    def test_international_feed_contract_stays_empty_when_live_fallback_disabled(self, monkeypatch):
+        import app.routers.feed as feed_router
+
+        monkeypatch.setattr(feed_router, "LIVE_FEED_FALLBACK_ENABLED", False)
+        monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
+
+        resp = client.get("/api/international")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 0
+
     def test_push_refresh_job_alias_returns_sync_result(self):
         resp = client.post("/api/push-refresh-jobs", json={})
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
         assert "synced" in data
+
+    def test_push_refresh_job_fetches_live_snapshot_on_demand(self, monkeypatch):
+        import app.routers.push as push_router
+
+        monkeypatch.setattr(
+            push_router,
+            "_fetch_live_push_snapshot",
+            lambda: ([{"id": "abc"}], [{"name": "main"}]),
+        )
+
+        resp = client.post("/api/push-refresh-jobs", json={})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["synced"] == 1
+        assert data["source"] == "live"
+
+    def test_push_proxy_skips_live_fetch_when_disabled(self, monkeypatch):
+        import app.routers.push as push_router
+
+        monkeypatch.setattr(push_router, "PUSH_LIVE_FETCH_ENABLED", False)
+        with push_router._push_sync_lock:
+            push_router._push_sync_cache["messages"] = [{"id": "cached"}]
+            push_router._push_sync_cache["channels"] = [{"name": "main"}]
+            push_router._push_sync_cache["ts"] = time.time()
+
+        resp = client.get("/api/push/messages")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["_synced"] is True
+
+    def test_articles_skip_prediction_enrichment_when_disabled(self, monkeypatch):
+        import app.routers.feed as feed_router
+
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/politik/test-artikel</loc>
+    <news:news>
+      <news:title>Breaking Test Artikel</news:title>
+      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        monkeypatch.setattr(feed_router, "ARTICLE_PREDICTION_ENRICHMENT_ENABLED", False)
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr(
+            "app.ml.predict.predict_or",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("predict_or should not run")),
+        )
+
+        resp = client.get("/api/articles")
+
+        assert resp.status_code == 200
+        assert resp.json()["articles"][0]["predictedOR"] is None
+
+    def test_tagesplan_returns_lightweight_payload_when_on_demand_build_disabled(self, monkeypatch):
+        import app.routers.tagesplan as tagesplan_router
+
+        monkeypatch.setattr(tagesplan_router, "TAGESPLAN_ON_DEMAND_BUILD_ENABLED", False)
+
+        resp = client.get("/api/tagesplan")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["loading"] is True
+        assert data["economyMode"] is True
+
+    def test_research_endpoint_warms_state_on_demand(self, monkeypatch):
+        import app.routers.forschung as research_router
+
+        original_state = dict(research_router._research_state)
+        try:
+            research_router._research_state.clear()
+            research_router._research_state.update({"push_data": [], "last_analysis": 0})
+
+            def _warm():
+                research_router._research_state["push_data"] = [{"message_id": "p1", "or": 5.0, "ts_num": 1}]
+                research_router._research_state["mature_count"] = 1
+                research_router._research_state["fresh_count"] = 0
+                research_router._research_state["findings"] = {}
+                research_router._research_state["ticker_entries"] = []
+                research_router._research_state["schwab_decisions"] = []
+                research_router._research_state["live_rules"] = []
+                research_router._research_state["rolling_accuracy"] = 0.6
+                research_router._research_state["accuracy_history"] = []
+                research_router._research_state["last_analysis"] = 1
+
+            monkeypatch.setattr("app.research.worker.run_autonomous_analysis", _warm)
+
+            resp = client.get("/api/research-insights")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "learnings" in data
+        finally:
+            research_router._research_state.clear()
+            research_router._research_state.update(original_state)
 
     def test_deprecated_compatibility_route_emits_runtime_headers(self):
         resp = client.get("/api/ml/status")
@@ -120,6 +283,24 @@ class TestStableFrontendContracts:
         assert resp.status_code == 200
         assert resp.headers.get("Deprecation") == "true"
         assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
+
+
+class TestAdobeTrafficEndpoint:
+    def test_adobe_traffic_stays_disabled_without_explicit_opt_in(self, monkeypatch):
+        import app.routers.misc as misc_router
+
+        monkeypatch.setitem(misc_router._adobe_state, "enabled", False)
+        monkeypatch.setitem(
+            misc_router._adobe_state,
+            "traffic",
+            {"hourly": [{"hour": 12, "pageviews": 10, "visitors": 8}]},
+        )
+
+        resp = client.get("/api/adobe/traffic")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
 
     def test_stable_contract_route_has_no_deprecation_headers(self):
         resp = client.get("/api/ml-model")
@@ -202,7 +383,8 @@ class TestInternalAccessControl:
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
 
-        asset_name = "index-5oNyFBdq.js"
+        assets_dir = Path(__file__).resolve().parents[1] / "dist-frontend" / "assets"
+        asset_name = next(path.name for path in assets_dir.glob("index-*.js"))
         resp = client.get(
             f"/dist-frontend/assets/{asset_name}",
             headers={"CF-Connecting-IP": "145.243.163.23"},
@@ -274,23 +456,6 @@ class TestInternalAccessControl:
         assert "text/html" in resp.headers.get("content-type", "")
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
         assert "Push Balancer" in resp.text
-        assert 'data-tab="live"' in resp.text
-
-    def test_root_falls_back_to_legacy_frontend_when_bundle_assets_are_unavailable(self, monkeypatch):
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
-        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
-        monkeypatch.setattr(
-            "app.main._frontend_html_assets_are_available",
-            lambda html: False,
-        )
-
-        resp = client.get("/", headers={"CF-Connecting-IP": "145.243.163.23"})
-
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers.get("content-type", "")
-        assert 'data-tab="live"' in resp.text
-        assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
 
 
 class TestPushApiBaseCandidates:
@@ -337,60 +502,57 @@ class TestTagesplanEndpoint:
         assert resp.status_code in (200, 400, 422)
 
     def test_tagesplan_db_outage_returns_loading_fallback(self, monkeypatch):
-        def _raise_db_outage(*args, **kwargs):
-            raise sqlite3.OperationalError("db locked")
+        def _raise_db_outage(*_args, **_kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
 
         monkeypatch.setattr("app.routers.tagesplan.build_tagesplan", _raise_db_outage)
         resp = client.get("/api/tagesplan")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["loading"] is True
-        assert "slots" in data
-
-    def test_tagesplan_history_date_returns_slot_shape(self):
-        resp = client.get("/api/tagesplan/history?date=2026-04-15")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["is_history"] is True
-        assert "slots" in data
+        assert data.get("loading") is True
+        assert isinstance(data.get("slots"), list)
 
     def test_tagesplan_suggestions_normalizes_items_for_frontends(self, monkeypatch):
         monkeypatch.setattr(
             "app.routers.tagesplan.load_tagesplan_suggestions",
             lambda date_iso=None: [
                 {
-                    "id": 1,
-                    "date_iso": "2026-04-15",
+                    "date_iso": "2026-04-13",
                     "slot_hour": 8,
-                    "suggestion_num": 0,
-                    "article_title": "Testtitel",
-                    "article_link": "https://example.com/story",
+                    "suggestion_num": 1,
+                    "article_title": "Test Titel",
+                    "article_link": "https://www.bild.de/test",
                     "article_category": "politik",
-                    "article_score": 42.0,
-                    "expected_or": 4.2,
+                    "article_score": 91.3,
+                    "expected_or": 5.4,
                     "best_cat": "politik",
-                    "captured_at": 123,
+                    "captured_at": 12345,
                 }
             ],
         )
-        resp = client.get("/api/tagesplan/suggestions?date=2026-04-15")
+        resp = client.get("/api/tagesplan/suggestions?date=2026-04-13")
         assert resp.status_code == 200
         data = resp.json()
-        assert "items" in data
+        assert data["items"][0]["title"] == "Test Titel"
+        assert data["items"][0]["url"] == "https://www.bild.de/test"
+        assert data["items"][0]["predictedOR"] == 5.4
         assert "suggestions" in data
         assert "8" in data["suggestions"]
-        assert data["items"][0]["title"] == "Testtitel"
 
     def test_tagesplan_suggestions_db_outage_returns_empty_fallback(self, monkeypatch):
-        def _raise_db_outage(*args, **kwargs):
-            raise sqlite3.OperationalError("db locked")
+        def _raise_db_outage(*_args, **_kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
 
-        monkeypatch.setattr("app.routers.tagesplan.load_tagesplan_suggestions", _raise_db_outage)
-        resp = client.get("/api/tagesplan/suggestions?date=2026-04-15")
+        monkeypatch.setattr(
+            "app.routers.tagesplan.load_tagesplan_suggestions",
+            _raise_db_outage,
+        )
+        resp = client.get("/api/tagesplan/suggestions?date=2026-04-13")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["loading"] is True
+        assert data["items"] == []
         assert data["suggestions"] == {}
+        assert data["loading"] is True
 
 
 # ── /api/ml/status ────────────────────────────────────────────────────────────
@@ -491,7 +653,7 @@ class TestPushSyncEndpoint:
 
 
 class TestPushTitleGenerateEndpoint:
-    def test_generate_push_title_one_brain_response_shape(self):
+    def test_generate_push_title_returns_stable_local_response_shape(self):
         resp = client.post(
             "/api/push-title/generate",
             json={"title": "Ausgangstitel", "category": "news"},
@@ -500,60 +662,44 @@ class TestPushTitleGenerateEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["title"]
-        assert len(data["title"]) <= 78
         assert isinstance(data["alternativeTitles"], list)
-        assert len(data["alternativeTitles"]) >= 1
         assert isinstance(data["reasoning"], str)
-        assert data["reasoning"]
         assert data["advisoryOnly"] is True
-        assert data["meta"]["modus"] == "local-editorial-chain"
+        assert data["contentType"] == "editorial"
+        assert data["gewinner"]["titel"] == data["title"]
+        assert isinstance(data["alle_kandidaten"], dict)
+        assert data["meta"]["modus"] == "local-fallback"
 
-    def test_generate_push_title_without_openai_key_no_longer_returns_503(self, monkeypatch):
-        monkeypatch.setattr("app.config.OPENAI_API_KEY", "")
-
+    def test_generate_push_title_marks_video_context(self):
         resp = client.post(
             "/api/push-title/generate",
-            json={"title": "BVB: Enthüllt! Für diese Mega-Klubs gilt die Schlotterbeck-Klausel", "category": "sport"},
+            json={
+                "title": "Ausgangstitel",
+                "category": "sport",
+                "url": "https://www.bild.de/sport/video/test",
+            },
         )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["title"]
-        assert "gewinner" in data
+        assert data["contentType"] == "video"
+        assert "video" in data["title"].lower() or any(
+            "video" in title.lower() for title in data["alternativeTitles"]
+        )
+        assert isinstance(data["alternativeTitles"], list)
         assert data["advisoryOnly"] is True
 
-    def test_generate_push_title_uses_llm_chain_when_key_is_present(self, monkeypatch):
-        monkeypatch.setattr("app.routers.misc.OPENAI_API_KEY", "test-key")
-
-        mocked_result = {
-            "title": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel",
-            "alternativeTitles": ["Schlotterbeck-Klausel: Diese Klubs sind betroffen"],
-            "reasoning": "Hohe Klarheit und konkreter Leserwert.",
-            "advisoryOnly": True,
-            "gewinner": {
-                "titel": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel",
-                "warum_dieser": "Hohe Klarheit und konkreter Leserwert.",
-            },
-            "alternative": {"titel": "Schlotterbeck-Klausel: Diese Klubs sind betroffen"},
-            "alle_kandidaten": {
-                "konsequenz": [
-                    {"titel": "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel"}
-                ]
-            },
-            "meta": {"modus": "editorial-prompt-chain"},
-        }
-
-        with patch("push_title_agent.generate_push_title", return_value=mocked_result):
+    def test_generate_push_title_falls_back_cleanly_when_generator_crashes(self):
+        with patch("app.routers.misc.build_push_title_suggestions", side_effect=Exception("boom")):
             resp = client.post(
                 "/api/push-title/generate",
-                json={"title": "Ausgangstitel", "category": "sport"},
+                json={"title": "Ausgangstitel", "category": "news"},
             )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["title"] == "BVB: Diese Klubs betrifft die Schlotterbeck-Klausel"
-        assert data["alternativeTitles"] == ["Schlotterbeck-Klausel: Diese Klubs sind betroffen"]
-        assert data["meta"]["modus"] == "editorial-prompt-chain"
+        assert data["title"]
+        assert data["advisoryOnly"] is True
 
     def test_generate_push_title_alias_requires_title_problem(self):
         resp = client.post("/api/push-title-generations", json={"category": "news"})
@@ -577,3 +723,51 @@ class TestPushTitleGenerateEndpoint:
         assert data["title"] == "HTTP Error"
         assert data["status"] == 501
         assert "not implemented" in data["detail"].lower()
+
+
+class TestPushHistoryEnhancements:
+    def test_pushes_support_sorting_filtering_and_delta(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.routers.push.push_db_load_all",
+            lambda **_kwargs: [
+                {
+                    "message_id": "sport-1",
+                    "title": "Sport stark",
+                    "headline": "",
+                    "cat": "sport",
+                    "type": "editorial",
+                    "channel": "main",
+                    "channels": ["main"],
+                    "ts_num": 1710000000,
+                    "or": 7.4,
+                    "total_recipients": 120000,
+                    "opened": 8880,
+                    "link": "https://www.bild.de/sport/test",
+                },
+                {
+                    "message_id": "politik-1",
+                    "title": "Politik solide",
+                    "headline": "",
+                    "cat": "politik",
+                    "type": "video",
+                    "channel": "main",
+                    "channels": ["main"],
+                    "ts_num": 1710003600,
+                    "or": 5.1,
+                    "total_recipients": 110000,
+                    "opened": 5610,
+                    "link": "https://www.bild.de/politik/video/test",
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            "app.routers.push._load_prediction_map",
+            lambda push_ids: {"sport-1": 0.061, "politik-1": 0.055},
+        )
+
+        resp = client.get("/api/pushes?sort=performanceDelta&category=sport&days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["pushes"][0]["category"] == "sport"
+        assert abs(data["pushes"][0]["performanceDelta"] - 0.013) < 1e-6

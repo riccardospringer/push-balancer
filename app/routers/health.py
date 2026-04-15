@@ -6,6 +6,25 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from app.auth import require_admin_key
+from app.config import (
+    ADOBE_TRAFFIC_ENABLED,
+    ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
+    BACKGROUND_AUTOMATIONS_ENABLED,
+    ECONOMY_MODE,
+    HEALTH_ACTIVE_CHECKS_ENABLED,
+    LIVE_FEED_FALLBACK_ENABLED,
+    OPENAI_BACKFILL_ENABLED,
+    OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY,
+    OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR,
+    OPENAI_PREDICTION_SCORING_ENABLED,
+    OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY,
+    OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR,
+    OPENAI_TITLE_GENERATION_ENABLED,
+    PAID_EXTERNAL_APIS_ENABLED,
+    PUSH_LIVE_FETCH_ENABLED,
+    RESEARCH_EXTERNAL_CONTEXT_ENABLED,
+    TAGESPLAN_ON_DEMAND_BUILD_ENABLED,
+)
 from app.research.worker import _health_state, _research_state
 
 router = APIRouter()
@@ -28,7 +47,9 @@ def _process_rss_mb() -> float:
 def get_health() -> JSONResponse:
     """Liefert Health- und Security-Status aller Endpunkte."""
     uptime = time.time() - _health_state.get("uptime_start", time.time())
-    raw_status = _health_state.get("status", "unhealthy")
+    raw_status = _health_state.get("status", "starting")
+    if not HEALTH_ACTIVE_CHECKS_ENABLED and raw_status in {"starting", "", None}:
+        raw_status = "ok"
     status = "healthy" if raw_status == "ok" else raw_status
     if status not in {"healthy", "degraded", "unhealthy"}:
         status = "unhealthy"
@@ -40,10 +61,40 @@ def get_health() -> JSONResponse:
         }
         for key, value in endpoints.items()
     }
+    cost_controls = {
+        "paidExternalApisEnabled": PAID_EXTERNAL_APIS_ENABLED,
+        "openaiTitleGenerationEnabled": bool(
+            PAID_EXTERNAL_APIS_ENABLED
+            and OPENAI_TITLE_GENERATION_ENABLED
+            and OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR > 0
+            and OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY > 0
+        ),
+        "openaiPredictionScoringEnabled": bool(
+            PAID_EXTERNAL_APIS_ENABLED
+            and OPENAI_PREDICTION_SCORING_ENABLED
+            and OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR > 0
+            and OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY > 0
+        ),
+        "openaiBackfillEnabled": bool(
+            PAID_EXTERNAL_APIS_ENABLED and OPENAI_BACKFILL_ENABLED
+        ),
+        "adobeTrafficEnabled": bool(
+            PAID_EXTERNAL_APIS_ENABLED and ADOBE_TRAFFIC_ENABLED
+        ),
+        "backgroundAutomationsEnabled": BACKGROUND_AUTOMATIONS_ENABLED,
+        "healthActiveChecksEnabled": HEALTH_ACTIVE_CHECKS_ENABLED,
+        "economyMode": ECONOMY_MODE,
+        "pushLiveFetchEnabled": PUSH_LIVE_FETCH_ENABLED,
+        "researchExternalContextEnabled": RESEARCH_EXTERNAL_CONTEXT_ENABLED,
+        "liveFeedFallbackEnabled": LIVE_FEED_FALLBACK_ENABLED,
+        "articlePredictionEnrichmentEnabled": ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
+        "tagesplanOnDemandBuildEnabled": TAGESPLAN_ON_DEMAND_BUILD_ENABLED,
+    }
     return JSONResponse(content={
         "status": status,
         "uptime": int(uptime),
         "checks": checks,
+        "costControls": cost_controls,
         "research": {
             "version": len(_research_state.get("push_data", [])),
             "lastUpdate": (

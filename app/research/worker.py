@@ -1149,8 +1149,50 @@ def _analyze_score_components(push_data: list, findings: dict, state: dict) -> N
 def _fetch_external_context(state: dict) -> dict:
     """Holt Wetter, Google Trends und Feiertag-Info. Alle 30min."""
     global _external_context_cache
+    try:
+        from app.config import RESEARCH_EXTERNAL_CONTEXT_ENABLED
+    except Exception:
+        RESEARCH_EXTERNAL_CONTEXT_ENABLED = False
+
     now = time.time()
     if now - _external_context_cache["last_fetch"] < 1800:
+        return _external_context_cache
+
+    if not RESEARCH_EXTERNAL_CONTEXT_ENABLED:
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        holiday = _GERMAN_HOLIDAYS.get(today_str, "")
+        weekday = datetime.datetime.now().weekday()
+        day_type = "holiday" if holiday else ("weekend" if weekday >= 5 else "weekday")
+        hour = datetime.datetime.now().hour
+        if 6 <= hour <= 8:
+            time_context = "pendler_morgen"
+        elif 11 <= hour <= 13:
+            time_context = "mittagspause"
+        elif 16 <= hour <= 18:
+            time_context = "feierabend"
+        elif 20 <= hour <= 23:
+            time_context = "prime_time"
+        elif 0 <= hour <= 5:
+            time_context = "nacht"
+        else:
+            time_context = "normal"
+
+        _external_context_cache = {
+            "weather": {"bad_weather_score": 0.3, "temp_c": 15, "weather_desc": "disabled"},
+            "trends": [],
+            "holiday": holiday,
+            "last_fetch": now,
+        }
+        state["external_context"] = {
+            "weather": _external_context_cache["weather"],
+            "trends_count": 0,
+            "trends_top5": [],
+            "holiday": holiday,
+            "day_type": day_type,
+            "time_context": time_context,
+            "last_update": datetime.datetime.now().strftime("%H:%M"),
+            "mode": "local-defaults",
+        }
         return _external_context_cache
 
     log.info("[Kontext] Fetche externe Datenquellen...")

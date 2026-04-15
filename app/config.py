@@ -11,6 +11,29 @@ from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("push-balancer")
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        log.warning("Invalid integer env %s=%r, falling back to %s", name, raw, default)
+        return default
+
 # ── .env im Projektverzeichnis laden (identisch zum Monolith) ──────────────
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOCAL_ENV = os.path.join(_APP_DIR, ".env")
@@ -27,7 +50,70 @@ PORT: int = int(os.environ.get("PORT", "8050"))
 ALLOW_INSECURE_SSL: bool = os.environ.get("ALLOW_INSECURE_SSL", "0") == "1"
 
 # ── OpenAI ─────────────────────────────────────────────────────────────────
+PAID_EXTERNAL_APIS_ENABLED: bool = _env_flag(
+    "PAID_EXTERNAL_APIS_ENABLED",
+    False,
+)
+BACKGROUND_AUTOMATIONS_ENABLED: bool = _env_flag(
+    "BACKGROUND_AUTOMATIONS_ENABLED",
+    False,
+)
+HEALTH_ACTIVE_CHECKS_ENABLED: bool = _env_flag(
+    "HEALTH_ACTIVE_CHECKS_ENABLED",
+    False,
+)
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI_API_KEY", "")
+OPENAI_TITLE_GENERATION_ENABLED: bool = _env_flag(
+    "OPENAI_TITLE_GENERATION_ENABLED",
+    False,
+)
+OPENAI_TITLE_GENERATION_MODEL: str = os.environ.get(
+    "OPENAI_TITLE_GENERATION_MODEL",
+    "gpt-4o-mini",
+)
+OPENAI_TITLE_GENERATION_TIMEOUT_S: float = float(
+    os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "8.0")
+)
+OPENAI_TITLE_GENERATION_MAX_TOKENS: int = int(
+    os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "320")
+)
+OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR: int = _env_int(
+    "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR",
+    0,
+)
+OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY: int = _env_int(
+    "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY",
+    0,
+)
+OPENAI_BACKFILL_ENABLED: bool = _env_flag(
+    "OPENAI_BACKFILL_ENABLED",
+    False,
+)
+OPENAI_PREDICTION_SCORING_ENABLED: bool = _env_flag(
+    "OPENAI_PREDICTION_SCORING_ENABLED",
+    False,
+)
+OPENAI_PREDICTION_SCORING_MODEL: str = os.environ.get(
+    "OPENAI_PREDICTION_SCORING_MODEL",
+    "gpt-4o-mini",
+)
+OPENAI_PREDICTION_SCORING_TIMEOUT_S: float = float(
+    os.environ.get("OPENAI_PREDICTION_SCORING_TIMEOUT_S", "4.0")
+)
+OPENAI_PREDICTION_SCORING_MAX_TOKENS: int = int(
+    os.environ.get("OPENAI_PREDICTION_SCORING_MAX_TOKENS", "60")
+)
+OPENAI_PREDICTION_SCORING_CACHE_TTL_S: int = int(
+    os.environ.get("OPENAI_PREDICTION_SCORING_CACHE_TTL_S", "3600")
+)
+OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR: int = _env_int(
+    "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_HOUR",
+    0,
+)
+OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY: int = _env_int(
+    "OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY",
+    0,
+)
 
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
@@ -70,6 +156,10 @@ RENDER_SYNC_URL: str = os.environ.get("RENDER_SYNC_URL", "")
 # ── Adobe Analytics ────────────────────────────────────────────────────────
 ADOBE_CLIENT_ID: str = os.environ.get("ADOBE_CLIENT_ID", "")
 ADOBE_CLIENT_SECRET: str = os.environ.get("ADOBE_CLIENT_SECRET", "")
+ADOBE_TRAFFIC_ENABLED: bool = _env_flag(
+    "ADOBE_TRAFFIC_ENABLED",
+    False,
+)
 ADOBE_COMPANY_ID: str = os.environ.get("ADOBE_GLOBAL_COMPANY_ID", "axelsp2")
 ADOBE_RSID: str = "axelspringerbild"
 ADOBE_TOKEN_URL: str = "https://ims-na1.adobelogin.com/ims/token/v3"
@@ -77,6 +167,27 @@ ADOBE_API_BASE: str = "https://analytics.adobe.io/api"
 
 # ── Render-Erkennung ───────────────────────────────────────────────────────
 IS_RENDER: bool = os.environ.get("RENDER", "").lower() == "true"
+ECONOMY_MODE: bool = _env_flag("ECONOMY_MODE", IS_RENDER)
+PUSH_LIVE_FETCH_ENABLED: bool = _env_flag(
+    "PUSH_LIVE_FETCH_ENABLED",
+    not ECONOMY_MODE,
+)
+LIVE_FEED_FALLBACK_ENABLED: bool = _env_flag(
+    "LIVE_FEED_FALLBACK_ENABLED",
+    not ECONOMY_MODE,
+)
+RESEARCH_EXTERNAL_CONTEXT_ENABLED: bool = _env_flag(
+    "RESEARCH_EXTERNAL_CONTEXT_ENABLED",
+    not ECONOMY_MODE,
+)
+ARTICLE_PREDICTION_ENRICHMENT_ENABLED: bool = _env_flag(
+    "ARTICLE_PREDICTION_ENRICHMENT_ENABLED",
+    not ECONOMY_MODE,
+)
+TAGESPLAN_ON_DEMAND_BUILD_ENABLED: bool = _env_flag(
+    "TAGESPLAN_ON_DEMAND_BUILD_ENABLED",
+    not ECONOMY_MODE,
+)
 
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
@@ -211,18 +322,6 @@ ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 
 # ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────
 DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _csv_env(name: str, default: str = "") -> list[str]:
-    raw = os.environ.get(name, default)
-    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 # ── Interner Zugriff / Netzwerk-Allowlist ─────────────────────────────────

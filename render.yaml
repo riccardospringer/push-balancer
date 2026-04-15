@@ -15,8 +15,46 @@ services:
         value: /data/.push_history.db
       - key: PUSH_DB_MAX_ROWS
         value: "5000"
+      - key: PAID_EXTERNAL_APIS_ENABLED
+        value: "false"
+      - key: BACKGROUND_AUTOMATIONS_ENABLED
+        value: "false"
+      - key: HEALTH_ACTIVE_CHECKS_ENABLED
+        value: "false"
+      - key: ECONOMY_MODE
+        value: "true"
+      - key: PUSH_LIVE_FETCH_ENABLED
+        value: "false"
+      - key: LIVE_FEED_FALLBACK_ENABLED
+        value: "false"
+      - key: RESEARCH_EXTERNAL_CONTEXT_ENABLED
+        value: "false"
+      - key: ARTICLE_PREDICTION_ENRICHMENT_ENABLED
+        value: "false"
+      - key: TAGESPLAN_ON_DEMAND_BUILD_ENABLED
+        value: "false"
       - key: OPENAI_API_KEY
         sync: false
+      - key: OPENAI_TITLE_GENERATION_ENABLED
+        value: "false"
+      - key: OPENAI_TITLE_GENERATION_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
+        value: "8.0"
+      - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
+        value: "320"
+      - key: OPENAI_BACKFILL_ENABLED
+        value: "false"
+      - key: OPENAI_PREDICTION_SCORING_ENABLED
+        value: "false"
+      - key: OPENAI_PREDICTION_SCORING_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_PREDICTION_SCORING_TIMEOUT_S
+        value: "4.0"
+      - key: OPENAI_PREDICTION_SCORING_MAX_TOKENS
+        value: "60"
+      - key: OPENAI_PREDICTION_SCORING_CACHE_TTL_S
+        value: "3600"
       - key: ADMIN_API_KEY
         sync: false
       - key: INTERNAL_ACCESS_ENABLED
@@ -35,5 +73,7 @@ services:
         sync: false
       - key: ADOBE_CLIENT_SECRET
         sync: false
+      - key: ADOBE_TRAFFIC_ENABLED
+        value: "false"
       - key: ADOBE_GLOBAL_COMPANY_ID
         value: axelsp2
