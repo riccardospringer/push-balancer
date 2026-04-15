@@ -12611,8 +12611,10 @@ function renderCompetitors() {
   window._compExklusivList = exklusivList;
   window._compHotTopics = hotTopics;
 
-  // Render each competitor card — nur Artikel der letzten 3 Stunden
+  // Render each competitor card — bevorzugt letzte 3 Stunden,
+  // mit Fallback bis 12 Stunden für langsamere Outlets wie SZ.
   const maxAge = 3 * 60 * 60 * 1000;
+  const fallbackMaxAge = 12 * 60 * 60 * 1000;
   const now = Date.now();
 
   // Aufgabe 1: Feste Outlet-Reihenfolge
@@ -12629,18 +12631,28 @@ function renderCompetitors() {
       .filter(a => (now - a.pubDate.getTime()) < maxAge)
       .sort((a, b) => b.pubDate - a.pubDate)
       .slice(0, 6);
-    if (fresh.length === 0) return '';
+    const visibleItems = fresh.length > 0
+      ? fresh
+      : items
+        .filter(a => (now - a.pubDate.getTime()) < fallbackMaxAge)
+        .sort((a, b) => b.pubDate - a.pubDate)
+        .slice(0, 6);
+    if (visibleItems.length === 0) return '';
+    const usingFallbackWindow = fresh.length === 0;
     const color = COMP_COLORS[name] || '#666';
     const label = COMP_LABELS[name] || name;
-    const rows = fresh.map(a => {
+    const rows = visibleItems.map(a => {
       const ageMs = now - a.pubDate.getTime();
       const ageMins = Math.round(ageMs / 60000);
       const ageStr = ageMins < 60 ? `${ageMins} Min` : `${Math.round(ageMins/60)} Std`;
+      const staleBadge = usingFallbackWindow
+        ? '<span class="comp-badge" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;font-size:9px">älter</span>'
+        : '';
 
       // Live-Ticker/Aggregation: eigenes Badge, NICHT als Gap zählen
       if (a.isLiveTicker) {
         return `<div class="comp-item is-covered" data-title="${escapeHtml(a.title)}" onclick="window.open('${safeUrl(a.link)}','_blank')" style="opacity:0.5">
-          <span class="comp-time">vor ${ageStr}</span> <span class="comp-title">${escapeHtml(a.title)}</span><span class="comp-badge" style="background:#f3f4f6;color:#9ca3af;border:1px solid #d1d5db;font-size:9px">Ticker/Sammlung</span>
+          <span class="comp-time">vor ${ageStr}</span> <span class="comp-title">${escapeHtml(a.title)}</span><span class="comp-badge" style="background:#f3f4f6;color:#9ca3af;border:1px solid #d1d5db;font-size:9px">Ticker/Sammlung</span>${staleBadge}
         </div>`;
       }
 
@@ -12685,15 +12697,16 @@ function renderCompetitors() {
       const isNew = !_knownCompTitles.has(a.title);
       const dimmed = covered || !relResult.relevant;
       return `<div class="comp-item${dimmed ? ' is-covered' : ''}${isNew && !dimmed ? ' comp-new' : ''}${isUrgent ? ' comp-urgent' : ''}" data-title="${escapeHtml(a.title)}" onclick="window.open('${safeUrl(a.link)}','_blank')">
-        <span class="comp-time">vor ${ageStr}</span> <span class="comp-title">${escapeHtml(a.title)}</span>${badge}${xorBadge}
+        <span class="comp-time">vor ${ageStr}</span> <span class="comp-title">${escapeHtml(a.title)}</span>${badge}${xorBadge}${staleBadge}
       </div>`;
     }).join('');
-    const hasRecent = fresh.some(a => (now - a.pubDate.getTime()) < 5 * 60 * 1000);
+    const hasRecent = visibleItems.some(a => (now - a.pubDate.getTime()) < 5 * 60 * 1000);
     const recentDot = hasRecent ? '<span class="comp-recent-dot" title="Neuer Artikel < 5 Min"></span>' : '';
+    const countLabel = usingFallbackWindow ? `${visibleItems.length} älter` : `${visibleItems.length} aktuell`;
     return `<div class="comp-card" data-outlet="${name}">
       <div class="comp-card-header">
         <span class="comp-logo"><span class="comp-dot" style="background:${color}" title="${label}"></span>${label}${recentDot}</span>
-        <span class="comp-count">${fresh.length} aktuell</span>
+        <span class="comp-count">${countLabel}</span>
       </div>
       ${rows}
     </div>`;
