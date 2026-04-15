@@ -17688,6 +17688,7 @@ function openDissFeynman(idx) {
 
 // ── Tagesplan Tab (Stundenplan-Layout) ────────────────────────────────
 let _tpInterval = null;
+let _tpLoading = false;
 let _tpCurrentDate = null; // null = heute, "YYYY-MM-DD" = historisch
 let _tpMode = 'redaktion'; // 'redaktion' oder 'sport'
 
@@ -17749,9 +17750,9 @@ function tpNavigateDay(delta) {
 }
 
 async function loadTagesplan() {
+  if (_tpLoading) return;
+  _tpLoading = true;
   console.log('[TP] loadTagesplan START, date=' + (_tpCurrentDate || 'heute'));
-  const _tpDebug = document.getElementById('tpGrid');
-
   const isHistory = !!_tpCurrentDate;
 
   // Artikel-Feed im Hintergrund laden falls noch leer (nur für heute)
@@ -17765,45 +17766,252 @@ async function loadTagesplan() {
 
   try {
     if (isHistory) {
-      // ── Historischer Tag: /api/tagesplan/history?date=YYYY-MM-DD ──
-      const [histResp] = await Promise.all([
-        resilientFetch(API_BASE + '/api/tagesplan/history?date=' + _tpCurrentDate + _modeA, {_timeout: 15000}),
-      ]);
+      const histResp = await resilientFetch(API_BASE + '/api/tagesplan/history?date=' + _tpCurrentDate + _modeA, {_timeout: 15000});
       if (!histResp.ok) throw new Error('History HTTP ' + histResp.status);
       const histRes = await histResp.json();
       showServerError(false);
-      renderTagesplan(histRes, {status: 'history'}, histRes.suggestions || {});
+      renderTagesplan(histRes, {status: 'history', metrics: {}}, histRes);
     } else {
-      // ── Heute: bestehende Logik ──
-      const [tpResp, mlResp, sugResp] = await Promise.all([
+      // ── Heute: nur Tagesplan ist kritisch, alles andere optional ──
+      const [tpSettled, mlSettled, sugSettled] = await Promise.allSettled([
         resilientFetch(API_BASE + '/api/tagesplan' + _modeQ, {_timeout: 60000}),
         resilientFetch(API_BASE + '/api/ml/status', {_timeout: 30000}),
-        resilientFetch(API_BASE + '/api/tagesplan/suggestions' + _modeQ, {_timeout: 10000}).catch(() => null),
+        resilientFetch(API_BASE + '/api/tagesplan/suggestions' + _modeQ, {_timeout: 10000}),
       ]);
+
+      const tpResp = tpSettled.status === 'fulfilled' ? tpSettled.value : null;
+      const mlResp = mlSettled.status === 'fulfilled' ? mlSettled.value : null;
+      const sugResp = sugSettled.status === 'fulfilled' ? sugSettled.value : null;
+
       if (!tpResp.ok) throw new Error('Tagesplan HTTP ' + tpResp.status);
-      if (!mlResp.ok) throw new Error('ML Status HTTP ' + mlResp.status);
+
       const tpRes = await tpResp.json();
-      const mlRes = await mlResp.json();
-      const sugRes = (sugResp && sugResp.ok) ? await sugResp.json() : {suggestions: {}};
+      const mlRes = (mlResp && mlResp.ok) ? await mlResp.json() : {trained: false, metrics: {}, advisoryOnly: true};
+      const sugRes = (sugResp && sugResp.ok) ? await sugResp.json() : {suggestions: {}, grouped: {}, items: []};
       window._tagesplanData = tpRes;
       window._mlStatus = mlRes;
       showServerError(false);
-      renderTagesplan(tpRes, mlRes, sugRes.suggestions || {});
+      renderTagesplan(tpRes, mlRes, sugRes);
     }
   } catch (e) {
     console.error('[TP] FEHLER:', e);
     showTabError('tpGrid', 'Tagesplan: ' + e.message, 'loadTagesplan()');
     if (_isNetworkError(e)) _markServerDown();
+  } finally {
+    _tpLoading = false;
   }
   if (!_tpInterval) {
     _tpInterval = setInterval(() => { if (currentTab === 'tagesplan' && !_tpCurrentDate) loadTagesplan(); }, 60000);
   }
-  // Retro nur für heute laden
-  if (!isHistory) loadRetro();
+}
+
+function _tpSafeText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function _tpNormalizeSavedSuggestions(payload) {
+  if (!payload) return {};
+  if (payload.suggestions && typeof payload.suggestions === 'object' && !Array.isArray(payload.suggestions)) return payload.suggestions;
+  if (payload.grouped && typeof payload.grouped === 'object' && !Array.isArray(payload.grouped)) return payload.grouped;
+  if (Array.isArray(payload.items)) {
+    const grouped = {};
+    for (const item of payload.items) {
+      const hour = String(item.slot_hour != null ? item.slot_hour : item.hour != null ? item.hour : '');
+      if (!hour) continue;
+      grouped[hour] = grouped[hour] || [];
+      grouped[hour].push(item);
+    }
+    return grouped;
+  }
+  if (typeof payload === 'object' && !Array.isArray(payload)) return payload;
+  return {};
+}
+
+function _tpNormalizeSuggestionItem(item, slotBestCat) {
+  if (!item) return null;
+  return {
+    title: item.title || item.article_title || '',
+    link: item.link || item.url || item.article_link || '',
+    category: item.category || item.cat || item.article_category || slotBestCat || '',
+    score: item.score || item.article_score || 0,
+    expected_or: item.expected_or != null ? item.expected_or : (item.predictedOR != null ? item.predictedOR : 0),
+    best_cat: item.best_cat || slotBestCat || '',
+  };
+}
+
+function _tpCategoryKey(cat) {
+  return String(cat || 'news').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function _tpBuildLightFallbackSuggestions(slot, pushedTitleSet) {
+  if (!Array.isArray(articles) || articles.length === 0) return [];
+  const slotCat = _tpCategoryKey(slot.best_cat);
+  const nowTs = Date.now();
+  const scored = [];
+  for (const article of articles) {
+    const title = String(article.title || '').trim();
+    if (!title) continue;
+    const key = title.toLowerCase().substring(0, 50);
+    if (pushedTitleSet.has(key)) continue;
+    if (_tpMode === 'sport' && typeof isSportArticle === 'function' && !isSportArticle(article)) continue;
+    const artCat = _tpCategoryKey(article.category);
+    const catFit = artCat && artCat === slotCat ? 1 : (artCat && (artCat.includes(slotCat) || slotCat.includes(artCat)) ? 0.75 : 0.2);
+    const ageMs = article.date ? Math.max(0, nowTs - new Date(article.date).getTime()) : 0;
+    const agePenalty = Math.min(ageMs / 3600000, 24) / 24;
+    const total = (Number(article.score) || 0) + catFit * 25 - agePenalty * 8;
+    scored.push({ article, total });
+  }
+  scored.sort((a, b) => b.total - a.total);
+  return scored.slice(0, 2).map(({ article }) => ({
+    title: article.title || '',
+    link: article.link || '',
+    category: article.category || slot.best_cat || '',
+    score: article.score || 0,
+    expected_or: 0,
+    best_cat: slot.best_cat || '',
+  }));
+}
+
+function _tpRenderSuggestionCard(item, label) {
+  if (!item) return '<div class="tp-row-sug"><div class="tp-sug-empty">Kein passender Artikel</div></div>';
+  const title = escapeHtml((item.title || '').substring(0, 90));
+  const link = item.link ? safeUrl(item.link) : '';
+  const score = Math.round(item.score || 0);
+  const cat = escapeHtml(item.category || item.best_cat || '');
+  const xor = Number(item.expected_or || 0);
+  const xorBadge = xor > 0
+    ? '<span class="tp-sug-or ' + (xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low') + '">' + xor.toFixed(1) + '%</span>'
+    : '';
+  return '<div class="tp-row-sug">'
+    + '<div class="tp-sug-num">' + label + '</div>'
+    + '<div class="tp-sug-title">' + (link ? '<a href="' + link + '" target="_blank" rel="noopener">' + title + '</a>' : title) + xorBadge + '</div>'
+    + '<div class="tp-sug-bottom"><span class="tp-sug-score">' + score + '</span><span class="tp-sug-cat">' + cat + '</span></div>'
+    + '</div>';
+}
+
+function renderTagesplanSlim(data, mlStatus, savedSuggestionsPayload) {
+  const groupedSuggestions = _tpNormalizeSavedSuggestions(savedSuggestionsPayload);
+  const isHistory = !!data.is_history;
+  const dateLabel = isHistory ? ((data.date || '') + ' (Rückblick)') : (data.date || '');
+  _tpSafeText('tpDate', dateLabel ? ' ' + dateLabel : '');
+  _tpSafeText('tpHeroGolden', (!isHistory && data.golden_hour != null) ? String(data.golden_hour).padStart(2, '0') + ':00' : '--');
+  _tpSafeText('tpHeroPushed', String(data.n_pushed_today || 0));
+  _tpSafeText('tpHeroMae', mlStatus && mlStatus.metrics && mlStatus.metrics.mae != null ? mlStatus.metrics.mae.toFixed(2) + 'pp' : '--');
+  _tpSafeText('tpHeroDb', data.total_pushes_db ? data.total_pushes_db.toLocaleString('de-DE') : '--');
+
+  const avgEl = document.getElementById('tpHeroAvgOR');
+  if (avgEl) {
+    const orValues = (data.already_pushed_today || []).map(p => Number(p.or || p.actual_or || 0)).filter(v => v > 0);
+    avgEl.textContent = orValues.length ? (orValues.reduce((sum, value) => sum + value, 0) / orValues.length).toFixed(1) + '%' : '--';
+    avgEl.style.color = '';
+  }
+  const retroSec = document.getElementById('tpRetroSection');
+  if (retroSec) retroSec.style.display = isHistory ? 'none' : '';
+  const llmPanel = document.getElementById('tpLlmReview');
+  if (llmPanel) llmPanel.style.display = 'none';
+  const cmpPanel = document.getElementById('tpComparisonSummary');
+  if (cmpPanel) cmpPanel.style.display = 'none';
+
+  const pushedPanel = document.getElementById('tpPushedToday');
+  const pushedList = document.getElementById('tpPushedList');
+  if (pushedPanel && pushedList) {
+    const pushed = Array.isArray(data.already_pushed_today) ? data.already_pushed_today : [];
+    if (pushed.length) {
+      pushedPanel.style.display = 'block';
+      pushedList.innerHTML = pushed.map((item) => {
+        const hour = item.hour >= 0 ? String(item.hour).padStart(2, '0') + ':00' : '--';
+        const orVal = Number(item.or || item.actual_or || 0);
+        const orBadge = orVal > 0 ? ' <span class="tp-pp-or">' + orVal.toFixed(1) + '%</span>' : '';
+        return '<span class="tp-pushed-pill"><span class="tp-pp-hour">' + hour + '</span> '
+          + escapeHtml((item.title || '').substring(0, 42)) + orBadge + '</span>';
+      }).join('');
+    } else {
+      pushedPanel.style.display = 'none';
+    }
+  }
+
+  const grid = document.getElementById('tpGrid');
+  const slots = Array.isArray(data.slots) ? data.slots : [];
+  if (!grid) return;
+  if (!slots.length) {
+    grid.innerHTML = data.loading
+      ? '<div style="text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Tagesplan wird vorbereitet…</div>'
+      : '<div style="text-align:center;padding:40px;color:var(--text-tertiary)">Keine Tagesplan-Daten verfügbar.</div>';
+    return;
+  }
+
+  const pushedTitleSet = new Set((data.already_pushed_today || []).map((p) => String(p.title || '').trim().toLowerCase().substring(0, 50)).filter(Boolean));
+  let html = '';
+  for (const slot of slots) {
+    const hourLabel = String(slot.hour).padStart(2, '0') + ':00';
+    const slotSuggestionsRaw = Array.isArray(groupedSuggestions[String(slot.hour)]) ? groupedSuggestions[String(slot.hour)] : [];
+    const slotSuggestions = slotSuggestionsRaw.map((item) => _tpNormalizeSuggestionItem(item, slot.best_cat)).filter(Boolean);
+    const fallbackSuggestions = !slot.is_past && slotSuggestions.length === 0 ? _tpBuildLightFallbackSuggestions(slot, pushedTitleSet) : [];
+    const displaySuggestions = (slotSuggestions.length ? slotSuggestions : fallbackSuggestions).slice(0, 2);
+    const pushedThisHour = Array.isArray(slot.pushed_this_hour) ? slot.pushed_this_hour : [];
+
+    let rowCls = 'tp-row';
+    if (slot.is_past) rowCls += ' tp-row-past';
+    if (slot.is_now) rowCls += ' tp-row-now';
+
+    html += '<div class="' + rowCls + '">';
+    html += '<div class="tp-row-time"><span class="tp-time">' + hourLabel + '</span>';
+    if (slot.is_now) html += '<span class="tp-time-label tp-time-now">Jetzt</span>';
+    else if (!slot.is_past && slot.must_have) html += '<span class="tp-time-label tp-time-must">Must</span>';
+    html += '</div>';
+
+    if (slot.is_past) {
+      html += '<div class="tp-row-sug"><div class="tp-past-label tp-past-label-ki">Systemempfehlung</div>';
+      if (displaySuggestions.length) {
+        html += displaySuggestions.map((item, idx) => _tpRenderSuggestionCard(item, 'Vorschlag ' + (idx + 1))).join('');
+      } else {
+        html += '<div class="tp-sug-empty">Keine gespeicherte Empfehlung</div>';
+      }
+      html += '</div>';
+      html += '<div class="tp-row-sug"><div class="tp-past-label tp-past-label-real">Tatsächlich gepusht</div>';
+      if (pushedThisHour.length) {
+        html += pushedThisHour.map((item) => {
+          const orVal = Number(item.or || item.actual_or || 0);
+          const orBadge = orVal > 0 ? ' <span class="tp-sug-or ' + (orVal >= 5 ? 'xor-high' : orVal >= 3 ? 'xor-mid' : 'xor-low') + '">' + orVal.toFixed(1) + '% OR</span>' : '';
+          return '<div style="padding:3px 0;font-size:12px;line-height:1.4">'
+            + escapeHtml((item.title || '').substring(0, 90)) + orBadge + '</div>';
+        }).join('');
+      } else {
+        html += '<div class="tp-sug-empty">Kein Push in dieser Stunde</div>';
+      }
+      html += '</div>';
+    } else {
+      html += _tpRenderSuggestionCard(displaySuggestions[0], 'Vorschlag 1');
+      html += _tpRenderSuggestionCard(displaySuggestions[1], 'Vorschlag 2');
+    }
+
+    const slotOr = Number(slot.expected_or || 0);
+    const actualOr = pushedThisHour.length
+      ? pushedThisHour.reduce((sum, item) => sum + Number(item.or || item.actual_or || 0), 0) / pushedThisHour.length
+      : 0;
+    const metaValue = slot.is_past ? actualOr : slotOr;
+    const metaLabel = slot.is_past ? 'OR' : 'XOR';
+    html += '<div class="tp-row-meta">'
+      + '<div class="tp-row-or ' + (metaValue >= 5 ? 'c-green' : metaValue >= 3 ? 'c-yellow' : 'c-gray') + '">' + (metaValue > 0 ? metaValue.toFixed(1) + '%' : '--') + '</div>'
+      + '<div class="tp-cat-pill tp-cat-' + escapeHtml(slot.best_cat || 'news') + '">' + escapeHtml(slot.best_cat || 'news') + '</div>'
+      + '<div style="font-size:10px;color:var(--text-tertiary);margin-top:4px">' + metaLabel + '</div>'
+      + '</div>';
+
+    html += '<div class="tp-row-status">';
+    html += '<div class="tp-mood-text">' + escapeHtml(slot.mood || (slot.is_past ? 'Rückblick' : 'Planung')) + '</div>';
+    if (slot.confidence) html += '<div class="tp-conf-text">' + escapeHtml(slot.confidence) + '</div>';
+    if (slotSuggestions.length === 0 && fallbackSuggestions.length > 0) html += '<div class="tp-conf-text">leichter Fallback</div>';
+    html += '</div>';
+    html += '</div>';
+  }
+
+  grid.innerHTML = html;
 }
 
 function renderTagesplan(data, mlStatus, savedSuggestions) {
   savedSuggestions = savedSuggestions || {};
+  return renderTagesplanSlim(data, mlStatus || {}, savedSuggestions);
   const isHistory = !!data.is_history;
 
   // ── Header ──

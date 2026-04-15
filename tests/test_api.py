@@ -2,6 +2,7 @@
 
 Alle Tests laufen ohne laufenden Server über FastAPI `TestClient`.
 """
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -334,6 +335,62 @@ class TestTagesplanEndpoint:
         """Ungültiger mode-Parameter → 200, kein Server-Crash."""
         resp = client.get("/api/tagesplan?mode=INVALID_MODE")
         assert resp.status_code in (200, 400, 422)
+
+    def test_tagesplan_db_outage_returns_loading_fallback(self, monkeypatch):
+        def _raise_db_outage(*args, **kwargs):
+            raise sqlite3.OperationalError("db locked")
+
+        monkeypatch.setattr("app.routers.tagesplan.build_tagesplan", _raise_db_outage)
+        resp = client.get("/api/tagesplan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["loading"] is True
+        assert "slots" in data
+
+    def test_tagesplan_history_date_returns_slot_shape(self):
+        resp = client.get("/api/tagesplan/history?date=2026-04-15")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_history"] is True
+        assert "slots" in data
+
+    def test_tagesplan_suggestions_normalizes_items_for_frontends(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.routers.tagesplan.load_tagesplan_suggestions",
+            lambda date_iso=None: [
+                {
+                    "id": 1,
+                    "date_iso": "2026-04-15",
+                    "slot_hour": 8,
+                    "suggestion_num": 0,
+                    "article_title": "Testtitel",
+                    "article_link": "https://example.com/story",
+                    "article_category": "politik",
+                    "article_score": 42.0,
+                    "expected_or": 4.2,
+                    "best_cat": "politik",
+                    "captured_at": 123,
+                }
+            ],
+        )
+        resp = client.get("/api/tagesplan/suggestions?date=2026-04-15")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "items" in data
+        assert "suggestions" in data
+        assert "8" in data["suggestions"]
+        assert data["items"][0]["title"] == "Testtitel"
+
+    def test_tagesplan_suggestions_db_outage_returns_empty_fallback(self, monkeypatch):
+        def _raise_db_outage(*args, **kwargs):
+            raise sqlite3.OperationalError("db locked")
+
+        monkeypatch.setattr("app.routers.tagesplan.load_tagesplan_suggestions", _raise_db_outage)
+        resp = client.get("/api/tagesplan/suggestions?date=2026-04-15")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["loading"] is True
+        assert data["suggestions"] == {}
 
 
 # ── /api/ml/status ────────────────────────────────────────────────────────────
