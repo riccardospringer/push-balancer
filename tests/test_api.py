@@ -161,6 +161,34 @@ class TestStableFrontendContracts:
         payload = resp.json()
         assert payload["total"] == 0
 
+    def test_competitor_feed_contract_returns_flat_feed_map(self, monkeypatch):
+        monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
+        monkeypatch.setattr(
+            "app.routers.feed._fetch_feeds_live",
+            lambda _feeds: {"welt": [{"t": "Titel", "l": "https://example.com"}]},
+        )
+
+        resp = client.get("/api/competitors")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert "welt" in payload
+        assert payload["welt"][0]["t"] == "Titel"
+
+    def test_sport_competitor_feed_contract_returns_flat_feed_map(self, monkeypatch):
+        monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
+        monkeypatch.setattr(
+            "app.routers.feed._fetch_feeds_live",
+            lambda _feeds: {"kicker": [{"t": "Sport Titel", "l": "https://example.com"}]},
+        )
+
+        resp = client.get("/api/sport-competitors")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert "kicker" in payload
+        assert payload["kicker"][0]["t"] == "Sport Titel"
+
     def test_push_refresh_job_alias_returns_sync_result(self):
         resp = client.post("/api/push-refresh-jobs", json={})
         assert resp.status_code == 200

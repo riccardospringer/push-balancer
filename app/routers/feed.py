@@ -450,6 +450,7 @@ def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
     return result
 
 
+@router.get("/api/competitors")
 def get_competitors() -> JSONResponse:
     """Liefert alle Competitor-Feeds aus Background-Cache.
 
@@ -478,6 +479,7 @@ def get_competitor(name: str) -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
+@router.get("/api/sport-competitors")
 def get_sport_competitors() -> JSONResponse:
     """Liefert Sport-Competitor-Feeds aus Background-Cache.
 
