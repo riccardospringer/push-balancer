@@ -227,6 +227,41 @@ class TestStableFrontendContracts:
         assert resp.status_code == 200
         assert resp.json()["articles"][0]["predictedOR"] is None
 
+    def test_articles_prediction_enrichment_uses_runtime_cache(self, monkeypatch):
+        import app.routers.feed as feed_router
+
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/politik/cache-artikel</loc>
+    <news:news>
+      <news:title>Cache Test Artikel</news:title>
+      <news:publication_date>2026-04-10T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        calls = {"count": 0}
+
+        def _predict(*_args, **_kwargs):
+            calls["count"] += 1
+            return {"predicted_or": 5.2}
+
+        feed_router._article_prediction_cache.clear()
+        monkeypatch.setattr(feed_router, "ARTICLE_PREDICTION_ENRICHMENT_ENABLED", True)
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr("app.ml.predict.predict_or", _predict)
+
+        first = client.get("/api/articles")
+        second = client.get("/api/articles")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["articles"][0]["predictedOR"] == 0.052
+        assert second.json()["articles"][0]["predictedOR"] == 0.052
+        assert calls["count"] == 1
+
     def test_tagesplan_returns_lightweight_payload_when_on_demand_build_disabled(self, monkeypatch):
         import app.routers.tagesplan as tagesplan_router
 

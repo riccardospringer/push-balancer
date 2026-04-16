@@ -24,15 +24,15 @@ services:
       - key: ECONOMY_MODE
         value: "true"
       - key: PUSH_LIVE_FETCH_ENABLED
-        value: "false"
+        value: "true"
       - key: LIVE_FEED_FALLBACK_ENABLED
-        value: "false"
+        value: "true"
       - key: RESEARCH_EXTERNAL_CONTEXT_ENABLED
         value: "false"
       - key: ARTICLE_PREDICTION_ENRICHMENT_ENABLED
-        value: "false"
+        value: "true"
       - key: TAGESPLAN_ON_DEMAND_BUILD_ENABLED
-        value: "false"
+        value: "true"
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_TITLE_GENERATION_ENABLED

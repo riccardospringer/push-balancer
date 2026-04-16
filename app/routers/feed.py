@@ -94,6 +94,9 @@ _VIDEO_TITLE_MARKERS = (
 # ── In-Memory URL-Cache ────────────────────────────────────────────────────
 _url_cache: dict[str, tuple[float, bytes]] = {}
 _URL_CACHE_MAX = 80  # max. Einträge — verhindert unbegrenztes Wachstum
+_article_prediction_cache: dict[str, tuple[float, float]] = {}
+_ARTICLE_PREDICTION_CACHE_MAX = 256
+_ARTICLE_PREDICTION_CACHE_TTL = max(CACHE_TTL, 900)
 
 try:
     import certifi as _certifi
@@ -123,6 +126,23 @@ def _fetch_url(url: str) -> bytes | None:
     except Exception as e:
         log.warning("[feed] _fetch_url Fehler für %s: %s", url[:60], e)
         return None
+
+
+def _article_prediction_cache_get(cache_key: str) -> float | None:
+    now = time.time()
+    cached = _article_prediction_cache.get(cache_key)
+    if cached and now - cached[0] < _ARTICLE_PREDICTION_CACHE_TTL:
+        return cached[1]
+    if cached:
+        _article_prediction_cache.pop(cache_key, None)
+    return None
+
+
+def _article_prediction_cache_set(cache_key: str, predicted_or: float) -> None:
+    if len(_article_prediction_cache) >= _ARTICLE_PREDICTION_CACHE_MAX:
+        oldest = min(_article_prediction_cache, key=lambda k: _article_prediction_cache[k][0])
+        del _article_prediction_cache[oldest]
+    _article_prediction_cache[cache_key] = (time.time(), predicted_or)
 
 
 class CompetitorXorRequest(BaseModel):
@@ -353,6 +373,19 @@ def get_articles(
 
             now = _dt.datetime.now()
             for article in selected:
+                cache_key = "|".join(
+                    [
+                        article["url"],
+                        article["title"],
+                        article["pubDate"],
+                        article["category"],
+                        "1" if article["isEilmeldung"] else "0",
+                    ]
+                )
+                cached_prediction = _article_prediction_cache_get(cache_key)
+                if cached_prediction is not None:
+                    article["predictedOR"] = round(float(cached_prediction) / 100, 4)
+                    continue
                 result = predict_or(
                     {
                         "title": article["title"],
@@ -368,6 +401,7 @@ def get_articles(
                 )
                 predicted_or = (result or {}).get("predicted_or")
                 if predicted_or is not None:
+                    _article_prediction_cache_set(cache_key, float(predicted_or))
                     article["predictedOR"] = round(float(predicted_or) / 100, 4)
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
