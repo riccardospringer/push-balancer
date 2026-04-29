@@ -1312,7 +1312,7 @@ def _run_analysis_inner() -> None:
     else:
         try:
             from app.database import push_db_load_all
-            push_data = push_db_load_all(max_days=90)
+            push_data = push_db_load_all(max_days=1460)
         except Exception as exc:
             log.warning("[research] DB-Ladefehler: %s", exc)
             push_data = state.get("push_data", [])

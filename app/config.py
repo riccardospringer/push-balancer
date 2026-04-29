@@ -196,7 +196,7 @@ PUSH_DB_PATH: str = os.environ.get(
     "DB_PATH",
     os.path.join(_APP_DIR, ".push_history.db"),
 )
-PUSH_DB_MAX_DAYS: int = int(os.environ.get("PUSH_DB_MAX_DAYS", "90"))
+PUSH_DB_MAX_DAYS: int = int(os.environ.get("PUSH_DB_MAX_DAYS", "1460"))
 PUSH_DB_MAX_ROWS: int = int(
     os.environ.get("PUSH_DB_MAX_ROWS", "5000" if IS_RENDER else "15000")
 )
