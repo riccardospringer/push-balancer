@@ -7,8 +7,8 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <script>
-// Force-Reload wenn alte Version im Cache: Version 3 = ML-Server-Predictions
-if (!window.__PB_V3_LOADED) { window.__PB_V3_LOADED = true; }
+// Force-Reload wenn alte Version im Cache: Version 4 = Story Radar EN + float scores
+if (!window.__PB_V4_LOADED) { window.__PB_V4_LOADED = true; location.reload(true); }
 // ML-OR Status Monitor (minimal)
 setInterval(function() {
   try {
@@ -328,6 +328,497 @@ setInterval(function() {
   }
 
   .sort-select:focus { border-color: var(--accent); }
+
+  /* ── Story Radar ── */
+  .story-radar-shell {
+    padding: 18px 24px 32px;
+  }
+
+  .story-radar-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+
+  .story-radar-title-wrap h1 {
+    font-size: 28px;
+    line-height: 1.1;
+    letter-spacing: -0.5px;
+    margin-bottom: 6px;
+  }
+
+  .story-radar-title-wrap p {
+    max-width: 760px;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }
+
+  .story-radar-summary {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .story-radar-stat {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    min-width: 132px;
+  }
+
+  .story-radar-stat-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .story-radar-stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.1;
+    margin-top: 4px;
+    color: var(--text);
+  }
+
+  .story-radar-stat-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  .story-radar-toolbar {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 14px 16px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .story-radar-filters {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    flex: 1 1 620px;
+  }
+
+  .story-radar-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 160px;
+  }
+
+  .story-radar-field label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .story-radar-select {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--white);
+    color: var(--text);
+    outline: none;
+  }
+
+  .story-radar-select:focus {
+    border-color: var(--accent);
+  }
+
+  .story-radar-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .story-radar-secondary {
+    width: 100%;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .story-radar-toggle-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background: #fafbfc;
+  }
+
+  .story-radar-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .story-radar-checkbox input {
+    accent-color: var(--accent);
+  }
+
+  .story-radar-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+  }
+
+  .story-radar-notice {
+    display: none;
+    background: var(--blue-bg);
+    border: 1px solid var(--blue-border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    color: #1d4ed8;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .sr-info-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 11px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sr-info-btn:hover { background: var(--bg); color: var(--text); }
+
+  .sr-info-panel {
+    display: none;
+    background: #fafafa;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 14px;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .sr-info-panel.open { display: block; }
+  .sr-info-panel h3 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 14px 0 4px;
+  }
+  .sr-info-panel h3:first-child { margin-top: 0; }
+  .sr-info-panel p { margin: 0 0 6px; color: var(--text-secondary); }
+  .sr-info-panel .sr-info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px;
+    margin: 8px 0 12px;
+  }
+  .sr-info-feature {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .sr-info-feature .name {
+    font-family: monospace;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .sr-info-feature .desc {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+  .sr-info-pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    margin: 8px 0 12px;
+    align-items: center;
+  }
+  .sr-info-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+  }
+  .sr-info-step .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; flex-shrink: 0;
+  }
+  .sr-info-arrow { color: var(--text-tertiary); padding: 0 2px; font-size: 12px; }
+  .sr-info-table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 12px; }
+  .sr-info-table th { background: var(--text); color: #fff; padding: 5px 8px; text-align: left; }
+  .sr-info-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+  .sr-info-table tr:nth-child(even) td { background: var(--bg); }
+  .sr-info-table td:first-child { font-family: monospace; font-size: 11px; color: var(--text); }
+
+  .story-radar-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .story-radar-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+
+  .story-radar-card.suppressed {
+    border-color: var(--amber-border);
+    background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  }
+
+  .story-radar-card-head {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 110px;
+    gap: 14px;
+    align-items: start;
+  }
+
+  .story-radar-rank {
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    background: var(--accent-light);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  .story-radar-card-meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .story-radar-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+
+  .story-radar-badge.status-not-covered {
+    background: var(--red-bg);
+    color: var(--red);
+    border-color: var(--red-border);
+  }
+
+  .story-radar-badge.status-angle-gap,
+  .story-radar-badge.status-partially-covered,
+  .story-radar-badge.status-follow-up {
+    background: var(--amber-bg);
+    color: var(--amber);
+    border-color: var(--amber-border);
+  }
+
+  .story-radar-badge.status-already-covered {
+    background: var(--green-bg);
+    color: var(--green);
+    border-color: var(--green-border);
+  }
+
+  .story-radar-badge.section {
+    background: #f3f4f6;
+    color: var(--text-secondary);
+    border-color: var(--border);
+  }
+
+  .story-radar-badge.muted {
+    background: #f8fafc;
+    color: var(--text-secondary);
+    border-color: var(--border);
+    font-weight: 600;
+  }
+
+  .story-radar-card-title {
+    font-size: 20px;
+    line-height: 1.2;
+    letter-spacing: -0.3px;
+    margin-bottom: 6px;
+  }
+
+  .story-radar-card-summary {
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .story-radar-score {
+    text-align: right;
+  }
+
+  .story-radar-score-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-tertiary);
+  }
+
+  .story-radar-score-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.6px;
+    line-height: 1;
+    margin-top: 4px;
+  }
+
+  .story-radar-score-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .story-radar-reasons {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .story-radar-reason {
+    background: #fafbfc;
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    padding: 12px;
+  }
+
+  .story-radar-reason-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 6px;
+  }
+
+  .story-radar-reason p {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+
+  .story-radar-footer {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light);
+  }
+
+  .story-radar-meta-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .story-radar-reset-link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  @media (max-width: 980px) {
+    .story-radar-card-head {
+      grid-template-columns: 52px minmax(0, 1fr);
+    }
+
+    .story-radar-score {
+      text-align: left;
+      grid-column: 2;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .story-radar-shell {
+      padding: 14px 14px 24px;
+    }
+
+    .story-radar-toolbar {
+      padding: 12px;
+    }
+
+    .story-radar-filters,
+    .story-radar-actions {
+      width: 100%;
+      margin-left: 0;
+    }
+
+    .story-radar-field {
+      min-width: 100%;
+    }
+
+    .story-radar-card {
+      padding: 14px;
+    }
+
+    .story-radar-card-head {
+      grid-template-columns: 1fr;
+    }
+
+    .story-radar-rank {
+      width: 42px;
+      height: 42px;
+      font-size: 16px;
+    }
+
+    .story-radar-score {
+      grid-column: auto;
+    }
+  }
 
   /* ── Table ── */
   .table-wrapper {
@@ -2436,6 +2927,7 @@ setInterval(function() {
     </div>
     <div class="nav-tabs">
       <button class="nav-tab active" data-tab="candidates" onclick="switchTab('candidates', this)">Kandidaten</button>
+      <button class="nav-tab" data-tab="storyradar" onclick="switchTab('storyradar', this)">Story Radar</button>
       <button class="nav-tab" data-tab="live" onclick="switchTab('live', this)">Live Pushes</button>
       <button class="nav-tab" data-tab="analyse" onclick="switchTab('analyse', this)">Analyse</button>
       <button class="nav-tab" data-tab="konkurrenz" onclick="switchTab('konkurrenz', this)">Konkurrenz</button>
@@ -2463,7 +2955,7 @@ setInterval(function() {
     <div class="filter-sep" style="height:28px;margin:0 4px"></div>
     <span class="status-dot off" id="statusDot"></span>
     <span class="status-label" id="statusText">Gestoppt</span>
-    <button class="btn" onclick="fetchArticles();fetchLivePushes();">
+    <button class="btn" onclick="fetchArticles();fetchStoryRadar();fetchLivePushes();">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
       Refresh
     </button>
@@ -2502,7 +2994,6 @@ setInterval(function() {
   <span class="results-count" id="articleCount"></span>
   <span style="font-size:12px;color:var(--text-tertiary)">Sortieren:</span>
   <select class="sort-select" id="sortSelect" onchange="setSortFromSelect(this.value)">
-    <option value="combined">Kombiniert</option>
     <option value="score" selected>Score (abst.)</option>
     <option value="prognose">Prognose (abst.)</option>
     <option value="time">Zeit (neueste)</option>
@@ -2528,6 +3019,164 @@ setInterval(function() {
 </div>
 
 </div><!-- /tabCandidates -->
+
+<!-- ═══ TAB: Story Radar ═══ -->
+<div class="tab-content" id="tabStoryRadar">
+  <div class="story-radar-shell">
+    <div class="story-radar-header">
+      <div class="story-radar-title-wrap">
+        <h1>Story Radar</h1>
+        <p>Stories BILD should look at right now — filtered to topics with a clear angle, an open gap, and low editorial noise.</p>
+      </div>
+      <div class="story-radar-summary" id="storyRadarSummary">
+        <div class="story-radar-stat">
+          <div class="story-radar-stat-label">Stories</div>
+          <div class="story-radar-stat-value">--</div>
+          <div class="story-radar-stat-sub">loading</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px;align-items:center">
+      <span id="srTrainStatus" style="font-size:12px;display:none"></span>
+      <button class="sr-info-btn" id="srTrainBtn" onclick="trainStoryRadarModel()" title="Train the ML model on current feedback labels">Train model</button>
+      <button class="sr-info-btn" onclick="toggleStoryRadarInfo()">How does this work?</button>
+    </div>
+
+    <div class="sr-info-panel" id="srInfoPanel">
+      <h3>What is Story Radar?</h3>
+      <p>Story Radar automatically evaluates thousands of news clusters and scores them for BILD relevance. Each story gets a score from 0 to 1 — the higher, the more recommended.</p>
+
+      <h3>The Pipeline — 8 steps</h3>
+      <div class="sr-info-pipeline">
+        <div class="sr-info-step"><span class="num">1</span>Ingestion</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">2</span>Coverage check</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">3</span>Features</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">4</span>ML score</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">5</span>Explanations</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">6</span>Ranking</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">7</span>Suppression</div><span class="sr-info-arrow">→</span>
+        <div class="sr-info-step"><span class="num">8</span>Dashboard</div>
+      </div>
+      <p><b>Coverage check:</b> Uses Jaccard similarity and entity overlap to detect whether BILD already covers the story. Result: gap_score (0 = already covered, 1 = genuine gap).</p>
+      <p><b>ML score:</b> LightGBM with LambdaRank objective — a gradient-boosted tree that learned which feature combinations signal a good story. Falls back to a weighted formula when no trained model is available.</p>
+      <p><b>Suppression:</b> Stories are hidden when already well-covered, too bureaucratic, confidence too low, or story too thin.</p>
+
+      <h3>The 17 features (all 0–1)</h3>
+      <div class="sr-info-grid">
+        <div class="sr-info-feature"><div class="name">topic_fit</div><div class="desc">Does the topic match BILD? (crime=1.0, regulation=0.28)</div></div>
+        <div class="sr-info-feature"><div class="name">emotion_score</div><div class="desc">Emotional intensity (attack, drama, death …)</div></div>
+        <div class="sr-info-feature"><div class="name">service_score</div><div class="desc">Reader utility (trains, prices, weather …)</div></div>
+        <div class="sr-info-feature"><div class="name">source_strength</div><div class="desc">Number of independent sources (6 = 1.0)</div></div>
+        <div class="sr-info-feature"><div class="name">document_strength</div><div class="desc">Number of articles in the cluster (10 = 1.0)</div></div>
+        <div class="sr-info-feature"><div class="name">entity_heat</div><div class="desc">How "hot" are the mentioned people/places right now?</div></div>
+        <div class="sr-info-feature"><div class="name">topic_heat</div><div class="desc">Current attention for this topic on BILD</div></div>
+        <div class="sr-info-feature"><div class="name">freshness_score</div><div class="desc">Recency — exponential decay, half-life 150 min</div></div>
+        <div class="sr-info-feature"><div class="name">novelty_score</div><div class="desc">How new is this for BILD? (65% gap_score + 35% uncertainty)</div></div>
+        <div class="sr-info-feature"><div class="name">gap_score</div><div class="desc">Coverage gap: 0.08 = already there, 0.92 = genuine gap</div></div>
+        <div class="sr-info-feature"><div class="name">storyability_score</div><div class="desc">Can this become a good BILD article?</div></div>
+        <div class="sr-info-feature"><div class="name">urgency_score</div><div class="desc">How urgently does the story need to run now?</div></div>
+        <div class="sr-info-feature"><div class="name">actionability_score</div><div class="desc">Enough substance for a complete article?</div></div>
+        <div class="sr-info-feature"><div class="name">standard_noise_score</div><div class="desc">Bureaucratic noise — higher is worse (negative signal)</div></div>
+      </div>
+
+      <h3>Ranking formula</h3>
+      <table class="sr-info-table">
+        <tr><th>Component</th><th>Weight</th></tr>
+        <tr><td>ml_score.relevance_score</td><td>42 %</td></tr>
+        <tr><td>gap_score</td><td>18 %</td></tr>
+        <tr><td>freshness_score</td><td>14 %</td></tr>
+        <tr><td>novelty_score</td><td>12 %</td></tr>
+        <tr><td>actionability_score</td><td> 8 %</td></tr>
+        <tr><td>storyability_score</td><td> 6 %</td></tr>
+      </table>
+
+      <h3>Suppression rules</h3>
+      <table class="sr-info-table">
+        <tr><th>Reason</th><th>Condition</th></tr>
+        <tr><td>already_covered</td><td>Coverage status = already_covered AND follow_up_potential &lt; 0.55</td></tr>
+        <tr><td>standard_noise</td><td>noise_score ≥ 0.70 AND ml_relevance &lt; 0.60</td></tr>
+        <tr><td>low_confidence</td><td>confidence &lt; 0.42</td></tr>
+        <tr><td>weak_story</td><td>min(storyability, actionability) &lt; 0.30</td></tr>
+      </table>
+
+      <p style="margin-top:8px;font-size:11.5px;color:var(--text-tertiary)">Model runs locally — no LLM API calls, no external services.</p>
+    </div>
+
+    <div class="story-radar-toolbar">
+      <div class="story-radar-filters">
+        <div class="story-radar-field">
+          <label for="storyRadarSection">Section</label>
+          <select class="story-radar-select" id="storyRadarSection" onchange="setStoryRadarSection(this.value)">
+            <option value="all" selected>All sections</option>
+            <option value="crime">Crime</option>
+            <option value="consumer">Consumer</option>
+            <option value="politics">Politics</option>
+            <option value="sport">Sport</option>
+            <option value="promi">Celebrity</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="story-radar-field">
+          <label for="storyRadarFreshness">Freshness</label>
+          <select class="story-radar-select" id="storyRadarFreshness" onchange="setStoryRadarFreshness(this.value)">
+            <option value="24h" selected>Last 24 hours</option>
+            <option value="6h">Last 6 hours</option>
+            <option value="now">Last 3 hours</option>
+            <option value="all">All current</option>
+          </select>
+        </div>
+        <div class="story-radar-field">
+          <label for="storyRadarCoverage">BILD status</label>
+          <select class="story-radar-select" id="storyRadarCoverage" onchange="setStoryRadarCoverage(this.value)">
+            <option value="all" selected>All visible topics</option>
+            <option value="not_on_bild">Not on BILD yet</option>
+            <option value="partial">Partially on BILD</option>
+            <option value="covered">Already on BILD</option>
+          </select>
+        </div>
+        <div class="story-radar-field">
+          <label for="storyRadarSort">Sort by</label>
+          <select class="story-radar-select" id="storyRadarSort" onchange="setStoryRadarSort(this.value)">
+            <option value="recommended" selected>Recommended</option>
+            <option value="urgent">Most urgent</option>
+            <option value="newest">Newest first</option>
+          </select>
+        </div>
+      </div>
+      <div class="story-radar-actions">
+        <button class="btn" id="storyRadarMoreBtn" onclick="toggleStoryRadarSecondary()">More filters</button>
+        <button class="btn" onclick="resetStoryRadarFilters()">Reset view</button>
+        <button class="btn btn-primary" onclick="fetchStoryRadar()">Reload</button>
+      </div>
+      <div class="story-radar-secondary" id="storyRadarSecondary" hidden>
+        <div class="story-radar-field">
+          <label for="storyRadarConfidence">Confidence</label>
+          <select class="story-radar-select" id="storyRadarConfidence" onchange="setStoryRadarConfidence(this.value)">
+            <option value="all" selected>All visible topics</option>
+            <option value="high">High confidence only</option>
+          </select>
+        </div>
+        <div class="story-radar-toggle-card">
+          <label class="story-radar-checkbox" for="storyRadarSuppressed">
+            <input type="checkbox" id="storyRadarSuppressed" onchange="setStoryRadarIncludeSuppressed(this.checked)">
+            Show suppressed stories
+          </label>
+          <div class="story-radar-hint">For debug or review only. Off by default to keep the list clean.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="story-radar-notice" id="storyRadarNotice"></div>
+
+    <div class="story-radar-list" id="storyRadarList">
+      <div class="loading-state">
+        <div class="spinner"></div>
+        Loading Story Radar…
+      </div>
+    </div>
+  </div>
+</div><!-- /tabStoryRadar -->
 
 <!-- ═══ TAB: Live Pushes ═══ -->
 <div class="tab-content" id="tabLive">
@@ -2670,8 +3319,6 @@ setInterval(function() {
     <!-- Filter-/Suchleiste -->
     <div id="compFilterBar">
       <input type="text" id="compSearchInput" placeholder="Themen durchsuchen..." oninput="filterCompItems()">
-      <button class="filter-btn active" onclick="setCompFilter('all')">Alle</button>
-      <button class="filter-btn" onclick="setCompFilter('gaps')">Nur Lücken</button>
     </div>
 
     <!-- Competitor cards -->
@@ -2722,8 +3369,6 @@ setInterval(function() {
 
       <div id="sportCompFilterBar">
         <input type="text" id="sportCompSearchInput" placeholder="Sport-Themen durchsuchen..." oninput="filterSportCompItems()">
-        <button class="filter-btn active" onclick="setSportCompFilter('all')">Alle</button>
-        <button class="filter-btn" onclick="setSportCompFilter('gaps')">Nur Gaps</button>
       </div>
 
       <div class="comp-grid" id="sportCompGrid">
@@ -3237,10 +3882,35 @@ const _prevCandOR = new Map();
 // Track previous hero number for count-up animation
 let _prevHeroValue = 0;
 
+const STORY_RADAR_DEFAULTS = Object.freeze({
+  section: 'all',
+  freshness: '24h',
+  coverage: 'all',
+  sort: 'recommended',
+  confidence: 'all',
+  includeSuppressed: false,
+  teamFirst: false,
+});
+
+let storyRadarState = {
+  ...STORY_RADAR_DEFAULTS,
+  initialized: false,
+  loading: false,
+  hasSuppressedPayload: false,
+  error: '',
+  generatedAt: '',
+  items: [],
+  filtered: [],
+  ignoredParams: [],
+  partialData: false,
+};
+
 // ── API Base ──
-// Live Server (Port 5500) → API-Calls an Python-Server (Port 8050)
-// Python-Server direkt oder Railway/Cloud (Port 443/80) → relative URLs
-const API_BASE = (!window.location.port || window.location.port === '8050' || window.location.port === '443' || window.location.port === '80') ? '' : 'http://' + window.location.hostname + ':8050';
+// Live-HTML Preview (Port 5500) → API-Calls an Python-Server (Port 8050)
+// Eigener App-Server (z.B. 8050, 8060, Cloud) → relative URLs / same origin
+const API_BASE = (!window.location.port || window.location.port === '443' || window.location.port === '80')
+  ? ''
+  : (window.location.port === '5500' ? 'http://' + window.location.hostname + ':8050' : '');
 
 // ── Resilient Fetch — automatischer Retry bei Netzwerkfehlern ──
 async function resilientFetch(url, options = {}, retries = 3) {
@@ -3311,8 +3981,10 @@ function _reloadAllFailedTabs() {
   console.info('[Heartbeat] Server wieder erreichbar — lade alle Daten nach');
   if (articles.length === 0) fetchArticles();
   if (livePushes.length === 0) fetchLivePushes();
+  if (!storyRadarState.initialized) fetchStoryRadar(true);
   // Aktuellen Tab immer neuladen
   if (currentTab === 'candidates') { if (articles.length > 0) applyFilterAndSort(true); else fetchArticles(); }
+  else if (currentTab === 'storyradar') fetchStoryRadar(true);
   else if (currentTab === 'live') fetchLivePushes();
   else if (currentTab === 'konkurrenz') fetchCompetitors();
   else if (currentTab === 'forschung') loadForschung();
@@ -3407,8 +4079,439 @@ function _isNetworkError(err) {
   document.head.appendChild(s);
 })();
 
+// ── Story Radar ──
+const STORY_RADAR_SECTION_LABELS = {
+  all: 'Alle Ressorts',
+  crime: 'Krimi',
+  consumer: 'Verbraucher',
+  politics: 'Politik',
+  sport: 'Sport',
+  promi: 'Promi',
+  other: 'Sonstiges',
+};
+
+const STORY_RADAR_COVERAGE_META = {
+  not_covered: { label: 'Not on BILD', className: 'status-not-covered' },
+  angle_gap: { label: 'Angle missing', className: 'status-angle-gap' },
+  partially_covered: { label: 'Partially covered', className: 'status-partially-covered' },
+  follow_up: { label: 'Update recommended', className: 'status-follow-up' },
+  already_covered: { label: 'Already covered', className: 'status-already-covered' },
+};
+
+function storyRadarSectionKey(cluster) {
+  const topics = ((cluster && cluster.topics) || []).map(t => String(t).toLowerCase());
+  if (topics.some(t => ['crime', 'public safety', 'police', 'justice'].includes(t))) return 'crime';
+  if (topics.some(t => ['consumer', 'service', 'transport', 'mobility', 'money', 'health'].includes(t))) return 'consumer';
+  if (topics.some(t => ['politics', 'policy', 'election', 'energy'].includes(t))) return 'politics';
+  if (topics.some(t => ['sport', 'football', 'soccer', 'bundesliga'].includes(t))) return 'sport';
+  if (topics.some(t => ['promi', 'celebrity', 'royal', 'entertainment'].includes(t))) return 'promi';
+  return 'other';
+}
+
+function storyRadarCoverageMeta(status) {
+  return STORY_RADAR_COVERAGE_META[status] || { label: 'Status unknown', className: 'status-follow-up' };
+}
+
+function storyRadarScoreText(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(2) : '--';
+}
+
+function storyRadarConfidenceLabel(value) {
+  const num = Number(value);
+  if (num >= 0.8) return 'high';
+  if (num >= 0.6) return 'medium';
+  return 'low';
+}
+
+function storyRadarSuppressionLabel(reason) {
+  const map = {
+    already_covered: 'already covered',
+    standard_noise: 'too much noise',
+    duplicate_cluster: 'likely duplicate',
+    low_confidence: 'low confidence',
+    weak_story: 'weak story',
+  };
+  return map[reason] || 'suppressed';
+}
+
+function storyRadarParseDate(value) {
+  const ts = Date.parse(value || '');
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function storyRadarRelativeTime(value) {
+  const ts = storyRadarParseDate(value);
+  if (ts == null) return 'Zeit unbekannt';
+  const diffMs = Math.max(0, Date.now() - ts);
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return 'gerade eben';
+  if (minutes < 60) return `vor ${minutes} Min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `vor ${hours} Std`;
+  const days = Math.round(hours / 24);
+  return `vor ${days} Tag${days === 1 ? '' : 'en'}`;
+}
+
+function storyRadarAgeHours(item) {
+  const cluster = item.cluster || {};
+  const ts = storyRadarParseDate(cluster.last_seen_at || cluster.first_seen_at);
+  if (ts == null) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - ts) / 3600000);
+}
+
+function storyRadarHasActiveFilters() {
+  return storyRadarState.section !== STORY_RADAR_DEFAULTS.section
+    || storyRadarState.freshness !== STORY_RADAR_DEFAULTS.freshness
+    || storyRadarState.coverage !== STORY_RADAR_DEFAULTS.coverage
+    || storyRadarState.sort !== STORY_RADAR_DEFAULTS.sort
+    || storyRadarState.confidence !== STORY_RADAR_DEFAULTS.confidence
+    || storyRadarState.includeSuppressed !== STORY_RADAR_DEFAULTS.includeSuppressed;
+}
+
+function syncStoryRadarControls() {
+  const sectionEl = document.getElementById('storyRadarSection');
+  const freshnessEl = document.getElementById('storyRadarFreshness');
+  const coverageEl = document.getElementById('storyRadarCoverage');
+  const sortEl = document.getElementById('storyRadarSort');
+  const confidenceEl = document.getElementById('storyRadarConfidence');
+  const suppressedEl = document.getElementById('storyRadarSuppressed');
+  const secondary = document.getElementById('storyRadarSecondary');
+  const moreBtn = document.getElementById('storyRadarMoreBtn');
+  if (sectionEl) sectionEl.value = storyRadarState.section;
+  if (freshnessEl) freshnessEl.value = storyRadarState.freshness;
+  if (coverageEl) coverageEl.value = storyRadarState.coverage;
+  if (sortEl) sortEl.value = storyRadarState.sort;
+  if (confidenceEl) confidenceEl.value = storyRadarState.confidence;
+  if (suppressedEl) suppressedEl.checked = !!storyRadarState.includeSuppressed;
+  if (secondary && moreBtn) moreBtn.textContent = secondary.hidden ? 'Mehr Filter' : 'Weniger Filter';
+}
+
+function toggleStoryRadarSecondary() {
+  const secondary = document.getElementById('storyRadarSecondary');
+  if (!secondary) return;
+  secondary.hidden = !secondary.hidden;
+  syncStoryRadarControls();
+}
+
+function toggleStoryRadarInfo() {
+  const panel = document.getElementById('srInfoPanel');
+  if (!panel) return;
+  panel.classList.toggle('open');
+}
+
+async function trainStoryRadarModel() {
+  const btn = document.getElementById('srTrainBtn');
+  const status = document.getElementById('srTrainStatus');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Training…';
+  if (status) { status.style.display = 'none'; status.textContent = ''; }
+  try {
+    const resp = await resilientFetch(`${API_BASE}/api/story-radar/train`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      btn.textContent = '✓ Trained';
+      btn.style.color = 'var(--green)';
+      btn.style.borderColor = 'var(--green)';
+      if (status) { status.textContent = `${data.trained_rows} rows · ${data.scorer}`; status.style.color = 'var(--green)'; status.style.display = ''; }
+      fetchStoryRadar();
+    } else {
+      btn.textContent = '✗ Failed';
+      btn.style.color = 'var(--red)';
+      btn.style.borderColor = 'var(--red)';
+      if (status) { status.textContent = data.error || 'Training failed'; status.style.color = 'var(--red)'; status.style.display = ''; }
+    }
+  } catch (err) {
+    btn.textContent = '✗ Error';
+    btn.style.color = 'var(--red)';
+    btn.style.borderColor = 'var(--red)';
+    if (status) { status.textContent = err.message || 'Network error'; status.style.color = 'var(--red)'; status.style.display = ''; }
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => {
+      btn.textContent = 'Train model';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+      if (status) status.style.display = 'none';
+    }, 6000);
+  }
+}
+
+function setStoryRadarSection(value) {
+  storyRadarState.section = value || STORY_RADAR_DEFAULTS.section;
+  applyStoryRadarFilters();
+}
+
+function setStoryRadarFreshness(value) {
+  storyRadarState.freshness = value || STORY_RADAR_DEFAULTS.freshness;
+  applyStoryRadarFilters();
+}
+
+function setStoryRadarCoverage(value) {
+  storyRadarState.coverage = value || STORY_RADAR_DEFAULTS.coverage;
+  applyStoryRadarFilters();
+}
+
+function setStoryRadarSort(value) {
+  storyRadarState.sort = value || STORY_RADAR_DEFAULTS.sort;
+  applyStoryRadarFilters();
+}
+
+function setStoryRadarConfidence(value) {
+  storyRadarState.confidence = value || STORY_RADAR_DEFAULTS.confidence;
+  applyStoryRadarFilters();
+}
+
+function setStoryRadarIncludeSuppressed(checked) {
+  storyRadarState.includeSuppressed = !!checked;
+  if (storyRadarState.includeSuppressed && !storyRadarState.hasSuppressedPayload) {
+    fetchStoryRadar();
+    return;
+  }
+  applyStoryRadarFilters();
+}
+
+function resetStoryRadarFilters() {
+  storyRadarState.section = STORY_RADAR_DEFAULTS.section;
+  storyRadarState.freshness = STORY_RADAR_DEFAULTS.freshness;
+  storyRadarState.coverage = STORY_RADAR_DEFAULTS.coverage;
+  storyRadarState.sort = STORY_RADAR_DEFAULTS.sort;
+  storyRadarState.confidence = STORY_RADAR_DEFAULTS.confidence;
+  storyRadarState.includeSuppressed = STORY_RADAR_DEFAULTS.includeSuppressed;
+  syncStoryRadarControls();
+  applyStoryRadarFilters();
+}
+
+function storyRadarCoverageMatches(item) {
+  const status = ((item || {}).gap_assessment || {}).coverage_status || '';
+  if (storyRadarState.coverage === 'all') return true;
+  if (storyRadarState.coverage === 'not_on_bild') return status === 'not_covered';
+  if (storyRadarState.coverage === 'covered') return status === 'already_covered';
+  return ['partially_covered', 'angle_gap', 'follow_up'].includes(status);
+}
+
+function storyRadarFreshnessMatches(item) {
+  const maxAgeHours = { now: 3, '6h': 6, '24h': 24, all: Number.POSITIVE_INFINITY }[storyRadarState.freshness] ?? 24;
+  return storyRadarAgeHours(item) <= maxAgeHours;
+}
+
+function storyRadarConfidenceMatches(item) {
+  if (storyRadarState.confidence === 'all') return true;
+  return Number((((item || {}).ranking || {}).confidence) || 0) >= 0.75;
+}
+
+function applyStoryRadarFilters() {
+  if (!storyRadarState.initialized) {
+    renderStoryRadar();
+    return;
+  }
+
+  let items = (storyRadarState.items || []).filter(item => {
+    const cluster = item.cluster || {};
+    const ranking = item.ranking || {};
+    if (!storyRadarState.includeSuppressed && ranking.suppressed) return false;
+    if (storyRadarState.section !== 'all' && storyRadarSectionKey(cluster) !== storyRadarState.section) return false;
+    if (!storyRadarFreshnessMatches(item)) return false;
+    if (!storyRadarCoverageMatches(item)) return false;
+    if (!storyRadarConfidenceMatches(item)) return false;
+    return true;
+  });
+
+  if (storyRadarState.sort === 'urgent') {
+    items.sort((a, b) => {
+      const urgencyA = Number(((a.features || {}).urgency_score) || 0);
+      const urgencyB = Number(((b.features || {}).urgency_score) || 0);
+      const freshnessA = Number(((a.features || {}).freshness_score) || 0);
+      const freshnessB = Number(((b.features || {}).freshness_score) || 0);
+      const rankA = Number(((a.ranking || {}).final_rank) || 9999);
+      const rankB = Number(((b.ranking || {}).final_rank) || 9999);
+      return (urgencyB - urgencyA) || (freshnessB - freshnessA) || (rankA - rankB);
+    });
+  } else if (storyRadarState.sort === 'newest') {
+    items.sort((a, b) => {
+      const lastA = storyRadarParseDate(((a.cluster || {}).last_seen_at) || ((a.cluster || {}).first_seen_at)) || 0;
+      const lastB = storyRadarParseDate(((b.cluster || {}).last_seen_at) || ((b.cluster || {}).first_seen_at)) || 0;
+      const rankA = Number(((a.ranking || {}).final_rank) || 9999);
+      const rankB = Number(((b.ranking || {}).final_rank) || 9999);
+      return (lastB - lastA) || (rankA - rankB);
+    });
+  } else {
+    items.sort((a, b) => {
+      const rankA = Number(((a.ranking || {}).final_rank) || 9999);
+      const rankB = Number(((b.ranking || {}).final_rank) || 9999);
+      return rankA - rankB;
+    });
+  }
+
+  storyRadarState.filtered = items;
+  renderStoryRadar();
+}
+
+function renderStoryRadarSummary() {
+  const el = document.getElementById('storyRadarSummary');
+  if (!el) return;
+  const items = storyRadarState.filtered || [];
+  const notCovered = items.filter(item => ((item.gap_assessment || {}).coverage_status) === 'not_covered').length;
+  const angleGaps = items.filter(item => ['angle_gap', 'follow_up', 'partially_covered'].includes((item.gap_assessment || {}).coverage_status || '')).length;
+  const avgConfidence = items.length
+    ? Math.round(items.reduce((sum, item) => sum + Number(((item.ranking || {}).confidence) || 0), 0) / items.length * 100)
+    : 0;
+  el.innerHTML = [
+    { label: 'Stories', value: items.length, sub: 'in this view' },
+    { label: 'Not on BILD', value: notCovered, sub: 'genuine gaps' },
+    { label: 'Angle / Update', value: angleGaps, sub: 'partial or follow-up' },
+    { label: 'Confidence', value: items.length ? `${avgConfidence}%` : '--', sub: 'average' },
+  ].map(stat => (
+    '<div class="story-radar-stat">'
+      + `<div class="story-radar-stat-label">${escapeHtml(stat.label)}</div>`
+      + `<div class="story-radar-stat-value">${escapeHtml(String(stat.value))}</div>`
+      + `<div class="story-radar-stat-sub">${escapeHtml(stat.sub)}</div>`
+      + '</div>'
+  )).join('');
+}
+
+function renderStoryRadarCard(item) {
+  const cluster = item.cluster || {};
+  const gap = item.gap_assessment || {};
+  const expl = item.explanations || {};
+  const ml = item.ml_score || {};
+  const ranking = item.ranking || {};
+  const coverage = storyRadarCoverageMeta(gap.coverage_status);
+  const sectionLabel = STORY_RADAR_SECTION_LABELS[storyRadarSectionKey(cluster)] || STORY_RADAR_SECTION_LABELS.other;
+  const freshnessLabel = storyRadarRelativeTime(cluster.last_seen_at || cluster.first_seen_at);
+  const whyRelevant = expl.why_relevant || ranking.ranking_reason || 'Currently relevant for BILD.';
+  const whyNow = expl.why_now || 'Recency justifies a quick editorial look.';
+  const whyGap = expl.why_gap || gap.reason || 'No reliable BILD coverage signals found.';
+  const angle = expl.recommended_angle || 'Sharpen to a concrete BILD angle for readers.';
+  const confidenceLabel = storyRadarConfidenceLabel(ranking.confidence);
+  const suppressedBadge = ranking.suppressed
+    ? `<span class="story-radar-badge muted">hidden: ${escapeHtml(storyRadarSuppressionLabel(ranking.suppression_reason || ''))}</span>`
+    : '';
+
+  return (
+    `<article class="story-radar-card${ranking.suppressed ? ' suppressed' : ''}">`
+      + '<div class="story-radar-card-head">'
+      + `<div class="story-radar-rank">${escapeHtml(String(ranking.final_rank || '–'))}</div>`
+      + '<div>'
+      + '<div class="story-radar-card-meta">'
+      + `<span class="story-radar-badge ${coverage.className}">${escapeHtml(coverage.label)}</span>`
+      + `<span class="story-radar-badge section">${escapeHtml(sectionLabel)}</span>`
+      + `<span class="story-radar-badge muted">${escapeHtml(freshnessLabel)}</span>`
+      + suppressedBadge
+      + '</div>'
+      + `<div class="story-radar-card-title">${escapeHtml(cluster.title || 'No title')}</div>`
+      + `<div class="story-radar-card-summary">${escapeHtml(cluster.summary || '')}</div>`
+      + '</div>'
+      + '<div class="story-radar-score">'
+      + '<div class="story-radar-score-label">Score</div>'
+      + `<div class="story-radar-score-value">${escapeHtml(storyRadarScoreText(ranking.final_score))}</div>`
+      + `<div class="story-radar-score-sub">Confidence: ${escapeHtml(confidenceLabel)}</div>`
+      + '</div>'
+      + '</div>'
+      + '<div class="story-radar-reasons">'
+      + '<div class="story-radar-reason"><div class="story-radar-reason-label">Why relevant</div><p>' + escapeHtml(whyRelevant) + '</p></div>'
+      + '<div class="story-radar-reason"><div class="story-radar-reason-label">Why now</div><p>' + escapeHtml(whyNow) + '</p></div>'
+      + '<div class="story-radar-reason"><div class="story-radar-reason-label">BILD status</div><p>' + escapeHtml(coverage.label + ': ' + whyGap) + '</p></div>'
+      + '<div class="story-radar-reason"><div class="story-radar-reason-label">Recommended angle</div><p>' + escapeHtml(angle) + '</p></div>'
+      + '</div>'
+      + '<div class="story-radar-footer">'
+      + `<span class="story-radar-meta-pill">${escapeHtml(String(cluster.source_count || 0))} sources</span>`
+      + `<span class="story-radar-meta-pill">${escapeHtml(String(cluster.document_count || 0))} documents</span>`
+      + `<span class="story-radar-meta-pill">ML ${escapeHtml(storyRadarScoreText(ml.relevance_score))}</span>`
+      + '</div>'
+      + '</article>'
+  );
+}
+
+function renderStoryRadar() {
+  const listEl = document.getElementById('storyRadarList');
+  const noticeEl = document.getElementById('storyRadarNotice');
+  if (!listEl) return;
+
+  syncStoryRadarControls();
+  renderStoryRadarSummary();
+
+  if (storyRadarState.loading && !storyRadarState.initialized) {
+    listEl.innerHTML = '<div class="loading-state"><div class="spinner"></div>Loading Story Radar…</div>';
+    if (noticeEl) noticeEl.style.display = 'none';
+    return;
+  }
+
+  if (storyRadarState.error) {
+    listEl.innerHTML = `<div class="error-state">Load error: ${escapeHtml(storyRadarState.error)}<br><br><button class="btn" onclick="fetchStoryRadar()">Retry</button></div>`;
+    if (noticeEl) noticeEl.style.display = 'none';
+    return;
+  }
+
+  const notices = [];
+  if (storyRadarState.partialData) notices.push('Some explanations are incomplete — topics are still visible.');
+  if (storyRadarState.includeSuppressed) notices.push('Suppressed stories are visible.');
+  if (storyRadarState.generatedAt) notices.push(`Updated ${storyRadarRelativeTime(storyRadarState.generatedAt)}.`);
+  if ((storyRadarState.ignoredParams || []).length > 0) notices.push('Some legacy URL params were ignored by the server.');
+  if (noticeEl) {
+    noticeEl.textContent = notices.join(' ');
+    noticeEl.style.display = notices.length ? 'block' : 'none';
+  }
+
+  if (!storyRadarState.filtered.length) {
+    const helper = storyRadarHasActiveFilters()
+      ? '<div style="margin-top:12px"><button class="story-radar-reset-link" onclick="resetStoryRadarFilters()">Reset to default view</button></div>'
+      : '';
+    listEl.innerHTML = '<div class="empty-state">'
+      + (storyRadarHasActiveFilters()
+        ? 'No stories match the current filters.'
+        : 'No editorially useful Story Radar results at the moment.')
+      + helper
+      + '</div>';
+    return;
+  }
+
+  listEl.innerHTML = storyRadarState.filtered.map(renderStoryRadarCard).join('');
+}
+
+async function fetchStoryRadar(silent = false) {
+  const listEl = document.getElementById('storyRadarList');
+  if (!listEl || storyRadarState.loading) return;
+  storyRadarState.loading = true;
+  storyRadarState.error = '';
+  if (!silent || !storyRadarState.initialized) {
+    listEl.innerHTML = '<div class="loading-state"><div class="spinner"></div>Loading Story Radar…</div>';
+  }
+
+  const params = new URLSearchParams({
+    model_variant: 'ml',
+    include_suppressed: storyRadarState.includeSuppressed ? 'true' : 'false',
+  });
+
+  try {
+    const response = await resilientFetch(`${API_BASE}/api/story-radar/ranked?${params.toString()}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    storyRadarState.initialized = true;
+    storyRadarState.generatedAt = data.generated_at || '';
+    storyRadarState.items = Array.isArray(data.items) ? data.items : [];
+    storyRadarState.hasSuppressedPayload = !!storyRadarState.includeSuppressed;
+    storyRadarState.ignoredParams = Array.isArray(data.ignored_params) ? data.ignored_params : [];
+    storyRadarState.partialData = storyRadarState.items.some(item => {
+      const gap = item.gap_assessment || {};
+      const expl = item.explanations || {};
+      return !gap.coverage_status || !(String(expl.why_relevant || '').trim()) || !(String(expl.recommended_angle || '').trim());
+    });
+    applyStoryRadarFilters();
+  } catch (err) {
+    console.error('Story Radar error:', err);
+    storyRadarState.error = err.message || 'Unbekannter Fehler';
+    renderStoryRadar();
+    if (_isNetworkError(err)) _markServerDown();
+  } finally {
+    storyRadarState.loading = false;
+  }
+}
+
 // ── Feed Source ──
 const FEED_URL = API_BASE + '/api/feed';
+const FEED_JSON_URL = API_BASE + '/api/feed-items';
 
 let _fetchArticlesLock = false;
 async function fetchArticles() {
@@ -3421,22 +4524,7 @@ async function fetchArticles() {
   updateStatus('loading');
 
   try {
-    const response = await resilientFetch(FEED_URL);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const xmlText = await response.text();
-    const parser = new DOMParser();
-    const xml = parser.parseFromString(xmlText, 'text/xml');
-
-    const parseError = xml.querySelector('parsererror');
-    if (parseError) throw new Error('Feed konnte nicht geparst werden');
-
-    // Parse sitemap-news.xml format
-    const nsMatch = xmlText.match(/xmlns:news="([^"]+)"/);
-    const ns = nsMatch ? nsMatch[1] : 'http://www.google.com/schemas/sitemap-news/0.9';
-    const urls = xml.querySelectorAll('url');
-    if (urls.length === 0) throw new Error('Keine Artikel im Feed gefunden');
-
-    articles = Array.from(urls).map(urlEl => parseSitemapItem(urlEl, ns));
+    articles = await loadPrimaryFeedArticles();
     // ML-Flow: Artikel-Daten sind eingetroffen
     if (typeof mlFlowEvent === 'function') { for (let _i = 0; _i < Math.min(3, articles.length); _i++) mlFlowEvent('in', 1); }
     applyFilterAndSort(true); // Neue Artikel-Daten → Caches invalidieren
@@ -3454,6 +4542,53 @@ async function fetchArticles() {
   } finally {
     _fetchArticlesLock = false;
   }
+}
+
+async function loadPrimaryFeedArticles() {
+  let jsonErr = null;
+  try {
+    return await loadPrimaryFeedArticlesFromJson();
+  } catch (err) {
+    jsonErr = err;
+    console.warn('Feed JSON failed, fallback to XML:', err);
+  }
+
+  try {
+    return await loadPrimaryFeedArticlesFromXml();
+  } catch (xmlErr) {
+    const detail = [jsonErr && `JSON: ${jsonErr.message}`, xmlErr && `XML: ${xmlErr.message}`]
+      .filter(Boolean)
+      .join(' | ');
+    throw new Error(detail || 'Feed konnte nicht geladen werden');
+  }
+}
+
+async function loadPrimaryFeedArticlesFromJson() {
+  const response = await resilientFetch(FEED_JSON_URL);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const items = await response.json();
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('Keine Artikel im Feed gefunden');
+  }
+  return items.map(mapCompactFeedItem);
+}
+
+async function loadPrimaryFeedArticlesFromXml() {
+  const response = await resilientFetch(FEED_URL);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const xmlText = await response.text();
+  const parser = new DOMParser();
+  const xml = parser.parseFromString(xmlText, 'text/xml');
+
+  const parseError = xml.querySelector('parsererror');
+  if (parseError) throw new Error('Feed konnte nicht geparst werden');
+
+  // XML-Dokumente mit Default-Namespace liefern in querySelectorAll('url') oft 0 Treffer.
+  // Deshalb hier namespace-agnostisch ueber local-name parsen.
+  const urls = Array.from(xml.getElementsByTagNameNS('*', 'url'));
+  if (urls.length === 0) throw new Error('Keine Artikel im Feed gefunden');
+
+  return urls.map(urlEl => parseSitemapItem(urlEl));
 }
 
 async function checkBildPlusStatus() {
@@ -3479,24 +4614,42 @@ async function checkBildPlusStatus() {
   }
 }
 
-function parseSitemapItem(urlEl, ns) {
-  const link = urlEl.querySelector('loc')?.textContent?.trim() || '';
-  const newsEl = urlEl.getElementsByTagNameNS(ns, 'news')[0];
-  const title = newsEl?.getElementsByTagNameNS(ns, 'title')[0]?.textContent?.trim() || '';
-  const pubDate = newsEl?.getElementsByTagNameNS(ns, 'publication_date')[0]?.textContent?.trim() || '';
-  const keywords = newsEl?.getElementsByTagNameNS(ns, 'keywords')[0]?.textContent?.trim() || '';
+function mapCompactFeedItem(item) {
+  const title = (item?.t || '').trim();
+  const link = (item?.l || '').trim();
+  const description = ((item?.d || '') || (Array.isArray(item?.c) ? item.c.join(', ') : '')).trim();
+  const pubDate = (item?.p || '').trim();
+  const isLiveTicker = Boolean(item?.lt);
 
+  return buildPrimaryFeedArticle({ title, link, description, pubDate, isLiveTicker });
+}
+
+function _getXmlTextByLocalName(root, localName) {
+  if (!root || typeof root.getElementsByTagNameNS !== 'function') return '';
+  return root.getElementsByTagNameNS('*', localName)[0]?.textContent?.trim() || '';
+}
+
+function parseSitemapItem(urlEl) {
+  const link = _getXmlTextByLocalName(urlEl, 'loc');
+  const newsEl = urlEl.getElementsByTagNameNS('*', 'news')[0];
+  const title = _getXmlTextByLocalName(newsEl, 'title');
+  const pubDate = _getXmlTextByLocalName(newsEl, 'publication_date');
+  const keywords = _getXmlTextByLocalName(newsEl, 'keywords');
+
+  return buildPrimaryFeedArticle({ title, link, description: keywords, pubDate });
+}
+
+function buildPrimaryFeedArticle({ title, link, description, pubDate, isLiveTicker }) {
   const _parsedDate = pubDate ? new Date(pubDate) : null;
   const date = (_parsedDate && !isNaN(_parsedDate.getTime())) ? _parsedDate : null;
   const id = btoa(unescape(encodeURIComponent(link || title || '_empty_' + Math.random()))).slice(0, 120);
   const category = extractCategory(link);
-  const description = keywords; // use keywords as description for scoring
-
   const scoring = calculateFallbackScore({title, description, category, date, scoreBreakdown: {breaking: 0}});
-  const isVideo = /\/video\//.test(link) || /video/i.test(keywords);
+  const isVideo = /\/video\//.test(link) || /video/i.test(description || '');
   const isBildPlus = /\/bild-plus\/|\/bild_plus\//.test(link) || category === 'BILD+';
+  const liveTicker = Boolean(isLiveTicker || isLiveTickerOrAggregation(title, link));
 
-  return { id, title, link, description: keywords, category, date, score: scoring.total, scoreBreakdown: scoring.breakdown, isVideo, isBildPlus };
+  return { id, title, link, description, category, date, score: scoring.total, scoreBreakdown: scoring.breakdown, isVideo, isBildPlus, isLiveTicker: liveTicker };
 }
 
 function extractCategory(link) {
@@ -4071,7 +5224,7 @@ function setFilter(filter, btn) {
 }
 
 function setSortFromSelect(sort) {
-  currentSort = sort;
+  currentSort = (sort === 'combined') ? 'score' : sort;
   applyFilterAndSort();
 }
 
@@ -4124,10 +5277,21 @@ function topicOverlap(titleA, titleB) {
   return 0.5 * jaccard + 0.5 * ratio;
 }
 
+function _sameStoryFallback(titleA, titleB) {
+  const overlap = topicOverlap(titleA, titleB);
+  if (overlap >= 0.85) return true;
+  if (overlap < 0.78) return false;
+  const entA = extractEntities(titleA);
+  const entB = extractEntities(titleB);
+  if (entA.length === 0 || entB.length === 0) return false;
+  const sharedEntities = entA.filter(e => entB.includes(e));
+  return sharedEntities.length >= 2 || (sharedEntities.length >= 1 && overlap >= 0.82);
+}
+
 function isTopicAlreadyPushed(articleTitle) {
   for (const m of livePushes) {
     const pushTitle = m.kickerAndHeadline || m.headline || '';
-    if (topicOverlap(articleTitle, pushTitle) >= 0.85) return true;
+    if (_sameStoryFallback(articleTitle, pushTitle)) return true;
   }
   return false;
 }
@@ -4171,6 +5335,8 @@ function isSportArticle(a) {
 }
 
 function applyFilterAndSort(forceInvalidate) {
+  if (currentSort === 'combined') currentSort = 'score';
+
   // Cache-Invalidierung NUR bei echten Datenaenderungen (neue Artikel/Pushes),
   // nicht bei jedem Auto-Refresh — Caches haben eigene TTLs (30s)
   if (forceInvalidate) {
@@ -8048,6 +9214,7 @@ function toggleAutoRefresh() {
   } else {
     autoRefreshInterval = setInterval(() => {
       fetchArticles();
+      if (storyRadarState.initialized || currentTab === 'storyradar') fetchStoryRadar(true);
       fetchLivePushes();
       _autoRingStart = Date.now();
     }, 60000);
@@ -8112,8 +9279,9 @@ function switchTab(tab, btn) {
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  const tabMap = { candidates: 'tabCandidates', live: 'tabLive', analyse: 'tabAnalyse', konkurrenz: 'tabKonkurrenz', forschung: 'tabForschung', tagesplan: 'tabTagesplan' };
+  const tabMap = { candidates: 'tabCandidates', storyradar: 'tabStoryRadar', live: 'tabLive', analyse: 'tabAnalyse', konkurrenz: 'tabKonkurrenz', forschung: 'tabForschung', tagesplan: 'tabTagesplan' };
   document.getElementById(tabMap[tab] || 'tabCandidates').classList.add('active');
+  if (tab === 'storyradar' && !storyRadarState.initialized) fetchStoryRadar();
   if (tab === 'live' && livePushes.length === 0) fetchLivePushes();
   if (tab === 'analyse') buildHeatmap();
   if (tab === 'konkurrenz') {
@@ -8790,7 +9958,7 @@ let _compXorFetchInFlight = false;
 const _knownCompTitles = new Set(); // Tracks known competitor article titles
 const _compTopicHistory = {}; // { clusterKey: [{ refresh: timestamp, outletCount: N }, ...] }
 let _compRefreshCounter = 0;
-let _compFilterMode = 'all'; // 'all' or 'gaps'
+let _compFilterMode = 'all';
 let _researchModifiers = null; // Cached research modifiers from /api/forschung
 let _tuningParams = null; // Tunable params from autonomous tuning loop
 const DEFAULT_TUNING_PARAMS_JS = {
@@ -11512,7 +12680,7 @@ function renderSportCompetitors() {
       }
 
       // Gap-Check: LLM-Agenten-Gremium (Server) mit Client-Fallback
-      const covered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(a.title) : false;
+      const covered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(a) : false;
       const relResult = covered ? {score: 0, relevant: false, source: 'skip'} : bildRelevanceScoreLLM(a.title);
       const relevance = relResult.score;
 
@@ -11688,7 +12856,7 @@ function toggleSportCompDropdown(type) {
         const srcDots = [...t.sources].map(s =>
           '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (SPORT_COMP_COLORS[s] || '#999') + ';margin-right:2px" title="' + (SPORT_COMP_LABELS[s] || s) + '"></span>'
         ).join('');
-        const bildCovered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(repTitle) : false;
+        const bildCovered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(t.articles[0] || repTitle) : false;
         const gapBadge = bildCovered ? '' : ' <span style="font-size:9px;background:#fef2f2;color:#dc2626;padding:1px 5px;border-radius:4px;font-weight:600">GAP</span>';
         const link = t.articles[0] ? safeUrl(t.articles[0].link || '') : '';
         html += '<div style="padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer" onclick="' + (link ? "window.open('" + link + "','_blank')" : '') + '">';
@@ -11704,9 +12872,7 @@ function toggleSportCompDropdown(type) {
 
 // ── Sport-Konkurrenz: Filter + Suche ──
 function setSportCompFilter(mode) {
-  _sportCompFilter = mode;
-  const bar = document.getElementById('sportCompFilterBar');
-  if (bar) bar.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.textContent.trim() === (mode === 'all' ? 'Alle' : 'Nur Gaps')));
+  _sportCompFilter = 'all';
   filterSportCompItems();
 }
 
@@ -11718,9 +12884,7 @@ function filterSportCompItems() {
   grid.querySelectorAll('.comp-item').forEach(el => {
     const title = (el.getAttribute('data-title') || '').toLowerCase();
     const matchesQuery = !query || title.includes(query);
-    const isGap = !el.classList.contains('is-covered') && !el.querySelector('.badge-covered');
-    const matchesFilter = _sportCompFilter === 'all' || (_sportCompFilter === 'gaps' && isGap);
-    el.style.display = (matchesQuery && matchesFilter) ? '' : 'none';
+    el.style.display = matchesQuery ? '' : 'none';
   });
 }
 
@@ -11808,7 +12972,7 @@ function _buildSportIntlCardHtml(outletKey, cardLabel, dotStyle, labelMap, dataO
     const srcLabel = labelMap[a.source] || a.source;
     const ageMins = Math.round((now - a.pubDate.getTime()) / 60000);
     const ageStr = ageMins < 60 ? ageMins + ' Min' : Math.round(ageMins / 60) + ' Std';
-    const covered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(a.title) : false;
+    const covered = typeof isArticleCoveredByBild === 'function' ? isArticleCoveredByBild(a) : false;
     const badge = covered ? '<span class="comp-badge badge-covered">bei BILD</span>' : '';
     const xor = typeof predictCompetitorOR === 'function' ? predictCompetitorOR(a.title, a.pubDate) : null;
     const xorBadge = xor != null ? '<span class="comp-xor ' + (xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low') + '" title="Geschaetzte OR: ' + xor.toFixed(2) + '%">' + xor.toFixed(2) + '%</span>' : '';
@@ -11851,22 +13015,18 @@ async function fetchCompetitors(silent) {
       _ltFiltered += competitorData[name].filter(a => a.isLiveTicker).length;
     }
     if (_ltFiltered > 0) console.log(`[Konkurrenz] ${_ltFiltered} Live-Ticker/Aggregation-Artikel markiert`);
+    await Promise.allSettled([fetchCoverageData(true), fetchRelevanceData(true)]);
     renderCompetitors();
     // Server-XOR für alle Konkurrenz-Titel laden (fire & forget, re-renders danach)
     _fetchServerCompXor();
     // Internationale Feeds parallel laden (fire & forget)
     fetchInternationalFeeds(true);
-    // LLM Coverage + Relevanz-Daten laden (fire & forget)
-    fetchCoverageData(true);
-    fetchRelevanceData(true);
 
     // Start auto-refresh (90s)
     if (!_compRefreshInterval) {
       _compRefreshInterval = setInterval(() => {
         if (currentTab === 'konkurrenz') {
           fetchCompetitors(true);
-          fetchCoverageData(true);
-          fetchRelevanceData(true);
         }
       }, 90000);
     }
@@ -12028,52 +13188,127 @@ function bildRelevanceScore(title) {
 }
 
 // ── LLM Coverage: Server-seitige Abdeckungspruefung ──
-let _serverCoverage = null;   // {results: {md5_key: {covered, confidence, reason, ...}}}
+let _serverCoverage = null;   // {items:[{title_key,link_key,covered,resolved,...}], results:{title_key:{...}}}
 let _serverCoverageTs = 0;
-let _serverCoverageByTitle = new Map(); // title_lower_120 → {covered, confidence}
+let _serverCoverageByKey = new Map(); // title_lower_120␟link_lower_200 → {covered, resolved, ...}
+let _serverCoverageByTitle = new Map(); // title_lower_120 → result (nur eindeutige Titel)
+const _COVERAGE_TTL_MS = 900000;
+const _COVERAGE_KEY_SEPARATOR = '\u241f';
+
+function _normalizeCoverageTitle(title) {
+  return (title || '').trim().toLowerCase().slice(0, 120);
+}
+
+function _normalizeCoverageLink(link) {
+  return (link || '').trim().toLowerCase().slice(0, 200);
+}
+
+function _coverageLookupKeyFromParts(titleKey, linkKey) {
+  return `${titleKey}${_COVERAGE_KEY_SEPARATOR}${linkKey}`;
+}
+
+function _coverageLookupKey(title, link) {
+  return _coverageLookupKeyFromParts(_normalizeCoverageTitle(title), _normalizeCoverageLink(link));
+}
+
+function _normalizeCoverageCandidate(candidate, maybeLink) {
+  if (candidate && typeof candidate === 'object') {
+    return {
+      title: candidate.title || candidate.t || candidate.repTitle || '',
+      link: candidate.link || candidate.l || maybeLink || '',
+    };
+  }
+  return { title: candidate || '', link: maybeLink || '' };
+}
 
 async function fetchCoverageData(silent) {
   try {
     const resp = await resilientFetch(API_BASE + '/api/coverage');
-    if (!resp.ok) return;
+    if (!resp.ok) return false;
     _serverCoverage = await resp.json();
     _serverCoverageTs = Date.now();
-    // Index aufbauen: Server gibt title_lower[:120] als Keys
-    if (_serverCoverage && _serverCoverage.results) {
-      _serverCoverageByTitle.clear();
-      for (const [titleKey, entry] of Object.entries(_serverCoverage.results)) {
-        _serverCoverageByTitle.set(titleKey, {
-          covered: entry.covered,
-          confidence: entry.confidence || 0,
-          ts: Date.now()
-        });
+    _serverCoverageByKey.clear();
+    _serverCoverageByTitle.clear();
+    const coverageItems = Array.isArray(_serverCoverage?.items)
+      ? _serverCoverage.items
+      : Object.entries(_serverCoverage?.results || {}).map(([titleKey, entry]) => ({
+          ...entry,
+          title_key: entry.title_key || titleKey,
+          link_key: entry.link_key || '',
+        }));
+    const titleBuckets = new Map();
+    for (const rawEntry of coverageItems) {
+      const titleKey = rawEntry.title_key || _normalizeCoverageTitle(rawEntry.title || '');
+      if (!titleKey) continue;
+      const linkKey = rawEntry.link_key || _normalizeCoverageLink(rawEntry.link || '');
+      const normalized = {
+        covered: rawEntry.covered === true || rawEntry.covered === 'true' || rawEntry.covered === 1,
+        confidence: Number(rawEntry.confidence || 0),
+        reason: rawEntry.reason || '',
+        source: rawEntry.source || '',
+        resolved: rawEntry.resolved !== undefined
+          ? !!rawEntry.resolved
+          : rawEntry.source !== 'step1_fallback' && rawEntry.source !== 'step2_missed',
+        matchedTitle: rawEntry.matched_title || '',
+        ts: Date.now(),
+        titleKey,
+        linkKey,
+      };
+      if (linkKey) {
+        _serverCoverageByKey.set(_coverageLookupKeyFromParts(titleKey, linkKey), normalized);
+      }
+      const bucket = titleBuckets.get(titleKey) || [];
+      bucket.push(normalized);
+      titleBuckets.set(titleKey, bucket);
+    }
+    for (const [titleKey, bucket] of titleBuckets.entries()) {
+      if (bucket.length === 1) {
+        _serverCoverageByTitle.set(titleKey, bucket[0]);
       }
     }
+    return true;
   } catch (e) {
     if (!silent) console.warn('[Coverage] Server nicht erreichbar, nutze Client-Fallback');
+    return false;
   }
 }
 
-function _coverageLookup(title) {
-  // Lookup in Server-Coverage-Cache (MD5-keyed)
-  if (!_serverCoverage || !_serverCoverage.results) return null;
-  if ((Date.now() - _serverCoverageTs) > 900000) return null; // 15min TTL
-  // Wir muessen den MD5 nachbilden — einfacher: iteriere ueber results und matche per title
-  // Performance: Cache ist klein (100-300 Eintraege), lineare Suche OK
-  const titleNorm = (title || '').trim().toLowerCase().slice(0, 120);
+function _coverageLookup(candidate, maybeLink) {
+  if (!_serverCoverage) return null;
+  if ((Date.now() - _serverCoverageTs) > _COVERAGE_TTL_MS) return null;
+  const { title, link } = _normalizeCoverageCandidate(candidate, maybeLink);
+  const titleNorm = _normalizeCoverageTitle(title);
   if (!titleNorm) return null;
-  // Schneller Lookup: gespeicherter Index
+  const linkNorm = _normalizeCoverageLink(link);
+  if (linkNorm) {
+    const exact = _serverCoverageByKey.get(_coverageLookupKeyFromParts(titleNorm, linkNorm));
+    if (exact && (Date.now() - exact.ts) < _COVERAGE_TTL_MS) return exact;
+  }
   const cached = _serverCoverageByTitle.get(titleNorm);
-  if (cached && (Date.now() - cached.ts) < 900000) return cached;
+  if (cached && (Date.now() - cached.ts) < _COVERAGE_TTL_MS) return cached;
   return null;
 }
 
-function _indexServerCoverage(title, result) {
-  // Merke Server-Ergebnis fuer schnellen Lookup
-  const titleNorm = (title || '').trim().toLowerCase().slice(0, 120);
-  if (titleNorm && result) {
-    _serverCoverageByTitle.set(titleNorm, { covered: result.covered, confidence: result.confidence, ts: Date.now() });
+function _indexServerCoverage(candidate, result) {
+  const { title, link } = _normalizeCoverageCandidate(candidate);
+  const titleNorm = _normalizeCoverageTitle(title);
+  if (!titleNorm || !result) return;
+  const linkNorm = _normalizeCoverageLink(link);
+  const normalized = {
+    covered: result.covered === true,
+    confidence: Number(result.confidence || 0),
+    reason: result.reason || '',
+    source: result.source || '',
+    resolved: result.resolved !== false,
+    matchedTitle: result.matched_title || '',
+    ts: Date.now(),
+    titleKey: titleNorm,
+    linkKey: linkNorm,
+  };
+  if (linkNorm) {
+    _serverCoverageByKey.set(_coverageLookupKey(titleNorm, linkNorm), normalized);
   }
+  _serverCoverageByTitle.set(titleNorm, normalized);
 }
 
 // ── LLM-Agenten-Gremium: BILD-Relevanz fuer Gap-Artikel ──
@@ -12123,27 +13358,31 @@ function bildRelevanceScoreLLM(title) {
   return { score: fallback, relevant: fallback >= 40, reason: '', kategorie: '', source: 'client' };
 }
 
-function isArticleCoveredByBild(title) {
-  // ═══ Stufe 0: LLM Server-Coverage (hoechste Qualitaet) ═══
-  const srvResult = _coverageLookup(title);
-  if (srvResult && srvResult.confidence >= 0.5) {
-    return srvResult.covered;
+function isArticleCoveredByBild(candidate, maybeLink) {
+  const { title, link } = _normalizeCoverageCandidate(candidate, maybeLink);
+  if (!title) return false;
+
+  // ═══ Stufe 0: LLM Server-Coverage (authoritativ, wenn vorhanden) ═══
+  const srvResult = _coverageLookup({ title, link });
+  if (srvResult) {
+    if (srvResult.resolved === false) return false;
+    return srvResult.covered === true;
   }
 
-  // ═══ Fallback: Client-seitige Heuristik (reiner Keyword-Overlap, kein Entity-Boost) ═══
+  // ═══ Fallback: Client-seitige Same-Story-Heuristik ═══
 
-  // Stufe 1: Pushes — nur bei klarem Topic-Match
+  // Stufe 1: Pushes
   for (const m of livePushes) {
     const bt = m.kickerAndHeadline || m.headline || '';
     if (!bt) continue;
-    if (topicOverlap(title, bt) >= 0.50) return true;
+    if (_sameStoryFallback(title, bt)) return true;
   }
 
-  // Stufe 2: Sitemap — breiter suchen, gleiche Schwelle
+  // Stufe 2: Sitemap
   const recentArticles = articles.slice(0, 200);
   for (const a of recentArticles) {
     if (!a.title) continue;
-    if (topicOverlap(title, a.title) >= 0.50) return true;
+    if (_sameStoryFallback(title, a.title)) return true;
   }
 
   return false;
@@ -12510,7 +13749,7 @@ function renderCompetitors() {
         </div>`;
       }
 
-      const covered = isArticleCoveredByBild(a.title);
+      const covered = isArticleCoveredByBild(a);
       const relResult = covered ? {score: 0, relevant: false, source: 'skip'} : bildRelevanceScoreLLM(a.title);
       const relevance = relResult.score;
       // Nur als Gap zählen wenn: (1) nicht bei BILD und (2) LLM-Gremium sagt relevant
@@ -12723,7 +13962,7 @@ function toggleCompDropdown(type) {
         const dots = [...cluster.sources].map(s =>
           `<span class="dd-source-dot" style="background:${COMP_COLORS[s] || '#999'}" title="${COMP_LABELS[s] || s}"></span>`
         ).join('');
-        const bildCovered = isArticleCoveredByBild(title);
+        const bildCovered = isArticleCoveredByBild(cluster.articles[0] || title);
         const badge = bildCovered ? '' : ' <span class="comp-badge badge-gap">GAP</span>';
         const trending = getTopicTrend(cluster.keywords) ? '<span class="trend-up" title="Trend: bei mehr Outlets als vorher">&#9650;</span>' : '';
         const link = safeUrl(cluster.articles[0].link || '');
@@ -12866,7 +14105,7 @@ function updatePushRecommendations(gapList, hotTopics, topicClusters) {
   (hotTopics || []).forEach(cluster => {
     const a = cluster.articles[0];
     if (!a || !a.title || seen.has(a.title)) return;
-    if (!isArticleCoveredByBild(a.title)) {
+    if (!isArticleCoveredByBild(a)) {
       seen.add(a.title);
       allCandidates.push({ ...a, _hotOutlets: cluster.sources.size });
     }
@@ -12942,16 +14181,12 @@ function filterCompItems() {
     const titleEl = el.querySelector('.comp-title');
     const title = titleEl ? titleEl.textContent.toLowerCase() : '';
     const matchSearch = !query || title.includes(query);
-    const matchFilter = _compFilterMode === 'all' || !el.classList.contains('is-covered');
-    el.style.display = (matchSearch && matchFilter) ? '' : 'none';
+    el.style.display = matchSearch ? '' : 'none';
   });
 }
 
 function setCompFilter(mode) {
-  _compFilterMode = mode;
-  document.querySelectorAll('#compFilterBar .filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.textContent.trim() === (mode === 'all' ? 'Alle' : 'Nur Lücken'));
-  });
+  _compFilterMode = 'all';
   filterCompItems();
 }
 
@@ -13842,7 +15077,7 @@ function runLearningAgentArmy() {
     const hotTopics = window._compHotTopics || [];
     if (hotTopics.length > 0) {
       findings.push(`${hotTopics.length} Hot Topics bei ≥3 Outlets erkannt`);
-      const gapTopics = hotTopics.filter(c => !isArticleCoveredByBild(c.articles[0].title));
+      const gapTopics = hotTopics.filter(c => !isArticleCoveredByBild(c.articles[0] || ''));
       if (gapTopics.length > 0) findings.push(`Davon <span class="la-val la-bad">${gapTopics.length} GAPs</span> — BILD fehlt`);
     }
     return { name: 'Konkurrenz-Analyst', icon: '🔍', color: '#06b6d4', findings, confidence: Math.min((exclusive.length + covered.length) / 15, 1) };
@@ -18530,14 +19765,16 @@ _loadPersistedLearningData();
   _updateConnectionBadge();
 
   // Phase 1: Alles PARALLEL starten was unabhaengig ist
-  const [healthResult, , histResult, liveResult] = await Promise.allSettled([
+  const [healthResult, , histResult, liveResult, storyRadarResult] = await Promise.allSettled([
     fetch(API_BASE + '/api/health', {signal: AbortSignal.timeout(5000)}).then(r => { if (r.ok) _markServerUp(); else throw new Error('HTTP ' + r.status); }),
     fetchChannels(),
     loadLearningHistory(),
     fetchLivePushes(),
+    fetchStoryRadar(true),
   ]);
   if (healthResult.status === 'rejected') { console.warn('[Init] Server:', healthResult.reason?.message); _markServerDown(); }
   if (liveResult.status === 'rejected') { console.warn('[Init] Live pushes:', liveResult.reason?.message); }
+  if (storyRadarResult.status === 'rejected') { console.warn('[Init] Story Radar:', storyRadarResult.reason?.message); }
 
   // Phase 2: Abhaengige Tasks (brauchen Live-Push-Daten)
   mergeFreshPushes();

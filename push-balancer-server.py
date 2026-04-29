@@ -177,6 +177,13 @@ if os.path.exists(_LOCAL_ENV):
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI_API_KEY", "")
 log = logging.getLogger("push-balancer")
 
+try:
+    from story_radar.api import StoryRadarHTTPAPI
+    _story_radar_api = StoryRadarHTTPAPI()
+except Exception as _story_radar_exc:
+    _story_radar_api = None
+    log.warning(f"[StoryRadar] API konnte nicht initialisiert werden: {_story_radar_exc}")
+
 PORT = int(os.environ.get("PORT", "8050"))
 ALLOW_INSECURE_SSL = os.environ.get("ALLOW_INSECURE_SSL", "0") == "1"
 
@@ -1178,6 +1185,26 @@ def _load_llm_scores_for_push(push):
     return {}
 
 
+def _estimate_or_from_llm_scores(scores, base_or):
+    """Approximiert aus gecachten LLM-Scores einen OR-Beitrag ohne Live-API-Call."""
+    if not scores:
+        return 0.0
+    try:
+        composite = (
+            float(scores.get("magnitude", 0.0)) * 0.20 +
+            float(scores.get("clickability", 0.0)) * 0.28 +
+            float(scores.get("relevanz", 0.0)) * 0.22 +
+            float(scores.get("dringlichkeit", 0.0)) * 0.16 +
+            float(scores.get("emotionalitaet", 0.0)) * 0.14
+        )
+        if composite <= 0:
+            return 0.0
+        factor = 0.70 + (composite / 10.0) * 0.90
+        return max(0.5, min(30.0, base_or * factor))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     """Extrahiert ~80 Features aus einem Push fuer das GBRT-Modell.
 
@@ -1780,7 +1807,9 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     _entropy = research_mods.get("entropy_mod", 0.0)
     feat["phd_entropy_mod"] = float(_entropy) if not isinstance(_entropy, dict) else 0.0
     feat["phd_competition_factor"] = float(phd_insights.get("competition_factor", 0.0))
-    feat["phd_entity_context"] = float(phd_insights.get("entity_context", 0.0))
+    # graphD / Entity-Graph-Signal ist aus dem produktiven Scoring entfernt.
+    # Feature bleibt nur fuer Modell-Kompatibilitaet erhalten und wird hart neutralisiert.
+    feat["phd_entity_context"] = 0.0
     feat["phd_fatigue_alpha"] = float(phd_insights.get("fatigue_alpha", 0.0))
     feat["heur_research_factor"] = float(research_mods.get("combined", 1.0)) if research_mods else 1.0
     feat["heur_phd_combined"] = float(phd_insights.get("combined_factor", 1.0)) if phd_insights else 1.0
@@ -2069,7 +2098,8 @@ def _unified_extract_features(push, history_stats, state=None):
         feat["phd_recency_ewma"] = float(research_mods.get("recency_ewma", 0.0))
         feat["phd_entropy_mod"] = float(research_mods.get("entropy_mod", 0.0))
         feat["phd_competition_factor"] = float(phd_insights.get("competition_factor", 0.0))
-        feat["phd_entity_context"] = float(phd_insights.get("entity_context", 0.0))
+        # graphD / Entity-Graph-Signal ist aus dem produktiven Scoring entfernt.
+        feat["phd_entity_context"] = 0.0
         feat["phd_fatigue_alpha"] = float(phd_insights.get("fatigue_alpha", 0.0))
 
         # ── A4: Kontext-Interaktions-Features (6) ──
@@ -8662,6 +8692,43 @@ _research_state = {
     "_last_tuning_call": 0,
 }
 _research_state["analysis_lock"] = threading.RLock()
+_research_state["analysis_run_lock"] = threading.Lock()
+
+_background_task_state = {}
+_background_task_state_lock = threading.Lock()
+
+
+def _run_background_task_once(name, target, *args, **kwargs):
+    """Startet eine Background-Task nur wenn nicht bereits ein Lauf aktiv ist."""
+    with _background_task_state_lock:
+        meta = _background_task_state.setdefault(name, {
+            "active": False,
+            "last_start": 0,
+            "last_end": 0,
+            "last_error": "",
+        })
+        if meta["active"]:
+            return False
+        meta["active"] = True
+        meta["last_start"] = time.time()
+        meta["last_error"] = ""
+
+    def _runner():
+        _bg_log = logging.getLogger("push-balancer")
+        try:
+            target(*args, **kwargs)
+        except Exception as e:
+            _bg_log.warning(f"[BG:{name}] Fehler: {e}", exc_info=True)
+            with _background_task_state_lock:
+                _background_task_state.setdefault(name, {})["last_error"] = str(e)
+        finally:
+            with _background_task_state_lock:
+                meta_inner = _background_task_state.setdefault(name, {})
+                meta_inner["active"] = False
+                meta_inner["last_end"] = time.time()
+
+    threading.Thread(target=_runner, daemon=True, name=f"bg-{name}").start()
+    return True
 
 # ── Tuning State Persistierung ──
 _TUNING_STATE_FILE = os.path.join(SERVE_DIR, ".tuning_state.json")
@@ -8788,7 +8855,7 @@ DEFAULT_TUNING_PARAMS = {
     "phd_fatigue_damp": 0.25,   # Fatigue-Daempfung (war 0.15)
     "phd_breaking_boost": 1.30, # Breaking-Regime-Boost max (war 1.15)
     "phd_recency_damp": 0.35,   # Recency-Trend-Daempfung (war 0.20)
-    "phd_entity_ctx_damp": 0.30, # Entity-Context-Daempfung (war 0.15)
+    "phd_entity_ctx_damp": 0.00, # graphD / Entity-Context aus produktivem Scoring entfernt
     "phd_bias_correction_damp": 0.70, # Bias-Korrektor-Daempfung (war 0.55)
 }
 
@@ -9039,14 +9106,42 @@ def _extract_hour(ts_str):
 
 def _run_autonomous_analysis():
     """Echtzeit-Analyse: Laeuft bei jedem Request, erkennt neue Pushes, aktualisiert alles."""
-    lock = _research_state.get("analysis_lock")
-    if lock and not lock.acquire(blocking=False):
+    run_lock = _research_state.get("analysis_run_lock")
+    if run_lock and not run_lock.acquire(blocking=False):
         return  # Already running in another thread
     try:
         _run_autonomous_analysis_inner()
     finally:
-        if lock:
-            lock.release()
+        if run_lock:
+            run_lock.release()
+
+
+def _run_research_auxiliary_cycle(state):
+    """Langsame Hilfsjobs ausserhalb des 20s-Scan-Loops ausfuehren."""
+    push_data = state.get("push_data", [])
+    if not push_data:
+        return
+
+    aux_steps = [
+        ("external_context", lambda: _fetch_external_context(state)),
+        ("server_feedback", lambda: _generate_server_feedback(state)),
+        ("autonomous_tuning", lambda: _autonomous_tuning(state)),
+        ("validate_tuning", lambda: _validate_tuning_changes(state)),
+        ("algo_team", lambda: _algo_team_autonomous(push_data, state)),
+        ("cross_reference", lambda: _cross_reference_engine(state)),
+        ("negative_results", lambda: _auto_detect_negative_results(state)),
+        ("format_decisions", lambda: _format_pending_as_decisions(state)),
+        ("exploration", lambda: _exploration_experiment(state)),
+        ("meta_research", lambda: _meta_research_cycle(push_data, state)),
+        ("arxiv_scout", lambda: _arxiv_paper_scout(state)),
+        ("institute_review", lambda: _run_institute_review(state)),
+    ]
+
+    for label, step in aux_steps:
+        try:
+            step()
+        except Exception as e:
+            log.warning(f"[ResearchAux] {label} fehlgeschlagen: {e}", exc_info=True)
 
 
 def _compute_temporal_trends(push_data):
@@ -9507,14 +9602,9 @@ def _run_autonomous_analysis_inner():
 
     # Volle Re-Analyse bei neuen Daten oder alle 60s
     if not is_new_data and state["findings"] and now - state["last_analysis"] < 60:
-        # Auch ohne neue Daten: LLM-basierte autonome Forschung laufen lassen
-        # (haben eigene Cooldowns — laufen nicht bei jedem Tick)
-        findings = state.get("findings")
-        if findings and push_data:
-            _fetch_external_context(state)  # Wetter, Trends, Feiertage (alle 30min)
-            _generate_server_feedback(state)
-            _algo_team_autonomous(push_data, state)
-            _arxiv_paper_scout(state)
+        # Langsame Hilfsjobs laufen detached, damit der Scan-Loop nicht blockiert.
+        if state.get("findings") and push_data:
+            _run_background_task_once("research_aux", _run_research_auxiliary_cycle, state)
         return
 
     state["last_analysis"] = now
@@ -10087,43 +10177,11 @@ def _run_autonomous_analysis_inner():
     # Genehmigte Algo-Team-Aenderungen tatsaechlich anwenden
     _apply_approved_changes(state)
 
-    # Autonomes Tuning: Claude Sonnet 4 optimiert predictOR-Parameter aus Feedback
-    _autonomous_tuning(state)
-
-    # 24h-Validierung: Rollback wenn Accuracy gesunken
-    _validate_tuning_changes(state)
-
-    # Server-Autonomie: Server misst sich selbst (kein Browser noetig)
-    _generate_server_feedback(state)
-
-    # Algo-Team: Autonome Analyse + Verbesserungsvorschlaege (alle 30min)
-    _algo_team_autonomous(push_data, state)
-
     # Event-Detection: Erkennt relevante Events (kein GPT-Call, reine Logik)
     _detect_events(push_data, findings, state)
 
-    # ── AUTONOMES FORSCHUNGSINSTITUT — Neue Mechanismen ──
-
-    # Cross-Referenz-Engine: Forscher-Synthese (alle 10 min)
-    _cross_reference_engine(state)
-
-    # Negativ-Ergebnisse aus gescheiterten Tuning-Versuchen erkennen
-    _auto_detect_negative_results(state)
-
-    # Pending Approvals als formatierte Entscheidungsvorlagen aufbereiten
-    _format_pending_as_decisions(state)
-
-    # Exploration-Budget: Spekulative Experimente (alle 2h)
-    _exploration_experiment(state)
-
-    # Meta-Forschung: Forschung ueber die Forschung (alle 6h)
-    _meta_research_cycle(push_data, state)
-
-    # Paper-Scout: Sucht aktuelle Papers auf arXiv (alle 4h)
-    _arxiv_paper_scout(state)
-
-    # Externes LLM-Review: Bewertet Authentizitaet des Instituts
-    _run_institute_review(state)
+    # Langsame Hilfsjobs (LLM, Tuning, Server-Feedback, Meta-Forschung) separat ausfuehren.
+    _run_background_task_once("research_aux", _run_research_auxiliary_cycle, state)
     log.info(f"[Research] Volle Analyse FERTIG: Gen #{gen}")
 
 
@@ -11177,6 +11235,7 @@ Nur JSON, kein anderer Text."""
             messages=[{"role": "system", "content": review_prompt}],
             max_tokens=800,
             temperature=0.3,
+            timeout=30,
         )
         raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
@@ -14666,7 +14725,7 @@ def _validate_tuning_changes(state):
 # SERVER-AUTONOMIE: Kein Browser noetig — Server misst sich selbst
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _server_predict_or(push, push_data, state):
+def _server_predict_or(push, push_data, state, allow_live_llm=False):
     """Server-seitige Prediction: Unified ML → ML-Ensemble → Heuristik (Fallback-Kette).
 
     Priorität:
@@ -15123,21 +15182,8 @@ def _server_predict_or(push, push_data, state):
             m6_factor *= (1.0 - damp) + damp * min(1.15, markov_boost)
             phd_details["markov_seq"] = round(markov_boost, 3)
 
-    # PhD-Entity-Context: Wort-Paar-Synergien im Titel
-    entity_ctx = mods.get("entity_context", {})
-    if entity_ctx and push_words:
-        push_word_list = sorted(push_words)
-        ctx_boosts = []
-        for i in range(len(push_word_list)):
-            for j in range(i + 1, min(i + 4, len(push_word_list))):
-                pair = f"{push_word_list[i]}+{push_word_list[j]}"
-                if pair in entity_ctx:
-                    ctx_boosts.append(entity_ctx[pair])
-        if ctx_boosts:
-            avg_ctx = sum(ctx_boosts) / len(ctx_boosts)
-            damp = params.get("phd_entity_ctx_damp", 0.15)
-            m6_factor *= (1.0 - damp) + damp * max(0.8, min(1.2, avg_ctx))
-            phd_details["entity_ctx"] = round(avg_ctx, 3)
+    # graphD / Entity-Context wurde aus dem produktiven Score entfernt.
+    # Die Forschungsanalyse darf weiterlaufen, beeinflusst hier aber kein Ranking mehr.
 
     # PhD-Recency: EWMA-Trend (steigende/fallende OR berücksichtigen)
     recency = mods.get("recency", {})
@@ -15209,10 +15255,27 @@ def _server_predict_or(push, push_data, state):
     if ctx_adjustments:
         methods["context_details"] = ", ".join(ctx_adjustments)
 
+    llm_cached_scores = push.get("_llm_scores") or _load_llm_scores_for_push(push)
+    if llm_cached_scores and "_llm_scores" not in push:
+        push["_llm_scores"] = llm_cached_scores
+
     # ── M8: GPT-Content-Scoring (KI-basierte Inhaltsanalyse) ──
     m8 = global_avg
     m8_reasoning = ""
-    if OPENAI_API_KEY and push.get("title", ""):
+    if llm_cached_scores:
+        _m8_cached = _estimate_or_from_llm_scores(llm_cached_scores, global_avg)
+        if _m8_cached > 0:
+            m8 = _m8_cached
+            m8_reasoning = "cached_llm_scores"
+            methods["gpt_content_scoring"] = round(m8, 3)
+            methods["gpt_clickability"] = round(float(llm_cached_scores.get("clickability", 0.0)), 2)
+            methods["gpt_relevanz"] = round(float(llm_cached_scores.get("relevanz", 0.0)), 2)
+            methods["gpt_dringlichkeit"] = round(float(llm_cached_scores.get("dringlichkeit", 0.0)), 2)
+            methods["gpt_emotionalitaet"] = round(float(llm_cached_scores.get("emotionalitaet", 0.0)), 2)
+            methods["gpt_magnitude"] = round(float(llm_cached_scores.get("magnitude", 0.0)), 2)
+            methods["gpt_source"] = "cached"
+            methods["gpt_reasoning"] = m8_reasoning
+    elif allow_live_llm and OPENAI_API_KEY and push.get("title", ""):
         try:
             import openai as _oai_m8
             _m8_client = _oai_m8.OpenAI(api_key=OPENAI_API_KEY)
@@ -15267,6 +15330,7 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
                 messages=[{"role": "user", "content": _m8_prompt}],
                 max_tokens=200,
                 temperature=0.3,
+                timeout=15,
             )
             _m8_text = _m8_resp.choices[0].message.content.strip()
             # JSON aus Antwort extrahieren
@@ -15284,6 +15348,7 @@ Antworte NUR in diesem JSON-Format (kein anderer Text):
                     methods["gpt_dringlichkeit"] = _m8_data.get("dringlichkeit", 0)
                     methods["gpt_emotionalitaet"] = _m8_data.get("emotionalitaet", 0)
                     methods["gpt_exklusivitaet"] = _m8_data.get("exklusivitaet", 0)
+                    methods["gpt_source"] = "live"
                     methods["gpt_reasoning"] = m8_reasoning
                     log.info(f"GPT-Content-Scoring: {m8:.1f}% — {m8_reasoning}")
         except Exception as _m8_err:
@@ -15552,6 +15617,7 @@ def _call_o3_json(prompt, max_tokens=1200, label="o3"):
         model="o3",
         messages=[{"role": "user", "content": prompt}],
         max_completion_tokens=max_tokens,
+        timeout=30,
     )
     raw = (resp.choices[0].message.content or "").strip()
     if not raw:
@@ -15560,6 +15626,7 @@ def _call_o3_json(prompt, max_tokens=1200, label="o3"):
             model="gpt-4.1",
             messages=[{"role": "system", "content": "Du bist ein Forschungsassistent. Antworte NUR mit JSON."}, {"role": "user", "content": prompt}],
             max_tokens=max_tokens, temperature=0.7,
+            timeout=30,
         )
         raw = (resp.choices[0].message.content or "").strip()
     if raw.startswith("```"):
@@ -15779,6 +15846,14 @@ def _generate_server_feedback(state):
     # Index fuer schnelles Ersetzen bei Re-Evaluation
     feedback_by_id = {fb.get("push_id"): i for i, fb in enumerate(feedback) if fb.get("source") == "server"}
 
+    # Ohne trainiertes ML/GBRT-Modell ist _server_predict_or deutlich teurer.
+    with _gbrt_lock:
+        has_fast_predictor = _gbrt_model is not None
+    if not has_fast_predictor:
+        with _ml_lock:
+            has_fast_predictor = _ml_state.get("model") is not None
+    max_new_per_cycle = 60 if has_fast_predictor else 10
+
     new_count = 0
     for push in mature:
         # Eindeutiger Key: OneSignal message_id (matcht pushes.message_id fuer Retro-JOIN)
@@ -15803,7 +15878,7 @@ def _generate_server_feedback(state):
         if len([p for p in training_pool if p.get("or", 0) > 0]) < 20:
             training_pool = push_data
 
-        result = _server_predict_or(push, training_pool, state)
+        result = _server_predict_or(push, training_pool, state, allow_live_llm=False)
         if result is None:
             continue
 
@@ -15867,8 +15942,8 @@ def _generate_server_feedback(state):
         except Exception as _dbe:
             log.debug(f"[PushDB] Prediction log error: {_dbe}")
 
-        # Max 100 pro Zyklus (erhoet fuer schnellere Abdeckung)
-        if new_count >= 100:
+        # Gedeckelte Batch-Groesse haelt den Aux-Worker reaktionsfaehig.
+        if new_count >= max_new_per_cycle:
             break
 
     # Feedback auf 2000 begrenzen
@@ -16905,17 +16980,21 @@ def _parse_rss_items_standalone(xml_str, max_items=30):
             _sn_news_tag = f"{{{_sn_ns}}}news"
             _sn_title_tag = f"{{{_sn_ns}}}title"
             _sn_pub_tag = f"{{{_sn_ns}}}publication_date"
+            _sn_keywords_tag = f"{{{_sn_ns}}}keywords"
             for url_el in root.iter(_sm_url_tag):
                 loc = (url_el.findtext(_sm_loc_tag, "") or "").strip()
                 news = url_el.find(_sn_news_tag)
                 title = ""
                 pub = ""
+                keywords = ""
                 if news is not None:
                     title = (news.findtext(_sn_title_tag, "") or "").strip()
                     pub = (news.findtext(_sn_pub_tag, "") or "").strip()
+                    keywords = (news.findtext(_sn_keywords_tag, "") or "").strip()
                 if not title:
                     continue
-                items.append({"t": title, "l": loc, "p": pub, "d": "", "c": []})
+                cats = [c.strip() for c in keywords.split(",") if c.strip()]
+                items.append({"t": title, "l": loc, "p": pub, "d": keywords, "c": cats})
                 if len(items) >= max_items:
                     break
     except ET.ParseError:
@@ -16978,7 +17057,7 @@ def _get_cached_feeds(feed_type):
 # ── LLM Coverage Detection (2-Step Prompt Chain) ─────────────────────────
 import hashlib as _hashlib
 
-_coverage_cache = {}  # md5(title+link) → {covered, matched_title, confidence, reason, ts, source}
+_coverage_cache = {}  # md5(title+link) → {covered, matched_title, confidence, reason, ts, source, title_key, link_key, resolved}
 _coverage_cache_lock = threading.Lock()
 _COVERAGE_CACHE_TTL = 900   # 15 Minuten
 _COVERAGE_CYCLE_INTERVAL = 300  # 5 Minuten (Budget-Schonung)
@@ -16986,8 +17065,16 @@ _coverage_last_cycle_ts = 0
 _coverage_stats = {"step1_calls": 0, "step2_calls": 0, "cache_hits": 0, "last_cycle_ms": 0, "last_error": "", "debug": ""}
 
 
+def _normalize_coverage_title(title):
+    return (title or "").strip().lower()[:120]
+
+
+def _normalize_coverage_link(link):
+    return (link or "").strip().lower()[:200]
+
+
 def _coverage_cache_key(title, link=""):
-    raw = (title.strip().lower()[:120] + "|" + link.strip().lower()[:200]).encode("utf-8")
+    raw = (_normalize_coverage_title(title) + "|" + _normalize_coverage_link(link)).encode("utf-8")
     return _hashlib.md5(raw).hexdigest()
 
 
@@ -17213,7 +17300,8 @@ def _llm_coverage_check():
             title_val = uncached[idx][0]
             link_val = uncached[idx][1]
             key_val = uncached[idx][2]
-            _title_key = title_val.strip().lower()[:120]
+            _title_key = _normalize_coverage_title(title_val)
+            _link_key = _normalize_coverage_link(link_val)
 
             try:
                 conf = float(r.get("confidence") or 0.5)
@@ -17237,6 +17325,8 @@ def _llm_coverage_check():
                         "ts": now,
                         "source": "step1",
                         "title_key": _title_key,
+                        "link_key": _link_key,
+                        "resolved": True,
                     }
                 batch_cached += 1
             else:
@@ -17268,7 +17358,8 @@ def _llm_coverage_check():
                 step2_by_title[t] = r
 
         for item in ambiguous:
-            t_key = item["title"].strip().lower()[:120]
+            t_key = _normalize_coverage_title(item["title"])
+            l_key = _normalize_coverage_link(item.get("link", ""))
             s2 = step2_by_title.get(t_key)
             if s2:
                 try:
@@ -17289,17 +17380,21 @@ def _llm_coverage_check():
                         "ts": now,
                         "source": "step2",
                         "title_key": t_key,
+                        "link_key": l_key,
+                        "resolved": True,
                     }
             else:
                 with _coverage_cache_lock:
                     _coverage_cache[item["key"]] = {
-                        "covered": item["step1_covered"],
+                        "covered": False,
                         "matched_title": item.get("matched_bild_title") or "",
                         "confidence": item["step1_confidence"],
-                        "reason": (item.get("reason") or "") + " [Step2 missed]",
+                        "reason": (item.get("reason") or "") + " [Step2 missed; unresolved]",
                         "ts": now,
-                        "source": "step1_fallback",
+                        "source": "step2_missed",
                         "title_key": t_key,
+                        "link_key": l_key,
+                        "resolved": False,
                     }
 
     # Alte Cache-Eintraege aufraeumen (> 1h)
@@ -17830,8 +17925,17 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(gz_data)
                 return
 
+        if self.path.split("?")[0].startswith("/api/story-radar/"):
+            if _story_radar_api is None:
+                self._error(500, "Story Radar API unavailable")
+            else:
+                _story_radar_api.handle_get(self)
+            return
+
         if self.path == "/api/feed":
             self._proxy_xml(BILD_SITEMAP)
+        elif self.path == "/api/feed-items":
+            self._serve_primary_feed_items()
         elif self.path.startswith("/api/push/"):
             self._proxy_push_api(self.path[len("/api"):])
         elif self.path == "/api/competitors":
@@ -17914,6 +18018,20 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._send_gzip(data, "application/xml; charset=utf-8")
         except Exception as e:
             self._error(502, f"Proxy error: {e}")
+
+    def _serve_primary_feed_items(self):
+        """Liefert den BILD-Primärfeed bereits serverseitig geparst als JSON."""
+        try:
+            data = _fetch_url(BILD_SITEMAP, timeout=10)
+            if data is None:
+                raise Exception("Empty response")
+            xml_str = data.decode("utf-8", errors="replace") if isinstance(data, (bytes, bytearray)) else data
+            items = _parse_rss_items_standalone(xml_str, max_items=120)
+            if not items:
+                raise Exception("Keine Artikel im Feed gefunden")
+            self._send_gzip(json.dumps(items).encode(), "application/json; charset=utf-8")
+        except Exception as e:
+            self._error(502, f"Feed items error: {e}")
 
     def _proxy_push_api(self, path):
         """Proxy requests to the BILD Push API — mit Sync-Cache-Fallback."""
@@ -17998,25 +18116,51 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
             self._error(502, f"Sport Global feeds error: {e}")
 
     def _serve_coverage(self):
-        """GET /api/coverage — LLM Coverage-Ergebnisse, keyed by title_lower[:120]."""
+        """GET /api/coverage — LLM Coverage-Ergebnisse. items = title+link, results = unique-title fallback."""
         try:
             now = time.time()
-            results = {}
+            items = []
+            unique_by_title = {}
+            title_collisions = set()
             with _coverage_cache_lock:
                 for key, entry in _coverage_cache.items():
                     if (now - entry["ts"]) < _COVERAGE_CACHE_TTL:
-                        title_key = entry.get("title_key", key)
-                        results[title_key] = {
-                            "covered": entry["covered"],
+                        title_key = entry.get("title_key", "")
+                        item = {
+                            "cache_key": key,
+                            "title_key": title_key,
+                            "link_key": entry.get("link_key", ""),
+                            "covered": entry.get("covered", False),
                             "matched_title": entry.get("matched_title"),
                             "confidence": entry.get("confidence", 0),
                             "reason": entry.get("reason", ""),
                             "source": entry.get("source", ""),
+                            "resolved": entry.get("resolved", True),
                         }
+                        items.append(item)
+                        if title_key:
+                            if title_key in unique_by_title:
+                                title_collisions.add(title_key)
+                            else:
+                                unique_by_title[title_key] = item
+            results = {}
+            for title_key, item in unique_by_title.items():
+                if title_key in title_collisions:
+                    continue
+                results[title_key] = {
+                    "covered": item["covered"],
+                    "matched_title": item.get("matched_title"),
+                    "confidence": item.get("confidence", 0),
+                    "reason": item.get("reason", ""),
+                    "source": item.get("source", ""),
+                    "resolved": item.get("resolved", True),
+                    "link_key": item.get("link_key", ""),
+                }
             payload = {
+                "items": items,
                 "results": results,
                 "stats": dict(_coverage_stats),
-                "cache_size": len(results),
+                "cache_size": len(items),
                 "ttl": _COVERAGE_CACHE_TTL,
             }
             self._send_gzip(json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
@@ -18701,6 +18845,12 @@ class PushBalancerHandler(http.server.SimpleHTTPRequestHandler):
         if content_length > self._MAX_POST_BODY:
             self._error(413, "Request body too large")
             return
+        if self.path.split("?")[0].startswith("/api/story-radar/"):
+            if _story_radar_api is None:
+                self._error(500, "Story Radar API unavailable")
+            else:
+                _story_radar_api.handle_post(self)
+            return
         if self.path == "/api/check-plus":
             self._check_plus_urls()
         elif self.path == "/api/schwab-chat":
@@ -19357,6 +19507,7 @@ STIL:
                     messages=messages,
                     max_tokens=400,
                     temperature=0.8,
+                    timeout=30,
                 )
                 schwab_reply = response.choices[0].message.content.strip()
             except Exception as e:
@@ -20157,6 +20308,7 @@ def _health_checker():
     import socket
     endpoints = [
         ("/api/feed", "Sitemap Feed"),
+        ("/api/feed-items", "Sitemap Feed JSON"),
         ("/api/forschung", "Forschung"),
         ("/api/competitors", "Konkurrenz-Feeds"),
         ("/push-balancer.html", "Frontend HTML"),
@@ -20251,6 +20403,7 @@ if __name__ == "__main__":
     print(f"Push Balancer server on http://localhost:{PORT}")
     print(f"  HTML:         http://localhost:{PORT}/push-balancer.html")
     print(f"  Feed:         http://localhost:{PORT}/api/feed")
+    print(f"  Feed JSON:    http://localhost:{PORT}/api/feed-items")
     print(f"  Push API:     http://localhost:{PORT}/api/push/...")
     print(f"  Competitors:  http://localhost:{PORT}/api/competitors")
     comps = ", ".join(COMPETITOR_FEEDS.keys())
@@ -20299,51 +20452,28 @@ if __name__ == "__main__":
                 _research_state["_stacking_counter"] = _stacking_counter
                 # Stacking Meta-Modell alle 30 Zyklen (~10 Min) trainieren
                 if _stacking_counter % 30 == 0:
-                    _train_stacking_model(_research_state)
+                    _run_background_task_once("stacking_train", _train_stacking_model, _research_state)
                 # LightGBM ML-Modell alle 1080 Zyklen (~6h) trainieren, erster Train bei Zyklus 1
                 if _stacking_counter == 1 or _stacking_counter % 1080 == 0:
-                    try:
-                        _ml_train_model()
-                    except Exception as _mle:
-                        log.warning(f"[ML] Training-Fehler im Research-Worker: {_mle}")
-                        import traceback
-                        log.warning(traceback.format_exc())
+                    _run_background_task_once("ml_train", _ml_train_model)
                 # GBRT-Modell: erster Train bei Zyklus 3, danach alle 360 Zyklen (~2h)
                 if _stacking_counter == 3 or _stacking_counter % 360 == 0:
-                    try:
-                        _gbrt_train()
-                    except Exception as _ge:
-                        log.warning(f"[GBRT] Training-Fehler: {_ge}")
+                    _run_background_task_once("gbrt_train", _gbrt_train)
                 # Unified ML Training: erster Train bei Zyklus 5, danach alle 1440 Zyklen (~8h)
                 if _stacking_counter == 5 or _stacking_counter % 1440 == 0:
-                    try:
-                        _unified_train()
-                    except Exception as _ue:
-                        log.warning(f"[Unified] Training-Fehler: {_ue}")
+                    _run_background_task_once("unified_train", _unified_train)
                 # GBRT Concept Drift Detection alle 60 Zyklen (~20 Min)
                 if _stacking_counter % 60 == 0 and _stacking_counter > 3:
-                    try:
-                        _gbrt_check_drift(_research_state)
-                    except Exception as _de:
-                        log.warning(f"[GBRT] Drift-Check-Fehler: {_de}")
+                    _run_background_task_once("gbrt_drift", _gbrt_check_drift, _research_state)
                 # GBRT Online Learning alle 90 Zyklen (~30 Min)
                 if _stacking_counter % 90 == 0 and _stacking_counter > 5:
-                    try:
-                        _gbrt_online_update()
-                    except Exception as _oe:
-                        log.warning(f"[GBRT] Online-Update-Fehler: {_oe}")
+                    _run_background_task_once("gbrt_online_update", _gbrt_online_update)
                 # Monitoring Tick: erster bei Zyklus 5, danach alle 60 Zyklen (~20 Min)
                 if _stacking_counter == 5 or (_stacking_counter % 60 == 0 and _stacking_counter > 5):
-                    try:
-                        _monitoring_tick()
-                    except Exception as _me:
-                        log.warning(f"[Monitoring] Tick-Fehler: {_me}")
+                    _run_background_task_once("monitoring_tick", _monitoring_tick)
                 # Tagesplan-Cache alle 15 Zyklen (~5 Min) im Hintergrund auffrischen
                 if _stacking_counter % 15 == 0:
-                    try:
-                        _ml_build_tagesplan(background=True)
-                    except Exception as _tp_e:
-                        log.debug(f"[Tagesplan] Background-Refresh: {_tp_e}")
+                    _run_background_task_once("tagesplan_refresh", _ml_build_tagesplan, background=True)
                 # (Auto-Suggestion läuft in eigenem Thread — siehe _auto_sug_worker)
                 # Tuning-State alle 5 Zyklen (100s) auf Disk speichern
                 if _research_state.get("tuning_params_version", 0) > 0:
