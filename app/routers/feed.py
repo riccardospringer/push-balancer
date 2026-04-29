@@ -241,54 +241,21 @@ def _parse_pub_timestamp(pub_date: str) -> float:
 
 
 def _build_article_score(category: str, title: str, pub_date: str, article_type: str) -> tuple[float, str]:
-    now_ts = time.time()
-    pub_ts = _parse_pub_timestamp(pub_date)
-    age_hours = max(0.0, (now_ts - pub_ts) / 3600) if pub_ts > 0 else 6.0
-    title_upper = title.upper()
-    title_lower = title.lower()
-
-    base = {
-        "politik": 58.0,
-        "sport": 62.0,
-        "news": 56.0,
-        "wirtschaft": 54.0,
-        "unterhaltung": 50.0,
-        "regional": 49.0,
-        "digital": 51.0,
-    }.get(category, 50.0)
-
-    score = base
+    score = _ARTICLE_CATEGORY_SCORES.get(category, 60.0)
     reasons: list[str] = []
+    title_upper = title.upper()
 
-    if age_hours <= 1:
-        score += 18.0
-        reasons.append("sehr frisch")
-    elif age_hours <= 3:
-        score += 12.0
-        reasons.append("frisch")
-    elif age_hours <= 8:
-        score += 6.0
-    elif age_hours >= 24:
-        score -= 8.0
-        reasons.append("älter")
-
-    if any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS):
-        score += 8.0
-        reasons.append("breaking")
-
-    if "liveticker" in title_lower or "live" in title_lower:
-        score += 4.0
-        reasons.append("live")
-
-    if category == "sport":
-        score += 3.0
-        reasons.append("sport-fit")
+    for keyword in _ARTICLE_BREAKING_KEYWORDS:
+        if keyword in title_upper:
+            score += 6.0
+            reasons.append("breaking")
+            break
 
     if article_type == "video":
         score -= 9.0
         reasons.append("video-abschlag")
 
-    return max(18.0, min(score, 100.0)), ", ".join(reasons[:3])
+    return max(18.0, min(score, 100.0)), ", ".join(reasons[:2])
 
 
 def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[dict[str, Any]]:
