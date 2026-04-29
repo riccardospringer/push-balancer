@@ -21,6 +21,7 @@ import type { Article } from '@/types/api'
 
 const CATEGORIES = [
   'alle',
+  'ohne sport',
   'politik',
   'sport',
   'unterhaltung',
@@ -162,7 +163,9 @@ export function KandidatenPage() {
   const filtered = useMemo<Article[]>(() => {
     if (!data?.articles) return []
     let list = data.articles
-    if (kandidatenCategory !== 'alle') {
+    if (kandidatenCategory === 'ohne sport') {
+      list = list.filter((a) => a.category?.toLowerCase() !== 'sport')
+    } else if (kandidatenCategory !== 'alle') {
       list = list.filter(
         (a) => a.category?.toLowerCase() === kandidatenCategory,
       )
@@ -260,7 +263,7 @@ export function KandidatenPage() {
                 active={kandidatenCategory === cat}
                 onClick={() => setKandidatenCategory(cat)}
               >
-                {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                {cat === 'ohne sport' ? 'Ohne Sport' : cat.charAt(0).toUpperCase() + cat.slice(1)}
               </FilterChip>
             ))}
           </div>

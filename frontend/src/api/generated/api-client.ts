@@ -1,5 +1,6 @@
 import type {
   AdobeTrafficResponse,
+  PushAlarmResponse,
   CompetitorResponse,
   FeedResponse,
   ForschungResponse,
@@ -16,7 +17,17 @@ import type {
   TagesplanRetroResponse,
   TagesplanSuggestionsResponse,
 } from '@/types/api'
-import { rawClient } from './api-client-base'
+import { rawClient, ApiError } from './api-client-base'
+
+async function fetchJson<T>(path: string, method: 'GET' | 'POST' = 'GET', signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    signal,
+    headers: { Accept: 'application/json' },
+  })
+  if (!res.ok) throw new ApiError(res.status, `${res.status} ${path}`)
+  return res.json() as Promise<T>
+}
 
 export const api = {
   health: async (signal?: AbortSignal): Promise<HealthResponse> => {
@@ -61,6 +72,12 @@ export const api = {
 
   feed: (signal?: AbortSignal) =>
     rawClient.listArticles({}, signal) as Promise<FeedResponse>,
+
+  pushAlarm: (signal?: AbortSignal) =>
+    fetchJson<PushAlarmResponse>('/api/push-alarm', 'GET', signal),
+
+  dismissPushAlarm: () =>
+    fetchJson<{ ok: boolean }>('/api/push-alarm/dismiss', 'POST'),
 
   pushStats: (signal?: AbortSignal) =>
     rawClient.listPushes({}, signal) as Promise<PushStatsResponse>,

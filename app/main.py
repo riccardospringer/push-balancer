@@ -47,6 +47,7 @@ from app.config import (
 from app.database import init_db, push_db_count, push_db_upsert
 from app.ml.gbrt import gbrt_load_model
 from app.routers import (
+    alarm,
     feed,
     forschung,
     gbrt,
@@ -793,6 +794,52 @@ def _start_background_workers() -> None:
     else:
         log.info("[MemCleanup] Deaktiviert, da keine Autoloops laufen")
 
+    # ── Push-Alarm Worker ──────────────────────────────────────────────────
+    def _push_alarm_worker() -> None:
+        from app.push_alarm.logic import check_push_alarm
+        from app.routers.alarm import update_alarm_state
+        from app.routers.feed import _fetch_url, _extract_sitemap_articles
+        from app.tagesplan.builder import _tagesplan_cache
+        from app.config import BILD_SITEMAP, PUSH_DB_PATH
+        import datetime
+
+        log.info("[PushAlarm] Worker gestartet (alle 90s)")
+        while True:
+            try:
+                xml = _fetch_url(BILD_SITEMAP)
+                articles = _extract_sitemap_articles(xml, max_items=60) if xml else []
+
+                # ML-Prediction anreichern wenn verfügbar
+                try:
+                    from app.ml.predict import predict_or
+                    from app.research.worker import _research_state
+                    now = datetime.datetime.now()
+                    for a in articles:
+                        result = predict_or(
+                            {"title": a["title"], "headline": a["title"],
+                             "cat": a["category"], "hour": now.hour,
+                             "ts_num": int(now.timestamp()),
+                             "is_eilmeldung": a["isEilmeldung"],
+                             "link": a["url"], "channels": []},
+                            _research_state,
+                        )
+                        por = (result or {}).get("predicted_or")
+                        if por is not None:
+                            a["predictedOR"] = round(float(por) / 100, 4)
+                except Exception:
+                    pass
+
+                # Tagesplan-State für Golden-Hour-Erkennung
+                tp_state = (_tagesplan_cache.get("redaktion") or {}).get("result")
+
+                recommendation = check_push_alarm(articles, PUSH_DB_PATH, tp_state)
+                update_alarm_state(recommendation)
+            except Exception as exc:
+                log.warning("[PushAlarm] Worker-Fehler: %s", exc)
+            time.sleep(90)
+
+    threading.Thread(target=_push_alarm_worker, daemon=True).start()
+
 
 # ── FastAPI App ────────────────────────────────────────────────────────────
 
@@ -922,6 +969,7 @@ app.add_middleware(
 )
 
 # ── Routers ────────────────────────────────────────────────────────────────
+app.include_router(alarm.router, tags=["PushAlarm"])
 app.include_router(health.router, tags=["Health"])
 app.include_router(forschung.router, tags=["Forschung"])
 app.include_router(tagesplan.router, tags=["Tagesplan"])

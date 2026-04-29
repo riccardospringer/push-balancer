@@ -259,6 +259,31 @@ export interface AdobeTrafficResponse {
   fetchedAt: string
 }
 
+// ── Push Alarm ────────────────────────────────────────────────────────────────
+
+export interface PushAlarmArticle {
+  title: string
+  url: string
+  score: number
+  predictedOR: number | null
+  category: string
+  isBreaking: boolean
+  isEilmeldung: boolean
+  reason: string
+  pushesToday: number
+  minsSinceLastPush: number | null
+  goldenHour: boolean
+  expectedORNow: number | null
+}
+
+export interface PushAlarmResponse {
+  active: boolean
+  article: PushAlarmArticle | null
+  reason: string
+  checkedAt: number
+  dismissedForSecs: number
+}
+
 // ── Push Title / Schwab ────────────────────────────────────────────────────────
 
 export interface GenerateTitleRequest {
