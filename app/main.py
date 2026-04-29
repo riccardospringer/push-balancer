@@ -1000,28 +1000,26 @@ async def frontend_root_entrypoint() -> Response:
     raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
 
 
+@app.get("/", include_in_schema=False)
+@app.get("/kandidaten", include_in_schema=False)
+@app.get("/kandidaten/", include_in_schema=False)
 @app.get("/push-balancer.html", include_in_schema=False)
-async def frontend_compat_entrypoint() -> Response:
-    """Liefert die historische interne Push-Balancer-Oberflaeche aus."""
-    return _legacy_frontend_response()
-
-
 @app.get("/dist-frontend", include_in_schema=False)
 @app.get("/dist-frontend/", include_in_schema=False)
-@app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
-async def frontend_dist_entrypoint(asset_path: str = "") -> Response:
-    """Kompatibilitaetspfad fuer historische interne Einstiege und alte Asset-Links."""
-    normalized_asset_path = asset_path.lstrip("/")
-    if normalized_asset_path:
-        candidate_path = os.path.normpath(os.path.join(SERVE_DIR, normalized_asset_path))
-        if candidate_path.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate_path):
-            return FileResponse(candidate_path)
+async def frontend_entrypoint() -> Response:
+    """Liefert push-balancer.html als primäre Oberfläche."""
     return _legacy_frontend_response()
 
-# ── Statische Dateien (HTML, JS, CSS) ─────────────────────────────────────
-# Wird nach den API-Routen gemountet, damit /api/* Priorität hat
-if os.path.isdir(SERVE_DIR):
-    app.mount("/", StaticFiles(directory=SERVE_DIR, html=True), name="static")
+
+@app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
+async def frontend_dist_assets(asset_path: str = "") -> Response:
+    """Statische Assets aus dist-frontend (JS/CSS Bundles für alte Links)."""
+    normalized = asset_path.lstrip("/")
+    if normalized:
+        candidate = os.path.normpath(os.path.join(SERVE_DIR, normalized))
+        if candidate.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+    return _legacy_frontend_response()
 
 
 # ── Einstiegspunkt für direkten Start ─────────────────────────────────────
