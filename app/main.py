@@ -425,8 +425,8 @@ def _start_background_workers() -> None:
     from app.ml.lightgbm_model import ml_train_model, unified_train, train_stacking_model
     from app.tagesplan.builder import build_tagesplan
 
-    # 5. Feed-Cache Worker
-    if BACKGROUND_AUTOMATIONS_ENABLED:
+    # 5. Feed-Cache Worker — läuft immer (günstig: nur RSS-HTTP-Fetches, kein ML)
+    if True:
         def _feed_cache_worker():
             from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS, SPORT_COMPETITOR_FEEDS, SPORT_EUROPA_FEEDS, SPORT_GLOBAL_FEEDS
             from app.research.worker import _feed_cache, _feed_cache_lock
