@@ -278,6 +278,12 @@ def _frontend_assets_dir() -> str:
 
 
 def _legacy_frontend_path() -> str:
+    # push-balancer.html liegt eine Ebene über app/ im Projekt-Root
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(root, "push-balancer.html")
+    if os.path.isfile(p):
+        return p
+    # Fallback auf legacy_push_balancer.html im app/-Verzeichnis
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
 
 
@@ -990,14 +996,6 @@ def _legacy_frontend_response() -> Response:
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
-
-
-@app.get("/", include_in_schema=False)
-async def frontend_root_entrypoint() -> Response:
-    frontend_response = _frontend_html_response("/")
-    if frontend_response is not None:
-        return frontend_response
-    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
 
 
 @app.get("/", include_in_schema=False)
