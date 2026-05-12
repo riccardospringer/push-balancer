@@ -8059,16 +8059,23 @@ function buildPushReasoning(article) {
 function findSimilarPushes(title, limit) {
   if (livePushes.length === 0) return [];
   const kw = extractKeywords(title.toLowerCase());
+  const ents = new Set(extractEntities(title));
   if (kw.length === 0) return [];
   const scored = livePushes
     .filter(m => m.openingRate != null)
     .map(m => {
-      const pkw = extractKeywords((m.kickerAndHeadline || '').toLowerCase());
-      const overlap = kw.filter(k => pkw.includes(k)).length;
-      return { ...m, similarity: overlap / Math.max(kw.length, 1) };
+      const pushTitle = m.kickerAndHeadline || m.headline || '';
+      const pkw = extractKeywords(pushTitle.toLowerCase());
+      const pEnts = new Set(extractEntities(pushTitle));
+      const kwOverlap = kw.filter(k => pkw.includes(k)).length;
+      const entOverlap = [...ents].filter(e => pEnts.has(e)).length;
+      // Score: Keywords + Entitäten (Eigennamen zählen doppelt)
+      const score = kwOverlap + entOverlap * 2;
+      return { ...m, _score: score, _kwOverlap: kwOverlap, _entOverlap: entOverlap };
     })
-    .filter(m => m.similarity >= 0.25)
-    .sort((a, b) => b.similarity - a.similarity);
+    // Mindestens 2 Keyword-Treffer ODER 1 Eigenname + 1 Keyword — kein Raten
+    .filter(m => m._kwOverlap >= 2 || (m._entOverlap >= 1 && m._kwOverlap >= 1))
+    .sort((a, b) => b._score - a._score);
   return scored.slice(0, limit);
 }
 
