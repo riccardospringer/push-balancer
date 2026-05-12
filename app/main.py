@@ -383,6 +383,17 @@ def _frontend_html_response(request_path: str) -> Response | None:
     return response
 
 
+_ALWAYS_PUBLIC_PREFIXES = (
+    "/assets/",
+    "/api/health",
+    "/api/push-alarm",
+    "/favicon",
+    "/robots.txt",
+)
+
+def _is_always_public(path: str) -> bool:
+    return any(path.startswith(p) for p in _ALWAYS_PUBLIC_PREFIXES)
+
 def _is_frontend_navigation_request(method: str, path: str) -> bool:
     if method != "GET":
         return False
@@ -944,7 +955,7 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     request.scope["path"] = normalized_path
     frontend_navigation = _is_frontend_navigation_request(request.method, normalized_path)
 
-    if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path):
+    if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path) or _is_always_public(normalized_path) or normalized_path in ("/", "/push-balancer.html", "/dist-frontend/"):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             frontend_response = _frontend_html_response(normalized_path)
