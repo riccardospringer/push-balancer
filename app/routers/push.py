@@ -338,6 +338,60 @@ def get_pushes(
     return JSONResponse(content=_build_pushes_response(limit, days, sort, category))
 
 
+@router.get("/api/pushes/export.csv")
+def export_pushes_csv(
+    days: int = 90,
+    limit: int = 10000,
+    sort: str = "sentAt",
+    category: str = "",
+) -> Response:
+    """CSV-Download des Push-History-Datasets.
+
+    Browser-freundlich: einfach URL aufrufen → Datei wird heruntergeladen,
+    Excel/Numbers oeffnet das Format direkt. Kein Tool, kein Auth, kein Skript.
+    Default: 90 Tage, bis zu 10000 Pushes.
+    """
+    import csv
+    import io
+
+    payload = _build_pushes_response(limit, days, sort, category)
+    pushes = payload.get("pushes", [])
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow([
+        "id", "sent_at", "title", "channel", "category", "type",
+        "recipients", "opened", "open_rate_pct", "predicted_or_pct",
+        "performance_delta_pct", "push_score", "frozen_xor", "url",
+    ])
+    for p in pushes:
+        writer.writerow([
+            p.get("id", ""),
+            p.get("sentAt", ""),
+            (p.get("title") or "").replace("\n", " ").replace("\r", " "),
+            p.get("channel", ""),
+            p.get("category", ""),
+            p.get("type", ""),
+            p.get("recipients") or 0,
+            p.get("opened") or 0,
+            f"{(p.get('openRate') or 0) * 100:.2f}",
+            f"{(p.get('predictedOR') or 0) * 100:.2f}" if p.get("predictedOR") is not None else "",
+            f"{(p.get('performanceDelta') or 0) * 100:.2f}" if p.get("performanceDelta") is not None else "",
+            p.get("pushScore") or 0,
+            p.get("frozenXor") or "",
+            p.get("url") or "",
+        ])
+    today_str = dt.datetime.now().strftime("%Y-%m-%d")
+    filename = f"push-balancer-export_{today_str}_{days}d.csv"
+    # UTF-8 BOM, damit Excel Umlaute korrekt erkennt
+    body = "\ufeff" + buf.getvalue()
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/api/pushes/sync")
 def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     """Empfängt Push-Daten von lokalem Server (Relay für Render).
