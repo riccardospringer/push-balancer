@@ -630,9 +630,6 @@ def _start_background_workers() -> None:
 
     threading.Thread(target=_preload_caches, daemon=True).start()
     log.info("[Preload] Tagesplan-Vorberechnung gestartet")
-        log.info("[Preload] Caches werden im Hintergrund aufgebaut")
-    else:
-        log.info("[Preload] Deaktiviert, Warmups laufen nur bei Bedarf")
 
     # 11. Adobe Analytics Traffic Worker
     from app.routers.misc import _adobe_state
