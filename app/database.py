@@ -16,6 +16,35 @@ log = logging.getLogger("push-balancer")
 
 _push_db_lock = threading.Lock()
 
+# ── Push-Score Snapshot ────────────────────────────────────────────────────────
+
+_CAT_SCORES: dict[str, int] = {
+    "politik": 82, "sport": 78, "news": 76, "wirtschaft": 74,
+    "unterhaltung": 66, "regional": 62, "digital": 68,
+}
+_BREAKING_KW = ("EIL", "BREAKING", "EXKLUSIV", "SCHOCK", "WARNUNG")
+
+def calc_push_score_snapshot(title: str, cat: str, kicker: str = "") -> int:
+    """Berechnet den Push-Score zum Versandzeitpunkt und speichert ihn unveränderlich.
+
+    Rein deterministisch: Kategorie-Basis + Breaking-Bonus.
+    Kein Frische-Faktor — Score ändert sich nach Versand nie mehr.
+    """
+    raw = (cat or kicker or "").lower().strip()
+    resolved = (
+        "sport"        if "sport"   in raw else
+        "politik"      if "polit"   in raw else
+        "wirtschaft"   if "wirtsch" in raw or "geld" in raw else
+        "unterhaltung" if "unterh"  in raw or "star" in raw or "people" in raw else
+        "regional"     if "region"  in raw else
+        "digital"      if "digital" in raw or "tech" in raw else
+        "news"
+    )
+    score = _CAT_SCORES.get(resolved, 60)
+    if any(kw in (title or "").upper() for kw in _BREAKING_KW):
+        score += 6
+    return min(score, 100)
+
 
 # ── Init ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +83,7 @@ def init_db() -> None:
         ("target_stats", "TEXT", "'{}'"), ("app_list", "TEXT", "'[]'"),
         ("n_apps", "INTEGER", "0"), ("total_recipients", "INTEGER", "0"),
         ("weekday", "INTEGER", "-1"),
+        ("push_score", "INTEGER", "0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE pushes ADD COLUMN {_col} {_type} DEFAULT {_default}")
@@ -335,10 +365,15 @@ def push_db_upsert(parsed_pushes: list) -> int:
                 _weekday = (_dt_mod.datetime.fromtimestamp(_ts_num).weekday() + 1) % 7
             except Exception:
                 _weekday = -1
+            _push_score = calc_push_score_snapshot(
+                p.get("title") or p.get("headline") or "",
+                p.get("cat", ""),
+                p.get("kicker", ""),
+            )
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
                 cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
-                target_stats, app_list, n_apps, total_recipients)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                target_stats, app_list, n_apps, total_recipients, push_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     or_val = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
                     opened = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
@@ -346,12 +381,13 @@ def push_db_upsert(parsed_pushes: list) -> int:
                     target_stats = CASE WHEN length(excluded.target_stats) > 2 THEN excluded.target_stats ELSE target_stats END,
                     n_apps = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
                     total_recipients = CASE WHEN excluded.total_recipients > 0 THEN excluded.total_recipients ELSE total_recipients END,
+                    push_score = CASE WHEN push_score = 0 THEN excluded.push_score ELSE push_score END,
                     updated_at = ?
             """, (mid, _ts_num, p.get("or", p.get("or_val", 0)), p.get("title", ""), p.get("headline", ""),
                   p.get("kicker", ""), p.get("cat", ""), p.get("link", ""), p.get("type", "editorial"),
                   p.get("hour", -1), _weekday, p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
                   p.get("channel", ""), json.dumps(p.get("channels", [])), 1 if p.get("is_eilmeldung") else 0,
-                  now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0), now))
+                  now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0), _push_score, now))
             count += cur.rowcount
         conn.commit()
         conn.close()

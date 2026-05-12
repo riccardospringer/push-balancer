@@ -8287,6 +8287,24 @@ async function fetchChannels() {
   } catch (e) { console.warn('Channel fetch failed:', e); }
 }
 
+// Score-Map: messageId → gespeicherter push_score aus DB (unveränderlicher Snapshot)
+const _dbScoreMap = new Map();
+async function _loadDbScoreMap() {
+  try {
+    const r = await fetch(API_BASE + '/api/pushes?days=3&limit=500');
+    if (!r.ok) return;
+    const d = await r.json();
+    (d.pushes || []).forEach(p => { if (p.id && p.pushScore) _dbScoreMap.set(p.id, p.pushScore); });
+  } catch(e) { console.warn('[scoreMap] load failed', e); }
+}
+_loadDbScoreMap(); // Einmalig beim Seitenstart laden
+
+function getPushScore(msg) {
+  const id = msg.messageId || msg.id;
+  if (id && _dbScoreMap.has(id)) return _dbScoreMap.get(id); // Snapshot aus DB
+  return calcPushScore(msg); // Fallback: retroaktiv
+}
+
 let _fetchLiveLock = false;
 async function fetchLivePushes() {
   if (_fetchLiveLock) return; // Overlap-Guard: verhindert parallele Aufrufe
@@ -8574,7 +8592,7 @@ function renderLivePushes() {
       <div>
         <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}</div>
         <div style="display:flex;align-items:baseline;gap:0">
-          ${(() => { const s = calcPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-badge ${cls}" title="Push-Score beim Versand">${s}</span>`; })()}
+          ${(() => { const s = getPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-badge ${cls}" title="Push-Score beim Versand (Snapshot)">${s}</span>`; })()}
           <span class="lr-title">${escapeHtml(title)}</span>
         </div>
       </div>

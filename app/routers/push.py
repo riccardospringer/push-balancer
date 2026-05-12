@@ -183,6 +183,15 @@ def _build_pushes_response(
             today_rows.append(row)
         predicted_or = prediction_map.get(str(row.get("message_id", "")))
         open_rate = round(_ratio(row.get("or")), 4)
+        push_score = row.get("push_score") or 0
+        # Backfill: falls Altdaten noch push_score=0, jetzt berechnen
+        if not push_score:
+            from app.database import calc_push_score_snapshot
+            push_score = calc_push_score_snapshot(
+                row.get("title") or row.get("headline") or "",
+                row.get("cat", ""),
+                row.get("kicker", ""),
+            )
         pushes.append(
             {
                 "id": row.get("message_id", ""),
@@ -199,6 +208,7 @@ def _build_pushes_response(
                     round(open_rate - predicted_or, 4) if predicted_or is not None else None
                 ),
                 "url": row.get("link") or None,
+                "pushScore": push_score,
             }
         )
 
