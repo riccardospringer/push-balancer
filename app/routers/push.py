@@ -186,13 +186,20 @@ def _build_pushes_response(
         push_score = row.get("push_score") or 0
         # Backfill: falls Altdaten noch push_score=0, jetzt berechnen
         if not push_score:
-            from app.database import calc_push_score_snapshot
-            push_score = calc_push_score_snapshot(
-                row.get("title") or row.get("headline") or "",
-                row.get("cat", ""),
-                row.get("kicker", ""),
-                row.get("link", ""),
-            )
+            # 1. Echter Kandidaten-Score aus dem Browser-Cache (wenn Tool offen war)
+            link = row.get("link", "")
+            if link:
+                from app.routers.score_capture import get_score_for_url
+                push_score = get_score_for_url(link) or 0
+            # 2. Fallback: Formel-Approximation
+            if not push_score:
+                from app.database import calc_push_score_snapshot
+                push_score = calc_push_score_snapshot(
+                    row.get("title") or row.get("headline") or "",
+                    row.get("cat", ""),
+                    row.get("kicker", ""),
+                    row.get("link", ""),
+                )
         pushes.append(
             {
                 "id": row.get("message_id", ""),

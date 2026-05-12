@@ -55,6 +55,7 @@ from app.routers import (
     misc,
     ml,
     push,
+    score_capture,
     tagesplan,
 )
 
@@ -986,6 +987,7 @@ app.add_middleware(
 
 # ── Routers ────────────────────────────────────────────────────────────────
 app.include_router(alarm.router, tags=["PushAlarm"])
+app.include_router(score_capture.router, tags=["ScoreCapture"])
 app.include_router(health.router, tags=["Health"])
 app.include_router(forschung.router, tags=["Forschung"])
 app.include_router(tagesplan.router, tags=["Tagesplan"])

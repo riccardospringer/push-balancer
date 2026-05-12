@@ -4517,6 +4517,8 @@ function applyFilterAndSort(forceInvalidate) {
   }
 
   renderArticles();
+  // Score-Snapshot: Top-20 Artikel-Scores ins Backend schreiben (für Live-Push Score-Zuordnung)
+  _captureArticleScores(filteredArticles.slice(0, 20));
   // Server-ML-Predictions async holen
   if (filteredArticles.length > 0) _fetchServerPredictions(filteredArticles);
 }
@@ -6869,6 +6871,26 @@ let _orCacheVersion = 0; window._orCacheVersion = _orCacheVersion;
 const _serverORCache = new Map(); window._serverORCache = _serverORCache;
 let _serverPredictionInFlight = false;
 function _invalidateORCache() { _orCache.clear(); _orCacheVersion++; }
+
+// ── Score-Capture: echte Kandidaten-Scores ans Backend senden ─────────────────
+let _captureThrottle = 0;
+async function _captureArticleScores(articles) {
+  const now = Date.now();
+  if (now - _captureThrottle < 30000) return; // max alle 30s
+  _captureThrottle = now;
+  if (!articles || articles.length === 0) return;
+  const payload = articles
+    .filter(a => a.link && a.score > 0)
+    .map(a => ({ url: a.link, score: Math.round(a.score * 10) / 10, ts: Math.floor(now / 1000) }));
+  if (payload.length === 0) return;
+  try {
+    await fetch(API_BASE + '/api/score-capture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scores: payload }),
+    });
+  } catch(e) { /* silent fail — Score-Capture ist optional */ }
+}
 
 // Server-Batch-Prediction: holt ML-Prognosen fuer ALLE Kandidaten vom Server.
 // Sendet in Tranchen von je 100 Artikeln, damit jeder eine individuelle Prognose bekommt.
