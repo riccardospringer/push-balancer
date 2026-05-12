@@ -4439,10 +4439,10 @@ function applyFilterAndSort(forceInvalidate) {
     return new Set(t.split(/[\s\-:!?,.\u201E\u201C\u201D"()|]+/).filter(w => w.length >= 4 && !_topicStops.has(w)));
   });
 
-  // Phase 3: Score-Korrektur anwenden (NICHT fuer Sport — Sport hat eigene stabile Formel)
+  // Phase 3: Score-Korrektur anwenden (Sport: 50% Penalty-Stärke — entschärft Sport-Bias)
   filteredArticles.forEach((a, idx) => {
     if (!a.scoreBreakdown) return;
-    if (isSportArticle(a)) return; // Sport: keine Topic-Saturation/Keyword-Dampening
+    const _penaltyScale = isSportArticle(a) ? 0.5 : 1.0; // Sport bleibt teilweise geschützt
     const text = ((a.title || '') + ' ' + (a.description || '')).toUpperCase();
     const aWords = _artWordSets[idx];
 
@@ -4475,11 +4475,14 @@ function applyFilterAndSort(forceInvalidate) {
       topicSatFactor = Math.max(0.70, 1.0 - 0.07 * Math.log2(similarCount + 1));
     }
 
-    // (C) Kombinierte Penalty auf Relevanz-Anteil anwenden
+    // (C) Kombinierte Penalty auf Relevanz-Anteil anwenden (Sport: 50% Penalty-Skala)
     const combinedFactor = Math.min(kwDampFactor, topicSatFactor);
-    if (combinedFactor < 1.0) {
+    const scaledFactor = combinedFactor < 1.0
+      ? 1.0 - (1.0 - combinedFactor) * _penaltyScale
+      : 1.0;
+    if (scaledFactor < 1.0) {
       const relOrig = a.scoreBreakdown.relevanz || 0;
-      const dampedRel = Math.round(relOrig * combinedFactor * 10) / 10;
+      const dampedRel = Math.round(relOrig * scaledFactor * 10) / 10;
       const relDiff = relOrig - dampedRel;
       a.scoreBreakdown._topicPenalty = -Math.round(relDiff * 10) / 10;
       if (kwDampFactor <= topicSatFactor) {
@@ -4501,11 +4504,8 @@ function applyFilterAndSort(forceInvalidate) {
     const orPred = predictOR(a);
     a._cachedOR = orPred;
     const xor = (orPred && orPred.or > 0) ? orPred.or : _avgOR;
-    // Sport: engerer xorFactor-Bereich (0.8-1.3) fuer weniger Volatilität
-    const _isSport = isSportArticle(a);
-    const xorFactor = _isSport
-      ? Math.min(1.3, Math.max(0.8, xor / _avgOR))
-      : Math.min(2.0, Math.max(0.5, xor / _avgOR));
+    // Einheitlicher xorFactor-Bereich (0.6-1.5) — Sport bekommt keinen Sonder-Bonus mehr
+    const xorFactor = Math.min(1.5, Math.max(0.6, xor / _avgOR));
     a.combinedScore = Math.min(100, Math.max(0,
       Math.round(a.score * xorFactor * 10) / 10
     ));
@@ -4537,6 +4537,40 @@ function applyFilterAndSort(forceInvalidate) {
       // Stabiler Tiebreaker: bei gleichem Score nach ID sortieren (verhindert Flicker)
       return d !== 0 ? d : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     });
+  }
+
+  // Diversitäts-Cap: Max 4 Sport-Artikel in Top 10 (nur wenn kein Sport-Filter aktiv)
+  // Sport-Artikel jenseits des Caps werden hinter die Top 10 verschoben, Reihenfolge sonst stabil.
+  if (currentFilter !== 'sport' && filteredArticles.length > 10) {
+    const SPORT_CAP = 4;
+    const top = filteredArticles.slice(0, 10);
+    const rest = filteredArticles.slice(10);
+    let sportInTop = 0;
+    const keptTop = [];
+    const overflowSport = [];
+    for (const a of top) {
+      if (isSportArticle(a)) {
+        if (sportInTop < SPORT_CAP) { keptTop.push(a); sportInTop++; }
+        else overflowSport.push(a);
+      } else {
+        keptTop.push(a);
+      }
+    }
+    if (overflowSport.length > 0) {
+      // Hole Nicht-Sport aus rest nach vorne, um auf 10 zu kommen
+      const nonSportFromRest = [];
+      const remainingRest = [];
+      for (const a of rest) {
+        if (keptTop.length + nonSportFromRest.length < 10 && !isSportArticle(a)) {
+          nonSportFromRest.push(a);
+        } else {
+          remainingRest.push(a);
+        }
+      }
+      filteredArticles = [...keptTop, ...nonSportFromRest, ...overflowSport, ...remainingRest];
+      window.filteredArticles = filteredArticles;
+      window._latestFilteredArticles = filteredArticles;
+    }
   }
 
   renderArticles();
@@ -8356,8 +8390,10 @@ const _dbXorMap = new Map();
 
 function getFrozenXor(msg) {
   const id = msg.messageId || msg.id;
-  if (id && _dbXorMap.has(id)) return _dbXorMap.get(id); // Snapshot aus DB
-  return null; // Kein frozen XOR — nicht anzeigen
+  if (id && _dbXorMap.has(id)) return _dbXorMap.get(id); // Snapshot aus DB (eingefroren)
+  // Fallback: clientseitige Live-Berechnung wenn DB-Snapshot fehlt
+  // (alte Pushes vor Freeze-Feature, oder API-Map noch nicht geladen)
+  try { return calcExpectedORForPush(msg); } catch (e) { return null; }
 }
 _loadDbScoreMap(); // Einmalig beim Seitenstart laden
 
@@ -14719,7 +14755,12 @@ function calcPushScore(msg) {
 // ── Expected OR für Live-Pushes (Rückblick-Berechnung) ──
 function calcExpectedORForPush(msg) {
   // Einfacherer, robusterer Ansatz: gewichteter Mix aus ähnlichen Pushes + Durchschnitt
-  const withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
+  let withOR = livePushes.filter(m => m.openingRate != null && m.openingRate > 0 && m.openingRate <= 25);
+  // Fallback auf learningData (7 Tage) wenn livePushes zu sparse — z.B. früh am Tag
+  if (withOR.length < 3 && typeof learningData !== 'undefined' && learningData && Array.isArray(learningData.pushes)) {
+    const ldWithOR = learningData.pushes.filter(p => p.openingRate != null && p.openingRate > 0 && p.openingRate <= 25);
+    if (ldWithOR.length >= 3) withOR = ldWithOR;
+  }
   if (withOR.length < 3) return null;
 
   const title = msg.kickerAndHeadline || msg.headline || '';
