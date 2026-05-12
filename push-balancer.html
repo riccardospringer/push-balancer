@@ -1018,10 +1018,10 @@ setInterval(function() {
   .live-row .lr-channel.ch-club { background: #fef3c7; color: #92400e; border-color: #fde68a; }
   .live-row .lr-channel.ch-other { background: var(--blue-bg); color: #2563eb; border-color: var(--blue-border); }
   .live-row .lr-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; }
-  .lr-score-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; padding: 1px 6px; border-radius: 4px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 7px; vertical-align: middle; flex-shrink: 0; }
-  .lr-score-badge.sc-high { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
-  .lr-score-badge.sc-mid  { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
-  .lr-score-badge.sc-low  { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+  .lr-score-inline { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 3px; margin-left: 6px; vertical-align: middle; }
+  .lr-score-inline.sc-high { background: #ecfdf5; color: #059669; }
+  .lr-score-inline.sc-mid  { background: #fffbeb; color: #d97706; }
+  .lr-score-inline.sc-low  { background: #f3f4f6; color: #6b7280; }
   .live-row .lr-or { text-align: right; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
   .live-row .lr-or.or-high { color: var(--green); }
   .live-row .lr-or.or-mid { color: var(--amber); }
@@ -8612,11 +8612,8 @@ function renderLivePushes() {
 
     rows.push(`<div class="live-row" onclick="openPushDetail(${globalIdx})">
       <div>
-        <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}</div>
-        <div style="display:flex;align-items:baseline;gap:0">
-          ${(() => { const s = getPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-badge ${cls}" title="Push-Score beim Versand (Snapshot)">${s}</span>`; })()}
-          <span class="lr-title">${escapeHtml(title)}</span>
-        </div>
+        <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}${(() => { const s = getPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-inline ${cls}" title="Push-Score beim Versand">Score ${s}</span>`; })()}</div>
+        <div class="lr-title">${escapeHtml(title)}</div>
       </div>
       <div class="lr-channels">${uniqueChannels.map(ch => `<span class="lr-channel ${getChClass(ch)}" title="${escapeHtml(ch)}">${escapeHtml(ch.length > 18 ? ch.substring(0,16) + '..' : ch)}</span>`).join('')}</div>
       <div class="lr-num">${recipients}</div>
