@@ -8323,8 +8323,8 @@ _loadDbScoreMap(); // Einmalig beim Seitenstart laden
 
 function getPushScore(msg) {
   const id = msg.messageId || msg.id;
-  if (id && _dbScoreMap.has(id)) return _dbScoreMap.get(id); // Snapshot aus DB
-  return calcPushScore(msg); // Fallback: retroaktiv
+  if (id && _dbScoreMap.has(id)) return _dbScoreMap.get(id); // Echter Score aus Tool
+  return null; // Kein Score → nichts anzeigen
 }
 
 let _fetchLiveLock = false;
@@ -8612,7 +8612,7 @@ function renderLivePushes() {
 
     rows.push(`<div class="live-row" onclick="openPushDetail(${globalIdx})">
       <div>
-        <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}${(() => { const s = getPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-inline ${cls}" title="Push-Score beim Versand">Score ${s}</span>`; })()}</div>
+        <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}${(() => { const s = getPushScore(msg); if (!s) return ''; const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-inline ${cls}" title="Push-Score beim Versand (vom Tool erfasst)">Score ${s}</span>`; })()}</div>
         <div class="lr-title">${escapeHtml(title)}</div>
       </div>
       <div class="lr-channels">${uniqueChannels.map(ch => `<span class="lr-channel ${getChClass(ch)}" title="${escapeHtml(ch)}">${escapeHtml(ch.length > 18 ? ch.substring(0,16) + '..' : ch)}</span>`).join('')}</div>

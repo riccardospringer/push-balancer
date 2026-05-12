@@ -380,12 +380,14 @@ def push_db_upsert(parsed_pushes: list) -> int:
                 _weekday = (_dt_mod.datetime.fromtimestamp(_ts_num).weekday() + 1) % 7
             except Exception:
                 _weekday = -1
-            _push_score = calc_push_score_snapshot(
-                p.get("title") or p.get("headline") or "",
-                p.get("cat", ""),
-                p.get("kicker", ""),
-                p.get("link", ""),
-            )
+            # Score nur aus Tool-Capture oder bereits gespeichert — kein Raten
+            _push_score = p.get("push_score") or 0
+            if not _push_score and p.get("link"):
+                try:
+                    from app.routers.score_capture import get_score_for_url
+                    _push_score = get_score_for_url(p["link"]) or 0
+                except Exception:
+                    pass
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
                 cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
                 target_stats, app_list, n_apps, total_recipients, push_score)
