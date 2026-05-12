@@ -7980,7 +7980,6 @@ function buildPushReasoning(article) {
   let compHtml = '';
   if (competitorData) {
     const titleKw = extractKeywords(article.title.toLowerCase());
-    const titleEnts = new Set(extractEntities(article.title || ''));
     const now = Date.now();
     const maxAge = 3 * 60 * 60 * 1000; // 3h — war 6h, zu groß für stichhaltige Matches
     const matches = [];
@@ -7988,19 +7987,11 @@ function buildPushReasoning(article) {
       for (const a of items) {
         if (!a.pubDate || isNaN(a.pubDate.getTime()) || (now - a.pubDate.getTime()) > maxAge) continue;
         const akw = extractKeywords(a.title.toLowerCase());
-        const aEnts = new Set(extractEntities(a.title || ''));
         const kwOverlap = titleKw.filter(k => akw.includes(k)).length;
-        // Entitäten-Überlappung (Eigennamen — stärkster Diskriminator)
-        const entOverlap = [...titleEnts].filter(e => aEnts.has(e)).length;
-        // Match-Kriterien (kein Short-Title-Exception mehr — war Ursache falscher Matches):
-        // a) 2+ Keywords UND mind. 1 Entität → sicherer Match
-        // b) 3+ Keywords ohne Entität → rein inhaltlicher Match
-        // c) 1+ Entität UND 1+ Keyword → Eigennamen-basierter Match
-        const isMatch = (kwOverlap >= 2 && entOverlap >= 1)
-                     || (kwOverlap >= 3)
-                     || (entOverlap >= 1 && kwOverlap >= 1);
-        if (isMatch) {
-          matches.push({ source: name, title: a.title, link: a.link, pubDate: a.pubDate, overlap: kwOverlap + entOverlap * 2 });
+        // Mindestens 2 Keyword-Übereinstimmungen — 1 reicht nicht
+        // (deutsche Substantive sind groß = kein zuverlässiges Entity-Matching)
+        if (kwOverlap >= 2) {
+          matches.push({ source: name, title: a.title, link: a.link, pubDate: a.pubDate, overlap: kwOverlap });
           break; // max 1 pro Outlet
         }
       }
@@ -8059,23 +8050,18 @@ function buildPushReasoning(article) {
 function findSimilarPushes(title, limit) {
   if (livePushes.length === 0) return [];
   const kw = extractKeywords(title.toLowerCase());
-  const ents = new Set(extractEntities(title));
   if (kw.length === 0) return [];
   const scored = livePushes
     .filter(m => m.openingRate != null)
     .map(m => {
       const pushTitle = m.kickerAndHeadline || m.headline || '';
       const pkw = extractKeywords(pushTitle.toLowerCase());
-      const pEnts = new Set(extractEntities(pushTitle));
-      const kwOverlap = kw.filter(k => pkw.includes(k)).length;
-      const entOverlap = [...ents].filter(e => pEnts.has(e)).length;
-      // Score: Keywords + Entitäten (Eigennamen zählen doppelt)
-      const score = kwOverlap + entOverlap * 2;
-      return { ...m, _score: score, _kwOverlap: kwOverlap, _entOverlap: entOverlap };
+      const overlap = kw.filter(k => pkw.includes(k)).length;
+      return { ...m, _overlap: overlap };
     })
-    // Mindestens 2 Keyword-Treffer ODER 1 Eigenname + 1 Keyword — kein Raten
-    .filter(m => m._kwOverlap >= 2 || (m._entOverlap >= 1 && m._kwOverlap >= 1))
-    .sort((a, b) => b._score - a._score);
+    // Mindestens 2 übereinstimmende Keywords — 1 reicht nicht (z.B. "Notfall" trifft zu viel)
+    .filter(m => m._overlap >= 2)
+    .sort((a, b) => b._overlap - a._overlap);
   return scored.slice(0, limit);
 }
 
