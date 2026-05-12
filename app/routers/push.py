@@ -207,6 +207,7 @@ def _build_pushes_response(
                 ),
                 "url": row.get("link") or None,
                 "pushScore": push_score,
+                "frozenXor": round(float(row.get("frozen_xor") or 0), 2) or None,
             }
         )
 

@@ -8343,8 +8343,21 @@ async function _loadDbScoreMap() {
     const r = await fetch(API_BASE + '/api/pushes?days=3&limit=500');
     if (!r.ok) return;
     const d = await r.json();
-    (d.pushes || []).forEach(p => { if (p.id && p.pushScore) _dbScoreMap.set(p.id, p.pushScore); });
+    (d.pushes || []).forEach(p => {
+      if (p.id) {
+        if (p.pushScore) _dbScoreMap.set(p.id, p.pushScore);
+        if (p.frozenXor) _dbXorMap.set(p.id, p.frozenXor);
+      }
+    });
   } catch(e) { console.warn('[scoreMap] load failed', e); }
+}
+// Frozen XOR map: messageId → eingefrierte Expected OR
+const _dbXorMap = new Map();
+
+function getFrozenXor(msg) {
+  const id = msg.messageId || msg.id;
+  if (id && _dbXorMap.has(id)) return _dbXorMap.get(id); // Snapshot aus DB
+  return null; // Kein frozen XOR — nicht anzeigen
 }
 _loadDbScoreMap(); // Einmalig beim Seitenstart laden
 
@@ -8608,8 +8621,8 @@ function renderLivePushes() {
       orStr = '–';
     }
 
-    // Expected OR: berechne was der Push Balancer vorhergesagt hätte
-    const expectedOR = calcExpectedORForPush(msg);
+    // Expected OR: eingefrierter Wert aus DB (berechnet beim Versand, ändert sich nie)
+    const expectedOR = getFrozenXor(msg);
     const expStr = expectedOR != null ? expectedOR.toFixed(1) + '%' : '–';
     let deltaHtml = '';
     if (expectedOR != null && or != null) {

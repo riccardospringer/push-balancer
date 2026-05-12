@@ -24,6 +24,61 @@ _CAT_SCORES: dict[str, int] = {
 }
 _BREAKING_KW = ("EIL", "BREAKING", "EXKLUSIV", "SCHOCK", "WARNUNG")
 
+def calc_frozen_xor(cat: str, hour: int, ts_num: int) -> float:
+    """Berechnet die Expected OR einmalig beim Push-Insert aus historischen DB-Daten.
+
+    Nutzt Kategorie-Durchschnitt + Stunden-Durchschnitt der letzten 90 Tage.
+    Wird einmal berechnet und nie mehr verändert — echte Snapshot-Statistik.
+    """
+    import datetime
+    cutoff = int(time.time()) - 90 * 86400
+    cat_lower = (cat or "news").lower().strip()
+
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+
+        # Kategorien-Durchschnitt
+        row = conn.execute(
+            """SELECT AVG(or_val), COUNT(*) FROM pushes
+               WHERE or_val > 0 AND or_val <= 20
+               AND ts_num > ? AND LOWER(TRIM(cat)) = ?""",
+            (cutoff, cat_lower)
+        ).fetchone()
+        cat_avg = float(row[0]) if row and row[0] else 0.0
+        cat_n = row[1] if row else 0
+
+        # Stunden-Durchschnitt (±1 Stunde)
+        h_min = max(0, hour - 1)
+        h_max = min(23, hour + 1)
+        row2 = conn.execute(
+            """SELECT AVG(or_val), COUNT(*) FROM pushes
+               WHERE or_val > 0 AND or_val <= 20
+               AND ts_num > ? AND hour BETWEEN ? AND ?""",
+            (cutoff, h_min, h_max)
+        ).fetchone()
+        hour_avg = float(row2[0]) if row2 and row2[0] else 0.0
+        hour_n = row2[1] if row2 else 0
+
+        conn.close()
+
+        # Globaler Fallback
+        global_avg = 5.0
+
+        # Gewichtetes Blend: Kategorie 50% + Stunde 30% + Global 20%
+        if cat_n >= 10 and hour_n >= 5:
+            xor = cat_avg * 0.5 + hour_avg * 0.3 + global_avg * 0.2
+        elif cat_n >= 10:
+            xor = cat_avg * 0.7 + global_avg * 0.3
+        elif hour_n >= 5:
+            xor = hour_avg * 0.6 + global_avg * 0.4
+        else:
+            xor = global_avg
+
+        return round(max(0.5, min(20.0, xor)), 2)
+    except Exception:
+        return 5.0
+
+
 def get_article_score_from_db(url: str) -> float | None:
     """Liest gespeicherten Kandidaten-Score aus article_score_log."""
     from app.routers.score_capture import _normalize_url
@@ -141,6 +196,7 @@ def init_db() -> None:
         ("weekday", "INTEGER", "-1"),
         ("push_score", "INTEGER", "0"),
         ("push_score_real", "INTEGER", "0"),  # 1 = vom Tool erfasst, 0 = kein Score
+        ("frozen_xor", "REAL", "0"),          # Einmalig berechnete Expected OR, nie mehr geändert
     ]:
         try:
             conn.execute(f"ALTER TABLE pushes ADD COLUMN {_col} {_type} DEFAULT {_default}")
@@ -434,7 +490,7 @@ def push_db_upsert(parsed_pushes: list) -> int:
                 _weekday = (_dt_mod.datetime.fromtimestamp(_ts_num).weekday() + 1) % 7
             except Exception:
                 _weekday = -1
-            # Score nur aus Tool-Capture — kein Raten, kein Schätzen
+            # Push Score: nur aus Tool-Capture — kein Raten
             _push_score = 0
             _push_score_real = 0
             if p.get("link"):
@@ -446,26 +502,38 @@ def push_db_upsert(parsed_pushes: list) -> int:
                         _push_score_real = 1
                 except Exception:
                     pass
+
+            # Frozen XOR: einmalig beim ersten Insert aus DB-Historik berechnen
+            _frozen_xor = calc_frozen_xor(
+                p.get("cat", "news"),
+                p.get("hour", -1) if p.get("hour", -1) >= 0 else (
+                    __import__("datetime").datetime.fromtimestamp(_ts_num).hour
+                    if _ts_num > 0 else 12
+                ),
+                _ts_num,
+            )
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
                 cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
-                target_stats, app_list, n_apps, total_recipients, push_score, push_score_real)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                target_stats, app_list, n_apps, total_recipients, push_score, push_score_real, frozen_xor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
-                    or_val = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
-                    opened = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
-                    received = CASE WHEN excluded.received > received THEN excluded.received ELSE received END,
-                    target_stats = CASE WHEN length(excluded.target_stats) > 2 THEN excluded.target_stats ELSE target_stats END,
-                    n_apps = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
+                    or_val     = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
+                    opened     = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
+                    received   = CASE WHEN excluded.received > received THEN excluded.received ELSE received END,
+                    target_stats  = CASE WHEN length(excluded.target_stats) > 2 THEN excluded.target_stats ELSE target_stats END,
+                    n_apps        = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
                     total_recipients = CASE WHEN excluded.total_recipients > 0 THEN excluded.total_recipients ELSE total_recipients END,
-                    push_score = CASE WHEN excluded.push_score_real = 1 THEN excluded.push_score ELSE push_score END,
+                    push_score    = CASE WHEN excluded.push_score_real = 1 THEN excluded.push_score ELSE push_score END,
                     push_score_real = CASE WHEN excluded.push_score_real = 1 THEN 1 ELSE push_score_real END,
+                    -- frozen_xor und frozen push_score werden nach erstem Insert NIE überschrieben
+                    frozen_xor = CASE WHEN frozen_xor > 0 THEN frozen_xor ELSE excluded.frozen_xor END,
                     updated_at = ?
             """, (mid, _ts_num, p.get("or", p.get("or_val", 0)), p.get("title", ""), p.get("headline", ""),
                   p.get("kicker", ""), p.get("cat", ""), p.get("link", ""), p.get("type", "editorial"),
                   p.get("hour", -1), _weekday, p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
                   p.get("channel", ""), json.dumps(p.get("channels", [])), 1 if p.get("is_eilmeldung") else 0,
                   now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0),
-                  _push_score, _push_score_real, now))
+                  _push_score, _push_score_real, _frozen_xor, now))
             count += cur.rowcount
         conn.commit()
         conn.close()
