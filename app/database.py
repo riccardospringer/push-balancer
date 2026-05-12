@@ -24,22 +24,37 @@ _CAT_SCORES: dict[str, int] = {
 }
 _BREAKING_KW = ("EIL", "BREAKING", "EXKLUSIV", "SCHOCK", "WARNUNG")
 
-def calc_push_score_snapshot(title: str, cat: str, kicker: str = "") -> int:
-    """Berechnet den Push-Score zum Versandzeitpunkt und speichert ihn unveränderlich.
+def calc_push_score_snapshot(title: str, cat: str, kicker: str = "", link: str = "") -> int:
+    """Berechnet den Push-Score zum Versandzeitpunkt — unveränderlicher Snapshot.
 
-    Rein deterministisch: Kategorie-Basis + Breaking-Bonus.
+    Kategorie-Erkennung: zuerst URL (zuverlässigste Quelle), dann cat-Feld.
     Kein Frische-Faktor — Score ändert sich nach Versand nie mehr.
     """
-    raw = (cat or kicker or "").lower().strip()
-    resolved = (
-        "sport"        if "sport"   in raw else
-        "politik"      if "polit"   in raw else
-        "wirtschaft"   if "wirtsch" in raw or "geld" in raw else
-        "unterhaltung" if "unterh"  in raw or "star" in raw or "people" in raw else
-        "regional"     if "region"  in raw else
-        "digital"      if "digital" in raw or "tech" in raw else
-        "news"
-    )
+    url = (link or "").lower()
+    cat_lower = (cat or "").lower().strip()
+
+    # URL-basierte Erkennung (höchste Priorität)
+    if "sportbild." in url or "/sport/" in url or "/fussball/" in url or "/bundesliga/" in url:
+        resolved = "sport"
+    elif "/politik/" in url or "/ausland/" in url:
+        resolved = "politik"
+    elif "/regional/" in url:
+        resolved = "regional"
+    elif "/unterhaltung/" in url or "/leute/" in url or "/royals/" in url:
+        resolved = "unterhaltung"
+    elif "/geld/" in url or "/wirtschaft/" in url or "/finanzen/" in url:
+        resolved = "wirtschaft"
+    elif "/digital/" in url or "/technik/" in url:
+        resolved = "digital"
+    # cat-Feld als Fallback
+    elif "sport"   in cat_lower: resolved = "sport"
+    elif "polit"   in cat_lower: resolved = "politik"
+    elif "region"  in cat_lower: resolved = "regional"
+    elif "unterh"  in cat_lower: resolved = "unterhaltung"
+    elif "wirtsch" in cat_lower or "geld" in cat_lower: resolved = "wirtschaft"
+    elif "digital" in cat_lower: resolved = "digital"
+    else: resolved = "news"
+
     score = _CAT_SCORES.get(resolved, 60)
     if any(kw in (title or "").upper() for kw in _BREAKING_KW):
         score += 6
@@ -369,6 +384,7 @@ def push_db_upsert(parsed_pushes: list) -> int:
                 p.get("title") or p.get("headline") or "",
                 p.get("cat", ""),
                 p.get("kicker", ""),
+                p.get("link", ""),
             )
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
                 cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,

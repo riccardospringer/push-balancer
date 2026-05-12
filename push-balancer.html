@@ -14635,15 +14635,21 @@ function mergeFreshPushes() {
 // ── Push-Score für Live-Pushes (retroaktive Berechnung) ──
 function calcPushScore(msg) {
   const CAT_SCORES = { politik:82, sport:78, news:76, wirtschaft:74, unterhaltung:66, regional:62, digital:68 };
-  const BREAKING_KW = ['EIL','BREAKING','LIVE','EXKLUSIV','SCHOCK','WARNUNG'];
-  // Kategorie aus kicker oder category-Feld ableiten
-  const raw = (msg.kicker || msg.category || msg.cat || '').toLowerCase().trim();
-  const cat = raw.includes('sport') ? 'sport'
-    : raw.includes('polit') ? 'politik'
-    : raw.includes('wirtschaft') || raw.includes('geld') ? 'wirtschaft'
-    : raw.includes('unterh') || raw.includes('people') || raw.includes('star') ? 'unterhaltung'
-    : raw.includes('region') ? 'regional'
-    : raw.includes('digital') || raw.includes('tech') ? 'digital'
+  const BREAKING_KW = ['EIL','BREAKING','EXKLUSIV','SCHOCK','WARNUNG'];
+  const url = (msg.link || msg.url || msg.articleUrl || '').toLowerCase();
+  const cat_raw = (msg.category || msg.cat || '').toLowerCase();
+  // URL zuerst (zuverlässigste Quelle)
+  const cat = (url.includes('sportbild.') || url.includes('/sport/') || url.includes('/fussball/') || url.includes('/bundesliga/')) ? 'sport'
+    : (url.includes('/politik/') || url.includes('/ausland/')) ? 'politik'
+    : url.includes('/regional/') ? 'regional'
+    : (url.includes('/unterhaltung/') || url.includes('/leute/') || url.includes('/royals/')) ? 'unterhaltung'
+    : (url.includes('/geld/') || url.includes('/wirtschaft/') || url.includes('/finanzen/')) ? 'wirtschaft'
+    : (url.includes('/digital/') || url.includes('/technik/')) ? 'digital'
+    : cat_raw.includes('sport') ? 'sport'
+    : cat_raw.includes('polit') ? 'politik'
+    : cat_raw.includes('region') ? 'regional'
+    : cat_raw.includes('unterh') ? 'unterhaltung'
+    : cat_raw.includes('wirtsch') || cat_raw.includes('geld') ? 'wirtschaft'
     : 'news';
   let score = CAT_SCORES[cat] || 60;
   const title = (msg.kickerAndHeadline || msg.headline || msg.title || '').toUpperCase();

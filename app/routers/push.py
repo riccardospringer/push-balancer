@@ -191,6 +191,7 @@ def _build_pushes_response(
                 row.get("title") or row.get("headline") or "",
                 row.get("cat", ""),
                 row.get("kicker", ""),
+                row.get("link", ""),
             )
         pushes.append(
             {
