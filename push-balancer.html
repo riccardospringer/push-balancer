@@ -996,7 +996,7 @@ setInterval(function() {
 
   .live-row {
     display: grid;
-    grid-template-columns: 1fr 130px 90px 80px 80px 70px 90px;
+    grid-template-columns: 1fr 130px 90px 80px 80px 90px;
     align-items: center;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border-light);
@@ -1018,10 +1018,10 @@ setInterval(function() {
   .live-row .lr-channel.ch-club { background: #fef3c7; color: #92400e; border-color: #fde68a; }
   .live-row .lr-channel.ch-other { background: var(--blue-bg); color: #2563eb; border-color: var(--blue-border); }
   .live-row .lr-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; }
-  .live-row .lr-score { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 700; }
-  .live-row .lr-score.sc-high { color: #059669; }
-  .live-row .lr-score.sc-mid  { color: #d97706; }
-  .live-row .lr-score.sc-low  { color: #6b7280; }
+  .lr-score-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; padding: 1px 6px; border-radius: 4px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 7px; vertical-align: middle; flex-shrink: 0; }
+  .lr-score-badge.sc-high { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+  .lr-score-badge.sc-mid  { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+  .lr-score-badge.sc-low  { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
   .live-row .lr-or { text-align: right; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
   .live-row .lr-or.or-high { color: var(--green); }
   .live-row .lr-or.or-mid { color: var(--amber); }
@@ -1096,7 +1096,7 @@ setInterval(function() {
 
   .live-header {
     display: grid;
-    grid-template-columns: 1fr 130px 90px 80px 80px 70px 90px;
+    grid-template-columns: 1fr 130px 90px 80px 80px 90px;
     padding: 8px 16px;
     font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-tertiary);
@@ -2583,7 +2583,6 @@ setInterval(function() {
       <div>Empfänger</div>
       <div>Geöffnet</div>
       <div>OR%</div>
-      <div>Score</div>
       <div>Erw. OR</div>
     </div>
     <div class="article-list" id="liveContent">
@@ -8574,13 +8573,15 @@ function renderLivePushes() {
     rows.push(`<div class="live-row" onclick="openPushDetail(${globalIdx})">
       <div>
         <div class="lr-kicker">${pulseDot}${timeStr} · ${escapeHtml(kicker)}</div>
-        <div class="lr-title">${escapeHtml(title)}</div>
+        <div style="display:flex;align-items:baseline;gap:0">
+          ${(() => { const s = calcPushScore(msg); const cls = s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; return `<span class="lr-score-badge ${cls}" title="Push-Score beim Versand">${s}</span>`; })()}
+          <span class="lr-title">${escapeHtml(title)}</span>
+        </div>
       </div>
       <div class="lr-channels">${uniqueChannels.map(ch => `<span class="lr-channel ${getChClass(ch)}" title="${escapeHtml(ch)}">${escapeHtml(ch.length > 18 ? ch.substring(0,16) + '..' : ch)}</span>`).join('')}</div>
       <div class="lr-num">${recipients}</div>
       <div class="lr-num">${opened}</div>
       <div class="lr-or ${orClass}"><span class="or-tick ${tickClass}" ${or != null ? `data-or="${or.toFixed(2)}"` : ''}>${orStr}</span>${arrowHtml}</div>
-      <div class="lr-score ${(() => { const s = calcPushScore(msg); return s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; })()}" title="Push-Score zum Versandzeitpunkt">${calcPushScore(msg)}</div>
       <div class="lr-or lr-expected" title="Erwartete OR">${expStr} ${deltaHtml}${challengeHtml}</div>
     </div>`);
   });
