@@ -192,10 +192,52 @@ TAGESPLAN_ON_DEMAND_BUILD_ENABLED: bool = _env_flag(
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
 # DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db
-PUSH_DB_PATH: str = os.environ.get(
+_PREFERRED_DB_PATH: str = os.environ.get(
     "DB_PATH",
     os.path.join(_APP_DIR, ".push_history.db"),
 )
+
+
+def _resolve_writable_db_path(preferred: str) -> str:
+    """Stellt sicher, dass der DB-Pfad beschreibbar ist.
+
+    Auf Render kann `/data` (persistent disk) bei einem Container-Start
+    nicht-beschreibbar sein (Permission-Race nach Mount). In dem Fall
+    fallen wir auf `/tmp` zurück, damit der Server überhaupt startet.
+    Daten sind dort nicht persistent, aber der Service läuft.
+    """
+    parent = os.path.dirname(preferred) or "."
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        pass
+    probe = os.path.join(parent, ".__db_writable_probe__")
+    try:
+        with open(probe, "w") as f:
+            f.write("x")
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        return preferred
+    except (OSError, PermissionError) as exc:
+        fallback = os.path.join("/tmp", os.path.basename(preferred) or ".push_history.db")
+        log.warning(
+            "DB-Pfad %s nicht beschreibbar (%s) — Fallback auf %s. Daten sind nicht persistent!",
+            preferred, exc, fallback,
+        )
+        try:
+            os.makedirs(os.path.dirname(fallback) or "/tmp", exist_ok=True)
+            with open(fallback + ".__probe__", "w") as f:
+                f.write("x")
+            os.remove(fallback + ".__probe__")
+            return fallback
+        except OSError as exc2:
+            log.error("Selbst /tmp nicht beschreibbar (%s) — DB-Init wird crashen", exc2)
+            return preferred
+
+
+PUSH_DB_PATH: str = _resolve_writable_db_path(_PREFERRED_DB_PATH)
 PUSH_DB_MAX_DAYS: int = int(os.environ.get("PUSH_DB_MAX_DAYS", "1460"))
 PUSH_DB_MAX_ROWS: int = int(
     os.environ.get("PUSH_DB_MAX_ROWS", "5000" if IS_RENDER else "15000")
