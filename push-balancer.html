@@ -3825,7 +3825,7 @@ function calculateFallbackScore(article) {
   const catScores = [
     ['bundesliga',20], ['fussball',20], ['formel1',19], ['formel-1',19],
     ['tennis',17], ['boxen',18], ['motorsport',17],
-    ['politik',22], ['unterhaltung',20], ['panorama',21], ['sport',19], ['regional',18],
+    ['politik',22], ['unterhaltung',11], ['panorama',15], ['sport',19], ['regional',18],
     ['geld',14], ['auto',11], ['digital',12], ['lifestyle',10], ['ratgeber',9], ['reise',8]
   ];
   let relBase = 13;
@@ -4044,7 +4044,27 @@ function calculateFallbackScore(article) {
   breakdown.forschungsDetail = forschungsDetail.join(', ');
   breakdown.individual = Math.min(15, individualBoost);
 
-  const rawTotal = breakdown.relevanz + breakdown.dringlichkeit + breakdown.neugier + breakdown.aktualität + breakdown.timing + breakdown.individual + breakdown.forschung;
+  let rawTotal = breakdown.relevanz + breakdown.dringlichkeit + breakdown.neugier + breakdown.aktualität + breakdown.timing + breakdown.individual + breakdown.forschung;
+
+  // ── TV-Show-Preview-Penalty ─────────────────────────────────────────────
+  // BILD pusht keine TV-Programmhinweise. Artikel die nur ankündigen was heute läuft
+  // bekommen einen starken Abzug und tauchen am Ende der Kandidatenliste auf.
+  const titleL = title.toLowerCase();
+  const descL = description.toLowerCase();
+  const linkL = (article.link || '').toLowerCase();
+  const isTvShowPreview = (
+    // TV-spezifische Keywords aus Sitemap-Tags (zuverlässigste Quelle)
+    /\b(tv-serie|tv-show|krankenhaus-serie|arzt-serie|krimi-serie|soap|daily soap|ard-serie|zdf-serie|rtl-serie|sat1-serie|fernsehserie|fernsehfilm|tatort|\bgzsz\b|lindenstraße|rote rosen|sturm der liebe|in aller freundschaft|unter uns|verbotene liebe|serie der woche|tv-tipp)\b/i.test(descL + titleL) ||
+    // Explizite Staffel/Folge-Marker im Titel
+    /\b(staffel \d|folge \d+|episode \d+)\b/i.test(titleL) ||
+    // URL-Muster
+    /\/(tv-serie|fernsehen|tv-programm|serie)\//i.test(linkL)
+  );
+  if (isTvShowPreview) {
+    rawTotal = Math.max(5, rawTotal - 35);
+    breakdown.tvShowPenalty = true;
+  }
+
   const total = Math.min(100, Math.round(rawTotal * 10) / 10);
   return { total, breakdown };
 }
@@ -4367,9 +4387,12 @@ function applyFilterAndSort(forceInvalidate) {
       const bd = a.scoreBreakdown;
 
       // Einheitlicher Score fuer alle Kategorien (inkl. Sport)
-      const rawTotal = (bd.relevanz || 0) + (bd.dringlichkeit || 0) +
+      let rawTotal = (bd.relevanz || 0) + (bd.dringlichkeit || 0) +
         (bd.neugier || 0) + (bd.aktualität || 0) + (bd.timing || 0) +
         (bd.breaking || 0) + (bd.individual || 0) + (bd.pushHistorie || 0) + (bd.forschung || 0);
+
+      // TV-Show-Preview-Penalty anwenden (aus initialem Scoring übernehmen)
+      if (bd.tvShowPenalty) rawTotal = Math.max(5, rawTotal - 35);
 
       // Stale-Penalty: nur fuer alte Artikel (>24h), aktualität handelt 0-24h
       const ageH = a.date ? (Date.now() - a.date.getTime()) / 3600000 : 0;
@@ -6028,7 +6051,7 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
         <div class="cell-content">
           <div class="article-title"><a href="${escapeHtml(a.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(a.title)}</a>${a.isBildPlus ? '<span class="bild-plus-badge" title="BILD Plus">B+</span>' : ''}${a._sportFavorit ? '<span style="background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:1px 6px;border-radius:3px;margin-left:6px;letter-spacing:0.5px">FAVORIT</span>' : ''}</div>
           <div class="article-meta">
-            BILD <span class="sep">›</span> ${escapeHtml(a.category)}${a.isVideo ? ' <span class="type-tag tag-video">Video</span>' : ''}
+            BILD <span class="sep">›</span> ${escapeHtml(a.category)}${a.isVideo ? ' <span class="type-tag tag-video">Video</span>' : ''}${(a.scoreBreakdown && a.scoreBreakdown.tvShowPenalty) ? ' <span class="type-tag" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb">TV-Vorschau</span>' : ''}
           </div>
         </div>
         <div class="cell-status">
