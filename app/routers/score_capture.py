@@ -49,11 +49,17 @@ def _normalize_url(url: str) -> str:
 
 def get_score_for_url(url: str) -> float | None:
     key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
+    # 1. Memory-Cache (schnell)
     with _lock:
         entry = _score_cache.get(key)
         if entry and time.time() - entry["ts"] < _CACHE_TTL:
             return entry["score"]
-    return None
+    # 2. DB-Fallback (überlebt Restarts)
+    try:
+        from app.database import get_article_score_from_db
+        return get_article_score_from_db(url)
+    except Exception:
+        return None
 
 
 class ScoreCaptureItem(BaseModel):
@@ -76,15 +82,21 @@ def debug_score_capture() -> JSONResponse:
 
 @router.post("/api/score-capture")
 def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
-    """Empfängt Artikel-Scores vom Kandidaten-Tab."""
+    """Empfängt Artikel-Scores vom Kandidaten-Tab — speichert in Memory + DB."""
+    from app.database import save_article_score_to_db
+    stored = 0
     with _lock:
         for item in body.scores:
             if not item.url or item.score <= 0:
                 continue
             key = hashlib.md5(_normalize_url(item.url).encode()).hexdigest()
-            # Nur speichern wenn Score neuer oder Score höher (frischere Berechnung)
             existing = _score_cache.get(key)
             if not existing or item.ts >= existing["ts"]:
                 _score_cache[key] = {"score": round(item.score, 1), "ts": item.ts, "url": item.url}
+                stored += 1
         _cleanup()
-    return JSONResponse({"ok": True, "stored": len(body.scores)})
+    # Persistent in DB schreiben (überlebt Render-Restarts)
+    for item in body.scores:
+        if item.url and item.score > 0:
+            save_article_score_to_db(item.url, round(item.score, 1))
+    return JSONResponse({"ok": True, "stored": stored})

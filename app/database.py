@@ -24,6 +24,47 @@ _CAT_SCORES: dict[str, int] = {
 }
 _BREAKING_KW = ("EIL", "BREAKING", "EXKLUSIV", "SCHOCK", "WARNUNG")
 
+def get_article_score_from_db(url: str) -> float | None:
+    """Liest gespeicherten Kandidaten-Score aus article_score_log."""
+    from app.routers.score_capture import _normalize_url
+    import hashlib
+    key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
+    ttl = 8 * 3600
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+        row = conn.execute(
+            "SELECT score, captured_at FROM article_score_log WHERE url_hash = ?", (key,)
+        ).fetchone()
+        conn.close()
+        if row and (time.time() - row[1]) < ttl:
+            return float(row[0])
+    except Exception:
+        pass
+    return None
+
+
+def save_article_score_to_db(url: str, score: float) -> None:
+    """Speichert Kandidaten-Score persistent in article_score_log."""
+    from app.routers.score_capture import _normalize_url
+    import hashlib
+    key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
+    try:
+        with _push_db_lock:
+            conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+            conn.execute(
+                """INSERT INTO article_score_log (url_hash, url, score, captured_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(url_hash) DO UPDATE SET
+                       score = excluded.score,
+                       captured_at = excluded.captured_at""",
+                (key, url[:500], score, int(time.time()))
+            )
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+
 def calc_push_score_snapshot(title: str, cat: str, kicker: str = "", link: str = "") -> int:
     """Berechnet den Push-Score zum Versandzeitpunkt — unveränderlicher Snapshot.
 
@@ -113,6 +154,15 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_or_ts ON pushes(or_val, ts_num)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_hour_or ON pushes(hour, or_val)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_weekday_hour ON pushes(weekday, hour)")
+
+    # Article score log — persistente Scores aus dem Kandidaten-Tab
+    conn.execute("""CREATE TABLE IF NOT EXISTS article_score_log (
+        url_hash TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        score REAL NOT NULL,
+        captured_at INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_score_log_ts ON article_score_log(captured_at)")
 
     # Prediction log
     conn.execute("""CREATE TABLE IF NOT EXISTS prediction_log (
