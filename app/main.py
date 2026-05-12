@@ -611,18 +611,16 @@ def _start_background_workers() -> None:
         log.info("[LLM-Backfill] Deaktiviert (PAID_EXTERNAL_APIS_ENABLED/OPENAI_BACKFILL_ENABLED nicht gesetzt)")
 
     # 10. Preload Caches
-    if BACKGROUND_AUTOMATIONS_ENABLED:
-        def _preload_caches():
-            from app.routers.feed import _fetch_url
-            from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
-            # Kurz warten bis ML-Modelle von Disk geladen sind (~2s) + kleiner Puffer
-            time.sleep(5)
-            try:
-                # background=True: blockiert bis der Plan fertig berechnet ist (kein fire-and-forget)
-                build_tagesplan(background=True)
-                log.info("[Preload] Tagesplan vorberechnet")
-            except Exception as e:
-                log.warning("[Preload] Tagesplan-Fehler: %s", e)
+    def _preload_caches():
+        from app.routers.feed import _fetch_url
+        from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
+        time.sleep(5)
+        try:
+            build_tagesplan(background=True)
+            log.info("[Preload] Tagesplan vorberechnet")
+        except Exception as e:
+            log.warning("[Preload] Tagesplan-Fehler: %s", e)
+        if BACKGROUND_AUTOMATIONS_ENABLED:
             try:
                 for url in list(COMPETITOR_FEEDS.values()) + list(INTERNATIONAL_FEEDS.values()):
                     _fetch_url(url)
@@ -630,7 +628,8 @@ def _start_background_workers() -> None:
             except Exception as e:
                 log.warning("[Preload] Feed-Cache-Fehler: %s", e)
 
-        threading.Thread(target=_preload_caches, daemon=True).start()
+    threading.Thread(target=_preload_caches, daemon=True).start()
+    log.info("[Preload] Tagesplan-Vorberechnung gestartet")
         log.info("[Preload] Caches werden im Hintergrund aufgebaut")
     else:
         log.info("[Preload] Deaktiviert, Warmups laufen nur bei Bedarf")
@@ -799,6 +798,20 @@ def _start_background_workers() -> None:
         log.info("[MemCleanup] Worker gestartet (alle 120s)")
     else:
         log.info("[MemCleanup] Deaktiviert, da keine Autoloops laufen")
+
+    # ── Tagesplan-Refresh (läuft immer, unabhängig von BACKGROUND_AUTOMATIONS) ──
+    def _tagesplan_refresh_worker() -> None:
+        time.sleep(30)  # Erst nach Preload starten
+        while True:
+            try:
+                build_tagesplan(background=True)
+                build_tagesplan(background=True, mode="sport")
+            except Exception as exc:
+                log.warning("[Tagesplan] Refresh-Fehler: %s", exc)
+            time.sleep(270)  # Alle 4,5 Min. → Cache-TTL 300s nie ablaufen lassen
+
+    threading.Thread(target=_tagesplan_refresh_worker, daemon=True).start()
+    log.info("[Tagesplan] Refresh-Worker gestartet (alle 270s)")
 
     # ── Push-Alarm Worker ──────────────────────────────────────────────────
     def _push_alarm_worker() -> None:
