@@ -996,7 +996,7 @@ setInterval(function() {
 
   .live-row {
     display: grid;
-    grid-template-columns: 1fr 130px 90px 80px 80px 90px;
+    grid-template-columns: 1fr 130px 90px 80px 80px 70px 90px;
     align-items: center;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border-light);
@@ -1018,6 +1018,10 @@ setInterval(function() {
   .live-row .lr-channel.ch-club { background: #fef3c7; color: #92400e; border-color: #fde68a; }
   .live-row .lr-channel.ch-other { background: var(--blue-bg); color: #2563eb; border-color: var(--blue-border); }
   .live-row .lr-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; }
+  .live-row .lr-score { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 700; }
+  .live-row .lr-score.sc-high { color: #059669; }
+  .live-row .lr-score.sc-mid  { color: #d97706; }
+  .live-row .lr-score.sc-low  { color: #6b7280; }
   .live-row .lr-or { text-align: right; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
   .live-row .lr-or.or-high { color: var(--green); }
   .live-row .lr-or.or-mid { color: var(--amber); }
@@ -1092,7 +1096,7 @@ setInterval(function() {
 
   .live-header {
     display: grid;
-    grid-template-columns: 1fr 130px 90px 80px 80px 90px;
+    grid-template-columns: 1fr 130px 90px 80px 80px 70px 90px;
     padding: 8px 16px;
     font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-tertiary);
@@ -2579,6 +2583,7 @@ setInterval(function() {
       <div>Empfänger</div>
       <div>Geöffnet</div>
       <div>OR%</div>
+      <div>Score</div>
       <div>Erw. OR</div>
     </div>
     <div class="article-list" id="liveContent">
@@ -8575,6 +8580,7 @@ function renderLivePushes() {
       <div class="lr-num">${recipients}</div>
       <div class="lr-num">${opened}</div>
       <div class="lr-or ${orClass}"><span class="or-tick ${tickClass}" ${or != null ? `data-or="${or.toFixed(2)}"` : ''}>${orStr}</span>${arrowHtml}</div>
+      <div class="lr-score ${(() => { const s = calcPushScore(msg); return s >= 80 ? 'sc-high' : s >= 70 ? 'sc-mid' : 'sc-low'; })()}" title="Push-Score zum Versandzeitpunkt">${calcPushScore(msg)}</div>
       <div class="lr-or lr-expected" title="Erwartete OR">${expStr} ${deltaHtml}${challengeHtml}</div>
     </div>`);
   });
@@ -14605,6 +14611,25 @@ function mergeFreshPushes() {
     console.log(`[Learning] +${newCount} neue, -${purged} alte Pushes (gesamt: ${learningData.pushes.length})`);
     rebuildSlotCacheFromLearning();
   }
+}
+
+// ── Push-Score für Live-Pushes (retroaktive Berechnung) ──
+function calcPushScore(msg) {
+  const CAT_SCORES = { politik:82, sport:78, news:76, wirtschaft:74, unterhaltung:66, regional:62, digital:68 };
+  const BREAKING_KW = ['EIL','BREAKING','LIVE','EXKLUSIV','SCHOCK','WARNUNG'];
+  // Kategorie aus kicker oder category-Feld ableiten
+  const raw = (msg.kicker || msg.category || msg.cat || '').toLowerCase().trim();
+  const cat = raw.includes('sport') ? 'sport'
+    : raw.includes('polit') ? 'politik'
+    : raw.includes('wirtschaft') || raw.includes('geld') ? 'wirtschaft'
+    : raw.includes('unterh') || raw.includes('people') || raw.includes('star') ? 'unterhaltung'
+    : raw.includes('region') ? 'regional'
+    : raw.includes('digital') || raw.includes('tech') ? 'digital'
+    : 'news';
+  let score = CAT_SCORES[cat] || 60;
+  const title = (msg.kickerAndHeadline || msg.headline || msg.title || '').toUpperCase();
+  if (BREAKING_KW.some(k => title.includes(k))) score += 6;
+  return Math.min(score, 100);
 }
 
 // ── Expected OR für Live-Pushes (Rückblick-Berechnung) ──
