@@ -7980,16 +7980,27 @@ function buildPushReasoning(article) {
   let compHtml = '';
   if (competitorData) {
     const titleKw = extractKeywords(article.title.toLowerCase());
+    const titleEnts = new Set(extractEntities(article.title || ''));
     const now = Date.now();
-    const maxAge = 6 * 60 * 60 * 1000;
+    const maxAge = 3 * 60 * 60 * 1000; // 3h — war 6h, zu groß für stichhaltige Matches
     const matches = [];
     for (const [name, items] of Object.entries(competitorData)) {
       for (const a of items) {
         if (!a.pubDate || isNaN(a.pubDate.getTime()) || (now - a.pubDate.getTime()) > maxAge) continue;
         const akw = extractKeywords(a.title.toLowerCase());
-        const overlap = titleKw.filter(k => akw.includes(k)).length;
-        if (overlap >= 2 || (titleKw.length <= 3 && overlap >= 1)) {
-          matches.push({ source: name, title: a.title, link: a.link, pubDate: a.pubDate, overlap });
+        const aEnts = new Set(extractEntities(a.title || ''));
+        const kwOverlap = titleKw.filter(k => akw.includes(k)).length;
+        // Entitäten-Überlappung (Eigennamen — stärkster Diskriminator)
+        const entOverlap = [...titleEnts].filter(e => aEnts.has(e)).length;
+        // Match-Kriterien (kein Short-Title-Exception mehr — war Ursache falscher Matches):
+        // a) 2+ Keywords UND mind. 1 Entität → sicherer Match
+        // b) 3+ Keywords ohne Entität → rein inhaltlicher Match
+        // c) 1+ Entität UND 1+ Keyword → Eigennamen-basierter Match
+        const isMatch = (kwOverlap >= 2 && entOverlap >= 1)
+                     || (kwOverlap >= 3)
+                     || (entOverlap >= 1 && kwOverlap >= 1);
+        if (isMatch) {
+          matches.push({ source: name, title: a.title, link: a.link, pubDate: a.pubDate, overlap: kwOverlap + entOverlap * 2 });
           break; // max 1 pro Outlet
         }
       }
@@ -12125,7 +12136,7 @@ function parseCompFeed(name, xmlStr) {
 
 function extractKeywords(text) {
   const stops = new Set(['der','die','das','und','in','von','für','mit','auf','ist','ein','eine','eines','einem','einen','einer','des','den','dem','zu','im','am','an','es','er','sie','hat','nach','bei','aus','als','wie','wird','über','auch','vor','um','noch','war','sein','nur','zum','zur','bis','dass','nicht','oder','aber','so','ich','vom','was','wer','dass','wenn','kann','will','soll','doch','mehr','sehr','alle','ganz','neue','news','wurde','worden','haben','hatte','hatten','seinen','seiner','diesem','diese','dieser','jeder','andere','sowie','etwa','dabei','müssen','können','dürfen','sollte','hätte','viele','deren','seinen','unter','dort','hier','dann','schon','wohl','immer','sogar','fast','bereits','wieder','gegen','zwischen','wegen','dabei','dazu','darum','darauf','lesen','live','breaking','eilmeldung','heute','morgen','gestern','jetzt','gleich','bald','gerade','aktuell','aktuelle','aktueller','neues','neuer','ersten','erste','erster','letzten','letzte','letzter','stunde','stunden','spricht','sagt','zeigt','macht','kommt','geht','steht','gibt','laut','kleine','kleiner','große','großer','großes',
-    'polizei','trainer','spieler','verein','partei','minister','regierung','gericht','richter','million','milliarden','prozent','bericht','interview','analyse','aussage','kritik','debatte','reform','entscheidung','verhandlung','ermittlung','anklage','urteil','strafe','bundesliga','stadt','land','leute','menschen','frau','mann','kinder','experte','behörde','bürger','opfer','verdächtige','beamte','sprecher','chef','team','gruppe','unternehmen','firma','konzern','forscher','studie','zahlen','daten','ergebnis','folgen','grund','fall','frage','thema','ende','anfang','zeit','woche','monat','jahr','dienstag','mittwoch','donnerstag','freitag','samstag','sonntag','montag']);
+    'polizei','trainer','spieler','verein','partei','minister','regierung','gericht','richter','million','milliarden','prozent','bericht','interview','analyse','aussage','kritik','debatte','reform','entscheidung','verhandlung','ermittlung','anklage','urteil','strafe','stadt','land','leute','menschen','frau','mann','kinder','experte','behörde','bürger','opfer','verdächtige','beamte','sprecher','chef','team','gruppe','unternehmen','firma','konzern','forscher','studie','zahlen','daten','ergebnis','folgen','grund','fall','frage','thema','ende','anfang','zeit','woche','monat','jahr','dienstag','mittwoch','donnerstag','freitag','samstag','sonntag','montag']);
   return text.toLowerCase().split(/[\s,.:;!?()\-–—"„""'\[\]\/|+]+/)
     .map(w => w.replace(/[^a-zäöüß0-9]/g, ''))
     .filter(w => w.length >= 3 && !stops.has(w))
