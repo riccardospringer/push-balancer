@@ -33,27 +33,31 @@ def get_forschung() -> JSONResponse:
 
     Der Research-Worker analysiert Daten im Hintergrund alle 20s.
     Dieser Endpoint gibt den vollständigen aktuellen State zurück.
+    Keys sind snake_case — identisch zum Legacy-Monolithen (push-balancer.html erwartet das).
     """
     _warm_research_state_if_needed()
 
     if not _research_state.get("push_data"):
         return JSONResponse(content={
-            "accuracy": 0, "accuracyTrend": 0, "accuracyTarget": 99.5,
-            "insightsToday": 0, "insightsTrend": 0, "pagesToday": 0, "pagesTrend": 0,
-            "researchers": [], "guestResearchers": [], "guestExchanges": [],
+            "accuracy": 0, "accuracy_trend": 0, "accuracy_target": 99.5,
+            "insights_today": 0, "insights_trend": 0, "pages_today": 0, "pages_trend": 0,
+            "researchers": [], "guest_researchers": [], "guest_exchanges": [],
             "orchestrator": {
                 "id": "ml-system", "name": "ML Pipeline",
                 "role": "Autonomes System", "status": "loading",
-                "currentDirective": "Lade Push-Daten...",
-                "teamsActive": 1, "decisionsToday": 0, "schwabDecisions": [],
+                "current_directive": "Lade Push-Daten...",
+                "teams_active": 1, "decisions_today": 0, "schwab_decisions": [],
             },
-            "bildTeam": [], "ticker": [], "learning": [],
+            "bild_team": [], "ticker": [], "learning": [],
             "dissertations": [], "diskurs": [],
-            "weekComparison": {}, "liveRules": [], "liveRulesCount": 0,
-            "nPushes": 0, "lastPushTs": 0, "loading": True,
-            "matureCount": 0, "freshCount": 0, "freshPushes": [],
-            "researchMemory": {}, "researchMemoryTotal": 0, "researchLog": [],
-            "researchProjects": [], "researchMilestones": [], "instituteReview": {},
+            "week_comparison": {}, "live_rules": [], "live_rules_count": 0,
+            "n_pushes": 0, "last_push_ts": 0, "loading": True,
+            "mature_count": 0, "fresh_count": 0, "fresh_pushes": [],
+            "research_memory": {}, "research_memory_total": 0, "research_log": [],
+            "research_projects": [], "research_milestones": [], "institute_review": {},
+            "mean_or": 0, "best_hour": None, "best_hour_or": 0,
+            "top_category": None, "top_category_or": 0, "accuracy_mae": 0,
+            "temporal_trends": {}, "or_distribution": {}, "findings": {},
         })
 
     s = _research_state
@@ -95,10 +99,10 @@ def get_forschung() -> JSONResponse:
         "name": "ML Pipeline",
         "role": "Autonomes System",
         "status": "active",
-        "currentDirective": directive,
-        "teamsActive": 1,
-        "decisionsToday": len(schwab_decisions),
-        "schwabDecisions": schwab_decisions[-10:],
+        "current_directive": directive,
+        "teams_active": 1,
+        "decisions_today": len(schwab_decisions),
+        "schwab_decisions": schwab_decisions[-10:],
     }
 
     # ML-Modell-Info aus aktuellen States
@@ -145,30 +149,63 @@ def get_forschung() -> JSONResponse:
 
     last_push_ts = max((p.get("ts_num", 0) for p in push_data), default=0)
 
+    # Fehlende Felder aus push_data berechnen (erwartet von push-balancer.html)
+    all_ors_sorted = sorted([p["or"] for p in push_data if 0 < p.get("or", 0) <= 30.0])
+    _median_or = all_ors_sorted[len(all_ors_sorted) // 2] if all_ors_sorted else 0.0
+    # Stunden-Analyse für best_hour
+    _hour_agg: dict = {}
+    for p in push_data:
+        h = p.get("hour", -1)
+        if 0 <= h <= 23 and 0 < p.get("or", 0) <= 30:
+            _hour_agg.setdefault(h, []).append(p["or"])
+    _best_hour = max(_hour_agg, key=lambda h: sum(_hour_agg[h]) / len(_hour_agg[h]), default=None) if _hour_agg else None
+    _best_hour_or = round(sum(_hour_agg[_best_hour]) / len(_hour_agg[_best_hour]), 2) if _best_hour is not None else 0
+    # Kategorie-Analyse für top_category
+    _cat_agg: dict = {}
+    for p in push_data:
+        c = p.get("cat", "News") or "News"
+        if 0 < p.get("or", 0) <= 30:
+            _cat_agg.setdefault(c, []).append(p["or"])
+    _top_cat = max(_cat_agg, key=lambda c: sum(_cat_agg[c]) / len(_cat_agg[c]), default=None) if _cat_agg else None
+    _top_cat_or = round(sum(_cat_agg[_top_cat]) / len(_cat_agg[_top_cat]), 2) if _top_cat else 0
+    # OR-Verteilung
+    _or_dist: dict = {}
+    if all_ors_sorted:
+        n = len(all_ors_sorted)
+        _or_dist = {
+            "min": round(all_ors_sorted[0], 2),
+            "q1": round(all_ors_sorted[n // 4], 2),
+            "median": round(all_ors_sorted[n // 2], 2),
+            "q3": round(all_ors_sorted[3 * n // 4], 2),
+            "max": round(all_ors_sorted[-1], 2),
+            "mean": round(sum(all_ors_sorted) / n, 2),
+            "n": n,
+        }
+
     return JSONResponse(content={
-        # Accuracy
-        "accuracy": round(rolling_acc * 100, 1),
-        "accuracyTrend": round(acc_trend * 100, 2),
-        "accuracyTarget": 99.5,
-        "accuracyByCat": s.get("accuracy_by_cat", {}),
-        "accuracyTrend7d": s.get("accuracy_trend", []),
-        "maeTrend": s.get("mae_trend", []),
-        "maeByCat": s.get("mae_by_cat", {}),
-        "maeByHour": s.get("mae_by_hour", {}),
-        "ensembleAccuracy": s.get("ensemble_accuracy", 0.0),
-        "ensembleMae": s.get("ensemble_mae", 0.0),
-        "ensembleAccuracyDelta": s.get("ensemble_accuracy_delta", 0.0),
-        "basisMae": s.get("basis_mae", 0.0),
+        # Accuracy — rolling_acc ist bereits in % (0-100), KEIN *100 mehr!
+        "accuracy": round(rolling_acc, 1),
+        "accuracy_trend": round(acc_trend, 2),
+        "accuracy_target": 99.5,
+        "accuracy_by_cat": s.get("accuracy_by_cat", {}),
+        "accuracy_mae": round(s.get("basis_mae", 0.0) or s.get("ensemble_mae", 0.0), 3),
+        "mae_trend": s.get("mae_trend", []),
+        "mae_by_cat": s.get("mae_by_cat", {}),
+        "mae_by_hour": s.get("mae_by_hour", {}),
+        "ensemble_accuracy": s.get("ensemble_accuracy", 0.0),
+        "ensemble_mae": s.get("ensemble_mae", 0.0),
+        "ensemble_accuracy_delta": s.get("ensemble_accuracy_delta", 0.0),
+        "basis_mae": s.get("basis_mae", 0.0),
         # Insights
-        "insightsToday": len(ticker_entries),
-        "insightsTrend": 0,
-        "pagesToday": n_pushes * 8,
-        "pagesTrend": 0,
+        "insights_today": len(ticker_entries),
+        "insights_trend": 0,
+        "pages_today": n_pushes * 8,
+        "pages_trend": 0,
         # Researchers (leer — keine fiktiven Profile)
         "researchers": [],
-        "guestResearchers": [],
-        "guestExchanges": [],
-        "bildTeam": [],
+        "guest_researchers": [],
+        "guest_exchanges": [],
+        "bild_team": [],
         "dissertations": [],
         "diskurs": [],
         # Orchestrator
@@ -177,36 +214,44 @@ def get_forschung() -> JSONResponse:
         "findings": findings,
         "ticker": ticker_entries[-50:],
         "learning": research_log,
-        "weekComparison": s.get("week_comparison", {}),
-        "liveRules": live_rules,
-        "liveRulesCount": len([r for r in live_rules if r.get("active")]),
-        "researchModifiers": s.get("research_modifiers", {}),
-        "externalContext": s.get("external_context", {}),
-        "algoScoreAnalysis": s.get("algo_score_analysis", {}),
-        # Push-Counts
-        "nPushes": n_pushes,
-        "lastPushTs": last_push_ts,
-        "matureCount": s.get("mature_count", 0),
-        "freshCount": s.get("fresh_count", 0),
-        "freshPushes": s.get("fresh_pushes", [])[:20],
+        "week_comparison": s.get("week_comparison", {}),
+        "live_rules": [r for r in live_rules if r.get("active")],
+        "live_rules_count": n_live_rules,
+        "research_modifiers": s.get("research_modifiers", {}),
+        "external_context": s.get("external_context", {}),
+        "algo_score_analysis": s.get("algo_score_analysis", {}),
+        # Push-Counts (snake_case — erwartet von push-balancer.html)
+        "n_pushes": n_pushes,
+        "last_push_ts": last_push_ts,
+        "mature_count": s.get("mature_count", 0),
+        "fresh_count": s.get("fresh_count", 0),
+        "fresh_pushes": s.get("fresh_pushes", [])[:20],
+        # Berechnete OR-Felder (fehlten bisher)
+        "mean_or": round(_median_or, 2),
+        "best_hour": _best_hour,
+        "best_hour_or": _best_hour_or,
+        "top_category": _top_cat,
+        "top_category_or": _top_cat_or,
+        "or_distribution": _or_dist,
+        "temporal_trends": s.get("temporal_trends", {}),
         # Research Memory
-        "researchMemory": s.get("research_memory", {}),
-        "researchMemoryTotal": len(s.get("research_memory", {})),
-        "researchLog": research_log,
-        "researchProjects": [],
-        "researchMilestones": [],
-        "instituteReview": {},
+        "research_memory": s.get("research_memory", {}),
+        "research_memory_total": len(s.get("research_memory", {})),
+        "research_log": research_log,
+        "research_projects": [],
+        "research_milestones": [],
+        "institute_review": {},
         # Schwab
-        "schwabDecisions": schwab_decisions[-20:],
-        "pendingApprovals": pending_approvals,
+        "schwab_decisions": schwab_decisions[-20:],
+        "pending_approvals": pending_approvals,
         # ML-Modell-Info
-        "mlAnalytics": {
+        "ml_analytics": {
             "gbrt": gbrt_info,
             "lightgbm": lgbm_info,
         },
         # Analysis Meta
-        "analysisGeneration": s.get("analysis_generation", 0),
-        "lastAnalysis": s.get("last_analysis", 0),
+        "analysis_generation": s.get("analysis_generation", 0),
+        "last_analysis": s.get("last_analysis", 0),
         "loading": False,
     })
 
