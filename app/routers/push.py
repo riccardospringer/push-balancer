@@ -183,8 +183,8 @@ def _build_pushes_response(
             today_rows.append(row)
         predicted_or = prediction_map.get(str(row.get("message_id", "")))
         open_rate = round(_ratio(row.get("or")), 4)
-        push_score = row.get("push_score") or 0
-        # Nur echten Score aus Tool-Capture verwenden — kein Raten
+        # Nur echten Score anzeigen (push_score_real=1 = vom Tool erfasst)
+        push_score = row.get("push_score") if row.get("push_score_real") else 0
         if not push_score:
             link = row.get("link", "")
             if link:

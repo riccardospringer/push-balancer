@@ -99,11 +99,15 @@ def init_db() -> None:
         ("n_apps", "INTEGER", "0"), ("total_recipients", "INTEGER", "0"),
         ("weekday", "INTEGER", "-1"),
         ("push_score", "INTEGER", "0"),
+        ("push_score_real", "INTEGER", "0"),  # 1 = vom Tool erfasst, 0 = kein Score
     ]:
         try:
             conn.execute(f"ALTER TABLE pushes ADD COLUMN {_col} {_type} DEFAULT {_default}")
         except Exception:
             pass
+    # Einmalige Migration: alle durch Formel gesetzten push_score-Werte zurücksetzen.
+    # Nur Scores mit push_score_real=1 sind echte Tool-Captures.
+    conn.execute("UPDATE pushes SET push_score = 0 WHERE push_score > 0 AND push_score_real = 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_ts ON pushes(ts_num)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_cat ON pushes(cat)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushes_or_ts ON pushes(or_val, ts_num)")
@@ -380,18 +384,22 @@ def push_db_upsert(parsed_pushes: list) -> int:
                 _weekday = (_dt_mod.datetime.fromtimestamp(_ts_num).weekday() + 1) % 7
             except Exception:
                 _weekday = -1
-            # Score nur aus Tool-Capture oder bereits gespeichert — kein Raten
-            _push_score = p.get("push_score") or 0
-            if not _push_score and p.get("link"):
+            # Score nur aus Tool-Capture — kein Raten, kein Schätzen
+            _push_score = 0
+            _push_score_real = 0
+            if p.get("link"):
                 try:
                     from app.routers.score_capture import get_score_for_url
-                    _push_score = get_score_for_url(p["link"]) or 0
+                    captured = get_score_for_url(p["link"]) or 0
+                    if captured:
+                        _push_score = captured
+                        _push_score_real = 1
                 except Exception:
                     pass
             cur.execute("""INSERT INTO pushes (message_id, ts_num, or_val, title, headline, kicker,
                 cat, link, type, hour, weekday, title_len, opened, received, channel, channels, is_eilmeldung, updated_at,
-                target_stats, app_list, n_apps, total_recipients, push_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                target_stats, app_list, n_apps, total_recipients, push_score, push_score_real)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     or_val = CASE WHEN excluded.or_val > 0 THEN excluded.or_val ELSE or_val END,
                     opened = CASE WHEN excluded.opened > opened THEN excluded.opened ELSE opened END,
@@ -399,13 +407,15 @@ def push_db_upsert(parsed_pushes: list) -> int:
                     target_stats = CASE WHEN length(excluded.target_stats) > 2 THEN excluded.target_stats ELSE target_stats END,
                     n_apps = CASE WHEN excluded.n_apps > 0 THEN excluded.n_apps ELSE n_apps END,
                     total_recipients = CASE WHEN excluded.total_recipients > 0 THEN excluded.total_recipients ELSE total_recipients END,
-                    push_score = CASE WHEN push_score = 0 THEN excluded.push_score ELSE push_score END,
+                    push_score = CASE WHEN excluded.push_score_real = 1 THEN excluded.push_score ELSE push_score END,
+                    push_score_real = CASE WHEN excluded.push_score_real = 1 THEN 1 ELSE push_score_real END,
                     updated_at = ?
             """, (mid, _ts_num, p.get("or", p.get("or_val", 0)), p.get("title", ""), p.get("headline", ""),
                   p.get("kicker", ""), p.get("cat", ""), p.get("link", ""), p.get("type", "editorial"),
                   p.get("hour", -1), _weekday, p.get("title_len", 0), p.get("opened", 0), p.get("received", 0),
                   p.get("channel", ""), json.dumps(p.get("channels", [])), 1 if p.get("is_eilmeldung") else 0,
-                  now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0), _push_score, now))
+                  now, _ts_json, _apps_json, p.get("n_apps", 0), p.get("total_recipients", 0),
+                  _push_score, _push_score_real, now))
             count += cur.rowcount
         conn.commit()
         conn.close()
