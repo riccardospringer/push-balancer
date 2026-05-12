@@ -249,12 +249,12 @@ def _build_article_score(category: str, title: str, pub_date: str, article_type:
 
     base = {
         "politik": 58.0,
-        "sport": 62.0,
-        "news": 56.0,
-        "wirtschaft": 54.0,
-        "unterhaltung": 50.0,
-        "regional": 49.0,
-        "digital": 51.0,
+        "sport": 55.0,
+        "news": 57.0,
+        "wirtschaft": 55.0,
+        "unterhaltung": 51.0,
+        "regional": 52.0,
+        "digital": 52.0,
     }.get(category, 50.0)
 
     score = base
@@ -280,9 +280,7 @@ def _build_article_score(category: str, title: str, pub_date: str, article_type:
         score += 4.0
         reasons.append("live")
 
-    if category == "sport":
-        score += 3.0
-        reasons.append("sport-fit")
+    # kein genereller Sport-Bonus — verhindert Sport-Monopol in der Liste
 
     if article_type == "video":
         score -= 9.0
