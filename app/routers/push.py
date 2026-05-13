@@ -38,9 +38,52 @@ except ImportError:
 
 
 class PredictionFeedbackRequest(BaseModel):
-    pushId: str
-    actualOr: float
+    # Neues camelCase-Format
+    pushId: str = ""
+    actualOr: float = 0.0
     title: str | None = None
+    predictedOr: float | None = None
+    # Altes snake_case-Format (HTML-Frontend)
+    push_id: str | None = None
+    actual_or: float | None = None
+    predicted_or: float | None = None
+    push_cat: str | None = None
+    push_hour: int | None = None
+
+
+def _lookup_push_row(push_id: str) -> dict | None:
+    """Lädt Push-Daten aus pushes-Tabelle für predicted_or-Berechnung."""
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=3)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT title, cat, hour, ts_num, is_eilmeldung FROM pushes WHERE message_id = ? LIMIT 1",
+            (push_id,),
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def _compute_predicted_or(push_id: str, title: str | None, cat: str | None, hour: int | None) -> float:
+    """Berechnet predicted_or für einen Push zum Feedback-Zeitpunkt."""
+    try:
+        push_row = _lookup_push_row(push_id)
+        push_data = {
+            "title": (push_row or {}).get("title") or title or "",
+            "cat": (push_row or {}).get("cat") or cat or "News",
+            "hour": (push_row or {}).get("hour") or hour or dt.datetime.now().hour,
+            "ts_num": (push_row or {}).get("ts_num") or int(time.time()),
+            "is_eilmeldung": bool((push_row or {}).get("is_eilmeldung", False)),
+            "channels": [],
+        }
+        from app.ml.predict import predict_or
+        from app.research.worker import _research_state
+        result = predict_or(push_data, _research_state)
+        return float((result or {}).get("predicted_or") or 0.0)
+    except Exception:
+        return 0.0
 
 
 class PushSyncRequest(BaseModel):
@@ -578,29 +621,52 @@ def create_push_refresh_job() -> JSONResponse:
     return JSONResponse(content=_build_refresh_response())
 
 
-@router.post("/api/predictions/feedback")
-def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
-    """Speichert tatsächliche Opening Rate für eine frühere Prediction.
+def _handle_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
+    """Gemeinsame Logik für beide Feedback-Endpunkte."""
+    # Normalisiere push_id: camelCase oder snake_case
+    push_id = body.pushId or body.push_id or ""
+    actual_or = body.actualOr if body.actualOr else (body.actual_or or 0.0)
+    if not push_id or actual_or <= 0:
+        return JSONResponse(content={"ok": False, "error": "missing push_id or actual_or"})
 
-    Wird vom Dashboard aufgerufen wenn eine Push-OR bekannt wird.
-    Dient als Trainings-Label für das ML-Modell.
+    # predicted_or: vom Client mitgesendet (altes Frontend) oder frisch berechnen
+    predicted_or = (
+        body.predicted_or
+        or body.predictedOr
+        or 0.0
+    )
+    if predicted_or <= 0:
+        predicted_or = _compute_predicted_or(
+            push_id,
+            title=body.title,
+            cat=body.push_cat,
+            hour=body.push_hour,
+        )
 
-    IMPLEMENTIERUNGSHINWEIS:
-        Vollstaendige Handler-Logik aus dem frueheren Monolithen:
-        _prediction_feedback() hierher migrieren (enthält auch Online-Bias-Update).
-    """
     try:
         push_db_log_prediction(
-            push_id=body.pushId,
-            predicted_or=0.0,
-            actual_or=body.actualOr,
+            push_id=push_id,
+            predicted_or=predicted_or,
+            actual_or=actual_or,
             title=body.title or "",
         )
-        log.info("[Feedback] Push %s: actual_or=%.2f%%", body.pushId, body.actualOr)
-        return JSONResponse(content={"ok": True})
+        log.info(
+            "[Feedback] Push %s: actual_or=%.2f%% predicted_or=%.2f%%",
+            push_id, actual_or, predicted_or,
+        )
+        return JSONResponse(content={"ok": True, "status": "ok"})
     except Exception as exc:
-        log.exception("[Feedback] Fehler in post_prediction_feedback")
-        raise HTTPException(
-            status_code=500,
-            detail="Feedback could not be stored.",
-        ) from exc
+        log.exception("[Feedback] Fehler beim Speichern")
+        raise HTTPException(status_code=500, detail="Feedback could not be stored.") from exc
+
+
+@router.post("/api/predictions/feedback")
+def post_prediction_feedback(body: PredictionFeedbackRequest) -> JSONResponse:
+    """Speichert tatsächliche Opening Rate für eine frühere Prediction."""
+    return _handle_feedback(body)
+
+
+@router.post("/api/prediction-feedback", include_in_schema=False)
+def post_prediction_feedback_legacy(body: PredictionFeedbackRequest) -> JSONResponse:
+    """Compat-Endpunkt für altes HTML-Frontend (ohne /s)."""
+    return _handle_feedback(body)
