@@ -273,3 +273,23 @@ export interface GenerateTitleResponse {
   reasoning: string
   advisoryOnly: true
 }
+
+
+export interface PushAlarmArticle {
+  title: string
+  url: string
+  score: number
+  category: string
+  predictedOR?: number
+  reason?: string
+  isBreaking?: boolean
+  isEilmeldung?: boolean
+  goldenHour?: boolean
+  pushesToday?: number
+  minsSinceLastPush?: number
+}
+
+export interface PushAlarmResponse {
+  active: boolean
+  article?: PushAlarmArticle
+}

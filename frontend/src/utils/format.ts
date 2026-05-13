@@ -36,7 +36,8 @@ export function fmtDateTime(iso: string): string {
   })
 }
 
-export function fmtNum(v: number, digits = 0): string {
+export function fmtNum(v: number | null | undefined, digits = 0): string {
+  if (v == null) return '0'
   return v.toLocaleString('de-DE', { maximumFractionDigits: digits })
 }
 
