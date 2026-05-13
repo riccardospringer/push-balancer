@@ -964,7 +964,7 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     request.scope["path"] = normalized_path
     frontend_navigation = _is_frontend_navigation_request(request.method, normalized_path)
 
-    if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path) or _is_always_public(normalized_path) or normalized_path in ("/", "/push-balancer.html", "/dist-frontend/"):
+    if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path) or _is_always_public(normalized_path) or frontend_navigation:
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
             frontend_response = _frontend_html_response(normalized_path)
@@ -1033,23 +1033,32 @@ def _legacy_frontend_response() -> Response:
 @app.get("/", include_in_schema=False)
 @app.get("/kandidaten", include_in_schema=False)
 @app.get("/kandidaten/", include_in_schema=False)
+@app.get("/live", include_in_schema=False)
+@app.get("/analyse", include_in_schema=False)
+@app.get("/konkurrenz", include_in_schema=False)
+@app.get("/forschung", include_in_schema=False)
+@app.get("/tagesplan", include_in_schema=False)
 @app.get("/push-balancer.html", include_in_schema=False)
 @app.get("/dist-frontend", include_in_schema=False)
 @app.get("/dist-frontend/", include_in_schema=False)
-async def frontend_entrypoint() -> Response:
-    """Liefert push-balancer.html als primäre Oberfläche."""
-    return _legacy_frontend_response()
+async def frontend_entrypoint(request: Request) -> Response:
+    """Liefert die React-SPA für alle Frontend-Routen."""
+    response = _frontend_html_response(request.url.path)
+    if response is None:
+        return _legacy_frontend_response()
+    return response
 
 
 @app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
 async def frontend_dist_assets(asset_path: str = "") -> Response:
-    """Statische Assets aus dist-frontend (JS/CSS Bundles für alte Links)."""
+    """Statische Assets aus dist-frontend (JS/CSS Bundles)."""
     normalized = asset_path.lstrip("/")
     if normalized:
         candidate = os.path.normpath(os.path.join(SERVE_DIR, normalized))
         if candidate.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate):
             return FileResponse(candidate)
-    return _legacy_frontend_response()
+    response = _frontend_html_response("/dist-frontend/")
+    return response if response is not None else _legacy_frontend_response()
 
 
 # ── Einstiegspunkt für direkten Start ─────────────────────────────────────
