@@ -96,6 +96,15 @@ async def lifespan(app: FastAPI):
     # ── 2. Push-Snapshot seeden ──
     _seed_push_snapshot()
 
+    # ── 2b. Auto-Seed aus BILD-API wenn DB leer (Background, blockt Startup nicht) ──
+    def _bg_auto_seed():
+        try:
+            from app.routers.push import auto_seed_db_if_empty
+            auto_seed_db_if_empty()
+        except Exception as e:
+            log.warning("[AutoSeed-BG] Fehler: %s", e)
+    threading.Thread(target=_bg_auto_seed, daemon=True, name="auto_seed_db").start()
+
     # ── 3. Background-Worker starten ──
     _start_background_workers()
 

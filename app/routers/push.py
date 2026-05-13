@@ -11,6 +11,7 @@ import sqlite3
 import time
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import APIRouter, HTTPException, Request
@@ -18,7 +19,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.config import PUSH_DB_PATH, PUSH_LIVE_FETCH_ENABLED, SYNC_SECRET, push_api_base_candidates
-from app.database import push_db_load_all, push_db_log_prediction
+from app.database import push_db_load_all, push_db_log_prediction, push_db_count, push_db_upsert
 
 log = logging.getLogger("push-balancer")
 router = APIRouter()
@@ -60,8 +61,92 @@ def _ratio(value: float | int | None) -> float:
     return numeric / 100 if numeric > 1 else numeric
 
 
-def _fetch_live_push_snapshot() -> tuple[list, list]:
-    if not PUSH_LIVE_FETCH_ENABLED:
+_CATEGORY_SEGMENTS = (
+    "regional", "sport", "politik", "unterhaltung", "ratgeber",
+    "geld", "auto", "digital", "leben", "spiele", "reise",
+    "news", "bild-plus", "lifestyle", "ausland", "video",
+)
+
+
+def _extract_category_from_url(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        path = urllib.parse.urlparse(url).path.lower()
+    except Exception:
+        return ""
+    for seg in _CATEGORY_SEGMENTS:
+        if f"/{seg}/" in path or path.startswith(f"/{seg}"):
+            return seg
+    return ""
+
+
+def _parse_bild_messages(raw_messages: list) -> list:
+    """Wandelt BILD Push-API Rohformat in das push_db_upsert-Schema."""
+    parsed: list[dict] = []
+    for m in raw_messages or []:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id") or m.get("messageId")
+        try:
+            ts = int(m.get("sendDate") or 0)
+        except (TypeError, ValueError):
+            ts = 0
+        if not mid or ts <= 0:
+            continue
+
+        tl = m.get("targetList") or []
+        channels = [t.get("channel", "") for t in tl if isinstance(t, dict) and t.get("channel")]
+        app_set: set = set()
+        for t in tl:
+            if isinstance(t, dict):
+                for a in (t.get("appList") or []):
+                    if a:
+                        app_set.add(a)
+        app_list = sorted(app_set)
+        channel = channels[0] if channels else ""
+        is_eil = any("eil" in (c or "").lower() for c in channels)
+
+        try:
+            or_raw = float(m.get("openingRate") or 0)
+        except (TypeError, ValueError):
+            or_raw = 0.0
+        or_val = or_raw / 100 if or_raw > 1 else or_raw
+
+        title = m.get("kickerAndHeadline") or m.get("headline") or ""
+        link = m.get("url") or m.get("urlId") or ""
+        try:
+            hour = dt.datetime.fromtimestamp(ts).hour
+        except (OSError, ValueError, OverflowError):
+            hour = -1
+
+        parsed.append({
+            "message_id": str(mid),
+            "ts_num": ts,
+            "or": or_val,
+            "title": title,
+            "headline": m.get("headline", "") or "",
+            "kicker": m.get("kicker", "") or "",
+            "cat": _extract_category_from_url(link) or "news",
+            "link": link,
+            "type": (m.get("sourceType") or "EDITORIAL").lower(),
+            "hour": hour,
+            "title_len": len(title),
+            "opened": int(m.get("openedCount") or 0),
+            "received": int(m.get("receivedCount") or 0),
+            "channel": channel,
+            "channels": channels,
+            "is_eilmeldung": is_eil,
+            "target_stats": m.get("targetStatistics") or {},
+            "app_list": app_list,
+            "n_apps": len(app_list),
+            "total_recipients": int(m.get("recipientCount") or 0),
+        })
+    return parsed
+
+
+def _fetch_live_push_snapshot(force: bool = False) -> tuple[list, list]:
+    if not force and not PUSH_LIVE_FETCH_ENABLED:
         raise RuntimeError("Live push fetch is disabled in economy mode")
 
     end_ts = int(time.time())
@@ -249,20 +334,85 @@ def _build_pushes_response(
 
 def _build_refresh_response() -> dict:
     try:
-        messages, channels = _fetch_live_push_snapshot()
+        messages, channels = _fetch_live_push_snapshot(force=True)
         with _push_sync_lock:
             _push_sync_cache["messages"] = messages
             _push_sync_cache["channels"] = channels
             _push_sync_cache["ts"] = time.time()
-        return {"ok": True, "synced": len(messages), "channels": len(channels), "source": "live"}
+        try:
+            n_written = push_db_upsert(_parse_bild_messages(messages))
+        except Exception as upsert_exc:
+            log.warning("[refresh] DB-Upsert fehlgeschlagen: %s", upsert_exc)
+            n_written = 0
+        return {
+            "ok": True,
+            "synced": len(messages),
+            "channels": len(channels),
+            "db_written": n_written,
+            "source": "live",
+        }
     except Exception as exc:
-        log.warning("[pushes] live refresh failed, falling back to DB summary: %s", exc)
+        log.warning("[pushes] live refresh failed: %s", exc)
+        # Fallback: aus dem Sync-Cache parsen + in DB schreiben (lokales Relay hat ihn ggf. befüllt)
+        with _push_sync_lock:
+            cache_msgs = list(_push_sync_cache.get("messages") or [])
+        if cache_msgs:
+            try:
+                n_written = push_db_upsert(_parse_bild_messages(cache_msgs))
+                return {
+                    "ok": True,
+                    "synced": len(cache_msgs),
+                    "channels": 0,
+                    "db_written": n_written,
+                    "source": "cache->db",
+                }
+            except Exception as cache_exc:
+                log.warning("[pushes] cache→db Fallback fehlgeschlagen: %s", cache_exc)
         try:
             rows = push_db_load_all(max_rows=50)
         except Exception as db_exc:
             log.warning("[pushes] refresh fallback without DB: %s", db_exc)
             rows = []
         return {"ok": True, "synced": len(rows), "channels": 0, "source": "db-fallback"}
+
+
+def auto_seed_db_if_empty() -> int:
+    """Seedet die DB einmalig aus BILD-API, wenn sie leer ist.
+
+    Wird beim App-Start in einem Background-Thread aufgerufen, damit der Server
+    nicht blockiert wird. Bypassed `PUSH_LIVE_FETCH_ENABLED` (force=True), weil
+    eine leere DB den gesamten Tagesplan + CSV-Export blockiert.
+    """
+    try:
+        if push_db_count() > 0:
+            return 0
+    except Exception as exc:
+        log.warning("[AutoSeed] push_db_count fehlgeschlagen: %s", exc)
+        return 0
+    try:
+        messages, channels = _fetch_live_push_snapshot(force=True)
+        with _push_sync_lock:
+            _push_sync_cache["messages"] = messages
+            _push_sync_cache["channels"] = channels
+            _push_sync_cache["ts"] = time.time()
+        n = push_db_upsert(_parse_bild_messages(messages))
+        log.info("[AutoSeed] %d Pushes von BILD-API in leere DB geseedet", n)
+        return n
+    except Exception as exc:
+        with _push_sync_lock:
+            cache_msgs = list(_push_sync_cache.get("messages") or [])
+        if cache_msgs:
+            try:
+                n = push_db_upsert(_parse_bild_messages(cache_msgs))
+                log.info(
+                    "[AutoSeed-Cache] %d Pushes aus Sync-Cache geseedet (Live-Fetch failed: %s)",
+                    n, exc,
+                )
+                return n
+            except Exception as cache_exc:
+                log.warning("[AutoSeed-Cache] Upsert fehlgeschlagen: %s", cache_exc)
+        log.warning("[AutoSeed] Live + Cache fehlgeschlagen, DB bleibt leer: %s", exc)
+        return 0
 
 
 @router.get("/api/push/{path:path}")
