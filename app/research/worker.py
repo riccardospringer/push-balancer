@@ -1558,6 +1558,13 @@ def _run_analysis_inner() -> None:
     # Residual Corrector aktualisieren
     update_residual_corrector()
 
+    # Agentenarmee: Scoring sukzessive optimieren
+    try:
+        from app.research.scoring_optimizer import run_scoring_optimizer
+        run_scoring_optimizer(state, push_data)
+    except Exception as _opt_exc:
+        log.warning("[research] Scoring-Optimizer Fehler: %s", _opt_exc)
+
 
 # ── Residual Corrector ─────────────────────────────────────────────────────
 
