@@ -204,20 +204,22 @@ def _agent_bias_calibrator(state: dict, push_data: list) -> None:
 
     state["ml_calibration"] = calibration
 
-    # Auch in Residual-Corrector schreiben (kompatibel mit predict.py)
+    # Modul-level Residual-Corrector aktualisieren (wird von predict_or() gelesen)
     if len(recent) >= _MIN_SAMPLES:
-        hour_groups_str = {str(k): v for k, v in hour_bias.items()}
-        existing = state.get("_residual_corrector", {})
-        existing["global_bias"] = round(global_bias, 4)
-        existing["cat_bias"] = {c: round(b, 4) for c, b in cat_bias.items()}
-        existing["hourgroup_bias"] = {
-            "morning": _weighted_hour_bias(hour_bias, range(6, 12)),
-            "afternoon": _weighted_hour_bias(hour_bias, range(12, 18)),
-            "evening": _weighted_hour_bias(hour_bias, range(18, 23)),
-            "night": _weighted_hour_bias(hour_bias, list(range(0, 6)) + [23]),
-        }
-        existing["n_samples"] = len(recent)
-        state["_residual_corrector"] = existing
+        try:
+            from app.research.worker import _residual_corrector, _residual_corrector_lock
+            with _residual_corrector_lock:
+                _residual_corrector["global_bias"] = round(global_bias, 4)
+                _residual_corrector["cat_bias"] = {c: round(b, 4) for c, b in cat_bias.items()}
+                _residual_corrector["hourgroup_bias"] = {
+                    "morning": _weighted_hour_bias(hour_bias, range(6, 12)),
+                    "afternoon": _weighted_hour_bias(hour_bias, range(12, 18)),
+                    "evening": _weighted_hour_bias(hour_bias, range(18, 23)),
+                    "night": _weighted_hour_bias(hour_bias, list(range(0, 6)) + [23]),
+                }
+                _residual_corrector["n_samples"] = len(recent)
+        except Exception as exc:
+            log.debug("[optimizer/bias_calibrator] Residual-Update fehlgeschlagen: %s", exc)
 
     log.debug(
         "[optimizer/bias_calibrator] global_bias=%.3f, %d cat, %d hour biases",
