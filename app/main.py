@@ -1031,22 +1031,20 @@ def _legacy_frontend_response() -> Response:
 
 
 @app.get("/", include_in_schema=False)
-@app.get("/kandidaten", include_in_schema=False)
-@app.get("/kandidaten/", include_in_schema=False)
-@app.get("/live", include_in_schema=False)
-@app.get("/analyse", include_in_schema=False)
-@app.get("/konkurrenz", include_in_schema=False)
-@app.get("/forschung", include_in_schema=False)
-@app.get("/tagesplan", include_in_schema=False)
 @app.get("/push-balancer.html", include_in_schema=False)
+async def frontend_entrypoint(request: Request) -> Response:
+    """Liefert das klassische push-balancer.html Frontend."""
+    return _legacy_frontend_response()
+
+
 @app.get("/dist-frontend", include_in_schema=False)
 @app.get("/dist-frontend/", include_in_schema=False)
-async def frontend_entrypoint(request: Request) -> Response:
-    """Liefert die React-SPA für alle Frontend-Routen."""
+@app.get("/app", include_in_schema=False)
+@app.get("/app/", include_in_schema=False)
+async def frontend_spa_entrypoint(request: Request) -> Response:
+    """React-SPA unter /app/ erreichbar."""
     response = _frontend_html_response(request.url.path)
-    if response is None:
-        return _legacy_frontend_response()
-    return response
+    return response if response is not None else _legacy_frontend_response()
 
 
 @app.get("/assets/{asset_path:path}", include_in_schema=False)
