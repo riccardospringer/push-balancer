@@ -1038,35 +1038,24 @@ async def frontend_entrypoint(request: Request) -> Response:
 @app.get("/app", include_in_schema=False)
 @app.get("/app/", include_in_schema=False)
 async def frontend_spa_entrypoint(request: Request) -> Response:
-    """React-SPA unter /app/ erreichbar."""
-    response = _frontend_html_response(request.url.path)
-    return response if response is not None else _legacy_frontend_response()
+    """Komplett deaktiviert — liefert klassisches push-balancer.html."""
+    return _legacy_frontend_response()
 
 
 @app.get("/assets/{asset_path:path}", include_in_schema=False)
 async def serve_frontend_asset(asset_path: str) -> Response:
-    """Statische Assets (JS/CSS Bundles) aus dist-frontend/assets/."""
+    """Statische Assets — nur noch fuer Legacy-Push-Balancer.html (falls referenziert)."""
     assets_dir = os.path.normpath(_frontend_assets_dir())
     candidate = os.path.normpath(os.path.join(assets_dir, asset_path))
     if candidate.startswith(assets_dir + os.sep) and os.path.isfile(candidate):
         return FileResponse(candidate)
-    # Fallback: Asset mit gleichem Prefix finden (hash-Rotation)
-    replacement = _find_replacement_asset_name(asset_path)
-    if replacement:
-        return FileResponse(os.path.join(assets_dir, replacement))
     raise HTTPException(status_code=404, detail=f"Asset not found: {asset_path}")
 
 
 @app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
 async def frontend_dist_assets(asset_path: str = "") -> Response:
-    """Compat-Route für /dist-frontend/ Pfade (leitet auf /assets/ weiter)."""
-    normalized = asset_path.lstrip("/")
-    if normalized:
-        candidate = os.path.normpath(os.path.join(SERVE_DIR, normalized))
-        if candidate.startswith(os.path.normpath(SERVE_DIR) + os.sep) and os.path.isfile(candidate):
-            return FileResponse(candidate)
-    response = _frontend_html_response("/dist-frontend/")
-    return response if response is not None else _legacy_frontend_response()
+    """Compat-Route — keine React-SPA-Assets mehr, alles auf push-balancer.html."""
+    return _legacy_frontend_response()
 
 
 # ── Einstiegspunkt für direkten Start ─────────────────────────────────────
