@@ -1795,44 +1795,55 @@ setInterval(function() {
   }
   .refresh-indicator .countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
 
-  /* ── Tagesplan Tab (Push-Schedule, PDF-basiert) ── */
-  .ps-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 20px 24px; margin-bottom: 16px; color: #fff; }
+  /* ── Tagesplan Tab — Lockscreen-Stil ── */
+  .ps-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 18px 22px; margin-bottom: 18px; color: #fff; }
   .ps-header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-  .ps-header-title { font-size: 18px; font-weight: 800; letter-spacing: 0.5px; }
-  .ps-header-sub { font-size: 12px; opacity: 0.7; margin-top: 2px; }
-  .ps-hero { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .ps-hero-box { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 10px; text-align: center; }
-  .ps-hero-val { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .ps-hero-lbl { font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
-  .ps-hero-box.ok .ps-hero-val { color: #5dffaf; }
-  .ps-hero-box.warn .ps-hero-val { color: #ffcc4d; }
-  .ps-hero-box.bad .ps-hero-val { color: #ff6d6d; }
+  .ps-header-title { font-size: 17px; font-weight: 700; letter-spacing: 0.2px; }
+  .ps-date-label { font-weight: 400; font-size: 13px; opacity: 0.65; margin-left: 10px; }
   .ps-day-nav { display: flex; gap: 4px; }
   .ps-nav-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 10px; color: #fff; cursor: pointer; font-size: 12px; }
-  .ps-nav-btn.today { background: rgba(255,204,77,0.2); border-color: rgba(255,204,77,0.4); font-weight: 600; }
-  .ps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 16px; }
-  .ps-slot { background: var(--card-bg); border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 10px; padding: 12px 14px; position: relative; }
-  .ps-slot.status-mandatory_open { border-left-color: #f59e0b; background: rgba(245,158,11,0.06); }
-  .ps-slot.status-mandatory_filled { border-left-color: #10b981; background: rgba(16,185,129,0.06); }
-  .ps-slot.status-avoid_clean { border-left-color: #9ca3af; opacity: 0.55; }
-  .ps-slot.status-avoid_violated { border-left-color: #dc2626; background: rgba(220,38,38,0.06); }
-  .ps-slot.status-gold { border-left-color: #fbbf24; background: rgba(251,191,36,0.04); }
-  .ps-slot.status-pushed { border-left-color: #10b981; }
-  .ps-slot.is-now { box-shadow: 0 0 0 2px rgba(96,165,250,0.45); }
-  .ps-slot-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
-  .ps-slot-hour { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .ps-slot-badges { font-size: 12px; }
-  .ps-slot-stars { color: #fbbf24; font-size: 14px; letter-spacing: 1px; margin-top: 2px; }
-  .ps-slot-or { font-size: 20px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 4px; }
-  .ps-slot-cat { font-size: 11px; color: var(--text-tertiary); text-transform: capitalize; margin-top: 2px; }
-  .ps-slot-count { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
-  .ps-pushed { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
-  .ps-pushed-item { font-size: 11px; color: var(--text-secondary); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 3px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ps-rules { margin-top: 20px; padding: 14px 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; }
-  .ps-rules h4 { margin: 0 0 8px; font-size: 12px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
-  .ps-rules ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
-  .ps-rules li { margin-bottom: 4px; }
-  .ps-footer-note { margin-top: 16px; font-size: 11px; color: var(--text-tertiary); text-align: center; }
+  .ps-nav-btn:hover { background: rgba(255,255,255,0.14); }
+  .ps-nav-btn.today { background: rgba(255,204,77,0.18); border-color: rgba(255,204,77,0.35); font-weight: 600; }
+  .ps-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .ps-hero-box { background: rgba(255,255,255,0.07); border-radius: 10px; padding: 12px 14px; }
+  .ps-hero-val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .ps-hero-lbl { font-size: 11px; opacity: 0.62; margin-top: 4px; }
+
+  .ps-loading { text-align: center; padding: 60px 20px; color: var(--text-tertiary); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+
+  /* Lockscreen-Stream */
+  .ps-stream { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+
+  .ps-card { background: rgba(38, 40, 48, 0.78); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.06); border-radius: 14px; padding: 12px 14px; color: #f4f5f7; position: relative; transition: background 0.15s ease; }
+  .ps-card.is-past { opacity: 0.45; }
+  .ps-card.is-now { border-color: rgba(96,165,250,0.5); box-shadow: 0 0 0 1px rgba(96,165,250,0.35); }
+  .ps-card.status-pushed { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.32); }
+  .ps-card.status-mandatory_open { background: rgba(245,158,11,0.10); border-color: rgba(245,158,11,0.30); }
+  .ps-card.status-mandatory_missed { background: rgba(220,38,38,0.10); border-color: rgba(220,38,38,0.28); }
+  .ps-card.status-avoid_clean { opacity: 0.42; }
+  .ps-card.status-avoid_violated { background: rgba(220,38,38,0.12); border-color: rgba(220,38,38,0.32); }
+  .ps-card.status-gold { background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.25); }
+
+  .ps-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .ps-card-app { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; color: #ff1f3a; background: rgba(255,31,58,0.12); padding: 3px 8px; border-radius: 6px; text-transform: uppercase; }
+  .ps-card-hour { font-size: 12px; color: rgba(255,255,255,0.65); font-variant-numeric: tabular-nums; }
+  .ps-card-tag { margin-left: auto; font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.85); text-transform: uppercase; letter-spacing: 0.4px; }
+  .ps-card-tag.tag-pushed { background: rgba(16,185,129,0.22); color: #6ee7b7; }
+  .ps-card-tag.tag-mandatory_open { background: rgba(245,158,11,0.22); color: #fcd34d; }
+  .ps-card-tag.tag-mandatory_missed { background: rgba(220,38,38,0.22); color: #fca5a5; }
+  .ps-card-tag.tag-avoid_violated { background: rgba(220,38,38,0.22); color: #fca5a5; }
+  .ps-card-tag.tag-gold { background: rgba(251,191,36,0.22); color: #fde68a; }
+
+  .ps-card-label { font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
+  .ps-card-title { font-size: 14px; font-weight: 600; line-height: 1.35; color: #f5f5f7; }
+  .ps-card-meta { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 3px; text-transform: capitalize; }
+  .ps-card-empty { font-size: 12px; color: rgba(255,255,255,0.45); padding: 6px 0; }
+  .ps-card-foot { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  .ps-card-or { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.85); display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+  .ps-card-or .dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; }
+  .ps-card-or.pred .dot { background: #60a5fa; }
+  .ps-card-or.muted { color: rgba(255,255,255,0.45); font-weight: 500; }
+  .ps-card-extras { margin-top: 6px; font-size: 11px; color: rgba(255,255,255,0.5); }
   /* ── Konkurrenz Tab ── */
   .comp-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -2936,8 +2947,7 @@ setInterval(function() {
   <div class="ps-header">
     <div class="ps-header-row">
       <div>
-        <div class="ps-header-title">PUSH-TAGESPLAN <span id="psDateLabel" style="font-weight:400;font-size:13px;opacity:0.65;margin-left:8px"></span></div>
-        <div class="ps-header-sub">Empfehlungen aus Analyse von <span id="psBaselineN">14.916</span> echten BILD-Pushes</div>
+        <div class="ps-header-title">Tagesplan <span id="psDateLabel" class="ps-date-label"></span></div>
       </div>
       <div class="ps-day-nav">
         <button class="ps-nav-btn" onclick="psNavigateDay(-1)" title="Vorheriger Tag">&larr;</button>
@@ -2946,16 +2956,13 @@ setInterval(function() {
       </div>
     </div>
     <div class="ps-hero">
-      <div class="ps-hero-box" id="psHeroAvgORBox"><div class="ps-hero-val" id="psHeroAvgOR">--</div><div class="ps-hero-lbl">&Oslash; OR heute</div></div>
-      <div class="ps-hero-box" id="psHeroPushesBox"><div class="ps-hero-val" id="psHeroPushes">--</div><div class="ps-hero-lbl">Pushes / Limit</div></div>
-      <div class="ps-hero-box" id="psHeroMandatoryBox"><div class="ps-hero-val" id="psHeroMandatory">--</div><div class="ps-hero-lbl">Pflicht 20+21</div></div>
-      <div class="ps-hero-box" id="psHeroAvoidBox"><div class="ps-hero-val" id="psHeroAvoid">--</div><div class="ps-hero-lbl">Toter Slot 10/11</div></div>
-      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroBest">--</div><div class="ps-hero-lbl">Top-Stunde Analyse</div></div>
+      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroPushes">--</div><div class="ps-hero-lbl">Pushes heute</div></div>
+      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroAvgOR">--</div><div class="ps-hero-lbl">&Oslash; Erfolg heute</div></div>
+      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroNext">--</div><div class="ps-hero-lbl">N&auml;chster Slot</div></div>
+      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroBest">--</div><div class="ps-hero-lbl">Beste Stunde heute</div></div>
     </div>
   </div>
-  <div id="psSlots" class="ps-grid"><div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div></div>
-  <div id="psRules" class="ps-rules" style="display:none"></div>
-  <div class="ps-footer-note" id="psFooter"></div>
+  <div id="psSlots" class="ps-stream"><div class="ps-loading"><div class="spinner"></div>Lade Tagesplan...</div></div>
 </div><!-- /tabTagesplan -->
 
 <!-- Bookmark Footer -->
@@ -17717,10 +17724,10 @@ function psNavigateDay(delta) {
 
 async function loadPushSchedule() {
   const grid = document.getElementById('psSlots');
-  if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div>';
+  if (grid) grid.innerHTML = '<div class="ps-loading"><div class="spinner"></div>Lade Tagesplan...</div>';
   try {
     const url = API_BASE + '/api/push-schedule' + (_psCurrentDate ? ('?date=' + _psCurrentDate) : '');
-    const resp = await resilientFetch(url, { _timeout: 10000 });
+    const resp = await resilientFetch(url, { _timeout: 15000 });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     window._pushSchedule = data;
@@ -17734,95 +17741,103 @@ async function loadPushSchedule() {
   }, 60000);
 }
 
+function _psHourLabel(h) { return (h < 10 ? '0' + h : '' + h) + ':00'; }
+
 function renderPushSchedule(d) {
   const dateLbl = document.getElementById('psDateLabel');
   if (dateLbl) dateLbl.textContent = d.weekday_name + ' · ' + _psFmtDate(d.date);
-  const baselineN = document.getElementById('psBaselineN');
-  if (baselineN) baselineN.textContent = (d.baseline_total_pushes || 0).toLocaleString('de-DE');
 
-  // Hero: KPI
   const k = d.kpi || {};
-  const setBox = (boxId, valId, val, klass) => {
-    const box = document.getElementById(boxId);
-    const v = document.getElementById(valId);
-    if (v) v.textContent = val;
-    if (box) {
-      box.classList.remove('ok', 'warn', 'bad');
-      if (klass) box.classList.add(klass);
-    }
-  };
 
-  const avgOr = k.current_avg_or;
-  const avgTxt = avgOr != null ? avgOr.toFixed(1) + '%' : '--';
-  const avgKlass = avgOr == null ? null : (avgOr >= 6.0 ? 'ok' : (avgOr >= 5.0 ? 'warn' : 'bad'));
-  setBox('psHeroAvgORBox', 'psHeroAvgOR', avgTxt, avgKlass);
-
+  // Pushes heute
   const pushes = k.pushes_today || 0;
   const limit = k.pushes_limit || 20;
-  const pushKlass = pushes >= limit ? 'bad' : (pushes >= limit - 2 ? 'warn' : 'ok');
-  setBox('psHeroPushesBox', 'psHeroPushes', pushes + '/' + limit, pushKlass);
+  document.getElementById('psHeroPushes').textContent = pushes + ' von ' + limit;
 
-  const mandFilled = (k.mandatory_filled || []).length;
-  const mandMissed = (k.mandatory_missed || []).length;
-  const mandPending = (k.mandatory_pending || []).length;
-  let mandTxt = mandFilled + '/2';
-  if (mandFilled === 2) mandTxt = 'OK';
-  else if (mandPending > 0) mandTxt = mandFilled + '/2 (offen)';
-  else if (mandMissed > 0) mandTxt = 'verpasst';
-  const mandKlass = mandFilled === 2 ? 'ok' : (mandMissed > 0 ? 'bad' : 'warn');
-  setBox('psHeroMandatoryBox', 'psHeroMandatory', mandTxt, mandKlass);
+  // Ø Erfolg heute
+  const avgOr = k.current_avg_or;
+  document.getElementById('psHeroAvgOR').textContent = (avgOr != null) ? avgOr.toFixed(1) + ' %' : '–';
 
-  const avoidV = k.avoid_violated || [];
-  const avoidTxt = avoidV.length ? 'verletzt ' + avoidV.join(',') : 'sauber';
-  setBox('psHeroAvoidBox', 'psHeroAvoid', avoidTxt, avoidV.length ? 'bad' : 'ok');
-
-  const bestTxt = (d.best_hour != null ? d.best_hour + ':00' : '--') + ' · ' + (d.best_hour_avg_or != null ? d.best_hour_avg_or.toFixed(1) + '%' : '--');
-  document.getElementById('psHeroBest').textContent = bestTxt;
-
-  // Slots
-  const grid = document.getElementById('psSlots');
-  if (grid) grid.innerHTML = (d.slots || []).map(renderPsSlot).join('');
-
-  // Golden rules
-  const rulesEl = document.getElementById('psRules');
-  if (rulesEl) {
-    if (d.golden_rules && d.golden_rules.length) {
-      rulesEl.style.display = '';
-      rulesEl.innerHTML = '<h4>Goldene Regeln</h4><ul>' + d.golden_rules.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
-    } else {
-      rulesEl.style.display = 'none';
+  // Nächster Slot (heute) — bevorzugt Pflicht, dann Gold, dann irgendein offener Slot >= jetzt
+  let nextSlot = null;
+  if (d.is_today) {
+    if (d.next_mandatory_hour != null) nextSlot = { h: d.next_mandatory_hour, tag: 'Pflicht' };
+    else if (d.next_gold_hour != null) nextSlot = { h: d.next_gold_hour, tag: 'Gold' };
+    else {
+      const future = (d.slots || []).find(s => !s.is_pushed && s.hour >= (d.now_hour || 0));
+      if (future) nextSlot = { h: future.hour, tag: '' };
     }
   }
+  document.getElementById('psHeroNext').textContent = nextSlot ? _psHourLabel(nextSlot.h) + (nextSlot.tag ? ' · ' + nextSlot.tag : '') : '–';
 
-  // Footer
-  const footer = document.getElementById('psFooter');
-  if (footer) {
-    const ov = d.baseline_overall_avg_or != null ? d.baseline_overall_avg_or.toFixed(2) + '%' : '--';
-    footer.textContent = 'Daten-Basis: Push-Analyse · ' + (d.baseline_total_pushes || 0).toLocaleString('de-DE') + ' Pushes · Gesamt-Ø ' + ov;
-  }
+  // Beste Stunde an diesem Wochentag — höchster expected_or unter den Slots
+  const bestSlot = (d.slots || []).reduce((best, s) => {
+    if (s.expected_or == null) return best;
+    if (!best || s.expected_or > best.expected_or) return s;
+    return best;
+  }, null);
+  document.getElementById('psHeroBest').textContent = bestSlot
+    ? _psHourLabel(bestSlot.hour) + ' · ' + bestSlot.expected_or.toFixed(1) + ' %'
+    : '–';
+
+  const grid = document.getElementById('psSlots');
+  if (grid) grid.innerHTML = (d.slots || []).map(renderPsSlot).join('');
 }
 
 function renderPsSlot(s) {
-  const stars = '★'.repeat(s.stars || 0) + '☆'.repeat(Math.max(0, 3 - (s.stars || 0)));
   const status = s.status || 'normal';
-  const klass = 'ps-slot status-' + status + (s.is_now ? ' is-now' : '');
-  const orTxt = s.avg_or != null ? s.avg_or.toFixed(1) + '%' : '–';
-  const badges = [];
-  if (s.is_mandatory) badges.push('⭐');
-  if (s.is_avoid) badges.push('🚫');
-  if (s.is_now) badges.push('●');
-  const pushedHtml = (s.pushed_in_slot || []).length
-    ? '<div class="ps-pushed">' + s.pushed_in_slot.map(p => '<div class="ps-pushed-item" title="' + escapeHtml(p.title || '') + '">' + escapeHtml((p.title || p.cat || '').slice(0, 38)) + (p.or_val ? ' · ' + p.or_val.toFixed(1) + '%' : '') + '</div>').join('') + '</div>'
-    : '';
-  const countTxt = s.count ? ('n=' + s.count) : '';
-  return '<div class="' + klass + '">'
-    + '<div class="ps-slot-head"><div class="ps-slot-hour">' + s.hour + ':00</div><div class="ps-slot-badges">' + badges.join(' ') + '</div></div>'
-    + '<div class="ps-slot-stars">' + stars + '</div>'
-    + '<div class="ps-slot-or">' + orTxt + '</div>'
-    + (s.top_cat ? '<div class="ps-slot-cat">' + escapeHtml(s.top_cat) + '</div>' : '')
-    + (countTxt ? '<div class="ps-slot-count">' + countTxt + '</div>' : '')
-    + pushedHtml
+  const klass = 'ps-card status-' + status + (s.is_now ? ' is-now' : '') + (s.is_past && !s.is_pushed ? ' is-past' : '');
+  const hourTxt = _psHourLabel(s.hour);
+
+  // Lockscreen-Card-Header: Zeit + Status-Tag (rechts)
+  let tag = '';
+  if (s.is_pushed) tag = 'Gepusht';
+  else if (s.is_now) tag = 'Jetzt';
+  else if (s.is_mandatory && !s.is_past) tag = 'Pflicht';
+  else if (s.is_mandatory && s.is_past) tag = 'Verpasst';
+  else if (s.is_avoid) tag = 'Toter Slot';
+  else if (s.stars === 3) tag = 'Top-Stunde';
+
+  const header = '<div class="ps-card-head">'
+    + '<div class="ps-card-app">BILD</div>'
+    + '<div class="ps-card-hour">' + hourTxt + '</div>'
+    + (tag ? '<div class="ps-card-tag tag-' + status + '">' + tag + '</div>' : '')
     + '</div>';
+
+  // Body
+  let body = '';
+  if (s.is_pushed && s.pushed) {
+    const p = s.pushed;
+    const orHtml = p.or_val != null
+      ? '<span class="ps-card-or"><span class="dot"></span>' + p.or_val.toFixed(1) + ' % Opening Rate</span>'
+      : '<span class="ps-card-or muted">Opening Rate ausstehend</span>';
+    body = '<div class="ps-card-title">' + escapeHtml(p.title || '(ohne Titel)') + '</div>'
+      + '<div class="ps-card-meta">' + (p.cat ? escapeHtml(p.cat) : '') + '</div>'
+      + '<div class="ps-card-foot">' + orHtml + '</div>';
+    if ((s.pushed_extras || []).length) {
+      body += '<div class="ps-card-extras">+ ' + s.pushed_extras.length + ' weitere im selben Slot</div>';
+    }
+  } else if (s.suggestion) {
+    const sg = s.suggestion;
+    const orExpHtml = sg.predicted_or != null
+      ? '<span class="ps-card-or pred"><span class="dot"></span>' + sg.predicted_or.toFixed(1) + ' % erwartet</span>'
+      : (s.expected_or != null
+          ? '<span class="ps-card-or muted">∅ ' + s.expected_or.toFixed(1) + ' % an diesem Slot</span>'
+          : '');
+    body = '<div class="ps-card-label">Vorschlag</div>'
+      + '<div class="ps-card-title">' + escapeHtml(sg.title) + '</div>'
+      + '<div class="ps-card-meta">' + (sg.cat ? escapeHtml(sg.cat) : '') + (sg.is_eilmeldung ? ' · Eilmeldung' : '') + '</div>'
+      + '<div class="ps-card-foot">' + orExpHtml + '</div>';
+  } else {
+    const sub = s.is_avoid
+      ? 'Statistisch schwache Stunde – nichts pushen'
+      : (s.is_past ? 'Slot vorbei' : 'Offen');
+    const expTxt = s.expected_or != null ? '∅ ' + s.expected_or.toFixed(1) + ' %' : '';
+    body = '<div class="ps-card-empty">' + sub + '</div>'
+      + (expTxt ? '<div class="ps-card-foot"><span class="ps-card-or muted">' + expTxt + '</span></div>' : '');
+  }
+
+  return '<div class="' + klass + '">' + header + body + '</div>';
 }
 
 // ── Init ──

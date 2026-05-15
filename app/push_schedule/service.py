@@ -1,8 +1,10 @@
-"""Push-Schedule Service — liefert Tagesplan ausschliesslich aus PDF-Wochenmatrix
-plus den heutigen Pushes aus der SQLite-DB.
+"""Push-Schedule Service — kombiniert PDF-Baseline mit Live-Pushes und
+echten Artikel-Vorschlaegen aus der BILD-Sitemap.
 
-Keine ML-Calls, kein Caching, kein Background-Refresh: Endpoint ist O(1)
-gegenueber der Matrix (im Speicher) + 1 SQLite-Query fuer die heutigen Pushes.
+Daten-Quellen:
+- Tatsaechlich gepushte Artikel: SQLite `pushes` (heute, mit gemessener OR)
+- Vorschlaege fuer leere Slots: BILD-Sitemap mit Score + ML predictedOR
+- Slot-Baseline (Erwartungswerte): PDF-Wochenmatrix aus 14.916 Pushes
 """
 from __future__ import annotations
 
@@ -10,11 +12,11 @@ import datetime
 import logging
 import sqlite3
 from statistics import mean
+from typing import Any, Optional
 
 from app.config import PUSH_DB_PATH
 from app.push_schedule.weekly_baseline import (
     PDF_BEST_HOUR,
-    PDF_GOLDEN_RULES,
     PDF_HOUR_AVG,
     PDF_KPI,
     PDF_OVERALL_AVG,
@@ -39,7 +41,6 @@ def _parse_date(date_str: str | None) -> datetime.date:
 
 
 def _read_pushes_for_date(target: datetime.date) -> list[dict]:
-    """Holt alle Pushes des angegebenen Datums aus der SQLite-DB."""
     day_start = int(datetime.datetime.combine(target, datetime.time.min).timestamp())
     day_end = int(datetime.datetime.combine(target, datetime.time.max).timestamp())
     try:
@@ -68,19 +69,116 @@ def _read_pushes_for_date(target: datetime.date) -> list[dict]:
         return []
 
 
-def _classify_slot(hour: int, is_mandatory: bool, is_avoid: bool, pushed_here: list[dict]) -> str:
-    if pushed_here:
-        if is_avoid:
-            return "avoid_violated"
-        return "pushed"
-    if is_mandatory:
+def _fetch_article_pool(limit: int = 30) -> list[dict]:
+    """Holt aktuelle Artikel-Kandidaten aus der BILD-Sitemap (mit Score),
+    sortiert nach Score absteigend. Robust gegen Netz-Fehler."""
+    try:
+        from app.routers.feed import _extract_sitemap_articles, _fetch_url
+        from app.config import BILD_SITEMAP
+        xml = _fetch_url(BILD_SITEMAP)
+        if not xml:
+            return []
+        articles = _extract_sitemap_articles(xml, max_items=80)
+        articles.sort(key=lambda a: (a.get("score", 0), a.get("pubDate", "")), reverse=True)
+        return articles[:limit]
+    except Exception as exc:
+        log.warning("[PushSchedule] Artikel-Pool-Fetch fehlgeschlagen: %s", exc)
+        return []
+
+
+def _enrich_with_predicted_or(articles: list[dict]) -> None:
+    """Reichert Artikel-Pool um predictedOR an (in-place). Best-effort, kein Hardfail."""
+    if not articles:
+        return
+    try:
+        from app.config import ARTICLE_PREDICTION_ENRICHMENT_ENABLED
+        if not ARTICLE_PREDICTION_ENRICHMENT_ENABLED:
+            return
+        from app.ml.predict import predict_or
+        from app.research.worker import _research_state
+        now = datetime.datetime.now()
+        for a in articles:
+            if a.get("predictedOR") is not None:
+                continue
+            try:
+                res = predict_or(
+                    {
+                        "title": a.get("title", ""),
+                        "headline": a.get("title", ""),
+                        "cat": a.get("category", ""),
+                        "hour": now.hour,
+                        "ts_num": int(now.timestamp()),
+                        "is_eilmeldung": bool(a.get("isEilmeldung")),
+                        "link": a.get("url", ""),
+                        "channels": [],
+                    },
+                    _research_state,
+                )
+                p = (res or {}).get("predicted_or")
+                if p is not None:
+                    a["predictedOR"] = round(float(p) / 100.0, 4)
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("[PushSchedule] predictedOR-Anreicherung fehlgeschlagen: %s", exc)
+
+
+def _pick_suggestion_for_slot(
+    hour: int,
+    top_cat: Optional[str],
+    pool: list[dict],
+    used_urls: set[str],
+) -> Optional[dict]:
+    """Waehlt einen Artikel-Vorschlag fuer einen Slot.
+
+    Strategie: hoechster Score-Treffer, der nicht bereits in einem frueheren
+    Slot verbraucht wurde. Wenn top_cat bekannt → bevorzugt gleiche Kategorie.
+    """
+    if not pool:
+        return None
+    candidates = [a for a in pool if a.get("url") not in used_urls and a.get("title")]
+    if not candidates:
+        return None
+    if top_cat:
+        matching = [a for a in candidates if (a.get("category") or "").lower() == top_cat.lower()]
+        if matching:
+            return matching[0]
+    return candidates[0]
+
+
+def _slot_status(is_mand: bool, is_avd: bool, has_push: bool, is_past: bool, stars: int) -> str:
+    if has_push:
+        return "avoid_violated" if is_avd else "pushed"
+    if is_mand and is_past:
+        return "mandatory_missed"
+    if is_mand:
         return "mandatory_open"
-    if is_avoid:
+    if is_avd:
         return "avoid_clean"
-    base = baseline_for(hour, 0) or {}
-    if base.get("stars", 0) == 3:
+    if stars == 3:
         return "gold"
     return "normal"
+
+
+def _format_push(p: dict) -> dict:
+    return {
+        "title": p.get("title", ""),
+        "cat": p.get("cat", ""),
+        "or_val": round(p.get("or_val", 0), 2) if p.get("or_val") else None,
+    }
+
+
+def _format_suggestion(a: dict) -> dict:
+    pred = a.get("predictedOR")
+    pred_pct = round(pred * 100, 2) if isinstance(pred, (int, float)) else None
+    return {
+        "title": a.get("title", ""),
+        "cat": a.get("category", ""),
+        "score": int(round(a.get("score", 0))),
+        "predicted_or": pred_pct,
+        "url": a.get("url", ""),
+        "is_eilmeldung": bool(a.get("isEilmeldung")),
+    }
 
 
 def build_push_schedule(date: str | None = None) -> dict:
@@ -94,31 +192,46 @@ def build_push_schedule(date: str | None = None) -> dict:
     or_vals = [p["or_val"] for p in pushed_today if p["or_val"] > 0]
     pushed_avg_or = round(mean(or_vals), 2) if or_vals else None
 
+    pool: list[dict] = []
+    if is_today:
+        pool = _fetch_article_pool(limit=30)
+        _enrich_with_predicted_or(pool)
+
     mandatory = PDF_KPI["mandatory_hours"]
     avoid = PDF_KPI["avoid_hours"]
+    used_urls: set[str] = set()
 
     slots = []
     for h in SLOT_HOURS:
         base = baseline_for(h, weekday) or {}
+        stars = int(base.get("stars", 0) or 0)
         pushed_here = [p for p in pushed_today if p["hour"] == h]
         is_mand = h in mandatory
         is_avd = h in avoid
+        is_past = is_today and h < now.hour
+        is_now = is_today and h == now.hour
+
+        suggestion = None
+        if is_today and not pushed_here and not is_past and not is_avd:
+            suggestion = _pick_suggestion_for_slot(h, base.get("top_cat"), pool, used_urls)
+            if suggestion:
+                used_urls.add(suggestion.get("url", ""))
+
         slots.append({
             "hour": h,
             "weekday": weekday,
-            "avg_or": base.get("avg_or"),
-            "count": base.get("count"),
+            "expected_or": base.get("avg_or"),
             "top_cat": base.get("top_cat"),
-            "stars": base.get("stars", 0),
+            "stars": stars,
             "is_mandatory": is_mand,
             "is_avoid": is_avd,
             "is_pushed": bool(pushed_here),
-            "is_now": is_today and h == now.hour,
-            "pushed_in_slot": [
-                {"title": p["title"], "cat": p["cat"], "or_val": p["or_val"]}
-                for p in pushed_here
-            ],
-            "status": _classify_slot(h, is_mand, is_avd, pushed_here),
+            "is_now": is_now,
+            "is_past": is_past,
+            "pushed": _format_push(pushed_here[0]) if pushed_here else None,
+            "pushed_extras": [_format_push(p) for p in pushed_here[1:]] if len(pushed_here) > 1 else [],
+            "suggestion": _format_suggestion(suggestion) if suggestion else None,
+            "status": _slot_status(is_mand, is_avd, bool(pushed_here), is_past, stars),
         })
 
     kpi = kpi_status(
@@ -128,6 +241,20 @@ def build_push_schedule(date: str | None = None) -> dict:
         current_hour=now.hour if is_today else 23,
     )
 
+    next_mandatory = next(
+        (h for h in mandatory if h not in pushed_hours and (not is_today or h >= now.hour)),
+        None,
+    )
+    next_gold = None
+    if is_today:
+        next_gold = next(
+            (h for h in SLOT_HOURS
+             if h >= now.hour
+             and h not in pushed_hours
+             and (baseline_for(h, weekday) or {}).get("stars", 0) == 3),
+            None,
+        )
+
     return {
         "date": target.isoformat(),
         "weekday": weekday,
@@ -136,9 +263,13 @@ def build_push_schedule(date: str | None = None) -> dict:
         "is_today": is_today,
         "slots": slots,
         "kpi": kpi,
-        "baseline_total_pushes": PDF_TOTAL_PUSHES_ANALYZED,
+        "next_mandatory_hour": next_mandatory,
+        "next_gold_hour": next_gold,
         "baseline_overall_avg_or": PDF_OVERALL_AVG,
         "best_hour": PDF_BEST_HOUR,
         "best_hour_avg_or": PDF_HOUR_AVG.get(PDF_BEST_HOUR),
-        "golden_rules": PDF_GOLDEN_RULES,
+        "_meta": {
+            "baseline_n": PDF_TOTAL_PUSHES_ANALYZED,
+            "pool_size": len(pool),
+        },
     }
