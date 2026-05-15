@@ -1049,9 +1049,23 @@ async def frontend_entrypoint(request: Request) -> Response:
     return response
 
 
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+async def serve_frontend_asset(asset_path: str) -> Response:
+    """Statische Assets (JS/CSS Bundles) aus dist-frontend/assets/."""
+    assets_dir = os.path.normpath(_frontend_assets_dir())
+    candidate = os.path.normpath(os.path.join(assets_dir, asset_path))
+    if candidate.startswith(assets_dir + os.sep) and os.path.isfile(candidate):
+        return FileResponse(candidate)
+    # Fallback: Asset mit gleichem Prefix finden (hash-Rotation)
+    replacement = _find_replacement_asset_name(asset_path)
+    if replacement:
+        return FileResponse(os.path.join(assets_dir, replacement))
+    raise HTTPException(status_code=404, detail=f"Asset not found: {asset_path}")
+
+
 @app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
 async def frontend_dist_assets(asset_path: str = "") -> Response:
-    """Statische Assets aus dist-frontend (JS/CSS Bundles)."""
+    """Compat-Route für /dist-frontend/ Pfade (leitet auf /assets/ weiter)."""
     normalized = asset_path.lstrip("/")
     if normalized:
         candidate = os.path.normpath(os.path.join(SERVE_DIR, normalized))
