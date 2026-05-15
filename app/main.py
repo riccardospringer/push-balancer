@@ -967,18 +967,14 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path) or _is_always_public(normalized_path) or frontend_navigation:
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            frontend_response = _frontend_html_response(normalized_path)
-            if frontend_response is not None:
-                return frontend_response
+            return _legacy_frontend_response()
         return response
 
     client_ip = _extract_client_ip(request)
     if _client_is_on_allowed_network(client_ip):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            frontend_response = _frontend_html_response(normalized_path)
-            if frontend_response is not None:
-                return frontend_response
+            return _legacy_frontend_response()
         return response
 
     log.warning(
