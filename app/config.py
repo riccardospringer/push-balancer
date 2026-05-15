@@ -184,11 +184,6 @@ ARTICLE_PREDICTION_ENRICHMENT_ENABLED: bool = _env_flag(
     "ARTICLE_PREDICTION_ENRICHMENT_ENABLED",
     not ECONOMY_MODE,
 )
-TAGESPLAN_ON_DEMAND_BUILD_ENABLED: bool = _env_flag(
-    "TAGESPLAN_ON_DEMAND_BUILD_ENABLED",
-    not ECONOMY_MODE,
-)
-
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
 # DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db

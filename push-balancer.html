@@ -1795,143 +1795,44 @@ setInterval(function() {
   }
   .refresh-indicator .countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
 
-  /* ── Tagesplan Tab (Row-based) ── */
-  .tp-header {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    border-radius: 16px; padding: 20px 24px; margin-bottom: 16px; color: #fff;
-  }
-  .tp-header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
-  .tp-header-title { font-size: 18px; font-weight: 800; letter-spacing: 0.5px; }
-  .tp-header-title .tp-date { font-weight: 400; font-size: 13px; opacity: 0.6; margin-left: 12px; }
-  .tp-hero-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .tp-hero-box { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 10px; text-align: center; }
-  .tp-hero-box .tp-hero-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .tp-hero-box .tp-hero-label { font-size: 10px; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
-  .tp-retrain-btn { padding: 8px 20px; background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
-  .tp-retrain-btn:hover { background: rgba(255,255,255,0.2); }
-  .tp-retrain-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  /* Row list */
-  .tp-row {
-    display: grid; grid-template-columns: 70px 1fr 1fr 90px 120px;
-    gap: 0; align-items: stretch;
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
-    margin-bottom: 8px; overflow: hidden; transition: box-shadow 0.15s;
-  }
-  .tp-row:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
-  .tp-row.tp-row-now { border: 2px solid var(--accent); box-shadow: 0 0 12px rgba(0,122,255,0.12); }
-  .tp-row.tp-row-must { border-color: #ff2d55; }
-  .tp-row.tp-row-now.tp-row-must { border-color: var(--accent); box-shadow: 0 0 12px rgba(0,122,255,0.12), inset 3px 0 0 #ff2d55; }
-  .tp-row.tp-row-golden { border-color: #ffc107; }
-  .tp-row.tp-row-past { opacity: 0.85; grid-template-columns: 70px 1fr 1fr 90px; margin-bottom: 4px; }
-  .tp-row.tp-row-past .tp-row-sug2 { display: none; }
-  .tp-past-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding: 2px 6px; border-radius: 4px; display: inline-block; }
-  .tp-past-label-ki { color: #2563eb; background: rgba(37,99,235,0.08); }
-  .tp-past-label-real { color: #059669; background: rgba(5,150,105,0.08); }
-  .tp-past-delta { font-size: 10px; font-weight: 700; margin-top: 2px; }
-  .tp-past-delta.delta-pos { color: #34c759; }
-  .tp-past-delta.delta-neg { color: #ff3b30; }
-  .tp-past-delta.delta-neutral { color: #8e8e93; }
-  .tp-past-hit { background: rgba(52,199,89,0.08); border: 2px solid rgba(52,199,89,0.4); border-radius: 12px; box-shadow: 0 0 8px rgba(52,199,89,0.12); }
-  .tp-past-miss { background: rgba(255,59,48,0.04); border: 1px solid rgba(255,59,48,0.12); border-radius: 8px; }
-  .tp-match-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.3px; }
-  .tp-match-yes { background: #d1fae5; color: #059669; }
-  .tp-sug-or { display: inline; font-size: 12px; font-weight: 700; margin-left: 6px; padding: 1px 6px; border-radius: 4px; }
-  .tp-sug-or.xor-high { color: #34c759; background: #d1fae5; }
-  .tp-sug-or.xor-mid { color: #ff9f0a; background: #fff7ed; }
-  .tp-sug-or.xor-low { color: #ff3b30; background: #fef2f2; }
-  /* Cells */
-  .tp-row-time {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 12px 8px; border-right: 1px solid var(--border-light); gap: 4px;
-  }
-  .tp-row-time .tp-time { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
-  .tp-row-time .tp-time-label { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
-  .tp-row-time .tp-time-now { color: var(--accent); }
-  .tp-row-time .tp-time-golden { color: #ffc107; }
-  .tp-row-time .tp-time-must { color: #ff2d55; }
-  .tp-row-meta {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 12px 10px; border-right: 1px solid var(--border-light); gap: 6px;
-  }
-  .tp-row-or { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
-  .tp-row-or.c-green { color: #34c759; }
-  .tp-row-or.c-yellow { color: #ff9f0a; }
-  .tp-row-or.c-gray { color: #8e8e93; }
-  .tp-cat-pill {
-    font-size: 9px; font-weight: 700; border-radius: 4px; padding: 2px 8px;
-    color: #fff; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
-  }
-  .tp-cat-sport { background: #34c759; }
-  .tp-cat-politik { background: #5856d6; }
-  .tp-cat-unterhaltung { background: #ff2d55; }
-  .tp-cat-geld { background: #ff9f0a; }
-  .tp-cat-regional { background: #af52de; }
-  .tp-cat-digital { background: #007aff; }
-  .tp-cat-leben { background: #ff6482; }
-  .tp-cat-news { background: #8e8e93; }
-  /* Article suggestion cells */
-  .tp-row-sug {
-    padding: 10px 14px; border-right: 1px solid var(--border-light);
-    display: flex; flex-direction: column; justify-content: center; gap: 4px;
-    min-height: 60px;
-  }
-  .tp-row-sug:last-child { border-right: none; }
-  .tp-sug-num { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); }
-  .tp-sug-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
-  .tp-sug-title a { color: var(--text); text-decoration: none; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .tp-sug-title a:hover { color: var(--accent); text-decoration: underline; }
-  .tp-sug-bottom { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
-  .tp-sug-score { font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .tp-sug-cat { font-weight: 600; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.2px; font-size: 9px; }
-  .tp-sug-empty { font-size: 11px; color: var(--text-tertiary); font-style: italic; }
-  /* Status cell */
-  .tp-row-status {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 10px 8px; gap: 4px; font-size: 9px; color: var(--text-tertiary); text-align: center;
-  }
-  .tp-row-status .tp-mood-text { font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10px; }
-  .tp-row-status .tp-conf-text { font-size: 9px; }
-  .tp-row-status .tp-pushed-badge { background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
-  /* Pushed-Today Pills */
-  /* Retro 7-Tage Styles */
-  .tp-retro-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 12px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; margin-top: 20px; margin-bottom: 10px; user-select: none; }
-  .tp-retro-header:hover { background: var(--bg-hover, rgba(0,0,0,0.03)); }
-  .tp-retro-header h3 { margin: 0; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text); }
-  .tp-retro-header .tp-retro-toggle { font-size: 18px; color: var(--text-tertiary); transition: transform 0.2s; }
-  .tp-retro-header.open .tp-retro-toggle { transform: rotate(180deg); }
-  .tp-retro-body { display: none; }
-  .tp-retro-body.open { display: block; }
-  .tp-retro-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 14px; }
-  .tp-retro-day-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 6px; overflow: hidden; }
-  .tp-retro-day-header { display: grid; grid-template-columns: 90px 80px 80px 140px 80px 80px 32px; align-items: center; padding: 8px 12px; font-size: 12px; cursor: pointer; gap: 4px; }
-  .tp-retro-day-header:hover { background: var(--bg-hover, rgba(0,0,0,0.02)); }
-  .tp-retro-day-header .day-label { font-weight: 700; }
-  .tp-retro-day-header .day-stat { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-  .tp-retro-day-header .day-best { font-weight: 700; color: #34c759; font-size: 11px; }
-  .tp-retro-day-header .day-mae { font-variant-numeric: tabular-nums; color: var(--text-tertiary); font-size: 11px; }
-  .tp-retro-day-header .day-match { font-weight: 600; font-size: 11px; }
-  .tp-retro-day-header .day-toggle { text-align: center; color: var(--text-tertiary); transition: transform 0.2s; }
-  .tp-retro-day-body { display: none; padding: 0 12px 10px; }
-  .tp-retro-day-body.open { display: block; }
-  .tp-retro-push { display: grid; grid-template-columns: 50px 1fr 70px 70px 80px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border-light); font-size: 12px; gap: 8px; }
-  .tp-retro-push:last-child { border-bottom: none; }
-  .tp-retro-push .rp-hour { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-  .tp-retro-push .rp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tp-retro-push .rp-title a { color: var(--text); text-decoration: none; }
-  .tp-retro-push .rp-title a:hover { color: var(--accent); text-decoration: underline; }
-  .tp-retro-push .rp-or { font-weight: 800; font-variant-numeric: tabular-nums; }
-  .tp-retro-push .rp-pred { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-  .tp-retro-delta { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; font-variant-numeric: tabular-nums; }
-  .tp-retro-match { border: 2px solid #34c759; border-radius: 10px; }
-  .tp-retro-miss { background: rgba(255,59,48,0.06); }
-  .tp-retro-nopred { border: 1px dashed var(--text-tertiary); border-radius: 10px; }
-  .tp-pushed-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; background: rgba(0,0,0,0.04); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-secondary); }
-  .tp-pushed-pill .tp-pp-hour { font-weight: 700; font-variant-numeric: tabular-nums; }
-  .tp-pushed-pill .tp-pp-or { font-weight: 700; font-variant-numeric: tabular-nums; margin-left: 2px; }
-  .tp-pushed-pill .tp-pp-eil { background: #ff2d55; color: #fff; font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; }
-  .tp-warning { display: block; font-size: 12px; background: #fff8e6; color: #7a5d00; border: 1px solid #ffcc02; border-left: 4px solid #ff9f0a; border-radius: 8px; padding: 10px 14px; margin: 6px 0; line-height: 1.4; }
-  .tp-warning::before { content: '\26A0\FE0F'; margin-right: 6px; }
-
+  /* ── Tagesplan Tab (Push-Schedule, PDF-basiert) ── */
+  .ps-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 20px 24px; margin-bottom: 16px; color: #fff; }
+  .ps-header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .ps-header-title { font-size: 18px; font-weight: 800; letter-spacing: 0.5px; }
+  .ps-header-sub { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+  .ps-hero { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .ps-hero-box { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 10px; text-align: center; }
+  .ps-hero-val { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .ps-hero-lbl { font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
+  .ps-hero-box.ok .ps-hero-val { color: #5dffaf; }
+  .ps-hero-box.warn .ps-hero-val { color: #ffcc4d; }
+  .ps-hero-box.bad .ps-hero-val { color: #ff6d6d; }
+  .ps-day-nav { display: flex; gap: 4px; }
+  .ps-nav-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 10px; color: #fff; cursor: pointer; font-size: 12px; }
+  .ps-nav-btn.today { background: rgba(255,204,77,0.2); border-color: rgba(255,204,77,0.4); font-weight: 600; }
+  .ps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 16px; }
+  .ps-slot { background: var(--card-bg); border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 10px; padding: 12px 14px; position: relative; }
+  .ps-slot.status-mandatory_open { border-left-color: #f59e0b; background: rgba(245,158,11,0.06); }
+  .ps-slot.status-mandatory_filled { border-left-color: #10b981; background: rgba(16,185,129,0.06); }
+  .ps-slot.status-avoid_clean { border-left-color: #9ca3af; opacity: 0.55; }
+  .ps-slot.status-avoid_violated { border-left-color: #dc2626; background: rgba(220,38,38,0.06); }
+  .ps-slot.status-gold { border-left-color: #fbbf24; background: rgba(251,191,36,0.04); }
+  .ps-slot.status-pushed { border-left-color: #10b981; }
+  .ps-slot.is-now { box-shadow: 0 0 0 2px rgba(96,165,250,0.45); }
+  .ps-slot-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .ps-slot-hour { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .ps-slot-badges { font-size: 12px; }
+  .ps-slot-stars { color: #fbbf24; font-size: 14px; letter-spacing: 1px; margin-top: 2px; }
+  .ps-slot-or { font-size: 20px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 4px; }
+  .ps-slot-cat { font-size: 11px; color: var(--text-tertiary); text-transform: capitalize; margin-top: 2px; }
+  .ps-slot-count { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+  .ps-pushed { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+  .ps-pushed-item { font-size: 11px; color: var(--text-secondary); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; padding: 3px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ps-rules { margin-top: 20px; padding: 14px 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; }
+  .ps-rules h4 { margin: 0 0 8px; font-size: 12px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
+  .ps-rules ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
+  .ps-rules li { margin-bottom: 4px; }
+  .ps-footer-note { margin-top: 16px; font-size: 11px; color: var(--text-tertiary); text-align: center; }
   /* ── Konkurrenz Tab ── */
   .comp-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -3030,61 +2931,31 @@ setInterval(function() {
 
 </div><!-- /tabForschung -->
 
-<!-- ═══ TAB: Tagesplan ═══ -->
+<!-- ═══ TAB: Tagesplan (Push-Schedule, PDF-basiert) ═══ -->
 <div class="tab-content" id="tabTagesplan" style="padding:16px 20px">
-  <div class="tp-header" id="tpHeader">
-    <div class="tp-header-top">
-      <div style="display:flex;align-items:center;gap:12px">
-        <div class="tp-header-title">PUSH-TAGESPLAN<span class="tp-date" id="tpDate"></span></div>
-        <div id="tpDayNav" style="display:flex;align-items:center;gap:4px;margin-left:8px">
-          <button class="tp-nav-btn" id="tpNavPrev" onclick="tpNavigateDay(-1)" title="Vorheriger Tag" style="background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:13px;color:var(--text-secondary)">&larr;</button>
-          <button class="tp-nav-btn" id="tpNavToday" onclick="tpNavigateDay(0)" style="background:var(--accent-light);border:1px solid var(--accent);border-radius:6px;padding:3px 10px;cursor:pointer;font-size:11px;font-weight:600;color:var(--accent)">Heute</button>
-          <button class="tp-nav-btn" id="tpNavNext" onclick="tpNavigateDay(1)" title="Nächster Tag" style="background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:13px;color:var(--text-secondary)">&rarr;</button>
-        </div>
+  <div class="ps-header">
+    <div class="ps-header-row">
+      <div>
+        <div class="ps-header-title">PUSH-TAGESPLAN <span id="psDateLabel" style="font-weight:400;font-size:13px;opacity:0.65;margin-left:8px"></span></div>
+        <div class="ps-header-sub">Empfehlungen aus Analyse von <span id="psBaselineN">14.916</span> echten BILD-Pushes</div>
       </div>
-      <button class="tp-retrain-btn" id="tpRetrainBtn" onclick="triggerRetrain()">Modell trainieren</button>
-    </div>
-    <div class="sub-tab-bar" style="padding:6px 0 2px">
-      <button class="sub-tab-btn active" id="tpModeRedaktion" onclick="switchTpMode('redaktion')">Redaktion</button>
-      <button class="sub-tab-btn" id="tpModeSport" onclick="switchTpMode('sport')">Sport</button>
-    </div>
-    <div class="tp-hero-row">
-      <div class="tp-hero-box" id="tpHeroBoxGolden"><div class="tp-hero-value" id="tpHeroGolden">--</div><div class="tp-hero-label">Golden Hour</div></div>
-      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroAvgOR">--</div><div class="tp-hero-label" id="tpHeroAvgORLabel">&Oslash; OR heute</div></div>
-      <div class="tp-hero-box"><div class="tp-hero-value" id="tpHeroPushed">--</div><div class="tp-hero-label" id="tpHeroPushedLabel">Gepusht</div></div>
-      <div class="tp-hero-box" id="tpHeroBoxMae"><div class="tp-hero-value" id="tpHeroMae">--</div><div class="tp-hero-label">MAE</div></div>
-      <div class="tp-hero-box" id="tpHeroBoxDb"><div class="tp-hero-value" id="tpHeroDb">--</div><div class="tp-hero-label">Trainiert auf</div></div>
-    </div>
-  </div>
-  <div id="tpPushedToday" style="display:none;margin-bottom:12px">
-    <div style="font-size:11px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Heute bereits gepusht</div>
-    <div id="tpPushedList" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-  </div>
-  <div id="tpLlmReview" style="display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:12px">
-    <div style="font-size:12px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">KI-Analyse</div>
-    <div id="tpLlmSummary" style="font-size:13px;line-height:1.5;color:var(--text)"></div>
-    <div id="tpLlmWarnings" style="margin-top:8px"></div>
-  </div>
-  <div id="tpComparisonSummary" style="display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:12px">
-    <div id="tpComparisonTitle" style="font-size:12px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">Empfehlung vs. Realität</div>
-    <div id="tpComparisonGrid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px"></div>
-  </div>
-  <div id="tpGrid"><div style="text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div></div>
-
-  <!-- 7-Tage-Retrospektive -->
-  <div id="tpRetroSection">
-    <div class="tp-retro-header open" id="tpRetroHeader" onclick="toggleRetroSection()">
-      <h3>7-Tage-Rückblick</h3>
-      <span class="tp-retro-toggle">&#9660;</span>
-    </div>
-    <div class="tp-retro-body open" id="tpRetroBody">
-      <div class="tp-retro-summary tp-hero-row" id="tpRetroSummary">
-        <div style="grid-column:1/-1;text-align:center;color:var(--text-tertiary);padding:12px">Lade Rückblick...</div>
+      <div class="ps-day-nav">
+        <button class="ps-nav-btn" onclick="psNavigateDay(-1)" title="Vorheriger Tag">&larr;</button>
+        <button class="ps-nav-btn today" onclick="psNavigateDay(0)">Heute</button>
+        <button class="ps-nav-btn" onclick="psNavigateDay(1)" title="Naechster Tag">&rarr;</button>
       </div>
-      <div id="tpRetroDays"></div>
+    </div>
+    <div class="ps-hero">
+      <div class="ps-hero-box" id="psHeroAvgORBox"><div class="ps-hero-val" id="psHeroAvgOR">--</div><div class="ps-hero-lbl">&Oslash; OR heute</div></div>
+      <div class="ps-hero-box" id="psHeroPushesBox"><div class="ps-hero-val" id="psHeroPushes">--</div><div class="ps-hero-lbl">Pushes / Limit</div></div>
+      <div class="ps-hero-box" id="psHeroMandatoryBox"><div class="ps-hero-val" id="psHeroMandatory">--</div><div class="ps-hero-lbl">Pflicht 20+21</div></div>
+      <div class="ps-hero-box" id="psHeroAvoidBox"><div class="ps-hero-val" id="psHeroAvoid">--</div><div class="ps-hero-lbl">Toter Slot 10/11</div></div>
+      <div class="ps-hero-box"><div class="ps-hero-val" id="psHeroBest">--</div><div class="ps-hero-lbl">Top-Stunde Analyse</div></div>
     </div>
   </div>
-
+  <div id="psSlots" class="ps-grid"><div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div></div>
+  <div id="psRules" class="ps-rules" style="display:none"></div>
+  <div class="ps-footer-note" id="psFooter"></div>
 </div><!-- /tabTagesplan -->
 
 <!-- Bookmark Footer -->
@@ -3326,7 +3197,7 @@ function _reloadAllFailedTabs() {
   else if (currentTab === 'live') fetchLivePushes();
   else if (currentTab === 'konkurrenz') fetchCompetitors();
   else if (currentTab === 'forschung') loadForschung();
-  else if (currentTab === 'tagesplan') loadTagesplan();
+  else if (currentTab === 'tagesplan') loadPushSchedule();
   else if (currentTab === 'analyse') buildHeatmap();
 }
 
@@ -8317,7 +8188,7 @@ function switchTab(tab, btn) {
     else if (_compSubTab === 'sport' && !_sportCompData) fetchSportCompetitors();
   }
   if (tab === 'forschung' && (!forschungLoaded || !forschungData)) loadForschung();
-  if (tab === 'tagesplan') loadTagesplan();
+  if (tab === 'tagesplan') loadPushSchedule();
   // Beim Tab-Wechsel Verbindungsstatus aktualisieren
   _updateConnectionBadge();
 }
@@ -17823,1043 +17694,135 @@ function openDissFeynman(idx) {
   document.getElementById('feynmanOverlay').classList.add('active');
 }
 
-// ── Tagesplan Tab (Stundenplan-Layout) ────────────────────────────────
-let _tpInterval = null;
-let _tpCurrentDate = null; // null = heute, "YYYY-MM-DD" = historisch
-let _tpMode = 'redaktion'; // 'redaktion' oder 'sport'
+// ── Tagesplan Tab (Push-Schedule, PDF-basiert) ────────────────────────
+let _psInterval = null;
+let _psCurrentDate = null; // null = heute, "YYYY-MM-DD" = explizit
 
-function switchTpMode(mode) {
-  _tpMode = mode;
-  document.getElementById('tpModeRedaktion').classList.toggle('active', mode === 'redaktion');
-  document.getElementById('tpModeSport').classList.toggle('active', mode === 'sport');
-  // Header-Titel anpassen
-  const titleEl = document.querySelector('.tp-header-title');
-  if (titleEl) {
-    const dateSpan = titleEl.querySelector('.tp-date');
-    const dateText = dateSpan ? dateSpan.outerHTML : '';
-    titleEl.innerHTML = (mode === 'sport' ? 'SPORT PUSH-TAGESPLAN' : 'PUSH-TAGESPLAN') + dateText;
-  }
-  loadTagesplan();
-}
-const _SHAP_DE = {
-  hour_weekday_avg_or:'Wochentag-Timing', hour_cat_avg_or:'Ressort-Timing',
-  hour_avg_or:'Tageszeit', cat_avg_or:'Ressort', weekday_avg_or:'Wochentag',
-  is_eilmeldung:'Eilmeldung', word_count:'Wortanzahl', title_len:'Zeichenzahl',
-  upper_ratio:'Grossbuchstaben', has_exclamation:'Ausrufezeichen',
-  has_question:'Fragezeichen', has_numbers:'Zahlen', has_breaking_kw:'Breaking',
-  has_emotion_kw:'Emotion', is_prime_time:'Primetime', is_morning:'Morgen',
-  n_channels:'Kanalanzahl', weekday:'Wochentag', hour:'Stunde',
-};
-
-function _tpTodayStr() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+function _psFmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-function tpNavigateDay(delta) {
-  const todayStr = _tpTodayStr();
+function psNavigateDay(delta) {
   if (delta === 0) {
-    // Heute
-    _tpCurrentDate = null;
+    _psCurrentDate = null;
   } else {
-    const baseStr = _tpCurrentDate || todayStr;
-    const base = new Date(baseStr + 'T12:00:00');
+    const base = _psCurrentDate ? new Date(_psCurrentDate + 'T00:00:00') : new Date();
     base.setDate(base.getDate() + delta);
-    const newStr = base.getFullYear() + '-' + String(base.getMonth()+1).padStart(2,'0') + '-' + String(base.getDate()).padStart(2,'0');
-    // Nicht in die Zukunft navigieren
-    if (newStr > todayStr) {
-      _tpCurrentDate = null;
-    } else if (newStr === todayStr) {
-      _tpCurrentDate = null;
-    } else {
-      _tpCurrentDate = newStr;
-    }
+    _psCurrentDate = base.toISOString().slice(0, 10);
   }
-  // Nav-Buttons updaten
-  const nextBtn = document.getElementById('tpNavNext');
-  const todayBtn = document.getElementById('tpNavToday');
-  if (nextBtn) nextBtn.disabled = !_tpCurrentDate;
-  if (nextBtn) nextBtn.style.opacity = _tpCurrentDate ? '1' : '0.3';
-  if (todayBtn) todayBtn.style.background = _tpCurrentDate ? 'var(--accent-light)' : 'var(--accent)';
-  if (todayBtn) todayBtn.style.color = _tpCurrentDate ? 'var(--accent)' : '#fff';
-  loadTagesplan();
+  loadPushSchedule();
 }
 
-async function loadTagesplan() {
-  console.log('[TP] loadTagesplan START, date=' + (_tpCurrentDate || 'heute'));
-  const _tpDebug = document.getElementById('tpGrid');
-
-  const isHistory = !!_tpCurrentDate;
-
-  // Artikel-Feed im Hintergrund laden falls noch leer (nur für heute)
-  if (!isHistory && articles.length === 0 && !_fetchArticlesLock) {
-    fetchArticles().catch(() => {});
-  }
-
-  const _modeParam = _tpMode === 'sport' ? 'mode=sport' : '';
-  const _modeQ = _modeParam ? '?' + _modeParam : '';
-  const _modeA = _modeParam ? '&' + _modeParam : '';
-
+async function loadPushSchedule() {
+  const grid = document.getElementById('psSlots');
+  if (grid) grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Lade Tagesplan...</div>';
   try {
-    if (isHistory) {
-      // ── Historischer Tag: /api/tagesplan/history?date=YYYY-MM-DD ──
-      const [histResp] = await Promise.all([
-        resilientFetch(API_BASE + '/api/tagesplan/history?date=' + _tpCurrentDate + _modeA, {_timeout: 15000}),
-      ]);
-      if (!histResp.ok) throw new Error('History HTTP ' + histResp.status);
-      const histRes = await histResp.json();
-      showServerError(false);
-      renderTagesplan(histRes, {status: 'history'}, histRes.suggestions || {});
-    } else {
-      // ── Heute: bestehende Logik ──
-      const [tpResp, mlResp, sugResp] = await Promise.all([
-        resilientFetch(API_BASE + '/api/tagesplan' + _modeQ, {_timeout: 60000}),
-        resilientFetch(API_BASE + '/api/ml/status', {_timeout: 30000}),
-        resilientFetch(API_BASE + '/api/tagesplan/suggestions' + _modeQ, {_timeout: 10000}).catch(() => null),
-      ]);
-      if (!tpResp.ok) throw new Error('Tagesplan HTTP ' + tpResp.status);
-      if (!mlResp.ok) throw new Error('ML Status HTTP ' + mlResp.status);
-      const tpRes = await tpResp.json();
-      const mlRes = await mlResp.json();
-      const sugRes = (sugResp && sugResp.ok) ? await sugResp.json() : {suggestions: {}};
-      window._tagesplanData = tpRes;
-      window._mlStatus = mlRes;
-      showServerError(false);
-      renderTagesplan(tpRes, mlRes, sugRes.suggestions || {});
-    }
-  } catch (e) {
-    console.error('[TP] FEHLER:', e);
-    showTabError('tpGrid', 'Tagesplan: ' + e.message, 'loadTagesplan()');
-    if (_isNetworkError(e)) _markServerDown();
-  }
-  if (!_tpInterval) {
-    _tpInterval = setInterval(() => { if (currentTab === 'tagesplan' && !_tpCurrentDate) loadTagesplan(); }, 60000);
-  }
-  // Retro nur für heute laden
-  if (!isHistory) loadRetro();
-}
-
-function renderTagesplan(data, mlStatus, savedSuggestions) {
-  savedSuggestions = savedSuggestions || {};
-  const isHistory = !!data.is_history;
-
-  // ── Header ──
-  const _histDateShort = isHistory ? (data.weekday || '') + ' ' + (data.date || '') : '';
-  const dateLabel = isHistory ? ' ' + _histDateShort + ' (Rückblick)' : ' ' + (data.date || '');
-  document.getElementById('tpDate').textContent = dateLabel;
-  const goldenH = (!isHistory && data.golden_hour != null) ? String(data.golden_hour).padStart(2,'0') + ':00' : '--';
-  document.getElementById('tpHeroGolden').textContent = isHistory ? '--' : goldenH;
-  document.getElementById('tpRetrainBtn').style.display = isHistory ? 'none' : '';
-  // Hero-Boxen: Golden Hour, MAE, Trainiert auf bei History ausblenden
-  const _boxGolden = document.getElementById('tpHeroBoxGolden');
-  const _boxMae = document.getElementById('tpHeroBoxMae');
-  const _boxDb = document.getElementById('tpHeroBoxDb');
-  if (_boxGolden) _boxGolden.style.display = isHistory ? 'none' : '';
-  if (_boxMae) _boxMae.style.display = isHistory ? 'none' : '';
-  if (_boxDb) _boxDb.style.display = isHistory ? 'none' : '';
-  // Hero-Labels dynamisch anpassen
-  const _avgORLabel = document.getElementById('tpHeroAvgORLabel');
-  if (_avgORLabel) _avgORLabel.innerHTML = isHistory ? '&Oslash; OR ' + escapeHtml(_histDateShort) : '&Oslash; OR heute';
-  const _pushedLabel2 = document.getElementById('tpHeroPushedLabel');
-  if (_pushedLabel2) _pushedLabel2.textContent = isHistory ? 'Pushes' : 'Gepusht';
-  // Retro-Sektion nur bei heute zeigen
-  const retroSec = document.getElementById('tpRetroSection');
-  if (retroSec) retroSec.style.display = isHistory ? 'none' : '';
-  // LLM-Review nur bei heute
-  const _llmPanelH = document.getElementById('tpLlmReview');
-  if (isHistory && _llmPanelH) _llmPanelH.style.display = 'none';
-
-  const _todayPushes = data.already_pushed_today || [];
-  // Historisch: actual_or statt or
-  const _todayORs = _todayPushes.filter(a => (a.or || a.actual_or) > 0).map(a => a.or || a.actual_or);
-  const _avgORToday = _todayORs.length > 0 ? (_todayORs.reduce((s, v) => s + v, 0) / _todayORs.length) : 0;
-  const _avgEl = document.getElementById('tpHeroAvgOR');
-  let _trendArrow = '';
-  if (_todayORs.length >= 4) {
-    const _recentN = Math.max(2, Math.floor(_todayORs.length / 3));
-    const _olderORs = _todayORs.slice(0, _todayORs.length - _recentN);
-    const _recentORs = _todayORs.slice(-_recentN);
-    const _olderAvg = _olderORs.reduce((s, v) => s + v, 0) / _olderORs.length;
-    const _recentAvg = _recentORs.reduce((s, v) => s + v, 0) / _recentORs.length;
-    const _diff = _recentAvg - _olderAvg;
-    if (_diff > 0.3) _trendArrow = ' <span style="color:#34c759;font-size:16px" title="OR steigt (+' + _diff.toFixed(1) + 'pp)">&#x25B2;</span>';
-    else if (_diff < -0.3) _trendArrow = ' <span style="color:#ff3b30;font-size:16px" title="OR sinkt (' + _diff.toFixed(1) + 'pp)">&#x25BC;</span>';
-    else _trendArrow = ' <span style="color:#8e8e93;font-size:12px" title="OR stabil (' + (_diff >= 0 ? '+' : '') + _diff.toFixed(1) + 'pp)">&#x25C6;</span>';
-  }
-  _avgEl.innerHTML = (_avgORToday > 0 ? _avgORToday.toFixed(1) + '%' : '--') + _trendArrow;
-  _avgEl.style.color = _avgORToday >= 5.5 ? '#34c759' : _avgORToday >= 4 ? '#ff9f0a' : _avgORToday > 0 ? '#ff3b30' : '';
-  document.getElementById('tpHeroPushed').textContent = data.n_pushed_today || 0;
-  const metrics = data.ml_metrics || mlStatus.metrics || {};
-  document.getElementById('tpHeroMae').textContent = metrics.mae != null ? metrics.mae.toFixed(2) + 'pp' : '--';
-  document.getElementById('tpHeroDb').textContent = data.total_pushes_db ? data.total_pushes_db.toLocaleString('de-DE') : '--';
-
-  // ── LLM-Review Panel (nur heute) ──
-  const llmPanel = document.getElementById('tpLlmReview');
-  const llm = data.llm_review;
-  if (!isHistory && llm && !llm.error && llm.summary) {
-    llmPanel.style.display = 'block';
-    document.getElementById('tpLlmSummary').textContent = llm.summary;
-    let warnHtml = '';
-    if (llm.warnings && llm.warnings.length) {
-      warnHtml = llm.warnings.map(w => '<div class="tp-warning">' + escapeHtml(w) + '</div>').join('');
-    }
-    document.getElementById('tpLlmWarnings').innerHTML = warnHtml;
-  } else {
-    llmPanel.style.display = 'none';
-  }
-
-  // ── Bereits gepusht (heute oder historisch) ──
-  const pushedPanel = document.getElementById('tpPushedToday');
-  const pushedList = document.getElementById('tpPushedList');
-  const pushedLabel = pushedPanel.querySelector('div');
-  if (pushedLabel) pushedLabel.textContent = isHistory ? 'Pushes am ' + _histDateShort : 'Heute bereits gepusht';
-  if (data.already_pushed_today && data.already_pushed_today.length > 0) {
-    pushedPanel.style.display = 'block';
-    pushedList.innerHTML = data.already_pushed_today.map(a => {
-      const h = a.hour >= 0 ? String(a.hour).padStart(2,'0') + ':00' : '??';
-      const orVal = a.or || a.actual_or || 0;
-      const orColor = orVal >= 5 ? '#34c759' : orVal >= 3 ? '#ff9f0a' : '#ff3b30';
-      const orBadge = orVal > 0 ? ' <span class="tp-pp-or" style="color:' + orColor + '">' + orVal.toFixed(1) + '%</span>' : '';
-      const eilBadge = a.is_eilmeldung ? ' <span class="tp-pp-eil">Eil</span>' : '';
-      return '<span class="tp-pushed-pill"><span class="tp-pp-hour">' + h + '</span> ' +
-        escapeHtml((a.title || '').substring(0, 40)) + orBadge + eilBadge + '</span>';
-    }).join('');
-  } else {
-    pushedPanel.style.display = 'none';
-  }
-
-  // ── Row-based Tagesplan ──
-  const grid = document.getElementById('tpGrid');
-  if (!data.slots || data.slots.length === 0) {
-    if (data.loading) {
-      grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-tertiary)"><div class="spinner" style="margin:0 auto 12px"></div>Modell wird geladen &mdash; bitte 30-60s warten...</div>';
-      setTimeout(() => { if (currentTab === 'tagesplan') loadTagesplan(); }, 5000);
-    } else {
-      grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-tertiary)">Keine Daten.</div>';
-    }
-    return;
-  }
-
-  const mustHaveSet = new Set(data.must_have_hours || []);
-  const goldenHour = data.golden_hour;
-
-  // ── Multi-Signal Ranking Pipeline ──
-  // Bereits heute gepushte Artikel aus dem Pool ausschliessen
-  const _pushedUrls = new Set();
-  const _pushedTitles = new Set();
-  if (data.already_pushed_today) {
-    for (const p of data.already_pushed_today) {
-      if (p.link) _pushedUrls.add(p.link.replace(/\/$/, ''));
-      if (p.title) _pushedTitles.add(p.title.trim().toLowerCase().substring(0, 50));
-    }
-  }
-  function _isAlreadyPushed(a) {
-    if (a.link && _pushedUrls.has(a.link.replace(/\/$/, ''))) return true;
-    if (a.title && _pushedTitles.has(a.title.trim().toLowerCase().substring(0, 50))) return true;
-    return false;
-  }
-  // Pool: alle nicht-gepushten Artikel (im Sport-Modus nur Sport-Artikel)
-  const _pool = [];
-  if (typeof articles !== 'undefined' && articles.length > 0) {
-    for (const a of articles) {
-      if (_isAlreadyPushed(a)) continue;
-      if (_tpMode === 'sport' && typeof isSportArticle === 'function' && !isSportArticle(a)) continue;
-      _pool.push(a);
-    }
-  }
-  // Tracking-State fuer Diversitaet ueber Slots
-  const _usedUrls = new Set();
-  const _usedCategories = []; // {hour, cat}
-  const _usedTopicKws = [];   // Set<string>[]
-
-  // Titel-Keywords extrahieren (fuer Topic-Diversitaet)
-  function _extractKws(title) {
-    const stops = new Set(['der','die','das','und','in','von','zu','mit','auf','fuer','ist','im','den','ein','eine','dem','des','nach','aus','bei','um','am','es','er','sie','so','wie','an','ab','als','vor','bis','was','wer','hat','zum','zur','vom','gegen','ueber','auch','noch','nur','aber','wird','war','sich','oder','sein','kann','wenn','schon','dass','ihre','ihr','seinen','einem','neue','neuer','neues']);
-    return new Set((title || '').toLowerCase().replace(/[^a-zaeoeueaouess0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2 && !stops.has(w)));
-  }
-
-  // Phase A: Multi-Signal Scoring
-  function _rankScore(article, slotHour, slotBestCat, ctx) {
-    // Signal 1: XOR (ML-Prognose)
-    const orData = typeof predictOR === 'function' ? predictOR(article) : null;
-    const xor = (orData && orData.or > 0) ? orData.or : null;
-    const xorNorm = xor != null ? Math.min(xor / 10, 1.0) : 0;
-    const hasServerML = orData && orData.serverSide;
-    const hasPending = orData && orData.or > 0 && orData.basis === 'pending';
-    const hasLegacy = orData && orData.or > 0 && !hasServerML && !hasPending;
-
-    // Signal 2: Composite Push Score
-    const scoreNorm = Math.min((article.score || 0) / 100, 1.0);
-
-    // Signal 3: CvD Agent Score
-    let cvdNorm = 0.5, cvdVerdict = '';
-    if (typeof runAgentTeam === 'function') {
-      try {
-        const ev = runAgentTeam(article);
-        cvdNorm = (ev.cvdScore || 5) / 10;
-        cvdVerdict = ev.recommendation || '';
-      } catch(e) { /* Agent-Fehler → neutral */ }
-    }
-
-    // Signal 4: Kategorie-Slot-Fit
-    const artCat = (article.category || 'sonstiges').toLowerCase().replace(/[^a-zaeoeue]/g, '');
-    const slotCatNorm = (slotBestCat || 'news').toLowerCase().replace(/[^a-zaeoeue]/g, '');
-    let catFit = 0.3;
-    if (artCat === slotCatNorm) catFit = 1.0;
-    else if (artCat.includes(slotCatNorm) || slotCatNorm.includes(artCat)) catFit = 0.7;
-    // Breaking ueberschreibt Kategorie-Constraint
-    const bd = article.scoreBreakdown || {};
-    if (bd.breaking > 0 || bd.dringlichkeit >= 20) catFit = Math.max(catFit, 0.9);
-
-    // Signal 5: Freshness relativ zum Slot
-    const ageMs = article.date ? (Date.now() - new Date(article.date).getTime()) : 43200000;
-    const ageH = ageMs / 3600000;
-    const nowH = new Date().getHours();
-    const hoursUntilSlot = Math.max(0, slotHour - nowH);
-    const effectiveAgeH = ageH + hoursUntilSlot;
-    let freshness;
-    if (effectiveAgeH < 1) freshness = 1.0;
-    else if (effectiveAgeH < 3) freshness = 0.85;
-    else if (effectiveAgeH < 6) freshness = 0.65;
-    else if (effectiveAgeH < 12) freshness = 0.40;
-    else if (effectiveAgeH < 24) freshness = 0.20;
-    else freshness = 0.05;
-
-    // Gewichte nach ML-Verfuegbarkeit
-    let wXor, wScore, wCvd, wCat, wFresh;
-    if (hasServerML)       { wXor=0.40; wScore=0.15; wCvd=0.15; wCat=0.15; wFresh=0.10; }
-    else if (hasPending)   { wXor=0.30; wScore=0.20; wCvd=0.15; wCat=0.15; wFresh=0.10; }
-    else if (hasLegacy)    { wXor=0.25; wScore=0.25; wCvd=0.15; wCat=0.15; wFresh=0.10; }
-    else                   { wXor=0.00; wScore=0.35; wCvd=0.25; wCat=0.20; wFresh=0.15; }
-
-    let total = xorNorm * wXor + scoreNorm * wScore + cvdNorm * wCvd + catFit * wCat + freshness * wFresh;
-
-    // Golden/Must-Hour Boost
-    if ((ctx.isGolden || ctx.isMust) && (xor >= 5 || cvdNorm >= 0.7)) total *= 1.10;
-
-    return {
-      total: total,
-      signals: { xor, xorNorm, scoreNorm, cvdScore: cvdNorm * 10, cvdVerdict, catFit, freshness, isBreaking: (bd.breaking > 0) }
-    };
-  }
-
-  // Phase B: Diversitaets-Multiplikator
-  function _diversityMult(article, slotHour) {
-    let mult = 1.0;
-    const artCat = (article.category || 'sonstiges').toLowerCase().replace(/[^a-zaeoeue]/g, '');
-    // Kategorie-Abstand
-    for (const used of _usedCategories) {
-      if (used.cat !== artCat) continue;
-      const dist = Math.abs(slotHour - used.hour);
-      if (dist <= 1) mult *= 0.60;
-      else if (dist <= 2) mult *= 0.80;
-      else if (dist <= 3) mult *= 0.90;
-    }
-    // Topic-Similaritaet (Jaccard)
-    const artKws = _extractKws(article.title);
-    if (artKws.size >= 2) {
-      for (const usedSet of _usedTopicKws) {
-        let inter = 0;
-        for (const k of artKws) { if (usedSet.has(k)) inter++; }
-        const union = new Set([...artKws, ...usedSet]).size;
-        const jaccard = union > 0 ? inter / union : 0;
-        if (jaccard > 0.5) mult *= 0.50;
-        else if (jaccard > 0.3) mult *= 0.75;
-      }
-    }
-    return mult;
-  }
-
-  // Phase B: Greedy Slot-Zuweisung
-  function _pickRanked(slotHour, slotBestCat, ctx) {
-    let bestArt = null, bestScore = -Infinity, bestSig = null;
-    for (const a of _pool) {
-      if (_usedUrls.has(a.link)) continue;
-      const { total, signals } = _rankScore(a, slotHour, slotBestCat, ctx);
-      const dMult = _diversityMult(a, slotHour);
-      const finalScore = total * dMult;
-      if (finalScore > bestScore) { bestScore = finalScore; bestArt = a; bestSig = signals; }
-    }
-    if (bestArt) {
-      _usedUrls.add(bestArt.link);
-      const artCat = (bestArt.category || 'sonstiges').toLowerCase().replace(/[^a-zaeoeue]/g, '');
-      _usedCategories.push({ hour: slotHour, cat: artCat });
-      _usedTopicKws.push(_extractKws(bestArt.title));
-      bestArt._rankSignals = bestSig;
-      bestArt._rankScore = bestScore;
-    }
-    return bestArt;
-  }
-
-  // Phase C: Begruendung
-  function _buildExplanation(a, sig, slotBestCat) {
-    if (!sig) return '';
-    const parts = [];
-    const artCat = (a.category || '').replace(/[^a-zA-ZaeoeueAeOeUe\s-]/g, '');
-    if (sig.isBreaking) parts.push('EILMELDUNG');
-    if (sig.xor != null && sig.xor >= 5) parts.push('Hohe OR-Prognose (' + sig.xor.toFixed(1) + '%)');
-    else if (sig.cvdScore >= 8) parts.push('Agenten-Urteil: ' + (sig.cvdVerdict || 'Top'));
-    else if (sig.scoreNorm >= 0.7 && sig.catFit >= 0.8) parts.push('Top-Score im Ressort ' + artCat);
-    else if (sig.freshness >= 0.85) parts.push('Brandaktuell');
-    else if (sig.catFit >= 0.7) parts.push('Passt zum Ressort ' + artCat);
-    else parts.push('Bester verfuegbarer Artikel');
-    // Score + XOR Kurzinfo
-    if (sig.xor != null && sig.xor > 0 && parts[0] !== 'EILMELDUNG' && !parts.some(p => p.includes('OR-Prognose')))
-      parts.push('XOR ' + sig.xor.toFixed(1) + '%');
-    return parts.join(' \u00B7 ');
-  }
-
-  function _sugCell(a, num, slotCat) {
-    if (!a) return '<div class="tp-row-sug"><div class="tp-sug-empty">Kein passender Artikel</div></div>';
-    const title = escapeHtml((a.title || '').substring(0, 90));
-    const score = a.score || 0;
-    const cat = escapeHtml(a.category || '');
-    const link = a.link ? safeUrl(a.link) : '';
-    const sig = a._rankSignals || {};
-    const xor = sig.xor != null ? sig.xor : ((typeof predictOR === 'function' ? (predictOR(a) || {}).or : null) || null);
-    const xorBadge = xor != null && xor > 0
-      ? '<span class="tp-sug-or ' + (xor >= 5 ? 'xor-high' : xor >= 3 ? 'xor-mid' : 'xor-low') + '">' + xor.toFixed(1) + '%</span>'
-      : '';
-    // Begruendung aus Ranking-Pipeline
-    const reason = _buildExplanation(a, sig, slotCat);
-    return '<div class="tp-row-sug">'
-      + '<div class="tp-sug-num">Vorschlag ' + num + '</div>'
-      + '<div class="tp-sug-title">' + (link ? '<a href="' + link + '" target="_blank" rel="noopener">' + title + '</a>' : title) + xorBadge + '</div>'
-      + '<div class="tp-sug-bottom"><span class="tp-sug-score">' + Math.round(score) + '</span><span class="tp-sug-cat">' + cat + '</span></div>'
-      + '<div style="font-size:10px;color:var(--text-tertiary);margin-top:1px">' + escapeHtml(reason) + '</div>'
-      + '</div>';
-  }
-
-  // Set aller Kandidaten-URLs + Titel fuer Artikel-Match
-  const _candidateUrls = new Set();
-  const _candidateTitles = new Set();
-  if (typeof articles !== 'undefined') {
-    for (const a of articles) {
-      if (a.link) _candidateUrls.add(a.link.replace(/\/$/, ''));
-      if (a.title) _candidateTitles.add(a.title.trim().toLowerCase().substring(0, 50));
-    }
-  }
-  function _isPushedFromCandidates(p) {
-    const pLink = (p.link || '').replace(/\/$/, '');
-    if (pLink && _candidateUrls.has(pLink)) return true;
-    const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-    if (pTitle && _candidateTitles.has(pTitle)) return true;
-    return false;
-  }
-
-
-  const _slotSuggestions = {};
-  // Globale Lookup: alle Empfehlungen aller Stunden (fuer Cross-Hour-Match)
-  const _allSugUrls = new Set();
-  const _allSugTitles = new Set();
-  for (const hKey of Object.keys(savedSuggestions)) {
-    for (const sg of (Array.isArray(savedSuggestions[hKey]) ? savedSuggestions[hKey] : [])) {
-      if (sg.link) _allSugUrls.add(sg.link.replace(/\/$/, ''));
-      if (sg.title) _allSugTitles.add(sg.title.trim().toLowerCase().substring(0, 50));
-    }
-  }
-  function _wasEverRecommended(p) {
-    const pLink = (p.link || '').replace(/\/$/, '');
-    if (pLink && _allSugUrls.has(pLink)) return true;
-    const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-    if (pTitle && _allSugTitles.has(pTitle)) return true;
-    return false;
-  }
-  let html = '';
-  for (const s of data.slots) {
-    const hStr = String(s.hour).padStart(2,'0') + ':00';
-    const isGolden = s.hour === goldenHour && !s.is_past;
-    const isMust = s.must_have || mustHaveSet.has(s.hour);
-    const orVal = s.expected_or != null ? s.expected_or.toFixed(1) + '%' : '--';
-    const orCls = s.color === 'green' ? 'c-green' : s.color === 'yellow' ? 'c-yellow' : 'c-gray';
-    const catCls = 'tp-cat-' + (s.best_cat || 'news');
-
-    // Pre-Check: Hat dieser Past-Slot einen Match? (fuer Row-Styling)
-    let _preSlotMatch = false;
-    if (s.is_past) {
-      const _prePushed = s.pushed_this_hour || [];
-      if (_prePushed.length > 0) {
-        _preSlotMatch = _prePushed.some(p => _wasEverRecommended(p));
-      }
-    }
-
-    let rowCls = 'tp-row';
-    if (s.is_past) rowCls += ' tp-row-past';
-    if (s.is_now) rowCls += ' tp-row-now';
-    if (isMust && !s.is_past) rowCls += ' tp-row-must';
-    if (isGolden) rowCls += ' tp-row-golden';
-    if (_preSlotMatch) rowCls += ' tp-past-hit';
-
-    html += '<div class="' + rowCls + '">';
-
-    // Time
-    html += '<div class="tp-row-time"><span class="tp-time">' + hStr + '</span>';
-    if (s.is_now) html += '<span class="tp-time-label tp-time-now">Jetzt</span>';
-    else if (isGolden) html += '<span class="tp-time-label tp-time-golden">Golden</span>';
-    else if (isMust && !s.is_past) html += '<span class="tp-time-label tp-time-must">Must</span>';
-    // Sport-Kalender-Badges
-    if (s.sport_context && s.sport_context.length > 0) {
-      for (const ctx of s.sport_context) {
-        html += '<span style="display:inline-block;font-size:9px;font-weight:700;color:#34c759;background:rgba(52,199,89,0.12);padding:1px 5px;border-radius:4px;margin-top:2px">' + escapeHtml(ctx) + '</span>';
-      }
-    }
-    html += '</div>';
-
-    // Suggestions
-    if (!s.is_past) {
-      const _ctx = { isGolden: isGolden, isMust: isMust, expectedOR: s.expected_or, mood: s.mood };
-      const sug1 = _pickRanked(s.hour, s.best_cat, _ctx);
-      const sug2 = _pickRanked(s.hour, s.best_cat, _ctx);
-      // XOR aus _rankSignals (bereits berechnet)
-      const _sug1Or = sug1 && sug1._rankSignals ? sug1._rankSignals.xor : null;
-      const _sug2Or = sug2 && sug2._rankSignals ? sug2._rankSignals.xor : null;
-      // Vorschlaege fuer spaetere Gegenueber­stellung speichern
-      _slotSuggestions[s.hour] = [];
-      if (sug1) _slotSuggestions[s.hour].push({slot_hour: s.hour, suggestion_num: 1, title: sug1.title, link: sug1.link, category: sug1.category, score: sug1.score || 0, expected_or: _sug1Or != null ? _sug1Or : 0, best_cat: s.best_cat});
-      if (sug2) _slotSuggestions[s.hour].push({slot_hour: s.hour, suggestion_num: 2, title: sug2.title, link: sug2.link, category: sug2.category, score: sug2.score || 0, expected_or: _sug2Or != null ? _sug2Or : 0, best_cat: s.best_cat});
-      html += _sugCell(sug1, 1, s.best_cat);
-      html += _sugCell(sug2, 2, s.best_cat);
-
-      // Meta: XOR + Category
-      html += '<div class="tp-row-meta">'
-        + '<div class="tp-row-or ' + orCls + '">' + orVal + '</div>'
-        + '<div class="tp-cat-pill ' + catCls + '">' + escapeHtml(s.best_cat || 'News') + '</div>'
-        + '</div>';
-
-      // Status
-      html += '<div class="tp-row-status">';
-      if (s.pushed_this_hour && s.pushed_this_hour.length > 0) {
-        html += '<div class="tp-pushed-badge">' + s.pushed_this_hour.length + ' gepusht</div>';
-      }
-      html += '<div class="tp-mood-text">' + escapeHtml(s.mood || '') + '</div>';
-      html += '<div class="tp-conf-text">n=' + (s.n_historical || 0) + '</div>';
-      html += '</div>';
-    } else {
-      // ── Past: System empfahl vs. Tatsaechlich gepusht ──
-      const pushed = s.pushed_this_hour || [];
-      const hasPush = pushed.length > 0;
-      // Fuer XOR-Vergleich: nur geplante Pushes (Non-Eilmeldungen)
-      const _nonEilPushed = pushed.filter(p => !p.is_eilmeldung);
-      const actualAvgOr = _nonEilPushed.length > 0
-        ? _nonEilPushed.reduce((acc, p) => acc + (p.or || 0), 0) / _nonEilPushed.length
-        : (hasPush ? pushed.reduce((acc, p) => acc + (p.or || 0), 0) / pushed.length : 0);
-      const savedSlot = savedSuggestions[String(s.hour)] || [];
-
-      // Empfehlungen: NUR gespeicherte Snapshots (nie rückwirkend aus aktuellem Pool faken)
-      let recArticles = [];
-      const _hasSaved = savedSlot.length > 0;
-      if (_hasSaved) {
-        recArticles = savedSlot.map(sg => ({title: sg.title, link: sg.link, category: sg.category || sg.best_cat, score: sg.score, expected_or: sg.expected_or}));
-      }
-
-      // Pruefe ob gepushter Artikel = Vorschlag (URL- oder Titel-Match)
-      function _matchesRec(p) {
-        const pLink = (p.link || '').replace(/\/$/, '');
-        const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-        for (const r of recArticles) {
-          if (pLink && r.link && pLink === r.link.replace(/\/$/, '')) return true;
-          if (pTitle && r.title && pTitle === r.title.trim().toLowerCase().substring(0, 50)) return true;
-        }
-        return false;
-      }
-      // Slot-Level Match-Check: gleiche Stunde ODER Cross-Hour (Artikel war in irgendeiner Stunde empfohlen)
-      const _slotHasMatch = hasPush && (
-        (recArticles.length > 0 && pushed.some(p => _matchesRec(p)))
-        || pushed.some(p => _wasEverRecommended(p))
-      );
-
-      // Left: System empfahl
-      html += '<div class="tp-row-sug"' + (_slotHasMatch ? ' style="background:rgba(52,199,89,0.06);border-radius:6px"' : '') + '>';
-      if (_slotHasMatch) {
-        html += '<div style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;color:#fff;background:#059669;padding:3px 10px;border-radius:4px;margin-bottom:5px;letter-spacing:0.3px">&#10003; TREFFER</div>';
-      }
-      let _isLiveFallback = false;
-      // Heute + kein Snapshot → Live-Pool-Fallback (Pool ist noch frisch)
-      if (!_hasSaved && !isHistory) {
-        const _fbCtx = { isGolden: false, isMust: false, expectedOR: s.expected_or, mood: s.mood };
-        const _fb1 = _pickRanked(s.hour, s.best_cat, _fbCtx);
-        const _fb2 = _pickRanked(s.hour, s.best_cat, _fbCtx);
-        [_fb1, _fb2].forEach(a => {
-          if (!a) return;
-          const _xor = a._rankSignals ? a._rankSignals.xor : null;
-          recArticles.push({title: a.title, link: a.link, category: a.category, score: a.score || 0, expected_or: (_xor && _xor > 0) ? Math.round(_xor * 100) / 100 : 0});
-        });
-        if (recArticles.length > 0) {
-          _isLiveFallback = true;
-          _slotSuggestions[s.hour] = recArticles.map((r, i) => ({slot_hour: s.hour, suggestion_num: i + 1, title: r.title, link: r.link, category: r.category, score: r.score, expected_or: r.expected_or, best_cat: s.best_cat || 'news'}));
-        }
-      }
-      if (!_hasSaved && !_isLiveFallback) {
-        const _noSugMsg = isHistory ? 'System war noch nicht aktiv' : 'Keine Empfehlung verfügbar';
-        html += '<div style="padding:8px 0;font-size:11px;color:var(--text-tertiary);font-style:italic">' + _noSugMsg + '</div>';
-      } else if (recArticles.length > 0) {
-        const _sugLabel = _isLiveFallback ? 'System empfiehlt (nachträglich)' : 'System empfahl';
-        html += '<div class="tp-past-label tp-past-label-ki">' + _sugLabel + '</div>';
-        html += recArticles.map((r, idx) => {
-          const rTitle = escapeHtml((r.title || '').substring(0, 80));
-          const rLink = r.link ? safeUrl(r.link) : '';
-          const rOrVal = r.expected_or || 0;
-          const rOrBadge = rOrVal > 0 ? ' <span class="tp-sug-or ' + (rOrVal >= 5 ? 'xor-high' : rOrVal >= 3 ? 'xor-mid' : 'xor-low') + '">' + rOrVal.toFixed(1) + '%</span>' : '';
-          // Match-Check: wurde dieser Vorschlag gepusht?
-          const rTitleLower = (r.title || '').trim().toLowerCase().substring(0, 50);
-          const rLinkNorm = (r.link || '').replace(/\/$/, '');
-          const wasFollowed = pushed.some(p => {
-            if (rLinkNorm && p.link && rLinkNorm === (p.link || '').replace(/\/$/, '')) return true;
-            const pT = (p.title || '').trim().toLowerCase().substring(0, 50);
-            return rTitleLower && pT && rTitleLower === pT;
-          });
-          const matchIcon = wasFollowed
-            ? '<span style="color:#059669;font-weight:700;margin-right:4px" title="Empfehlung befolgt">&#10003;</span>'
-            : '<span style="color:#d1d5db;margin-right:4px" title="Nicht befolgt">&#10007;</span>';
-          // Detail-Zeile: Kategorie + Score + XOR (einmal, nicht doppelt)
-          const detailParts = [];
-          if (r.category) detailParts.push(r.category);
-          if (r.score) detailParts.push('Score ' + Math.round(r.score));
-          if (rOrVal > 0) detailParts.push('XOR ' + rOrVal.toFixed(1) + '%');
-          return '<div style="padding:3px 0;font-size:12px;line-height:1.4">'
-            + matchIcon
-            + '<span style="color:var(--text-tertiary);font-size:10px;margin-right:3px">' + (idx + 1) + '.</span>'
-            + (rLink ? '<a href="' + rLink + '" target="_blank" rel="noopener" style="color:var(--text-secondary)">' + rTitle + '</a>' : rTitle)
-            + rOrBadge
-            + '<div style="margin-top:2px;font-size:10px;color:var(--text-tertiary)">' + escapeHtml(detailParts.join(' \u00B7 ')) + '</div>'
-            + '</div>';
-        }).join('');
-      }
-      html += '</div>';
-
-      // Right: Was tatsaechlich gepusht wurde
-      html += '<div class="tp-row-sug">';
-      html += '<div class="tp-past-label tp-past-label-real">Tatsächlich gepusht</div>';
-      if (hasPush) {
-        html += pushed.map(p => {
-          const pOr = p.or || 0;
-          const pOrCls = pOr >= 5 ? 'xor-high' : pOr >= 3 ? 'xor-mid' : 'xor-low';
-          const pOrBadge = pOr > 0 ? ' <span class="tp-sug-or ' + pOrCls + '">' + pOr.toFixed(1) + '% OR</span>' : '';
-          const _isSameHourMatch = recArticles.length > 0 && _matchesRec(p);
-          const _isCrossHourMatch = !_isSameHourMatch && _wasEverRecommended(p);
-          const isMatch = _isSameHourMatch || _isCrossHourMatch;
-          let matchIcon = '';
-          if (isMatch) {
-            const _matchLabel = _isCrossHourMatch ? 'Vom System empfohlen' : 'Vom System empfohlen';
-            matchIcon = '<div style="display:inline-flex;align-items:center;gap:3px;font-size:8px;font-weight:700;color:#059669;background:rgba(52,199,89,0.12);padding:1px 6px;border-radius:3px;margin-bottom:2px;letter-spacing:0.3px"><span style="font-size:10px">&#10003;</span> ' + _matchLabel + '</div><br>';
-          }
-          const eilBadge = p.is_eilmeldung ? ' <span style="background:#ff2d55;color:#fff;font-size:8px;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px">EIL</span>' : '';
-          return '<div style="padding:3px 0;font-size:12px;line-height:1.4">'
-            + matchIcon + escapeHtml((p.title||'').substring(0, 80)) + pOrBadge + eilBadge
-            + '<div style="margin-top:2px"><span class="tp-cat-pill tp-cat-' + escapeHtml(p.cat || 'news') + '" style="font-size:9px">' + escapeHtml(p.cat || '') + '</span></div>'
-            + '</div>';
-        }).join('');
-      } else {
-        html += '<div class="tp-sug-empty" style="opacity:0.4;font-style:italic">Kein Push in dieser Stunde</div>';
-      }
-      html += '</div>';
-
-      // Meta: System XOR vs Actual OR
-      html += '<div class="tp-row-meta">';
-      const _slotBestXor = recArticles.length > 0 ? Math.max(...recArticles.map(r => r.expected_or || 0)) : 0;
-      if (hasPush && actualAvgOr > 0 && _slotBestXor > 0) {
-        // System XOR oben (blau)
-        html += '<div style="font-size:11px;font-weight:700;color:#2563eb;text-align:center">' + _slotBestXor.toFixed(1) + '%</div>';
-        html += '<div style="font-size:8px;color:var(--text-tertiary);text-align:center;margin:-1px 0 1px">XOR</div>';
-        // Delta-Pfeil
-        const _slotDelta = _slotBestXor - actualAvgOr;
-        const _slotArrow = _slotDelta > 0.2 ? '<span style="color:#34c759;font-weight:700">&#9650; +' + _slotDelta.toFixed(1) + '</span>'
-          : _slotDelta < -0.2 ? '<span style="color:#ff3b30">&#9660; ' + _slotDelta.toFixed(1) + '</span>'
-          : '<span style="color:#8e8e93">&#9644; 0</span>';
-        html += '<div style="font-size:9px;text-align:center">' + _slotArrow + '</div>';
-        // Actual OR unten
-        const actOrCls = actualAvgOr >= 5.5 ? 'c-green' : actualAvgOr >= 4 ? 'c-yellow' : 'c-gray';
-        html += '<div style="font-size:11px;text-align:center;margin-top:1px" class="' + actOrCls + '">' + actualAvgOr.toFixed(1) + '%</div>';
-        html += '<div style="font-size:8px;color:var(--text-tertiary);text-align:center">OR</div>';
-      } else if (hasPush && actualAvgOr > 0) {
-        const actOrCls = actualAvgOr >= 5.5 ? 'c-green' : actualAvgOr >= 4 ? 'c-yellow' : 'c-gray';
-        html += '<div class="tp-row-or ' + actOrCls + '">' + actualAvgOr.toFixed(1) + '%</div>';
-      } else {
-        html += '<div class="tp-row-or c-gray">--</div>';
-      }
-      html += '</div>';
-    }
-
-    html += '</div>'; // close row
-  }
-  grid.innerHTML = html;
-  // Scroll to now row
-  requestAnimationFrame(() => {
-    const nowRow = grid.querySelector('.tp-row-now');
-    if (nowRow) nowRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
-  // Vorschlaege an Server loggen (fire-and-forget)
-  // Vorschlaege NUR für heute loggen, nie für historische Tage
-  if (!isHistory) {
-    const _logList = [];
-    for (const sugs of Object.values(_slotSuggestions)) { for (const s of sugs) _logList.push(s); }
-    if (_logList.length > 0) {
-      fetch(API_BASE + '/api/tagesplan/log-suggestions', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({date_iso: new Date().toISOString().slice(0, 10), suggestions: _logList})
-      }).catch(() => {});
-    }
-  }
-
-  // ── Empfehlung vs. Realitaet: Tages-Zusammenfassung ──
-  // Eilmeldungen ausschliessen: System kann Breaking News nicht vorhersagen
-  const _cmpPanel = document.getElementById('tpComparisonSummary');
-  const _cmpGrid = document.getElementById('tpComparisonGrid');
-  let _cmpHoursTotal = 0, _cmpArticleMatch = 0, _cmpCatMatch = 0, _cmpEilSkipped = 0;
-  let _cmpOrFollowed = [], _cmpOrDeviated = [];
-  let _cmpSysXors = [], _cmpActOrs = [], _cmpWins = 0;
-  const _cmpMatchList = []; // Konkrete Treffer fuer Anzeige
-  for (const s of data.slots) {
-    if (!s.is_past) continue;
-    const pushed = s.pushed_this_hour || [];
-    if (pushed.length === 0) continue;
-    const recItems = savedSuggestions[String(s.hour)] || [];
-    if (recItems.length === 0) continue;
-    // Non-Eil bevorzugen; Eil-only mit OR>7% = viral, nicht planbar → ausschliessen
-    const nonEil = pushed.filter(p => !p.is_eilmeldung);
-    let avgOr;
-    if (nonEil.length > 0) {
-      avgOr = nonEil.reduce((acc, p) => acc + (p.or || 0), 0) / nonEil.length;
-    } else {
-      avgOr = pushed.reduce((acc, p) => acc + (p.or || 0), 0) / pushed.length;
-      if (avgOr > 7) { _cmpEilSkipped++; continue; }
-    }
-    _cmpHoursTotal++;
-    // Best XOR aus beiden Vorschlaegen (Maximum)
-    const bestXor = Math.max(...recItems.map(r => r.expected_or || 0));
-    _cmpSysXors.push(bestXor);
-    _cmpActOrs.push(avgOr);
-    if (bestXor >= avgOr) _cmpWins++;
-    // Kategorie-Match (nonEil bevorzugt, Fallback alle Pushes)
-    const _cmpPushes = nonEil.length > 0 ? nonEil : pushed;
-    const recCat = (recItems[0].best_cat || recItems[0].category || s.best_cat || '').toLowerCase();
-    const pushedCats = _cmpPushes.map(p => (p.cat || '').toLowerCase());
-    if (pushedCats.some(c => c === recCat)) _cmpCatMatch++;
-    // Artikel-Match (gleiche Stunde ODER Cross-Hour)
-    let anyMatch = false;
-    for (const p of _cmpPushes) {
-      const pLink = (p.link || '').replace(/\/$/, '');
-      const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-      // Gleiche Stunde
-      for (const r of recItems) {
-        if (pLink && r.link && pLink === r.link.replace(/\/$/, '')) { anyMatch = true; break; }
-        if (pTitle && r.title && pTitle === r.title.trim().toLowerCase().substring(0, 50)) { anyMatch = true; break; }
-      }
-      // Cross-Hour: war der Artikel in irgendeiner Stunde empfohlen?
-      if (!anyMatch) {
-        if (pLink && _allSugUrls.has(pLink)) anyMatch = true;
-        else if (pTitle && _allSugTitles.has(pTitle)) anyMatch = true;
-      }
-      if (anyMatch) break;
-    }
-    if (anyMatch) {
-      _cmpArticleMatch++;
-      _cmpOrFollowed.push(avgOr);
-      // Konkreten Treffer-Artikel finden (same-hour + cross-hour)
-      let _cmpFound = false;
-      for (const p of _cmpPushes) {
-        if (_cmpFound) break;
-        const pLink = (p.link || '').replace(/\/$/, '');
-        const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-        // 1) Same-hour: Push matched Suggestion dieser Stunde
-        for (const r of recItems) {
-          const rLink = (r.link || '').replace(/\/$/, '');
-          const rTitle = (r.title || '').trim().toLowerCase().substring(0, 50);
-          if ((pLink && rLink && pLink === rLink) || (pTitle && rTitle && pTitle === rTitle)) {
-            _cmpMatchList.push({hour: s.hour, title: p.title || r.title, or: p.or || 0, xor: r.expected_or || 0, cat: p.cat || r.category || ''});
-            _cmpFound = true; break;
-          }
-        }
-        // 2) Cross-hour: Push matched Suggestion einer anderen Stunde
-        if (!_cmpFound && ((pLink && _allSugUrls.has(pLink)) || (pTitle && _allSugTitles.has(pTitle)))) {
-          // XOR aus der Original-Empfehlung holen
-          let _xhXor = 0;
-          for (const hk of Object.keys(savedSuggestions)) {
-            for (const r of (Array.isArray(savedSuggestions[hk]) ? savedSuggestions[hk] : [])) {
-              const rLink = (r.link || '').replace(/\/$/, '');
-              const rTitle = (r.title || '').trim().toLowerCase().substring(0, 50);
-              if ((pLink && rLink && pLink === rLink) || (pTitle && rTitle && pTitle === rTitle)) { _xhXor = r.expected_or || 0; break; }
-            }
-            if (_xhXor > 0) break;
-          }
-          _cmpMatchList.push({hour: s.hour, title: p.title, or: p.or || 0, xor: _xhXor, cat: p.cat || ''});
-          _cmpFound = true;
-        }
-      }
-    }
-    else { _cmpOrDeviated.push(avgOr); }
-  }
-  if (_cmpHoursTotal >= 2) {
-    _cmpPanel.style.display = 'block';
-    const _cmpTitle = document.getElementById('tpComparisonTitle');
-    if (_cmpTitle) _cmpTitle.textContent = isHistory ? 'Empfehlung vs. Realität — ' + _histDateShort : 'Empfehlung vs. Realität';
-    const _avg = arr => arr.length > 0 ? (arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(1) : '--';
-    const _avgSysXor = _cmpSysXors.length > 0 ? _cmpSysXors.reduce((s, v) => s + v, 0) / _cmpSysXors.length : 0;
-    const _avgActOr = _cmpActOrs.length > 0 ? _cmpActOrs.reduce((s, v) => s + v, 0) / _cmpActOrs.length : 0;
-    const _sysAdvantage = _avgSysXor - _avgActOr;
-    const _advSign = _sysAdvantage >= 0 ? '+' : '';
-    const _advColor = _sysAdvantage >= 0 ? '#34c759' : '#ff9f0a';
-    const _winPct = Math.round(_cmpWins / _cmpHoursTotal * 100);
-    const _eilNote = _cmpEilSkipped > 0 ? '<div style="font-size:10px;color:var(--text-tertiary);margin-top:8px;font-style:italic">' + _cmpEilSkipped + ' virale Eilmeldungs-Stunde' + (_cmpEilSkipped > 1 ? 'n' : '') + ' ausgeschlossen (OR &gt;7%, nicht planbar)</div>' : '';
-    _cmpGrid.innerHTML =
-      // Zeile 1: System XOR vs Tatsaechliche OR — Hauptvergleich
-      '<div class="tp-hero-box" style="border:1px solid rgba(37,99,235,0.2);background:rgba(37,99,235,0.04)">'
-        + '<div class="tp-hero-value" style="color:#2563eb">' + _avgSysXor.toFixed(1) + '%</div>'
-        + '<div class="tp-hero-label">System XOR</div></div>'
-      + '<div class="tp-hero-box">'
-        + '<div class="tp-hero-value" style="color:' + _advColor + '">' + _advSign + _sysAdvantage.toFixed(1) + 'pp</div>'
-        + '<div class="tp-hero-label">Vorteil System</div></div>'
-      + '<div class="tp-hero-box">'
-        + '<div class="tp-hero-value">' + _avgActOr.toFixed(1) + '%</div>'
-        + '<div class="tp-hero-label">Geplante Pushes OR</div></div>'
-      + '<div class="tp-hero-box" style="border:1px solid rgba(52,199,89,0.2);background:rgba(52,199,89,0.04)">'
-        + '<div class="tp-hero-value" style="color:#34c759">' + _cmpWins + '/' + _cmpHoursTotal
-        + ' <span style="font-size:12px;color:var(--text-tertiary)">(' + _winPct + '%)</span></div>'
-        + '<div class="tp-hero-label">Stunden besser</div></div>'
-      // Zeile 2: Trefferquote + gefolgt/abgewichen
-      + '<div class="tp-hero-box"><div class="tp-hero-value">' + _cmpArticleMatch + '/' + _cmpHoursTotal
-        + ' <span style="font-size:12px;color:var(--text-tertiary)">(' + Math.round(_cmpArticleMatch / _cmpHoursTotal * 100) + '%)</span></div>'
-        + '<div class="tp-hero-label">Artikel-Match</div></div>'
-      + '<div class="tp-hero-box"><div class="tp-hero-value" style="color:#34c759">' + _avg(_cmpOrFollowed) + '%</div>'
-        + '<div class="tp-hero-label">OR (gefolgt)</div></div>'
-      + '<div class="tp-hero-box"><div class="tp-hero-value" style="color:#ff9f0a">' + _avg(_cmpOrDeviated) + '%</div>'
-        + '<div class="tp-hero-label">OR (abgewichen)</div></div>'
-      + '<div class="tp-hero-box"><div class="tp-hero-value">' + _cmpCatMatch + '/' + _cmpHoursTotal
-        + ' <span style="font-size:12px;color:var(--text-tertiary)">(' + Math.round(_cmpCatMatch / _cmpHoursTotal * 100) + '%)</span></div>'
-        + '<div class="tp-hero-label">Kategorie-Match</div></div>'
-      + _eilNote;
-    // ── Treffer-Liste: Konkrete Artikel die empfohlen UND gepusht wurden ──
-    if (_cmpMatchList.length > 0) {
-      let _matchHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'
-        + '<div style="font-size:11px;font-weight:700;color:#059669;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">'
-        + '&#10003; Treffer — Empfehlung wurde gepusht (' + _cmpMatchList.length + ')</div>';
-      _matchHtml += _cmpMatchList.map(m => {
-        const hStr = String(m.hour).padStart(2, '0') + ':00';
-        const orCls = m.or >= 5 ? 'xor-high' : m.or >= 3 ? 'xor-mid' : 'xor-low';
-        const orBadge = m.or > 0 ? '<span class="tp-sug-or ' + orCls + '" style="margin-left:6px">' + m.or.toFixed(1) + '% OR</span>' : '';
-        return '<div style="padding:3px 0;font-size:12px;line-height:1.5">'
-          + '<span style="color:var(--text-tertiary);font-weight:600;margin-right:6px">' + hStr + '</span>'
-          + '<span style="color:#059669;font-weight:700;margin-right:4px">&#10003;</span>'
-          + escapeHtml((m.title || '').substring(0, 70))
-          + orBadge
-          + '<span class="tp-cat-pill tp-cat-' + escapeHtml(m.cat || 'news') + '" style="font-size:8px;margin-left:6px">' + escapeHtml(m.cat) + '</span>'
-          + '</div>';
-      }).join('');
-      _matchHtml += '</div>';
-      _cmpGrid.innerHTML += _matchHtml;
-    }
-  } else {
-    _cmpPanel.style.display = 'none';
-  }
-}
-
-async function triggerRetrain() {
-  const btn = document.getElementById('tpRetrainBtn');
-  btn.disabled = true; btn.textContent = 'Training...';
-  try {
-    await fetch(API_BASE + '/api/ml/retrain', { method: 'POST' });
-    setTimeout(() => { loadTagesplan(); btn.disabled = false; btn.textContent = 'Modell neu trainieren'; }, 10000);
-  } catch (e) { btn.disabled = false; btn.textContent = 'Modell neu trainieren'; }
-}
-
-// ── 7-Tage-Retrospektive ──
-let _retroData = null;
-let _retroLoading = false;
-
-function toggleRetroSection() {
-  const header = document.getElementById('tpRetroHeader');
-  const body = document.getElementById('tpRetroBody');
-  header.classList.toggle('open');
-  body.classList.toggle('open');
-  if (body.classList.contains('open')) loadRetro();
-}
-
-async function loadRetro() {
-  if (_retroLoading) return;
-  _retroLoading = true;
-  try {
-    const resp = await resilientFetch(API_BASE + '/api/tagesplan/retro', {_timeout: 15000});
+    const url = API_BASE + '/api/push-schedule' + (_psCurrentDate ? ('?date=' + _psCurrentDate) : '');
+    const resp = await resilientFetch(url, { _timeout: 10000 });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    _retroData = await resp.json();
-    renderRetroSummary(_retroData.summary);
-    renderRetroDays(_retroData.days);
+    const data = await resp.json();
+    window._pushSchedule = data;
+    renderPushSchedule(data);
   } catch (e) {
-    console.error('[Retro] Fehler:', e);
-    document.getElementById('tpRetroSummary').innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-tertiary);padding:12px">Fehler: ' + escapeHtml(e.message) + '</div>';
-    document.getElementById('tpRetroDays').innerHTML = '';
-  } finally {
-    _retroLoading = false;
+    showTabError('psSlots', 'Tagesplan: ' + e.message, 'loadPushSchedule()');
+  }
+  if (_psInterval) clearInterval(_psInterval);
+  _psInterval = setInterval(() => {
+    if (currentTab === 'tagesplan' && !_psCurrentDate) loadPushSchedule();
+  }, 60000);
+}
+
+function renderPushSchedule(d) {
+  const dateLbl = document.getElementById('psDateLabel');
+  if (dateLbl) dateLbl.textContent = d.weekday_name + ' · ' + _psFmtDate(d.date);
+  const baselineN = document.getElementById('psBaselineN');
+  if (baselineN) baselineN.textContent = (d.baseline_total_pushes || 0).toLocaleString('de-DE');
+
+  // Hero: KPI
+  const k = d.kpi || {};
+  const setBox = (boxId, valId, val, klass) => {
+    const box = document.getElementById(boxId);
+    const v = document.getElementById(valId);
+    if (v) v.textContent = val;
+    if (box) {
+      box.classList.remove('ok', 'warn', 'bad');
+      if (klass) box.classList.add(klass);
+    }
+  };
+
+  const avgOr = k.current_avg_or;
+  const avgTxt = avgOr != null ? avgOr.toFixed(1) + '%' : '--';
+  const avgKlass = avgOr == null ? null : (avgOr >= 6.0 ? 'ok' : (avgOr >= 5.0 ? 'warn' : 'bad'));
+  setBox('psHeroAvgORBox', 'psHeroAvgOR', avgTxt, avgKlass);
+
+  const pushes = k.pushes_today || 0;
+  const limit = k.pushes_limit || 20;
+  const pushKlass = pushes >= limit ? 'bad' : (pushes >= limit - 2 ? 'warn' : 'ok');
+  setBox('psHeroPushesBox', 'psHeroPushes', pushes + '/' + limit, pushKlass);
+
+  const mandFilled = (k.mandatory_filled || []).length;
+  const mandMissed = (k.mandatory_missed || []).length;
+  const mandPending = (k.mandatory_pending || []).length;
+  let mandTxt = mandFilled + '/2';
+  if (mandFilled === 2) mandTxt = 'OK';
+  else if (mandPending > 0) mandTxt = mandFilled + '/2 (offen)';
+  else if (mandMissed > 0) mandTxt = 'verpasst';
+  const mandKlass = mandFilled === 2 ? 'ok' : (mandMissed > 0 ? 'bad' : 'warn');
+  setBox('psHeroMandatoryBox', 'psHeroMandatory', mandTxt, mandKlass);
+
+  const avoidV = k.avoid_violated || [];
+  const avoidTxt = avoidV.length ? 'verletzt ' + avoidV.join(',') : 'sauber';
+  setBox('psHeroAvoidBox', 'psHeroAvoid', avoidTxt, avoidV.length ? 'bad' : 'ok');
+
+  const bestTxt = (d.best_hour != null ? d.best_hour + ':00' : '--') + ' · ' + (d.best_hour_avg_or != null ? d.best_hour_avg_or.toFixed(1) + '%' : '--');
+  document.getElementById('psHeroBest').textContent = bestTxt;
+
+  // Slots
+  const grid = document.getElementById('psSlots');
+  if (grid) grid.innerHTML = (d.slots || []).map(renderPsSlot).join('');
+
+  // Golden rules
+  const rulesEl = document.getElementById('psRules');
+  if (rulesEl) {
+    if (d.golden_rules && d.golden_rules.length) {
+      rulesEl.style.display = '';
+      rulesEl.innerHTML = '<h4>Goldene Regeln</h4><ul>' + d.golden_rules.map(r => '<li>' + escapeHtml(r) + '</li>').join('') + '</ul>';
+    } else {
+      rulesEl.style.display = 'none';
+    }
+  }
+
+  // Footer
+  const footer = document.getElementById('psFooter');
+  if (footer) {
+    const ov = d.baseline_overall_avg_or != null ? d.baseline_overall_avg_or.toFixed(2) + '%' : '--';
+    footer.textContent = 'Daten-Basis: Push-Analyse · ' + (d.baseline_total_pushes || 0).toLocaleString('de-DE') + ' Pushes · Gesamt-Ø ' + ov;
   }
 }
 
-function renderRetroSummary(s) {
-  if (!s) return;
-  const el = document.getElementById('tpRetroSummary');
-  const bestDay = s.best_day ? (s.best_day.weekday + ' ' + s.best_day.date + ' — ' + s.best_day.avg_or.toFixed(2) + '%') : '--';
-  const topHour = s.top_hour != null ? (String(s.top_hour).padStart(2, '0') + ':00 — ' + s.top_hour_avg_or.toFixed(1) + '%') : '--';
-  el.innerHTML =
-    '<div class="tp-hero-box"><div class="tp-hero-value">' + (s.total_pushes || 0) + '</div><div class="tp-hero-label">Pushes gesamt</div></div>' +
-    '<div class="tp-hero-box"><div class="tp-hero-value">' + (s.avg_or_7d ? s.avg_or_7d.toFixed(2) + '%' : '--') + '</div><div class="tp-hero-label">Avg OR 7d</div></div>' +
-    '<div class="tp-hero-box"><div class="tp-hero-value" style="font-size:13px">' + escapeHtml(bestDay) + '</div><div class="tp-hero-label">Bester Tag</div></div>' +
-    '<div class="tp-hero-box"><div class="tp-hero-value">' + (s.prediction_mae_7d != null ? s.prediction_mae_7d.toFixed(2) + 'pp' : '--') + '</div><div class="tp-hero-label">Modell-MAE</div></div>' +
-    '<div class="tp-hero-box"><div class="tp-hero-value" style="font-size:13px">' + escapeHtml(topHour) + '</div><div class="tp-hero-label">Top-Stunde</div></div>';
-}
-
-function renderRetroDays(days) {
-  if (!days || !days.length) { document.getElementById('tpRetroDays').innerHTML = '<div style="text-align:center;color:var(--text-tertiary);padding:20px">Keine Daten vorhanden.</div>'; return; }
-  let html = '';
-  const sorted = [...days].reverse();
-  for (const day of sorted) {
-    const bestInfo = day.best_push ? (day.best_push.or.toFixed(1) + '% (' + escapeHtml(day.best_push.cat) + ' ' + day.best_push.hour + 'h)') : '--';
-    const maeStr = day.prediction_mae != null ? day.prediction_mae.toFixed(2) + 'pp' : '--';
-    const hasSuggestions = day.suggestions && Object.keys(day.suggestions).length > 0;
-
-    // Cross-Hour Lookup: alle Empfehlungen des Tages (VOR Header fuer Match-Count)
-    const _retroSugUrls = new Set();
-    const _retroSugTitles = new Set();
-    if (day.suggestions) {
-      for (const hk of Object.keys(day.suggestions)) {
-        for (const sg of day.suggestions[hk]) {
-          if (sg.link) _retroSugUrls.add(sg.link.replace(/\/$/, ''));
-          if (sg.title) _retroSugTitles.add(sg.title.trim().toLowerCase().substring(0, 50));
-        }
-      }
-    }
-    function _retroWasRecommended(p) {
-      const pLink = (p.link || '').replace(/\/$/, '');
-      if (pLink && _retroSugUrls.has(pLink)) return true;
-      const pTitle = (p.title || '').trim().toLowerCase().substring(0, 50);
-      if (pTitle && _retroSugTitles.has(pTitle)) return true;
-      return false;
-    }
-    // Empfehlungs-Matches zaehlen (Cross-Hour)
-    let _retroMatchCount = 0;
-    for (const hk of Object.keys(day.hours || {})) {
-      const hPushes = (day.hours[hk] && day.hours[hk].pushes) || [];
-      for (const p of hPushes) { if (_retroWasRecommended(p)) _retroMatchCount++; }
-    }
-
-    html += '<div class="tp-retro-day-card" id="retroDay-' + day.date_iso + '">';
-    html += '<div class="tp-retro-day-header" onclick="toggleRetroDay(\'' + day.date_iso + '\')">';
-    html += '<span class="day-label">' + day.weekday + ' ' + day.date.substring(0, 5) + '</span>';
-    html += '<span class="day-stat">' + day.n_pushed + ' Pushes</span>';
-    html += '<span class="day-stat">' + day.avg_or.toFixed(2) + '%</span>';
-    html += '<span class="day-best">Best: ' + bestInfo + '</span>';
-    html += '<span class="day-mae">MAE: ' + maeStr + '</span>';
-    if (_retroMatchCount > 0) {
-      html += '<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;color:#fff;background:#059669;padding:2px 8px;border-radius:4px">&#10003; ' + _retroMatchCount + ' MATCH' + (_retroMatchCount > 1 ? 'ES' : '') + '</span>';
-    }
-    html += '<span class="day-match">' + day.match_quote + ' Treffer</span>';
-    html += '<span class="day-toggle">&#9660;</span>';
-    html += '</div>';
-    // Expanded body
-    html += '<div class="tp-retro-day-body" id="retroBody-' + day.date_iso + '">';
-
-    // Alle relevanten Stunden sammeln (Pushes + Suggestions)
-    const allHours = new Set();
-    for (const h of Object.keys(day.hours || {})) allHours.add(h);
-    if (day.suggestions) { for (const h of Object.keys(day.suggestions)) allHours.add(h); }
-    const sortedHours = [...allHours].sort((a, b) => Number(a) - Number(b));
-
-    for (const h of sortedHours) {
-      const pushes = (day.hours[h] && day.hours[h].pushes) || [];
-      const sugs = (day.suggestions && day.suggestions[h]) || [];
-      const hStr = String(h).padStart(2, '0') + ':00';
-
-      // Stunden-Header
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:2px;padding:4px 0;border-bottom:1px solid var(--border)">';
-      html += '<span style="font-weight:700;font-size:12px;font-variant-numeric:tabular-nums;min-width:45px">' + hStr + '</span>';
-      if (pushes.length > 0) html += '<span style="font-size:10px;color:#34c759;font-weight:600">' + pushes.length + ' gepusht</span>';
-      else html += '<span style="font-size:10px;color:var(--text-tertiary)">kein Push</span>';
-      if (sugs.length > 0) html += '<span style="font-size:10px;color:#2563eb;font-weight:600">' + sugs.length + ' empfohlen</span>';
-      html += '</div>';
-
-      // System empfahl (blau)
-      if (sugs.length > 0) {
-        for (const sg of sugs) {
-          const sgTitle = escapeHtml((sg.title || '').substring(0, 80));
-          const sgLink = sg.link ? safeUrl(sg.link) : '';
-          const sgOrBadge = sg.expected_or > 0 ? '<span style="font-weight:700;color:#2563eb;font-variant-numeric:tabular-nums;margin-left:4px">' + sg.expected_or.toFixed(1) + '%</span>' : '';
-          const sgCat = sg.cat ? '<span class="tp-cat-pill tp-cat-' + escapeHtml(sg.cat) + '" style="font-size:9px;margin-left:4px">' + escapeHtml(sg.cat) + '</span>' : '';
-          // Pruefen ob dieser Vorschlag tatsaechlich gepusht wurde (gleiche Stunde oder Cross-Hour)
-          const sgTitleLower = (sg.title || '').trim().toLowerCase().substring(0, 50);
-          const sgLinkNorm = (sg.link || '').replace(/\/$/, '');
-          // Gleiche Stunde
-          let wasFollowed = pushes.some(p => {
-            const pTitleLower = (p.title || '').trim().toLowerCase().substring(0, 50);
-            return (sgTitleLower && pTitleLower && sgTitleLower === pTitleLower)
-              || (sgLinkNorm && p.link && sgLinkNorm === p.link.replace(/\/$/, ''));
-          });
-          // Cross-Hour: in irgendeiner Stunde des Tages gepusht?
-          if (!wasFollowed) {
-            for (const hk2 of Object.keys(day.hours)) {
-              const p2 = (day.hours[hk2] && day.hours[hk2].pushes) || [];
-              if (p2.some(p => {
-                const pT = (p.title || '').trim().toLowerCase().substring(0, 50);
-                return (sgTitleLower && pT && sgTitleLower === pT)
-                  || (sgLinkNorm && p.link && sgLinkNorm === p.link.replace(/\/$/, ''));
-              })) { wasFollowed = true; break; }
-            }
-          }
-          const followIcon = wasFollowed ? '<span style="color:#34c759;font-weight:700;margin-right:4px" title="Empfehlung befolgt">&#10003;</span>' : '<span style="color:var(--text-tertiary);margin-right:4px" title="Nicht befolgt">&#10007;</span>';
-          html += '<div style="display:flex;align-items:center;gap:4px;padding:2px 0 2px 50px;font-size:11px;color:#2563eb">';
-          html += followIcon;
-          html += (sgLink ? '<a href="' + sgLink + '" target="_blank" style="color:#2563eb">' + sgTitle + '</a>' : sgTitle);
-          html += sgOrBadge + sgCat;
-          html += '</div>';
-        }
-      }
-
-      // Tatsaechlich gepusht (gruen/rot)
-      for (const p of pushes) {
-        const hasMatch = p.delta !== null;
-        const isMatch = hasMatch && Math.abs(p.delta) <= 1.0;
-        const isMiss = hasMatch && Math.abs(p.delta) > 1.5;
-        const _wasRec = _retroWasRecommended(p);
-        const _rowBg = _wasRec ? 'background:rgba(52,199,89,0.08);border-radius:6px' : (isMiss ? 'background:rgba(255,59,48,0.04)' : '');
-        html += '<div style="display:grid;grid-template-columns:50px 1fr 55px 55px 70px;align-items:center;padding:3px 0;font-size:12px;gap:6px;' + _rowBg + '">';
-        html += '<span></span>';
-        html += '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">';
-        if (_wasRec) html += '<span style="display:inline-flex;align-items:center;gap:2px;font-size:8px;font-weight:700;color:#fff;background:#059669;padding:1px 6px;border-radius:3px;margin-right:5px;letter-spacing:0.3px;vertical-align:middle">&#10003; MATCH</span>';
-        if (p.link) html += '<a href="' + escapeHtml(p.link) + '" target="_blank" style="color:var(--text);text-decoration:none">';
-        html += escapeHtml(p.title || 'Kein Titel');
-        if (p.link) html += '</a>';
-        html += ' <span class="tp-cat-pill tp-cat-' + escapeHtml(p.cat) + '" style="font-size:9px">' + escapeHtml(p.cat) + '</span>';
-        if (p.is_eilmeldung) html += ' <span style="background:#ff2d55;color:#fff;font-size:8px;font-weight:700;padding:1px 4px;border-radius:3px">EIL</span>';
-        html += '</span>';
-        html += '<span style="font-weight:800;font-variant-numeric:tabular-nums">' + p.actual_or.toFixed(1) + '%</span>';
-        html += '<span style="font-variant-numeric:tabular-nums;color:var(--text-secondary)">' + (p.predicted_or != null ? p.predicted_or.toFixed(1) + '%' : '--') + '</span>';
-        if (hasMatch) {
-          const sign = p.delta >= 0 ? '+' : '';
-          const color = isMatch ? '#34c759' : (isMiss ? '#ff3b30' : '#ff9f0a');
-          html += '<span style="color:' + color + ';font-size:10px;font-weight:700;font-variant-numeric:tabular-nums">' + sign + p.delta.toFixed(2) + 'pp</span>';
-        } else {
-          html += '<span style="color:var(--text-tertiary);font-size:10px">--</span>';
-        }
-        html += '</div>';
-      }
-
-      // Stunde ohne Push aber mit Empfehlung: verpasste Chance
-      if (pushes.length === 0 && sugs.length > 0) {
-        html += '<div style="padding:2px 0 2px 50px;font-size:10px;color:var(--text-tertiary);font-style:italic">Kein Push in dieser Stunde</div>';
-      }
-    }
-
-    if (!hasSuggestions) {
-      html += '<div style="padding:8px 0;font-size:11px;color:var(--text-tertiary)">Keine Systemempfehlungen gespeichert (Tracking ab 24.03.2026)</div>';
-    }
-    html += '</div></div>';
-  }
-  document.getElementById('tpRetroDays').innerHTML = html;
-}
-
-function toggleRetroDay(dateIso) {
-  const body = document.getElementById('retroBody-' + dateIso);
-  const card = document.getElementById('retroDay-' + dateIso);
-  if (!body) return;
-  body.classList.toggle('open');
-  const toggle = card.querySelector('.day-toggle');
-  if (toggle) toggle.style.transform = body.classList.contains('open') ? 'rotate(180deg)' : '';
+function renderPsSlot(s) {
+  const stars = '★'.repeat(s.stars || 0) + '☆'.repeat(Math.max(0, 3 - (s.stars || 0)));
+  const status = s.status || 'normal';
+  const klass = 'ps-slot status-' + status + (s.is_now ? ' is-now' : '');
+  const orTxt = s.avg_or != null ? s.avg_or.toFixed(1) + '%' : '–';
+  const badges = [];
+  if (s.is_mandatory) badges.push('⭐');
+  if (s.is_avoid) badges.push('🚫');
+  if (s.is_now) badges.push('●');
+  const pushedHtml = (s.pushed_in_slot || []).length
+    ? '<div class="ps-pushed">' + s.pushed_in_slot.map(p => '<div class="ps-pushed-item" title="' + escapeHtml(p.title || '') + '">' + escapeHtml((p.title || p.cat || '').slice(0, 38)) + (p.or_val ? ' · ' + p.or_val.toFixed(1) + '%' : '') + '</div>').join('') + '</div>'
+    : '';
+  const countTxt = s.count ? ('n=' + s.count) : '';
+  return '<div class="' + klass + '">'
+    + '<div class="ps-slot-head"><div class="ps-slot-hour">' + s.hour + ':00</div><div class="ps-slot-badges">' + badges.join(' ') + '</div></div>'
+    + '<div class="ps-slot-stars">' + stars + '</div>'
+    + '<div class="ps-slot-or">' + orTxt + '</div>'
+    + (s.top_cat ? '<div class="ps-slot-cat">' + escapeHtml(s.top_cat) + '</div>' : '')
+    + (countTxt ? '<div class="ps-slot-count">' + countTxt + '</div>' : '')
+    + pushedHtml
+    + '</div>';
 }
 
 // ── Init ──

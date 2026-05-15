@@ -221,5 +221,5 @@ def _gbrt_build_history_stats(pushes, target_ts=0):
     }
 
 
-# Public alias (tagesplan/builder.py importiert ohne Unterstrich)
+# Public alias (Konsumenten importieren ohne Unterstrich)
 gbrt_build_history_stats = _gbrt_build_history_stats

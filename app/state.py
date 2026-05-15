@@ -89,16 +89,6 @@ _residual_corrector_lock = threading.Lock()
 _push_sync_cache: dict = {"messages": [], "ts": 0, "channels": []}
 _push_sync_lock = threading.Lock()
 
-# ── Tagesplan Cache ───────────────────────────────────────────────────────
-def _TP_CACHE_EMPTY() -> dict:
-    return {"result": None, "hour": -1, "ts": 0, "building": False, "model_id": None}
-
-_tagesplan_cache: dict = {
-    "redaktion": _TP_CACHE_EMPTY(),
-    "sport": _TP_CACHE_EMPTY(),
-}
-_tagesplan_cache_lock = threading.Lock()
-
 # ── Research State ────────────────────────────────────────────────────────
 _research_state: dict = {
     "last_fetch": 0,

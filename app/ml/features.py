@@ -942,5 +942,5 @@ def _gbrt_extract_features(push, history_stats, state=None, fast_mode=False):
     return feat
 
 
-# Public aliases (tagesplan/builder.py importiert ohne Unterstrich)
+# Public aliases (Konsumenten importieren ohne Unterstrich)
 gbrt_extract_features = _gbrt_extract_features

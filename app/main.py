@@ -12,7 +12,7 @@ Startup-Sequenz (uebernommen aus dem frueheren Monolithen):
 7. Health-Checker starten
 8. Embedding-Modell im Hintergrund laden
 9. LLM-Backfill-Thread starten
-10. Tagesplan + Feed-Cache vorberechnen
+10. Push-Schedule + Feed-Cache vorberechnen
 11. Adobe Analytics Traffic-Worker starten (wenn konfiguriert)
 12. Push-Auto-Fetch-Worker starten
 13. Push-Sync-Worker starten (wenn RENDER_SYNC_URL gesetzt)
@@ -55,8 +55,8 @@ from app.routers import (
     misc,
     ml,
     push,
+    push_schedule,
     score_capture,
-    tagesplan,
 )
 
 log = logging.getLogger("push-balancer")
@@ -444,7 +444,6 @@ def _start_background_workers() -> None:
     )
     from app.ml.gbrt import gbrt_train, gbrt_online_update, gbrt_check_drift
     from app.ml.lightgbm_model import ml_train_model, unified_train, train_stacking_model
-    from app.tagesplan.builder import build_tagesplan
 
     # 5. Feed-Cache Worker — läuft immer (günstig: nur RSS-HTTP-Fetches, kein ML)
     if True:
@@ -553,11 +552,6 @@ def _start_background_workers() -> None:
                             monitoring_tick()
                         except Exception as e:
                             log.warning("[Monitoring] Tick-Fehler: %s", e)
-                    if counter % 15 == 0:
-                        try:
-                            build_tagesplan(background=True)
-                        except Exception as e:
-                            log.debug("[Tagesplan] Background-Refresh: %s", e)
                 except Exception as e:
                     import traceback
                     log.warning("[Research] Periodic-Task-Fehler: %s\n%s", e, traceback.format_exc())
@@ -636,11 +630,6 @@ def _start_background_workers() -> None:
         from app.routers.feed import _fetch_url
         from app.config import COMPETITOR_FEEDS, INTERNATIONAL_FEEDS
         time.sleep(5)
-        try:
-            build_tagesplan(background=True)
-            log.info("[Preload] Tagesplan vorberechnet")
-        except Exception as e:
-            log.warning("[Preload] Tagesplan-Fehler: %s", e)
         if BACKGROUND_AUTOMATIONS_ENABLED:
             try:
                 for url in list(COMPETITOR_FEEDS.values()) + list(INTERNATIONAL_FEEDS.values()):
@@ -650,7 +639,7 @@ def _start_background_workers() -> None:
                 log.warning("[Preload] Feed-Cache-Fehler: %s", e)
 
     threading.Thread(target=_preload_caches, daemon=True).start()
-    log.info("[Preload] Tagesplan-Vorberechnung gestartet")
+    log.info("[Preload] Feed-Cache-Vorberechnung gestartet")
 
     # 11. Adobe Analytics Traffic Worker
     from app.routers.misc import _adobe_state
@@ -779,23 +768,7 @@ def _start_background_workers() -> None:
     elif RENDER_SYNC_URL:
         log.info("[Sync] Deaktiviert, da BACKGROUND_AUTOMATIONS_ENABLED=false")
 
-    # 14. Auto-Suggestion Worker
-    if BACKGROUND_AUTOMATIONS_ENABLED:
-        def _auto_sug_worker():
-            time.sleep(30)
-            log.info("[AutoSug] Worker gestartet (prüft alle 10 Min)")
-            while True:
-                try:
-                    from app.tagesplan.builder import _auto_save_suggestions
-                    _auto_save_suggestions()
-                except Exception as e:
-                    log.warning("[AutoSug] Worker-Fehler: %s", e)
-                time.sleep(600)
-
-        threading.Thread(target=_auto_sug_worker, daemon=True).start()
-        log.info("[AutoSug] Worker gestartet (stündlich)")
-    else:
-        log.info("[AutoSug] Deaktiviert, Vorschläge werden bei Bedarf erzeugt")
+    # 14. Auto-Suggestion Worker — entfallen (Tagesplan-Suggestions abgeschafft)
 
     # 15. Memory-Cleanup Worker (alle 2 Minuten)
     if BACKGROUND_AUTOMATIONS_ENABLED:
@@ -817,26 +790,12 @@ def _start_background_workers() -> None:
     else:
         log.info("[MemCleanup] Deaktiviert, da keine Autoloops laufen")
 
-    # ── Tagesplan-Refresh (läuft immer, unabhängig von BACKGROUND_AUTOMATIONS) ──
-    def _tagesplan_refresh_worker() -> None:
-        time.sleep(30)  # Erst nach Preload starten
-        while True:
-            try:
-                build_tagesplan(background=True)
-                build_tagesplan(background=True, mode="sport")
-            except Exception as exc:
-                log.warning("[Tagesplan] Refresh-Fehler: %s", exc)
-            time.sleep(270)  # Alle 4,5 Min. → Cache-TTL 300s nie ablaufen lassen
-
-    threading.Thread(target=_tagesplan_refresh_worker, daemon=True).start()
-    log.info("[Tagesplan] Refresh-Worker gestartet (alle 270s)")
-
     # ── Push-Alarm Worker ──────────────────────────────────────────────────
     def _push_alarm_worker() -> None:
         from app.push_alarm.logic import check_push_alarm
         from app.routers.alarm import update_alarm_state
         from app.routers.feed import _fetch_url, _extract_sitemap_articles
-        from app.tagesplan.builder import _tagesplan_cache
+        from app.push_schedule.weekly_baseline import baseline_for, PDF_KPI
         from app.config import BILD_SITEMAP, PUSH_DB_PATH
         import datetime
 
@@ -866,8 +825,22 @@ def _start_background_workers() -> None:
                 except Exception:
                     pass
 
-                # Tagesplan-State für Golden-Hour-Erkennung
-                tp_state = (_tagesplan_cache.get("redaktion") or {}).get("result")
+                # Tagesplan-State aus PDF-Wochenmatrix (Golden-Hour = stars==3)
+                _wd = datetime.datetime.now().weekday()
+                _now_h = datetime.datetime.now().hour
+                _now_cell = baseline_for(_now_h, _wd) or {}
+                _golden_h = next(
+                    (h for h in range(_now_h, 24)
+                     if (baseline_for(h, _wd) or {}).get("stars") == 3),
+                    None,
+                )
+                tp_state = {
+                    "golden_hour": _golden_h,
+                    "slots": [
+                        {"hour": h, "expected_or": (baseline_for(h, _wd) or {}).get("avg_or")}
+                        for h in range(6, 24)
+                    ],
+                }
 
                 recommendation = check_push_alarm(articles, PUSH_DB_PATH, tp_state)
                 update_alarm_state(recommendation)
@@ -1006,7 +979,7 @@ app.include_router(alarm.router, tags=["PushAlarm"])
 app.include_router(score_capture.router, tags=["ScoreCapture"])
 app.include_router(health.router, tags=["Health"])
 app.include_router(forschung.router, tags=["Forschung"])
-app.include_router(tagesplan.router, tags=["Tagesplan"])
+app.include_router(push_schedule.router, tags=["PushSchedule"])
 app.include_router(ml.router, tags=["ML"])
 app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])

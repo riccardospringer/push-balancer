@@ -23,7 +23,6 @@ from app.config import (
     PAID_EXTERNAL_APIS_ENABLED,
     PUSH_LIVE_FETCH_ENABLED,
     RESEARCH_EXTERNAL_CONTEXT_ENABLED,
-    TAGESPLAN_ON_DEMAND_BUILD_ENABLED,
 )
 from app.research.worker import _health_state, _research_state
 
@@ -88,7 +87,6 @@ def get_health() -> JSONResponse:
         "researchExternalContextEnabled": RESEARCH_EXTERNAL_CONTEXT_ENABLED,
         "liveFeedFallbackEnabled": LIVE_FEED_FALLBACK_ENABLED,
         "articlePredictionEnrichmentEnabled": ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
-        "tagesplanOnDemandBuildEnabled": TAGESPLAN_ON_DEMAND_BUILD_ENABLED,
     }
     return JSONResponse(content={
         "status": status,
