@@ -3683,6 +3683,102 @@ function calculatePushScore(article) {
 }
 
 // ── Scoring Algorithm (Upday-Modell) ──
+// ── Titelstruktur-Analyse ──────────────────────────────────────────────────
+// Analysiert den Satz als Ganzes statt einzelne Wörter zu zählen.
+// Liefert: titleType, structureMultiplier, entities[], actionVerb
+function _analyzeTitleStructure(title) {
+  const t = title.trim();
+  const tu = t.toUpperCase();
+  const words = t.split(/\s+/);
+
+  // 1. Benannte Entitäten: aufeinanderfolgende großgeschriebene Wörter (>3 Zeichen)
+  const entities = [];
+  let eBuffer = [];
+  for (const w of words) {
+    const clean = w.replace(/[^A-Za-zÄÖÜäöüß]/g, '');
+    if (clean.length > 3 && clean[0] === clean[0].toUpperCase() && clean[0] !== clean[0].toLowerCase()) {
+      eBuffer.push(clean);
+    } else {
+      if (eBuffer.length) { entities.push(eBuffer.join(' ')); eBuffer = []; }
+    }
+  }
+  if (eBuffer.length) entities.push(eBuffer.join(' '));
+
+  // 2. Aktionsverb: bestimmt WAS passiert (wichtiger als einzelne Keywords)
+  const verbMap = {
+    // Tod / Krankheit — höchste Dringlichkeit
+    tod:     ['GESTORBEN','STIRBT','STARB','VERSTORBEN','TOT AUFGEFUNDEN','ERMORDET','GETÖTET'],
+    unfall:  ['VERUNGLÜCKT','ABGESTÜRZT','KOLLABIERT','ZUSAMMENGEBROCHEN','NOTARZT','INTENSIVSTATION'],
+    // Politische Ereignisse
+    ruecktritt: ['TRITT ZURÜCK','ZURÜCKGETRETEN','RÜCKTRITT','ENTLASSEN','GEFEUERT','BEURLAUBT','ABGESETZT','ABDANKT'],
+    wahl:    ['GEWÄHLT','VERLIERT WAHL','GEWINNT WAHL','KANDIDIERT','SCHEITERT'],
+    anschlag:['ANSCHLAG','EXPLOSION','ATTENTAT','SCHÜSSE','GEISELNAHME','AMOKLAUF','TERRORANGRIFF'],
+    // Sport — konkretes Ergebnis vs. Ankündigung
+    sportErgebnis: ['SCHLÄGT','BESIEGT','VERLIERT GEGEN','GEWINNT','SIEGT','SCHEITERT IM','REMIS','UNENTSCHIEDEN','ABSTIEG','AUFSTIEG','MEISTER','POKALSIEGER'],
+    sportNews: ['VERLETZT','WECHSELT ZU','VERLÄSST','VERPFLICHTET','SPERRT','GESPERRT'],
+    // Wirtschaft
+    wirtschaft: ['INSOLVENZ','PLEITE','ENTLÄSST','STELLT EIN','STEIGT UM','FÄLLT UM','REKORD'],
+    // Justiz
+    justiz: ['VERURTEILT','VERHAFTET','FESTGENOMMEN','FREIGESPROCHEN','ANGEKLAGT','RAZZIA','ERMITTLUNGEN GEGEN'],
+  };
+
+  let actionVerb = null;
+  let verbCategory = null;
+  for (const [cat, verbs] of Object.entries(verbMap)) {
+    for (const v of verbs) {
+      if (tu.includes(v)) { actionVerb = v; verbCategory = cat; break; }
+    }
+    if (actionVerb) break;
+  }
+
+  // 3. Titeltyp aus Satzstruktur ableiten
+  let titleType = 'neutral';
+  let structureMultiplier = 1.0;
+
+  // Retrospektive / Analyse — erkennt rückblickende Titel
+  const isRetro = /\b(DAMALS|RÜCKBLICK|JAHRESTAG|VOR \d+ JAHR|FRÜHER|FRÜHERE|HISTORISCH|ERINNERT|SO WAR|DOCH WIRKLICH|EINST)\b/i.test(t);
+  // Spekulation — "könnte", "soll", "plant", "denkt an"
+  const isSpeculative = /\b(KÖNNTE|SOLLTE|PLANT|ÜBERLEGT|DENKT AN|WILL ANGEBLICH|SOLL ANGEBLICH|VIELLEICHT|MÖGLICHERWEISE|DENKBAR|WÄRE MÖGLICH)\b/i.test(t);
+  // Analyse / Erklärung — "so funktioniert", "deshalb", "darum", "das steckt dahinter"
+  const isAnalysis = /^(SO |DARUM |DESHALB |DESWEGEN |DAS IST |WAS STECKT|WARUM |WIE FUNKTIONIERT|HINTERGRUND|ERKLÄRT|ERKLÄRT:)/i.test(t);
+  // Definitiv-Aussage: [ENTITY] + Aktionsverb (stärkste Form)
+  const isDefinitive = actionVerb !== null && entities.length >= 1;
+  // Frage
+  const isQuestion = t.includes('?');
+  // Breaking-Struktur: Doppelpunkt früh + konkretes Wort danach
+  const isBreakingStructure = /^[A-ZÄÖÜ]{2,}:/.test(t) || t.startsWith('+++');
+  // Liste / Aufzählung: "X Dinge", "Top 10", "Die besten..."
+  const isList = /^(TOP|DIE BESTEN|DIE SCHLECHTESTEN|\d+ DINGE|\d+ GRÜNDE|SO VIEL|DAS SIND DIE)/i.test(t);
+
+  if (isBreakingStructure && isDefinitive) {
+    titleType = 'breaking'; structureMultiplier = 1.3;
+  } else if (isDefinitive && !isSpeculative) {
+    titleType = 'definitive'; structureMultiplier = 1.15;
+  } else if (isRetro) {
+    titleType = 'retrospective'; structureMultiplier = 0.35;
+  } else if (isAnalysis) {
+    titleType = 'analysis'; structureMultiplier = 0.55;
+  } else if (isSpeculative) {
+    titleType = 'speculative'; structureMultiplier = 0.65;
+  } else if (isList) {
+    titleType = 'list'; structureMultiplier = 0.7;
+  } else if (isQuestion) {
+    titleType = 'question'; structureMultiplier = 0.8;
+  }
+
+  // Verbkategorie beeinflusst den Multiplier zusätzlich
+  if (verbCategory) {
+    const verbBoost = {
+      tod: 0.25, anschlag: 0.2, ruecktritt: 0.15, unfall: 0.15,
+      justiz: 0.1, sportErgebnis: 0.05, wirtschaft: 0.05,
+      wahl: 0.1, sportNews: 0.05,
+    };
+    structureMultiplier = Math.min(1.5, structureMultiplier + (verbBoost[verbCategory] || 0));
+  }
+
+  return { titleType, structureMultiplier, entities, actionVerb, verbCategory, isRetro, isSpeculative, isDefinitive };
+}
+
 // Engagement-Prediction: Wie wahrscheinlich öffnet ein User diesen Push?
 // Kontinuierliche Berechnung für maximale Score-Differenzierung
 function calculateFallbackScore(article) {
@@ -3964,6 +4060,36 @@ function calculateFallbackScore(article) {
     rawTotal = Math.max(5, rawTotal - 35);
     breakdown.tvShowPenalty = true;
   }
+
+  // ── Titelstruktur-Analyse: Satz verstehen statt Wörter zählen ──────────
+  const titleStruct = _analyzeTitleStructure(title);
+  const sm = titleStruct.structureMultiplier;
+
+  // Struktur-Multiplier auf Dringlichkeit + Neugier anwenden
+  // (Aktualität und Timing sind zeitbasiert, kein struktureller Einfluss)
+  const dringAdjusted = breakdown.dringlichkeit * sm;
+  const neugierAdjusted = breakdown.neugier * Math.min(1.2, sm); // Neugier etwas gedämpfter
+  const strukturDelta = (dringAdjusted - breakdown.dringlichkeit) + (neugierAdjusted - breakdown.neugier);
+
+  rawTotal += strukturDelta;
+  breakdown.dringlichkeit = Math.min(25, Math.round(dringAdjusted * 10) / 10);
+  breakdown.neugier = Math.min(25, Math.round(neugierAdjusted * 10) / 10);
+  breakdown.titleType = titleStruct.titleType;
+  breakdown.structureMultiplier = Math.round(sm * 100) / 100;
+
+  // Direkter Verb-Bonus: hat der Satz ein echtes Aktionsverb?
+  if (titleStruct.actionVerb && titleStruct.entities.length >= 1) {
+    const verbCatBonus = { tod: 8, anschlag: 7, ruecktritt: 6, unfall: 5, justiz: 4, sportErgebnis: 3, wirtschaft: 3, wahl: 4, sportNews: 2 };
+    const vBonus = verbCatBonus[titleStruct.verbCategory] || 2;
+    rawTotal += vBonus;
+    breakdown.verbBonus = vBonus;
+    breakdown.actionVerb = titleStruct.actionVerb;
+  }
+
+  // Retrospektiv-Strafe: "Damals/Rückblick" Artikel sollen niedrig bleiben
+  if (titleStruct.isRetro) rawTotal = Math.min(rawTotal, 35);
+  // Spekulativ: Cap bei 65 (kann immer noch wichtig sein)
+  if (titleStruct.isSpeculative && rawTotal > 65) rawTotal = 65;
 
   const total = Math.min(100, Math.round(rawTotal * 10) / 10);
   return { total, breakdown };
