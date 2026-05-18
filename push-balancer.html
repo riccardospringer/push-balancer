@@ -3765,28 +3765,43 @@ function calculateFallbackScore(article) {
   breakdown.relevanz = Math.min(30, Math.round((relBase + promiBoost + lenBonus) * 10) / 10);
 
   // 2. DRINGLICHKEIT (max 25) — Muss man das JETZT wissen?
-  // Word-Boundary-Check: vermeidet False Positives (SOFORT in "Sofort-Hilfe", ALARM in "Fehlalarm")
+
+  // Wortgrenze-Check: verhindert "ALARM" in "Fehlalarm", "TOTE" in "Tote Hosen"
   function _wordMatch(text, word) {
-    const re = new RegExp('(?:^|[\\s!?.,;:+|\\-])' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[\\s!?.,;:+|\\-])', 'i');
+    const re = new RegExp('(?:^|[\\s!?.,;:+|\\-\u201e\u201c()])' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[\\s!?.,;:+|\\-\u201e\u201c()])', 'i');
     return re.test(text);
   }
+
+  // Kontext-Check: Faktor 0.0–1.0 je nach Negation/Abschwächung vor dem Keyword
+  function _contextFactor(text, keyword) {
+    const kIdx = text.toUpperCase().indexOf(keyword.toUpperCase());
+    if (kIdx < 0) return 1.0;
+    const before = text.substring(Math.max(0, kIdx - 50), kIdx).toUpperCase();
+    const negations = ['KEIN ','KEINE ','KEINEN ','NICHT ','KEINERLEI ','OHNE ',
+                       'NUR EIN ','NUR EINE ','FAST ','BEINAHE ','VERMEINTLICH','ANGEBLICH','SOLL ','SOLLEN '];
+    for (const n of negations) { if (before.includes(n)) return 0.15; }
+    if (/VOR \d+ JAHR|DAMALS|HISTORISCH|FR\u00FCHRER|EINST |IM ZWEITEN/.test(before)) return 0.2;
+    const after = text.substring(kIdx, Math.min(text.length, kIdx + 40)).toUpperCase();
+    if (after.includes('?')) return 0.6;
+    return 1.0;
+  }
+
   const urgentWords = ['EILMELDUNG','BREAKING','GERADE EBEN','SOEBEN','JETZT LIVE','LIVE-TICKER','DRINGEND'];
   const crisisWords = ['GESTORBEN','ANSCHLAG','TERROR','EXPLOSION','ERDBEBEN','ABSTURZ','KATASTROPHE','NOTFALL','EVAKUIERUNG','AMOKLAUF','TOTE','OPFER'];
-  const warnWords = ['WARNUNG','RÜCKRUF','UNWETTER','STURM','HOCHWASSER'];
+  const warnWords = ['WARNUNG','R\u00DCCKRUF','UNWETTER','STURM','HOCHWASSER'];
   let urgScore = 0;
   let breakingSignals = 0;
   for (const w of urgentWords) { if (_wordMatch(fullText, w)) { urgScore += 7; breakingSignals += 7; } }
   for (const w of crisisWords) {
     if (_wordMatch(fullText, w)) {
-      urgScore += relevanzWords.has(w) ? 2.5 : 5;
+      urgScore += (relevanzWords.has(w) ? 2.5 : 5) * _contextFactor(fullText, w);
     }
   }
-  for (const w of warnWords) { if (_wordMatch(fullText, w)) urgScore += 3; }
+  for (const w of warnWords) { if (_wordMatch(fullText, w)) urgScore += 3 * _contextFactor(fullText, w); }
   breakdown.dringlichkeit = Math.min(25, Math.round(urgScore * 10) / 10);
-  // Breaking: Echte Breaking-Signale = voller Bonus, Crisis-Keywords = kleiner Bonus
   let breakingScore = breakingSignals * 2;
   if (breakingSignals === 0 && urgScore > 0) {
-    breakingScore = Math.min(urgScore * 0.8, 6); // Crisis/Warn ohne echtes Breaking: max 6
+    breakingScore = Math.min(urgScore * 0.8, 6);
   }
   breakdown.breaking = Math.min(15, Math.round(breakingScore));
 
@@ -3797,20 +3812,27 @@ function calculateFallbackScore(article) {
     soft: ['RAZZIA','VERHAFTET','FESTGENOMMEN','VERDACHT','BETRUG','LÜGE','ERMITTLUNGEN','ANKLAGE','PROZESS','URTEIL','STREIT','VORWÜRFE']
   };
   let neugierScore = 0;
-  for (const w of neugierTiers.strong) { if (fullText.includes(w)) neugierScore += 6; }
-  for (const w of neugierTiers.mid) { if (fullText.includes(w)) neugierScore += 4; }
-  for (const w of neugierTiers.soft) { if (fullText.includes(w)) neugierScore += 2.5; }
-  // Frage im Titel: Neugier-Trigger, kategorie-abhängig (Diss. IV)
+  // Wortgrenzen + Kontextfaktor für alle Neugier-Wörter
+  for (const w of neugierTiers.strong) {
+    if (_wordMatch(fullText, w)) neugierScore += 6 * _contextFactor(fullText, w);
+  }
+  for (const w of neugierTiers.mid) {
+    if (_wordMatch(fullText, w)) neugierScore += 4 * _contextFactor(fullText, w);
+  }
+  for (const w of neugierTiers.soft) {
+    if (_wordMatch(fullText, w)) neugierScore += 2.5 * _contextFactor(fullText, w);
+  }
+  // Kombinationssignal: starkes Wort + konkreter Name = glaubwürdiger
+  const _entityList = ['TRUMP','PUTIN','MERZ','SCHOLZ','MUSK','BIDEN','HABECK','WEIDEL','BAERBOCK','LAUTERBACH'];
+  if (neugierScore >= 5 && _entityList.some(e => fullText.includes(e))) neugierScore += 2;
+  // Frage im Titel: Neugier-Trigger, kategorie-abhängig
   if (title.includes('?')) {
     const _qBonus = {politik:6, panorama:5, unterhaltung:5, geld:4, lifestyle:4, digital:3, ratgeber:3, regional:3, sport:4, fussball:4, bundesliga:4, eilmeldung:0, breaking:0};
     neugierScore += (_qBonus[(category||'').toLowerCase()] != null ? _qBonus[(category||'').toLowerCase()] : 3);
   }
-  // Zahlen erhöhen Klickrate leicht
-  if (/\d{2,}/.test(title)) neugierScore += 2;  // größere Zahlen
+  if (/\d{2,}/.test(title)) neugierScore += 2;
   else if (/\d+/.test(title)) neugierScore += 1;
-  // Ausführungszeichen = Zitat = Neugier
   if (title.includes('"') || title.includes('\u201E') || title.includes('\u201C')) neugierScore += 2;
-  // Doppelpunkt oder Gedankenstrich = Cliffhanger-Struktur
   if (/[:\u2013\u2014]/.test(title) && title.length > 30) neugierScore += 1.5;
   breakdown.neugier = Math.min(25, Math.round(neugierScore * 10) / 10);
 
