@@ -33,6 +33,7 @@ from app.config import (
     PUSH_TEAMS_MIN_SCORE,
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
+    PUSH_TEAMS_SCORE_ONLY_MODE,
     PUSH_TEAMS_WEBHOOK_URL,
 )
 from app.database import (
@@ -59,6 +60,7 @@ class TeamsAlertConfig:
     enabled: bool = PUSH_TEAMS_ALERTS_ENABLED
     webhook_url: str = PUSH_TEAMS_WEBHOOK_URL
     min_score: float = PUSH_TEAMS_MIN_SCORE
+    score_only_mode: bool = PUSH_TEAMS_SCORE_ONLY_MODE
     min_or: float = PUSH_TEAMS_MIN_OR
     min_minutes_since_last_push: int = PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -168,7 +170,7 @@ def should_notify_teams(
         blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
 
     allowed = {item.lower() for item in config.allowed_sections if item.strip()}
-    if allowed and section.lower() not in allowed:
+    if not config.score_only_mode and allowed and section.lower() not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
 
     if score >= min_score:
@@ -176,36 +178,47 @@ def should_notify_teams(
     else:
         blockers.append(f"Score zu niedrig: {score:.1f} < {min_score:.1f}")
 
-    if predicted_or is None:
-        blockers.append("Prognose fehlt")
-    elif predicted_or >= min_or:
-        positive.append(f"Prognose {predicted_or:.2f}% OR liegt ueber Mindestwert {min_or:.2f}%")
+    if config.score_only_mode:
+        positive.append("Score-Modus aktiv: Score ueber Schwelle reicht fuer Teams-Hinweis")
+        if predicted_or is not None:
+            positive.append(f"Prognose als Kontext: {predicted_or:.2f}% OR")
+        if minutes_since_last_push is not None:
+            positive.append(f"Letzter Push vor {minutes_since_last_push:.0f} Minuten")
     else:
-        blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
+        if predicted_or is None:
+            blockers.append("Prognose fehlt")
+        elif predicted_or >= min_or:
+            positive.append(f"Prognose {predicted_or:.2f}% OR liegt ueber Mindestwert {min_or:.2f}%")
+        else:
+            blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
 
-    if minutes_since_last_push is None:
-        blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
-        status = "observe"
-    elif minutes_since_last_push >= min_pause:
-        positive.append(
-            f"Letzter Push vor {minutes_since_last_push:.0f} Minuten, Mindestpause erfuellt"
-        )
-    else:
-        blockers.append(
-            f"Pause seit letztem Push zu kurz: {minutes_since_last_push:.0f} < {min_pause} Minuten"
-        )
-        status = "observe"
+        if minutes_since_last_push is None:
+            blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
+            status = "observe"
+        elif minutes_since_last_push >= min_pause:
+            positive.append(
+                f"Letzter Push vor {minutes_since_last_push:.0f} Minuten, Mindestpause erfuellt"
+            )
+        else:
+            blockers.append(
+                f"Pause seit letztem Push zu kurz: {minutes_since_last_push:.0f} < {min_pause} Minuten"
+            )
+            status = "observe"
 
     freshness_hours = _freshness_hours(candidate, now_ts)
     if freshness_hours is not None:
         if freshness_hours <= config.max_article_age_hours:
             positive.append(f"Aktuell: Artikel vor {freshness_hours:.1f} Stunden veroeffentlicht")
-        else:
+        elif not config.score_only_mode:
             blockers.append(
                 f"Artikel nicht frisch genug: {freshness_hours:.1f}h > {config.max_article_age_hours}h"
             )
 
-    if int(context.get("recentPushCount6h") or 0) > config.max_pushes_last_6h and not breaking:
+    if (
+        not config.score_only_mode
+        and int(context.get("recentPushCount6h") or 0) > config.max_pushes_last_6h
+        and not breaking
+    ):
         blockers.append("Push-Dichte in den letzten 6 Stunden zu hoch")
 
     duplicate_reason = _already_pushed_reason(candidate, context.get("history") or [])
@@ -263,6 +276,7 @@ def should_notify_teams(
         "lastTeamsAlertAt": _iso_from_ts(_safe_int(alert_state.get("last_alert_ts"))) if alert_state else None,
         "alertCount": int(alert_state.get("alert_count") or 0) if alert_state else 0,
         "isBreaking": breaking,
+        "scoreOnlyMode": config.score_only_mode,
         "section": section,
         "evaluatedAt": _iso_from_ts(now_ts),
     }
@@ -372,31 +386,50 @@ def build_teams_push_recommendation(
     predicted_or = normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
     now_ts = int(context.get("nowTs") or time.time())
     minutes = decision.get("minutesSinceLastPush")
+    score_only_mode = bool(decision.get("scoreOnlyMode") or config.score_only_mode)
+    score_threshold = float(decision.get("minScore", config.min_score) or config.min_score)
     push_text = str(candidate.get("recommendedText") or title)
     competition = (decision.get("competition") or {}).get("summary") or "Kein staerkerer Kandidat aktuell verfuegbar"
 
     bullets = _dedupe(
         [
             f"Push Score: {score:.1f} und damit ueber Schwelle {decision.get('minScore', config.min_score):.1f}",
-            f"Prognose: {_format_or(predicted_or)}, aktuell guter Zeitpunkt",
+            (
+                f"Prognose: {_format_or(predicted_or)}, aktuell guter Zeitpunkt"
+                if not score_only_mode
+                else f"Score-Modus aktiv: Teams-Hinweis wird ab Score {score_threshold:.1f} ausgeloest"
+            ),
             (
                 f"Letzter Push vor {float(minutes):.0f} Minuten, Mindestpause erfuellt"
                 if isinstance(minutes, (int, float))
-                else "Keine aktuelle Push-Pause blockiert die Empfehlung"
+                else (
+                    "Pause seit letztem Push blockiert im Score-Modus nicht"
+                    if score_only_mode
+                    else "Keine aktuelle Push-Pause blockiert die Empfehlung"
+                )
             ),
             *list(decision.get("reasons") or [])[:4],
         ]
     )[:6]
 
-    why_now = [
-        f"Prognose liegt bei {_format_or(predicted_or)} und damit ueber dem Mindestwert.",
-        (
-            f"Seit dem letzten Push sind {float(minutes):.0f} Minuten vergangen; die Mindestpause ist erfuellt."
-            if isinstance(minutes, (int, float))
-            else "In der geladenen Historie blockiert kein letzter Push die Empfehlung."
-        ),
-        "Der Kandidat ist aktuell der staerkste pushwuerdige Artikel im Feld.",
-    ]
+    if score_only_mode:
+        why_now = [
+            f"Der Push Score liegt bei {score:.1f} und damit ueber der Teams-Schwelle.",
+            f"Der aktuelle Teams-Modus ist score-basiert: ab {score_threshold:.1f} wird ein Hinweis ausgeloest.",
+            "Anti-Spam-Regeln verhindern Wiederholungen fuer denselben Artikel.",
+        ]
+        if predicted_or is not None:
+            why_now.append(f"Prognose als Kontext: {_format_or(predicted_or)}.")
+    else:
+        why_now = [
+            f"Prognose liegt bei {_format_or(predicted_or)} und damit ueber dem Mindestwert.",
+            (
+                f"Seit dem letzten Push sind {float(minutes):.0f} Minuten vergangen; die Mindestpause ist erfuellt."
+                if isinstance(minutes, (int, float))
+                else "In der geladenen Historie blockiert kein letzter Push die Empfehlung."
+            ),
+            "Der Kandidat ist aktuell der staerkste pushwuerdige Artikel im Feld.",
+        ]
     why_pushworthy = [*bullets, f"Konkurrenzlage: {competition}"]
 
     text_lines = [

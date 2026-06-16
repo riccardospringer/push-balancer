@@ -346,6 +346,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `70` | Minimum push score for a standard Teams recommendation |
+| `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, `score >= PUSH_TEAMS_MIN_SCORE` is enough to trigger a Teams alert; forecast, pause, section, freshness, and push density become context only |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |

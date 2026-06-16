@@ -27,6 +27,7 @@ def _config(**overrides):
         "enabled": True,
         "webhook_url": "https://teams.example.test/webhook",
         "min_score": 70.0,
+        "score_only_mode": False,
         "min_or": 5.0,
         "min_minutes_since_last_push": 30,
         "realert_score_delta": 8.0,
@@ -138,6 +139,33 @@ def test_bad_forecast_does_not_trigger_teams_decision():
 
     assert decision["shouldNotify"] is False
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
+
+
+def test_score_only_mode_triggers_for_score_above_threshold_without_forecast_or_push_time():
+    candidate = _candidate(predictedOR=None)
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(score_only_mode=True),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["scoreOnlyMode"] is True
+    assert any("Score-Modus aktiv" in reason for reason in decision["reasons"])
+
+
+def test_score_only_mode_keeps_score_threshold_as_blocker():
+    candidate = _candidate(score=69.9, predictedOR=None)
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(score_only_mode=True),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Score zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
 def test_missing_article_link_does_not_trigger_action_recommendation():
