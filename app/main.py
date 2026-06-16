@@ -40,6 +40,8 @@ from app.config import (
     INTERNAL_ACCESS_ENABLED,
     INTERNAL_ACCESS_EXEMPT_PATHS,
     PORT,
+    PUSH_TEAMS_ALERTS_ENABLED,
+    PUSH_TEAMS_CHECK_INTERVAL_SECONDS,
     SERVE_DIR,
     SNAPSHOT_PATH,
 )
@@ -769,7 +771,29 @@ def _start_background_workers() -> None:
 
     # 14. Auto-Suggestion Worker — entfallen (Tagesplan-Suggestions abgeschafft)
 
-    # 15. Memory-Cleanup Worker (alle 2 Minuten)
+    # 15. Microsoft Teams recommendation alert worker
+    if PUSH_TEAMS_ALERTS_ENABLED:
+        def _teams_alert_worker():
+            from app.notifications.teams import run_teams_alert_cycle
+
+            interval = max(30, int(PUSH_TEAMS_CHECK_INTERVAL_SECONDS or 120))
+            time.sleep(45)
+            log.info("[TeamsAlert] Worker gestartet (alle %ds)", interval)
+            while True:
+                try:
+                    result = run_teams_alert_cycle()
+                    if result.get("sent"):
+                        log.info("[TeamsAlert] Empfehlung an Teams gesendet: %s", result.get("candidateId"))
+                except Exception as e:
+                    log.warning("[TeamsAlert] Worker-Fehler: %s", e)
+                time.sleep(interval)
+
+        threading.Thread(target=_teams_alert_worker, daemon=True, name="teams_alert_worker").start()
+        log.info("[TeamsAlert] Aktiviert")
+    else:
+        log.info("[TeamsAlert] Deaktiviert (PUSH_TEAMS_ALERTS_ENABLED=false)")
+
+    # 16. Memory-Cleanup Worker (alle 2 Minuten)
     if BACKGROUND_AUTOMATIONS_ENABLED:
         def _memory_cleanup_worker():
             time.sleep(60)

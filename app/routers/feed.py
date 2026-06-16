@@ -70,11 +70,20 @@ _ARTICLE_CATEGORY_SCORES: dict[str, float] = {
 }
 _ARTICLE_BREAKING_KEYWORDS = (
     "EIL",
+    "EILMELDUNG",
     "BREAKING",
     "LIVE",
     "EXKLUSIV",
     "SCHOCK",
     "WARNUNG",
+)
+_ARTICLE_BREAKING_RE = re.compile(
+    r"\b(?:eilmeldung|eil|breaking|live|exklusiv|schock|warnung)\b",
+    re.IGNORECASE,
+)
+_ARTICLE_EILMELDUNG_RE = re.compile(
+    r"\b(?:eilmeldung|eil)\b",
+    re.IGNORECASE,
 )
 
 _VIDEO_URL_MARKERS = (
@@ -240,11 +249,18 @@ def _parse_pub_timestamp(pub_date: str) -> float:
         return 0.0
 
 
+def _has_article_breaking_signal(title: str) -> bool:
+    return bool(_ARTICLE_BREAKING_RE.search(title or ""))
+
+
+def _has_article_eilmeldung_signal(title: str) -> bool:
+    return bool(_ARTICLE_EILMELDUNG_RE.search(title or ""))
+
+
 def _build_article_score(category: str, title: str, pub_date: str, article_type: str) -> tuple[float, str]:
     now_ts = time.time()
     pub_ts = _parse_pub_timestamp(pub_date)
     age_hours = max(0.0, (now_ts - pub_ts) / 3600) if pub_ts > 0 else 6.0
-    title_upper = title.upper()
     title_lower = title.lower()
 
     base = {
@@ -272,7 +288,7 @@ def _build_article_score(category: str, title: str, pub_date: str, article_type:
         score -= 8.0
         reasons.append("älter")
 
-    if any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS):
+    if _has_article_breaking_signal(title):
         score += 8.0
         reasons.append("breaking")
 
@@ -309,7 +325,8 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
         category = _infer_article_category(loc, title)
         article_type = _infer_article_type(loc, title)
         score, score_reason = _build_article_score(category, title, pub_date, article_type)
-        title_upper = title.upper()
+        is_breaking = _has_article_breaking_signal(title)
+        is_eilmeldung = _has_article_eilmeldung_signal(title)
 
         articles.append(
             {
@@ -321,8 +338,8 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
                 "score": min(score, 100.0),
                 "scoreReason": score_reason,
                 "predictedOR": None,
-                "isBreaking": any(keyword in title_upper for keyword in _ARTICLE_BREAKING_KEYWORDS),
-                "isEilmeldung": "EIL" in title_upper,
+                "isBreaking": is_breaking,
+                "isEilmeldung": is_eilmeldung,
                 "isSport": category == "sport",
                 "isVideo": article_type == "video",
                 "isPlusArticle": False,
@@ -399,6 +416,13 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
                     article["predictedOR"] = round(float(predicted_or) / 100, 4)
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
+
+    try:
+        from app.notifications.teams import annotate_candidates_with_teams_decisions
+
+        selected = annotate_candidates_with_teams_decisions(selected)
+    except Exception as exc:
+        log.warning("[articles] Teams decision annotation failed: %s", exc)
 
     return {
         "articles": selected,

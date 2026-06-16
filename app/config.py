@@ -34,6 +34,17 @@ def _env_int(name: str, default: int) -> int:
         log.warning("Invalid integer env %s=%r, falling back to %s", name, raw, default)
         return default
 
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(0.0, float(raw.strip()))
+    except ValueError:
+        log.warning("Invalid float env %s=%r, falling back to %s", name, raw, default)
+        return default
+
 # ── .env im Projektverzeichnis laden (identisch zum Monolith) ──────────────
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOCAL_ENV = os.path.join(_APP_DIR, ".env")
@@ -377,3 +388,33 @@ INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
     "INTERNAL_ACCESS_EXEMPT_PATHS",
     "/api/health",
 )
+
+# ── Microsoft Teams Push Recommendation Alerts ─────────────────────────────
+# Disabled by default. Enabling this sends selected article metadata to the
+# configured Teams/Power Automate endpoint and requires editorial/privacy approval.
+PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
+PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
+PUSH_TEAMS_MIN_SCORE: float = _env_float("PUSH_TEAMS_MIN_SCORE", 70.0)
+PUSH_TEAMS_MIN_OR: float = _env_float("PUSH_TEAMS_MIN_OR", 5.0)
+PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH: int = _env_int(
+    "PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH",
+    30,
+)
+PUSH_TEAMS_REALERT_SCORE_DELTA: float = _env_float("PUSH_TEAMS_REALERT_SCORE_DELTA", 8.0)
+PUSH_TEAMS_REALERT_OR_DELTA: float = _env_float("PUSH_TEAMS_REALERT_OR_DELTA", 0.75)
+PUSH_TEAMS_ALERT_COOLDOWN_MINUTES: int = _env_int(
+    "PUSH_TEAMS_ALERT_COOLDOWN_MINUTES",
+    90,
+)
+PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env("PUSH_TEAMS_ALLOWED_SECTIONS", "")
+PUSH_TEAMS_BREAKING_OVERRIDE: bool = _env_flag("PUSH_TEAMS_BREAKING_OVERRIDE", True)
+PUSH_TEAMS_BREAKING_MIN_SCORE: float = _env_float("PUSH_TEAMS_BREAKING_MIN_SCORE", 62.0)
+PUSH_TEAMS_BREAKING_MIN_OR: float = _env_float("PUSH_TEAMS_BREAKING_MIN_OR", 4.0)
+PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH: int = _env_int(
+    "PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH",
+    10,
+)
+PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS: int = _env_int("PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS", 24)
+PUSH_TEAMS_MAX_PUSHES_LAST_6H: int = _env_int("PUSH_TEAMS_MAX_PUSHES_LAST_6H", 8)
+PUSH_TEAMS_CHECK_INTERVAL_SECONDS: int = _env_int("PUSH_TEAMS_CHECK_INTERVAL_SECONDS", 120)
+PUSH_TEAMS_CANDIDATE_LIMIT: int = _env_int("PUSH_TEAMS_CANDIDATE_LIMIT", 80)

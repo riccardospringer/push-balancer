@@ -308,6 +308,18 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 2. **Relay sync** (`POST /api/pushes/sync`): The local Mac server posts fresh push data to the Render instance every cycle, authenticated via `PUSH_SYNC_SECRET`. Set `RENDER_SYNC_URL` on the local server to enable this.
 3. **Optional startup seed**: if you mount a sanitized snapshot file and point `PUSH_SNAPSHOT_PATH` at it, the service seeds SQLite at startup before any live fetch succeeds.
 
+### Microsoft Teams Push Recommendations
+
+`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates the current article candidates and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
+
+For Power Automate, use the trigger body field `messageHtml` as the Teams message content:
+
+```text
+@{triggerBody()?['messageHtml']}
+```
+
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, and `recommendedPushText`.
+
 ### CORS
 
 Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`, `RENDER_EXTERNAL_HOSTNAME`, and the local network IP. The Render hostname `push-balancer.onrender.com` is always included.
@@ -331,6 +343,16 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `RESEARCH_EXTERNAL_CONTEXT_ENABLED` | No | `false` in economy mode | Allows live weather and trend fetches for research analysis; when disabled research uses local defaults |
 | `ARTICLE_PREDICTION_ENRICHMENT_ENABLED` | No | `false` in economy mode | Controls whether `/api/articles` enriches each item with on-the-fly OR predictions |
 | `TAGESPLAN_ON_DEMAND_BUILD_ENABLED` | No | `false` in economy mode | Controls whether `/api/tagesplan` builds a fresh plan on request; when disabled it returns a lightweight loading payload |
+| `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
+| `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
+| `PUSH_TEAMS_MIN_SCORE` | No | `70` | Minimum push score for a standard Teams recommendation |
+| `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
+| `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
+| `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
+| `PUSH_TEAMS_REALERT_SCORE_DELTA` | No | `8` | Required score improvement for a re-alert |
+| `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |
+| `PUSH_TEAMS_ALLOWED_SECTIONS` | No | empty | Comma-separated section allowlist, e.g. `News,Politik,Sport,Regional` |
+| `PUSH_TEAMS_BREAKING_OVERRIDE` | No | `true` | Allows lower configured breaking-news thresholds |
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
 | `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-4o-mini` | Model used for manual title generation when enabled |

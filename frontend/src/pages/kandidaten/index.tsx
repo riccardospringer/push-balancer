@@ -71,6 +71,25 @@ function ScoreBar({ score }: { score: number }) {
   )
 }
 
+function teamsAlertVariant(
+  teamsAlert: Article['teamsAlert'],
+): 'green' | 'amber' | 'default' | 'red' {
+  if (!teamsAlert) return 'default'
+  if (teamsAlert.shouldNotify || teamsAlert.status === 'sent') return 'green'
+  if (teamsAlert.status === 'observe') return 'amber'
+  if (teamsAlert.status === 'failed') return 'red'
+  return 'default'
+}
+
+function teamsAlertLabel(teamsAlert: Article['teamsAlert']): string {
+  if (!teamsAlert) return 'Teams offen'
+  if (teamsAlert.status === 'sent') return 'Teams gesendet'
+  if (teamsAlert.shouldNotify || teamsAlert.status === 'notify') return 'Teams empfohlen'
+  if (teamsAlert.status === 'observe') return 'Teams beobachtet'
+  if (teamsAlert.status === 'failed') return 'Teams Fehler'
+  return 'Teams kein Alert'
+}
+
 function ArticleRow({
   article,
   onPreview,
@@ -95,6 +114,25 @@ function ArticleRow({
         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
           {fmtDateTime(article.pubDate)} · {article.category}
         </div>
+        {article.teamsAlert?.summary && (
+          <div
+            style={{
+              fontSize: '12px',
+              color: article.teamsAlert.shouldNotify
+                ? 'var(--green)'
+                : 'var(--text-secondary)',
+              marginTop: '4px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Teams: {article.teamsAlert.summary}
+            {article.teamsAlert.lastTeamsAlertAt
+              ? ` · zuletzt ${fmtDateTime(article.teamsAlert.lastTeamsAlertAt)}`
+              : ''}
+          </div>
+        )}
       </TableCell>
       <TableCell>
         <ScoreBar score={article.score} />
@@ -116,6 +154,11 @@ function ArticleRow({
       </TableCell>
       <TableCell>
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+          {article.teamsAlert && (
+            <Badge variant={teamsAlertVariant(article.teamsAlert)}>
+              {teamsAlertLabel(article.teamsAlert)}
+            </Badge>
+          )}
           {article.isBreaking && <Badge variant="red">Breaking</Badge>}
           {article.isEilmeldung && <Badge variant="red">Eilmeldung</Badge>}
           {article.isSport && <Badge variant="blue">Sport</Badge>}

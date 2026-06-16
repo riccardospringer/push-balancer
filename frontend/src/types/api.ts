@@ -22,6 +22,23 @@ export interface Article {
   modDate?: string
   score: number
   predictedOR?: number
+  scoreReason?: string
+  recommendedText?: string
+  teamsAlert?: {
+    candidateId: string
+    articleId: string
+    articleUrl: string
+    shouldNotify: boolean
+    status: 'notify' | 'skip' | 'observe' | 'sent' | 'failed' | string
+    summary?: string
+    reasons?: string[]
+    blockingReasons?: string[]
+    minutesSinceLastPush?: number | null
+    lastPushAt?: string | null
+    lastTeamsAlertAt?: string | null
+    alertCount?: number
+    evaluatedAt?: string
+  }
   isBreaking?: boolean
   isEilmeldung?: boolean
   isSport?: boolean

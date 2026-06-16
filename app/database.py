@@ -30,7 +30,6 @@ def calc_frozen_xor(cat: str, hour: int, ts_num: int) -> float:
     Nutzt Kategorie-Durchschnitt + Stunden-Durchschnitt der letzten 90 Tage.
     Wird einmal berechnet und nie mehr verändert — echte Snapshot-Statistik.
     """
-    import datetime
     cutoff = int(time.time()) - 90 * 86400
     cat_lower = (cat or "news").lower().strip()
 
@@ -303,6 +302,27 @@ def init_db() -> None:
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tpsug_date ON tagesplan_suggestions(date_iso)")
 
+    # Teams recommendation alerts. Stores operational anti-spam metadata only.
+    conn.execute("""CREATE TABLE IF NOT EXISTS teams_alerts (
+        article_key TEXT PRIMARY KEY,
+        article_id TEXT DEFAULT '',
+        article_url TEXT DEFAULT '',
+        title_hash TEXT DEFAULT '',
+        first_alert_ts INTEGER DEFAULT 0,
+        last_alert_ts INTEGER DEFAULT 0,
+        last_decision_ts INTEGER NOT NULL,
+        last_score REAL DEFAULT 0,
+        last_predicted_or REAL DEFAULT 0,
+        last_candidate_updated_at INTEGER DEFAULT 0,
+        last_is_breaking INTEGER DEFAULT 0,
+        last_reason TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        alert_count INTEGER DEFAULT 0,
+        last_error TEXT DEFAULT ''
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_last_alert ON teams_alerts(last_alert_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_status ON teams_alerts(status)")
+
     # ML v2: LLM-Score Spalten (idempotent via ALTER TABLE)
     _llm_columns = [
         ("llm_magnitude", "REAL DEFAULT 0"),
@@ -361,6 +381,7 @@ def _db_cleanup() -> None:
     cutoff_predlog = int(time.time()) - 180 * 86400     # Prediction-Log: 180 Tage
     cutoff_embedding = int(time.time()) - 30 * 86400    # Embedding-Cache: 30 Tage
     cutoff_monitoring = int(time.time()) - 14 * 86400   # Monitoring-Events: 14 Tage
+    cutoff_teams_alerts = int(time.time()) - 45 * 86400 # Teams-Alert-Metadaten: 45 Tage
     cutoff_experiments = int(time.time()) - 365 * 86400 # Experimente: 1 Jahr
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
@@ -379,6 +400,9 @@ def _db_cleanup() -> None:
         ).rowcount
         deleted["monitoring_events"] = conn.execute(
             "DELETE FROM monitoring_events WHERE timestamp < ?", (cutoff_monitoring,)
+        ).rowcount
+        deleted["teams_alerts"] = conn.execute(
+            "DELETE FROM teams_alerts WHERE last_decision_ts < ?", (cutoff_teams_alerts,)
         ).rowcount
         deleted["experiments"] = conn.execute(
             "DELETE FROM experiments WHERE timestamp < ? AND promoted = 0",
@@ -810,3 +834,118 @@ def load_tagesplan_suggestions(date_iso: str | None = None, limit: int = 200) ->
             ).fetchall()
         conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Teams Alert State ──────────────────────────────────────────────────────
+
+def teams_alert_get(article_key: str) -> dict | None:
+    """Load anti-spam state for one Teams alert candidate."""
+    if not article_key:
+        return None
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM teams_alerts WHERE article_key = ?",
+            (article_key,),
+        ).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+def teams_alert_load_for_keys(article_keys: list[str]) -> dict[str, dict]:
+    """Load Teams alert state for a candidate batch."""
+    keys = [key for key in article_keys if key]
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT * FROM teams_alerts WHERE article_key IN ({placeholders})",
+            keys,
+        ).fetchall()
+        conn.close()
+    return {str(row["article_key"]): dict(row) for row in rows}
+
+
+def teams_alert_record(
+    *,
+    article_key: str,
+    article_id: str,
+    article_url: str,
+    title_hash: str,
+    score: float,
+    predicted_or: float,
+    candidate_updated_at: int,
+    is_breaking: bool,
+    reason: str,
+    status: str,
+    error: str = "",
+    decision_ts: int | None = None,
+) -> None:
+    """Persist Teams alert send/failure metadata for anti-spam decisions."""
+    if not article_key:
+        return
+    now = int(decision_ts or time.time())
+    sent = status == "sent"
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT * FROM teams_alerts WHERE article_key = ?",
+            (article_key,),
+        ).fetchone()
+
+        first_alert_ts = int(existing["first_alert_ts"] or 0) if existing else 0
+        last_alert_ts = int(existing["last_alert_ts"] or 0) if existing else 0
+        alert_count = int(existing["alert_count"] or 0) if existing else 0
+        if sent:
+            first_alert_ts = first_alert_ts or now
+            last_alert_ts = now
+            alert_count += 1
+
+        conn.execute(
+            """INSERT INTO teams_alerts (
+                article_key, article_id, article_url, title_hash, first_alert_ts,
+                last_alert_ts, last_decision_ts, last_score, last_predicted_or,
+                last_candidate_updated_at, last_is_breaking, last_reason, status,
+                alert_count, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(article_key) DO UPDATE SET
+                article_id = excluded.article_id,
+                article_url = excluded.article_url,
+                title_hash = excluded.title_hash,
+                first_alert_ts = excluded.first_alert_ts,
+                last_alert_ts = excluded.last_alert_ts,
+                last_decision_ts = excluded.last_decision_ts,
+                last_score = excluded.last_score,
+                last_predicted_or = excluded.last_predicted_or,
+                last_candidate_updated_at = excluded.last_candidate_updated_at,
+                last_is_breaking = excluded.last_is_breaking,
+                last_reason = excluded.last_reason,
+                status = excluded.status,
+                alert_count = excluded.alert_count,
+                last_error = excluded.last_error
+            """,
+            (
+                article_key,
+                article_id,
+                article_url,
+                title_hash,
+                first_alert_ts,
+                last_alert_ts,
+                now,
+                float(score or 0.0),
+                float(predicted_or or 0.0),
+                int(candidate_updated_at or 0),
+                1 if is_breaking else 0,
+                reason[:500],
+                status[:32],
+                alert_count,
+                error[:500],
+            ),
+        )
+        conn.commit()
+        conn.close()
