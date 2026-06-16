@@ -31,7 +31,6 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.config import (
     ALLOWED_ORIGINS,
@@ -48,6 +47,7 @@ from app.database import init_db, push_db_count, push_db_upsert
 from app.ml.gbrt import gbrt_load_model
 from app.routers import (
     alarm,
+    consumer,
     feed,
     forschung,
     gbrt,
@@ -395,7 +395,6 @@ def _frontend_html_response(request_path: str) -> Response | None:
 _ALWAYS_PUBLIC_PREFIXES = (
     "/assets/",
     "/api/health",
-    "/api/push-alarm",
     "/favicon",
     "/robots.txt",
 )
@@ -795,7 +794,7 @@ def _start_background_workers() -> None:
         from app.push_alarm.logic import check_push_alarm
         from app.routers.alarm import update_alarm_state
         from app.routers.feed import _fetch_url, _extract_sitemap_articles
-        from app.push_schedule.weekly_baseline import baseline_for, PDF_KPI
+        from app.push_schedule.weekly_baseline import baseline_for
         from app.config import BILD_SITEMAP, PUSH_DB_PATH
         import datetime
 
@@ -984,6 +983,7 @@ app.include_router(ml.router, tags=["ML"])
 app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])
 app.include_router(feed.router, tags=["Feed"])
+app.include_router(consumer.router, tags=["Consumer"])
 app.include_router(misc.router, tags=["Misc"])
 
 

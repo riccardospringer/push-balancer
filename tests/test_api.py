@@ -372,6 +372,97 @@ class TestAdobeTrafficEndpoint:
         assert "Sunset" not in resp.headers
 
 
+class TestConsumerApi:
+    def _stub_article_source(self, monkeypatch):
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/politik/consumer-test</loc>
+    <news:news>
+      <news:title>Eilmeldung: Consumer Test Artikel</news:title>
+      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://www.bild.de/sport/consumer-sport-test</loc>
+    <news:news>
+      <news:title>FC Bayern gewinnt Consumer Test</news:title>
+      <news:publication_date>2026-04-09T09:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr(
+            "app.ml.predict.predict_or",
+            lambda *_args, **_kwargs: {"predicted_or": 6.2},
+        )
+
+    def test_consumer_articles_requires_configured_key(self, monkeypatch):
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")
+
+        resp = client.get("/api/v1/articles")
+
+        assert resp.status_code == 503
+        assert resp.json()["title"] == "Service Unavailable"
+
+    def test_consumer_recommendations_supports_bearer_auth(self, monkeypatch):
+        self._stub_article_source(monkeypatch)
+
+        resp = client.get(
+            "/api/v1/recommendations?limit=5&minScore=0",
+            headers={"Authorization": "Bearer consumer-test-key"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["kind"] == "recommendations"
+        assert data["apiVersion"] == "v1"
+        assert data["advisoryOnly"] is True
+        assert data["actionAllowed"] is False
+        assert data["count"] == 2
+        assert "explanation" not in data["articles"][0]
+
+    def test_consumer_status_supports_bearer_auth(self, monkeypatch):
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
+
+        resp = client.get(
+            "/api/v1/status",
+            headers={"Authorization": "Bearer consumer-test-key"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["endpoints"]["recommendations"] == "/api/v1/recommendations"
+
+    def test_consumer_scores_returns_compact_projection(self, monkeypatch):
+        self._stub_article_source(monkeypatch)
+
+        resp = client.get(
+            "/api/v1/scores?limit=10",
+            headers={"X-Consumer-Key": "consumer-test-key"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["apiVersion"] == "v1"
+        assert data["count"] == 2
+        assert "scores" in data
+        assert set(data["scores"][0]) == {
+            "articleId",
+            "url",
+            "title",
+            "category",
+            "score",
+            "predictedOpenRate",
+            "priority",
+            "updatedAt",
+        }
+
+
 class TestInternalAccessControl:
     def test_allows_cf_connecting_ip_when_allowlisted(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)

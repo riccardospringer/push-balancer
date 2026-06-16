@@ -46,6 +46,10 @@ def test_openapi_documents_critical_public_routes():
     expected_paths = {
         "/api/health",
         "/api/articles",
+        "/api/v1/status",
+        "/api/v1/recommendations",
+        "/api/v1/articles",
+        "/api/v1/scores",
         "/api/pushes",
         "/api/pushes/sync",
         "/api/predictions/feedback",
@@ -226,6 +230,7 @@ def test_runtime_environment_variables_are_documented_for_handover():
         "DB_PATH",
         "PUSH_DB_MAX_ROWS",
         "ADMIN_API_KEY",
+        "CONSUMER_API_KEY",
         "INTERNAL_ACCESS_ENABLED",
         "INTERNAL_ACCESS_ALLOWED_CIDRS",
         "INTERNAL_ACCESS_EXEMPT_PATHS",

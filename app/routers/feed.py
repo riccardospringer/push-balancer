@@ -344,12 +344,8 @@ def get_feed() -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
-@router.get("/api/articles")
-def get_articles(
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=60, ge=1, le=200),
-) -> JSONResponse:
-    """Return article candidates from the BILD sitemap as a typed JSON collection."""
+def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
+    """Return article candidates from the BILD sitemap as a JSON-ready payload."""
     data = _fetch_url(BILD_SITEMAP)
     if data is None:
         raise HTTPException(status_code=502, detail="BILD sitemap is not reachable")
@@ -404,16 +400,23 @@ def get_articles(
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
 
-    return JSONResponse(
-        content={
-            "articles": selected,
-            "total": len(articles),
-            "count": len(articles),
-            "offset": offset,
-            "limit": limit,
-            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-    )
+    return {
+        "articles": selected,
+        "total": len(articles),
+        "count": len(articles),
+        "offset": offset,
+        "limit": limit,
+        "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+@router.get("/api/articles")
+def get_articles(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> JSONResponse:
+    """Return article candidates from the BILD sitemap as a typed JSON collection."""
+    return JSONResponse(content=build_articles_payload(offset=offset, limit=limit))
 
 
 def _paginate_feed_dict(

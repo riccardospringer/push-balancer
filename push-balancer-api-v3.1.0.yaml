@@ -21,6 +21,8 @@ tags:
     description: Health and runtime diagnostics
   - name: Articles
     description: Article candidate discovery from the BILD sitemap
+  - name: Consumer
+    description: Versioned read-only API for downstream app integrations
   - name: Feeds
     description: Sitemap, competitor, and international feed access
   - name: Pushes
@@ -99,6 +101,203 @@ paths:
           $ref: "#/components/responses/BadGateway"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+
+  /api/v1/status:
+    get:
+      tags: [Consumer]
+      operationId: getConsumerApiStatus
+      summary: Get consumer API status
+      description: Returns readiness and integration metadata for the versioned read-only consumer API.
+      security:
+        - consumerBearerAuth: []
+        - consumerApiKey: []
+      responses:
+        "200":
+          description: Consumer API status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumerStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/recommendations:
+    get:
+      tags: [Consumer]
+      operationId: listConsumerRecommendations
+      summary: List consumer recommendations
+      description: Returns the simplest drop-in list of ranked article recommendations for trusted downstream app integrations.
+      security:
+        - consumerBearerAuth: []
+        - consumerApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          description: Maximum number of recommendations to return.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: category
+          in: query
+          description: Optional lowercase category filter, for example `politik` or `sport`.
+          required: false
+          schema:
+            type: string
+            example: "politik"
+        - name: minScore
+          in: query
+          description: Optional minimum 0-100 advisory score.
+          required: false
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+            default: 60
+            example: 70
+        - name: includeExplanations
+          in: query
+          description: Include score explanations, drivers, risks, and score breakdowns.
+          required: false
+          schema:
+            type: boolean
+            default: false
+            example: false
+      responses:
+        "200":
+          description: Consumer recommendations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumerArticleCollectionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/articles:
+    get:
+      tags: [Consumer]
+      operationId: listConsumerArticles
+      summary: List consumer article candidates
+      description: Returns ranked article candidates and advisory scores for trusted downstream app integrations. The endpoint is read-only and never triggers push delivery.
+      security:
+        - consumerBearerAuth: []
+        - consumerApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          description: Maximum number of article candidates to return.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: category
+          in: query
+          description: Optional lowercase category filter, for example `politik` or `sport`.
+          required: false
+          schema:
+            type: string
+            example: "politik"
+        - name: minScore
+          in: query
+          description: Optional minimum 0-100 advisory score.
+          required: false
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+            example: 70
+        - name: includeExplanations
+          in: query
+          description: Include score explanations, drivers, risks, and score breakdowns.
+          required: false
+          schema:
+            type: boolean
+            default: true
+            example: true
+      responses:
+        "200":
+          description: Consumer article candidates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumerArticleCollectionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/scores:
+    get:
+      tags: [Consumer]
+      operationId: listConsumerScores
+      summary: List consumer article scores
+      description: Returns a compact read-only score projection for trusted downstream apps that only need article IDs, URLs, and advisory ranking values.
+      security:
+        - consumerBearerAuth: []
+        - consumerApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          description: Maximum number of score entries to return.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: category
+          in: query
+          description: Optional lowercase category filter, for example `politik` or `sport`.
+          required: false
+          schema:
+            type: string
+            example: "sport"
+        - name: minScore
+          in: query
+          description: Optional minimum 0-100 advisory score.
+          required: false
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+            example: 75
+      responses:
+        "200":
+          description: Consumer score projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumerScoreCollectionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/pushes:
     get:
@@ -1463,6 +1662,15 @@ components:
       in: header
       name: X-Admin-Key
       description: Administrative API key required for protected retraining and promotion endpoints.
+    consumerApiKey:
+      type: apiKey
+      in: header
+      name: X-Consumer-Key
+      description: Read-only API key required for versioned downstream consumer endpoints.
+    consumerBearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token authentication for versioned downstream consumer endpoints.
   parameters:
     Offset:
       name: offset
@@ -1724,6 +1932,299 @@ components:
           type: string
           format: date-time
           description: Timestamp when the collection was built.
+          example: "2026-04-09T09:15:00Z"
+
+    ConsumerStatusResponse:
+      type: object
+      required: [apiVersion, status, advisoryOnly, actionAllowed, authentication, endpoints]
+      properties:
+        apiVersion:
+          type: string
+          description: Version of the downstream consumer API contract.
+          example: "v1"
+        status:
+          type: string
+          description: Readiness status of the consumer API.
+          example: "ok"
+        advisoryOnly:
+          type: boolean
+          description: Indicates that the response is only editorial decision support.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Indicates whether the API may trigger push delivery actions.
+          example: false
+        authentication:
+          type: object
+          description: Supported authentication modes for consumer calls.
+          required: [bearer, consumerKeyHeader]
+          properties:
+            bearer:
+              type: boolean
+              description: Whether Authorization Bearer authentication is accepted.
+              example: true
+            consumerKeyHeader:
+              type: boolean
+              description: Whether X-Consumer-Key authentication is accepted.
+              example: true
+        endpoints:
+          type: object
+          description: Canonical consumer endpoint paths.
+          required: [recommendations, articles, scores]
+          properties:
+            recommendations:
+              type: string
+              description: Drop-in recommendations endpoint path.
+              example: "/api/v1/recommendations"
+            articles:
+              type: string
+              description: Full article candidate endpoint path.
+              example: "/api/v1/articles"
+            scores:
+              type: string
+              description: Compact score projection endpoint path.
+              example: "/api/v1/scores"
+
+    ConsumerArticleFlags:
+      type: object
+      required: [breaking, eilmeldung, sport, video, plusArticle]
+      properties:
+        breaking:
+          type: boolean
+          description: Whether the article looks like breaking news.
+          example: true
+        eilmeldung:
+          type: boolean
+          description: Whether the title indicates an urgent bulletin.
+          example: true
+        sport:
+          type: boolean
+          description: Whether the article belongs to sport coverage.
+          example: false
+        video:
+          type: boolean
+          description: Whether the article looks like video content.
+          example: false
+        plusArticle:
+          type: boolean
+          description: Whether the article appears to be paywalled.
+          example: false
+
+    ConsumerArticleExplanation:
+      type: object
+      required: [reason, drivers, risks, breakdown]
+      properties:
+        reason:
+          type: string
+          description: Short editorial explanation for the advisory score.
+          example: "Starker Score durch Breaking-Mechanik und gutes Zeitfenster."
+        drivers:
+          type: array
+          description: Main aggregated performance and editorial drivers.
+          items:
+            type: string
+          example: ["Opening-Potenzial: hoher Aktualitäts- und Unterbrechungswert"]
+        risks:
+          type: array
+          description: Main fatigue, mix, trust, or clickiness risks.
+          items:
+            type: string
+          example: ["Keine starken Ermüdungs- oder Klickigkeits-Signale"]
+        breakdown:
+          type: object
+          description: Dimension-level 0-100 score components.
+          additionalProperties: true
+
+    ConsumerArticle:
+      type: object
+      required: [id, url, title, category, publishedAt, score, recommendedText, flags]
+      properties:
+        id:
+          type: string
+          description: Stable article identifier.
+          example: "https://www.bild.de/politik/consumer-test"
+        url:
+          type: string
+          format: uri
+          description: Canonical article URL.
+          example: "https://www.bild.de/politik/consumer-test"
+        title:
+          type: string
+          description: Editorial article title.
+          example: "Eilmeldung: Consumer Test Artikel"
+        category:
+          type: string
+          description: Inferred editorial category.
+          example: "politik"
+        publishedAt:
+          type: string
+          format: date-time
+          description: Article publication timestamp.
+          example: "2026-04-09T08:00:00Z"
+        score:
+          type: number
+          format: float
+          description: Advisory 0-100 editorial ranking score.
+          example: 88.0
+        predictedOpenRate:
+          type:
+            - number
+            - "null"
+          format: float
+          description: Advisory predicted opening-rate ratio, where 0.055 means 5.5%.
+          example: 0.055
+        priority:
+          type: string
+          description: Current mix priority label.
+          example: "hoch"
+        recommendedText:
+          type: string
+          description: Suggested push text for editorial review.
+          example: "Eilmeldung: Consumer Test Artikel"
+        flags:
+          $ref: "#/components/schemas/ConsumerArticleFlags"
+        explanation:
+          $ref: "#/components/schemas/ConsumerArticleExplanation"
+
+    ConsumerArticleCollectionResponse:
+      type: object
+      required: [apiVersion, advisoryOnly, actionAllowed, articles, total, count, offset, limit, fetchedAt]
+      properties:
+        kind:
+          type: string
+          description: Optional response kind for drop-in recommendation calls.
+          example: "recommendations"
+        apiVersion:
+          type: string
+          description: Version of the downstream consumer API contract.
+          example: "v1"
+        advisoryOnly:
+          type: boolean
+          description: Indicates that the response is only editorial decision support.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Indicates whether the API may trigger push delivery actions.
+          example: false
+        articles:
+          type: array
+          description: Current page of ranked article candidates for consumers.
+          items:
+            $ref: "#/components/schemas/ConsumerArticle"
+        total:
+          type: integer
+          format: int64
+          description: Number of matching article candidates after filters.
+          example: 24
+        count:
+          type: integer
+          format: int32
+          description: Number of article candidates returned in this page.
+          example: 10
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first returned article.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size requested by the caller.
+          example: 50
+        fetchedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the collection was built.
+          example: "2026-04-09T09:15:00Z"
+
+    ConsumerScore:
+      type: object
+      required: [articleId, url, title, category, score, predictedOpenRate, priority, updatedAt]
+      properties:
+        articleId:
+          type: string
+          description: Stable article identifier.
+          example: "https://www.bild.de/politik/consumer-test"
+        url:
+          type: string
+          format: uri
+          description: Canonical article URL.
+          example: "https://www.bild.de/politik/consumer-test"
+        title:
+          type: string
+          description: Editorial article title.
+          example: "Eilmeldung: Consumer Test Artikel"
+        category:
+          type: string
+          description: Inferred editorial category.
+          example: "politik"
+        score:
+          type: number
+          format: float
+          description: Advisory 0-100 editorial ranking score.
+          example: 88.0
+        predictedOpenRate:
+          type:
+            - number
+            - "null"
+          format: float
+          description: Advisory predicted opening-rate ratio, where 0.055 means 5.5%.
+          example: 0.055
+        priority:
+          type: string
+          description: Current mix priority label.
+          example: "hoch"
+        updatedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the score projection was built.
+          example: "2026-04-09T09:15:00Z"
+
+    ConsumerScoreCollectionResponse:
+      type: object
+      required: [apiVersion, advisoryOnly, actionAllowed, scores, total, count, offset, limit, fetchedAt]
+      properties:
+        apiVersion:
+          type: string
+          description: Version of the downstream consumer API contract.
+          example: "v1"
+        advisoryOnly:
+          type: boolean
+          description: Indicates that the response is only editorial decision support.
+          example: true
+        actionAllowed:
+          type: boolean
+          description: Indicates whether the API may trigger push delivery actions.
+          example: false
+        scores:
+          type: array
+          description: Current page of compact article scores for consumers.
+          items:
+            $ref: "#/components/schemas/ConsumerScore"
+        total:
+          type: integer
+          format: int64
+          description: Number of matching score entries after filters.
+          example: 24
+        count:
+          type: integer
+          format: int32
+          description: Number of score entries returned in this page.
+          example: 10
+        offset:
+          type: integer
+          format: int32
+          description: Offset of the first returned score entry.
+          example: 0
+        limit:
+          type: integer
+          format: int32
+          description: Page size requested by the caller.
+          example: 100
+        fetchedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the score projection was built.
           example: "2026-04-09T09:15:00Z"
 
     Push:

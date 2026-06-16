@@ -357,6 +357,10 @@ SAFETY_MODE: str = "ADVISORY_ONLY"
 # Wenn nicht gesetzt, geben Admin-Endpoints 503 zurück.
 ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 
+# ── Consumer API Key (schützt read-only API für andere Apps) ────────────────
+# Wenn nicht gesetzt, bleiben die Consumer-Endpunkte deaktiviert.
+CONSUMER_API_KEY: str = os.environ.get("CONSUMER_API_KEY", "")
+
 # ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────
 DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
 

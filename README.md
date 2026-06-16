@@ -193,6 +193,10 @@ A full OpenAPI specification is maintained in [`push-balancer-api-v3.1.0.yaml`](
 |---|---|
 | `GET /api/health` | Service health, endpoint checks, and research metadata |
 | `GET /api/articles` | Article candidates from the BILD sitemap |
+| `GET /api/v1/status` | Smoke test for the read-only consumer API |
+| `GET /api/v1/recommendations` | Drop-in read-only consumer API for ranked recommendations |
+| `GET /api/v1/articles` | Read-only consumer API for ranked articles and advisory scores |
+| `GET /api/v1/scores` | Compact read-only consumer API for article score projections |
 | `GET /api/pushes` | Recent push history with same-day aggregates |
 | `GET /api/feeds/competitor` | Editorial competitor monitoring feed |
 | `GET /api/feeds/competitor/sport` | Sports competitor monitoring feed |
@@ -225,7 +229,21 @@ Additional compatibility and operational helper endpoints still exist, but the f
 
 Compatibility endpoints are also marked at runtime with `Deprecation: true` and a `Sunset` header so downstream clients can detect that they should migrate to the stable contract.
 
-Protected mutation endpoints require the `X-Admin-Key` header and remain unavailable when `ADMIN_API_KEY` is not configured.
+Protected mutation endpoints require the `X-Admin-Key` header and remain unavailable when `ADMIN_API_KEY` is not configured. Downstream consumer endpoints require `Authorization: Bearer <CONSUMER_API_KEY>` or `X-Consumer-Key` and remain unavailable when `CONSUMER_API_KEY` is not configured.
+
+### Consumer API
+
+Use the versioned consumer API for backend-to-backend integrations that need current article candidates and scores without depending on the React frontend contract:
+
+```bash
+curl -H "Authorization: Bearer $CONSUMER_API_KEY" \
+  "https://push-balancer.onrender.com/api/v1/recommendations?limit=20&minScore=70"
+
+curl -H "Authorization: Bearer $CONSUMER_API_KEY" \
+  "https://push-balancer.onrender.com/api/v1/scores?category=sport&limit=20"
+```
+
+The responses are read-only and advisory-only (`actionAllowed=false`). Production deployments should expose `/api/health` for platform checks and `/api/v1/*` for authenticated consumers only. Keep `/api/docs`, `/api/openapi.json`, and legacy `/api/*` routes behind the internal CIDR allowlist.
 
 ---
 
@@ -269,7 +287,7 @@ Operational privacy rules in this repository:
 
 - Do not commit production snapshots, raw push exports, or analytics dumps.
 - Use `PUSH_SNAPSHOT_PATH` only for sanitized startup seeds mounted outside the repository.
-- Keep `OPENAI_API_KEY`, `ADMIN_API_KEY`, `PUSH_SYNC_SECRET`, Adobe credentials, and `NPM_TOKEN` out of source control.
+- Keep `OPENAI_API_KEY`, `ADMIN_API_KEY`, `CONSUMER_API_KEY`, `PUSH_SYNC_SECRET`, Adobe credentials, and `NPM_TOKEN` out of source control.
 - Admin mutation endpoints stay disabled unless `ADMIN_API_KEY` is explicitly configured.
 - Relay sync stays disabled unless `PUSH_SYNC_SECRET` is configured on both sides.
 
@@ -296,7 +314,7 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 
 ### Internal Network Access
 
-Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to restrict the app to AS/VPN egress IPs. On Render this protection is enabled by default, so non-exempt routes stay closed until the AS network CIDRs are configured. Keep `/api/health` in `INTERNAL_ACCESS_EXEMPT_PATHS` unless your platform health check uses a different route.
+Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to restrict the app to AS/VPN egress IPs. On Render this protection is enabled by default, so non-exempt routes stay closed until the AS network CIDRs are configured. Keep `/api/health,/api/v1` in `INTERNAL_ACCESS_EXEMPT_PATHS` so platform health checks and authenticated consumer API calls can work while docs and legacy routes remain internal.
 
 ---
 
@@ -342,9 +360,10 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `BIND_HOST` | No | `0.0.0.0` | Server bind host |
 | `ALLOW_INSECURE_SSL` | No | `0` | Set to `1` to disable SSL certificate verification (development only) |
 | `ADMIN_API_KEY` | No | — | Strong random admin key for protected retraining and promotion endpoints; required to enable admin mutations |
+| `CONSUMER_API_KEY` | No | — | Strong random read-only key for downstream consumer endpoints (`/api/v1/recommendations`, `/api/v1/articles`, `/api/v1/scores`); required to enable consumer API access |
 | `INTERNAL_ACCESS_ENABLED` | No | `true` on Render, `false` locally | Restrict non-exempt routes to the CIDRs listed in `INTERNAL_ACCESS_ALLOWED_CIDRS` |
 | `INTERNAL_ACCESS_ALLOWED_CIDRS` | No | `127.0.0.1/32,::1/128,145.243.0.0/16,91.220.134.0/24` | Comma-separated AS/VPN egress CIDRs or individual IPs in `/32` or `/128` notation |
-| `INTERNAL_ACCESS_EXEMPT_PATHS` | No | `/api/health` | Comma-separated route list that remains reachable without the internal allowlist |
+| `INTERNAL_ACCESS_EXEMPT_PATHS` | No | `/api/health` | Comma-separated route list that remains reachable without the internal allowlist; production should use `/api/health,/api/v1` so only health checks and authenticated consumer routes are externally reachable |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
 | `PUSH_DB_MAX_DAYS` | No | `90` | Maximum age of push rows loaded from SQLite into memory for analysis/runtime paths |
 | `PUSH_DB_MAX_ROWS` | No | `15000` locally, lower on Render | Maximum number of push rows loaded from SQLite into memory |
