@@ -8,6 +8,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+from app import database
 from app.main import app as _test_app
 from fastapi.testclient import TestClient
 
@@ -44,6 +45,37 @@ class TestHealthEndpoint:
         """'status'-Feld muss ein String sein."""
         resp = client.get("/api/health")
         assert isinstance(resp.json().get("status"), str)
+
+
+class TestTeamsAlertsEndpoint:
+    def test_teams_alerts_returns_recent_dashboard_history(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_alert_record(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=5.4,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                status="sent",
+                decision_ts=1_800_000_100,
+            )
+
+            resp = client.get("/api/teams-alerts?limit=5")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        item = data["items"][0]
+        assert item["articleTitle"] == "Eilmeldung: Regierung beschliesst Paket"
+        assert item["articleUrl"] == "https://www.bild.de/politik/article-1"
+        assert item["status"] == "sent"
+        assert item["score"] == pytest.approx(82.0)
+        assert item["predictedOR"] == pytest.approx(5.4)
 
 
 class TestStableFrontendContracts:

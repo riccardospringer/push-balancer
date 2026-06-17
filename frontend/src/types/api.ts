@@ -54,6 +54,28 @@ export interface FeedResponse {
   limit: number
 }
 
+export interface TeamsAlertRecord {
+  articleKey: string
+  articleId: string
+  articleUrl: string
+  articleTitle: string
+  status: 'sent' | 'failed' | 'notify' | 'skip' | 'observe' | string
+  score: number
+  predictedOR: number
+  reason: string
+  lastError?: string
+  alertCount: number
+  lastAlertAt?: string | null
+  lastDecisionAt?: string | null
+  isBreaking?: boolean
+}
+
+export interface TeamsAlertsResponse {
+  items: TeamsAlertRecord[]
+  total: number
+  fetchedAt: string
+}
+
 // ── Push Statistics ───────────────────────────────────────────────────────────
 
 export interface Push {

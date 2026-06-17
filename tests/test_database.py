@@ -14,6 +14,33 @@ from app import database
 
 # ── _push_db_upsert ──────────────────────────────────────────────────────────
 
+
+class TestTeamsAlertHistory:
+    def test_teams_alert_list_recent_contains_dashboard_fields(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_alert_record(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=5.4,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                status="sent",
+                decision_ts=1_800_000_100,
+            )
+
+            rows = database.teams_alert_list_recent(limit=5)
+
+        assert len(rows) == 1
+        assert rows[0]["article_title"] == "Eilmeldung: Regierung beschliesst Paket"
+        assert rows[0]["article_url"] == "https://www.bild.de/politik/article-1"
+        assert rows[0]["status"] == "sent"
+        assert rows[0]["last_score"] == pytest.approx(82.0)
+
 class TestPushDbUpsert:
     def test_upsert_inserts_new_records(self, tmp_db, sample_pushes):
         """Neue Pushes werden korrekt in die DB geschrieben."""

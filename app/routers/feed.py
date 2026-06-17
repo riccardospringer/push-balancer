@@ -9,6 +9,7 @@ GET /api/international/{name}    — Einzelner internationaler Feed
 POST /api/competitors/xor        — Batch-XOR via Wort-Performance-Scoring
 """
 import logging
+import datetime
 import re
 import ssl
 import time
@@ -473,6 +474,57 @@ def get_articles(
 ) -> JSONResponse:
     """Return article candidates from the BILD sitemap as a typed JSON collection."""
     return JSONResponse(content=build_articles_payload(offset=offset, limit=limit))
+
+
+def _iso_from_unix_ts(ts: int | float | None) -> str | None:
+    if not ts:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+@router.get("/api/teams-alerts")
+def get_teams_alerts(limit: int = Query(default=20, ge=1, le=100)) -> JSONResponse:
+    """Return recent Teams recommendation decisions for dashboard transparency."""
+    try:
+        from app.database import teams_alert_list_recent
+
+        rows = teams_alert_list_recent(limit)
+    except Exception as exc:
+        log.warning("[teams-alerts] could not load Teams alert history: %s", exc)
+        rows = []
+
+    items = []
+    for row in rows:
+        last_alert_ts = int(row.get("last_alert_ts") or 0)
+        last_decision_ts = int(row.get("last_decision_ts") or 0)
+        items.append(
+            {
+                "articleKey": row.get("article_key") or "",
+                "articleId": row.get("article_id") or "",
+                "articleUrl": row.get("article_url") or "",
+                "articleTitle": row.get("article_title") or "",
+                "status": row.get("status") or "",
+                "score": float(row.get("last_score") or 0.0),
+                "predictedOR": float(row.get("last_predicted_or") or 0.0),
+                "reason": row.get("last_reason") or "",
+                "lastError": row.get("last_error") or "",
+                "alertCount": int(row.get("alert_count") or 0),
+                "lastAlertAt": _iso_from_unix_ts(last_alert_ts),
+                "lastDecisionAt": _iso_from_unix_ts(last_decision_ts),
+                "isBreaking": bool(row.get("last_is_breaking") or 0),
+            }
+        )
+
+    return JSONResponse(
+        content={
+            "items": items,
+            "total": len(items),
+            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+    )
 
 
 def _paginate_feed_dict(

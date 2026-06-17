@@ -602,6 +602,7 @@ def evaluate_and_send_best_candidate(
         article_id=str(selected.get("id") or candidate_key(selected)),
         article_url=_url(selected),
         title_hash=title_hash(selected),
+        article_title=_title(selected),
         score=_score(selected),
         predicted_or=_candidate_predicted_or(selected) or 0.0,
         candidate_updated_at=_candidate_updated_ts(selected),

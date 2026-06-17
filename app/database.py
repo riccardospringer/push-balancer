@@ -307,6 +307,7 @@ def init_db() -> None:
         article_key TEXT PRIMARY KEY,
         article_id TEXT DEFAULT '',
         article_url TEXT DEFAULT '',
+        article_title TEXT DEFAULT '',
         title_hash TEXT DEFAULT '',
         first_alert_ts INTEGER DEFAULT 0,
         last_alert_ts INTEGER DEFAULT 0,
@@ -320,7 +321,12 @@ def init_db() -> None:
         alert_count INTEGER DEFAULT 0,
         last_error TEXT DEFAULT ''
     )""")
+    try:
+        conn.execute("ALTER TABLE teams_alerts ADD COLUMN article_title TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_last_alert ON teams_alerts(last_alert_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_last_decision ON teams_alerts(last_decision_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_status ON teams_alerts(status)")
 
     # ML v2: LLM-Score Spalten (idempotent via ALTER TABLE)
@@ -881,6 +887,22 @@ def teams_alert_last_sent_ts() -> int:
     return int((row[0] if row else 0) or 0)
 
 
+def teams_alert_list_recent(limit: int = 20) -> list[dict]:
+    """Return recent Teams alert decisions for dashboard transparency."""
+    safe_limit = max(1, min(int(limit or 20), 100))
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT * FROM teams_alerts
+               ORDER BY CASE WHEN last_alert_ts > 0 THEN last_alert_ts ELSE last_decision_ts END DESC
+               LIMIT ?""",
+            (safe_limit,),
+        ).fetchall()
+        conn.close()
+    return [dict(row) for row in rows]
+
+
 def teams_alert_record(
     *,
     article_key: str,
@@ -895,6 +917,7 @@ def teams_alert_record(
     status: str,
     error: str = "",
     decision_ts: int | None = None,
+    article_title: str = "",
 ) -> None:
     """Persist Teams alert send/failure metadata for anti-spam decisions."""
     if not article_key:
@@ -919,14 +942,15 @@ def teams_alert_record(
 
         conn.execute(
             """INSERT INTO teams_alerts (
-                article_key, article_id, article_url, title_hash, first_alert_ts,
+                article_key, article_id, article_url, article_title, title_hash, first_alert_ts,
                 last_alert_ts, last_decision_ts, last_score, last_predicted_or,
                 last_candidate_updated_at, last_is_breaking, last_reason, status,
                 alert_count, last_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(article_key) DO UPDATE SET
                 article_id = excluded.article_id,
                 article_url = excluded.article_url,
+                article_title = excluded.article_title,
                 title_hash = excluded.title_hash,
                 first_alert_ts = excluded.first_alert_ts,
                 last_alert_ts = excluded.last_alert_ts,
@@ -944,6 +968,7 @@ def teams_alert_record(
                 article_key,
                 article_id,
                 article_url,
+                article_title[:500],
                 title_hash,
                 first_alert_ts,
                 last_alert_ts,

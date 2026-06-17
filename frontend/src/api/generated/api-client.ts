@@ -16,6 +16,7 @@ import type {
   TagesplanResponse,
   TagesplanRetroResponse,
   TagesplanSuggestionsResponse,
+  TeamsAlertsResponse,
 } from '@/types/api'
 import { rawClient, ApiError } from './api-client-base'
 
@@ -191,6 +192,9 @@ export const api = {
 
   feed: (signal?: AbortSignal) =>
     rawClient.listArticles({}, signal) as Promise<FeedResponse>,
+
+  teamsAlerts: (signal?: AbortSignal) =>
+    fetchJson<TeamsAlertsResponse>('/api/teams-alerts?limit=12', 'GET', signal),
 
   pushAlarm: (signal?: AbortSignal) =>
     fetchJson<PushAlarmResponse>('/api/push-alarm', 'GET', signal),

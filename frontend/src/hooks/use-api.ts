@@ -18,6 +18,14 @@ export function useFeed() {
   })
 }
 
+export function useTeamsAlerts() {
+  return useQuery({
+    queryKey: ['teamsAlerts'],
+    queryFn: ({ signal }) => api.teamsAlerts(signal),
+    refetchInterval: 60_000,
+  })
+}
+
 export function usePushStats() {
   return useQuery({
     queryKey: ['pushStats'],

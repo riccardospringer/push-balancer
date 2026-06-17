@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useFeed } from '@/hooks/use-api'
+import { useFeed, useTeamsAlerts } from '@/hooks/use-api'
 import {
   Alert,
   Badge,
@@ -17,7 +17,7 @@ import { useKandidatenFilterStore } from '@/stores/kandidaten-filter-store'
 import { PushPreviewModal } from '@/components/ui/push-preview-modal'
 import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtOR, fmtScore, scoreVariant } from '@/utils/format'
-import type { Article } from '@/types/api'
+import type { Article, TeamsAlertRecord } from '@/types/api'
 
 const CATEGORIES = [
   'alle',
@@ -88,6 +88,175 @@ function teamsAlertLabel(teamsAlert: Article['teamsAlert']): string {
   if (teamsAlert.status === 'observe') return 'Teams beobachtet'
   if (teamsAlert.status === 'failed') return 'Teams Fehler'
   return 'Teams kein Alert'
+}
+
+function teamsAlertRecordVariant(
+  alert: TeamsAlertRecord,
+): 'green' | 'amber' | 'default' | 'red' {
+  if (alert.status === 'sent') return 'green'
+  if (alert.status === 'failed') return 'red'
+  if (alert.status === 'observe') return 'amber'
+  return 'default'
+}
+
+function teamsAlertRecordLabel(alert: TeamsAlertRecord): string {
+  if (alert.status === 'sent') return 'Teams gesendet'
+  if (alert.status === 'failed') return 'Teams Fehler'
+  if (alert.status === 'observe') return 'Teams beobachtet'
+  return alert.status || 'Teams Entscheidung'
+}
+
+function fmtTeamsAlertOR(value: number): string {
+  if (!value || value <= 0) return 'keine belastbare OR'
+  return `${value.toLocaleString('de-DE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} % OR`
+}
+
+function TeamsAlertHistory({
+  alerts,
+  isLoading,
+}: {
+  alerts: TeamsAlertRecord[]
+  isLoading: boolean
+}) {
+  return (
+    <Card style={{ marginBottom: '16px' }}>
+      <CardContent style={{ padding: '14px 16px' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '12px',
+            marginBottom: alerts.length > 0 ? '10px' : 0,
+          }}
+        >
+          <div>
+            <h2 style={{ fontSize: '15px', fontWeight: 700, margin: 0 }}>
+              Letzte Teams-Empfehlungen
+            </h2>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              Persistenter Verlauf der redaktionellen Handlungsempfehlungen
+            </div>
+          </div>
+          {isLoading && <Spinner size={16} />}
+        </div>
+
+        {!isLoading && alerts.length === 0 && (
+          <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+            Noch keine Teams-Empfehlung gespeichert.
+          </div>
+        )}
+
+        {alerts.length > 0 && (
+          <div style={{ display: 'grid', gap: '8px' }}>
+            {alerts.slice(0, 5).map((alert) => {
+              const title =
+                alert.articleTitle || alert.articleUrl || alert.articleId || alert.articleKey
+              const time = alert.lastAlertAt || alert.lastDecisionAt
+              return (
+                <div
+                  key={`${alert.articleKey}-${alert.lastDecisionAt ?? ''}`}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) auto',
+                    gap: '10px',
+                    alignItems: 'start',
+                    padding: '10px 0',
+                    borderTop: '1px solid var(--border-light)',
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '6px',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      <Badge variant={teamsAlertRecordVariant(alert)}>
+                        {teamsAlertRecordLabel(alert)}
+                      </Badge>
+                      {alert.isBreaking && <Badge variant="red">Breaking</Badge>}
+                      {time && (
+                        <span
+                          style={{
+                            fontSize: '12px',
+                            color: 'var(--text-tertiary)',
+                          }}
+                        >
+                          {fmtDateTime(time)}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={title}
+                    >
+                      {alert.articleUrl ? (
+                        <a
+                          href={alert.articleUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                        >
+                          {title}
+                        </a>
+                      ) : (
+                        title
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '12px',
+                        color:
+                          alert.status === 'failed'
+                            ? 'var(--red)'
+                            : 'var(--text-secondary)',
+                        marginTop: '3px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={alert.status === 'failed' ? alert.lastError : alert.reason}
+                    >
+                      {alert.status === 'failed'
+                        ? alert.lastError || alert.reason || 'Teams-Versand fehlgeschlagen'
+                        : alert.reason || 'Push empfohlen'}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      textAlign: 'right',
+                      fontSize: '12px',
+                      color: 'var(--text-secondary)',
+                      whiteSpace: 'nowrap',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                      Score {fmtScore(alert.score)}
+                    </div>
+                    <div>{fmtTeamsAlertOR(alert.predictedOR)}</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 function ArticleRow({
@@ -193,6 +362,8 @@ function ArticleRow({
 
 export function KandidatenPage() {
   const { data, isLoading, error, refetch } = useFeed()
+  const { data: teamsAlertsData, isLoading: teamsAlertsLoading } =
+    useTeamsAlerts()
   const {
     kandidatenSearch,
     kandidatenCategory,
@@ -278,6 +449,11 @@ export function KandidatenPage() {
           ↻ Aktualisieren
         </button>
       </div>
+
+      <TeamsAlertHistory
+        alerts={teamsAlertsData?.items ?? []}
+        isLoading={teamsAlertsLoading}
+      />
 
       {/* Filter Bar */}
       <Card style={{ marginBottom: '16px' }}>
