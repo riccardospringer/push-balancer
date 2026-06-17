@@ -461,6 +461,46 @@ def test_multiple_good_candidates_only_notify_best_candidate():
     assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions[second["url"]]["blockingReasons"])
 
 
+def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
+    high_raw = _candidate(
+        id="article-raw",
+        url="https://www.bild.de/politik/raw",
+        score=96.0,
+        predictedOR=0.08,
+        title="Regierung beschliesst neues Steuerpaket fuer Familien",
+        isBreaking=False,
+        isEilmeldung=False,
+    )
+    stronger_cvd = _candidate(
+        id="article-cvd",
+        url="https://www.bild.de/politik/cvd",
+        score=88.0,
+        predictedOR=0.061,
+        title="Eilmeldung: Israel und Iran einigen sich auf Feuerpause",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    candidates = [high_raw, stronger_cvd]
+    context = build_teams_alert_context(
+        candidates,
+        history=_history(minutes_since_last_push=55),
+        alert_state={},
+        now_ts=NOW_TS,
+    )
+
+    result = evaluate_teams_alert_candidates(
+        candidates,
+        context,
+        _config(min_alert_score=70.0, min_editorial_score=82.0),
+    )
+    decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
+
+    assert result["selectedCandidateId"] == stronger_cvd["url"]
+    assert decisions[stronger_cvd["url"]]["selectionScore"] > decisions[high_raw["url"]]["selectionScore"]
+    assert decisions[stronger_cvd["url"]]["shouldNotify"] is True
+    assert decisions[high_raw["url"]]["shouldNotify"] is False
+
+
 def test_teams_message_contains_required_editorial_fields():
     candidate = _candidate()
     context = _context(candidate)
@@ -477,6 +517,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert candidate["url"] in text
     assert "Teams-Alert-Score: " in text
     assert "CvD-Score: " in text
+    assert "Auswahlwert: " in text
     assert "Push-Score: 78,4" in text
     assert "Prognose: 5,20 % OR" in text
     assert "Letzter Push: vor 42 Minuten" in text
@@ -487,6 +528,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["teamsAlertScore"] >= payload["teamsAlertScoreThreshold"]
     assert payload["editorialReview"]["approved"] is True
     assert payload["editorialScore"] >= 82.0
+    assert payload["selectionScore"] > 0
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]

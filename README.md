@@ -318,7 +318,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, and `editorialReview`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, and blocks soft topics unless they have a clear current public-interest angle. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, and `selectionScore`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, and blocks soft topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
 
 ### CORS
 

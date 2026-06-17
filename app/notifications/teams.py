@@ -257,6 +257,14 @@ def should_notify_teams(
     )
     positive.extend(editorial_review["reasons"])
     blockers.extend(editorial_review["blockers"])
+    selection_score = _recommendation_selection_score(
+        score=score,
+        alert_score=alert_score,
+        editorial_score=float(editorial_review["score"]),
+        predicted_or=predicted_or,
+        dashboard_rank=dashboard_rank,
+        breaking=breaking,
+    )
 
     if config.score_only_mode:
         positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
@@ -370,6 +378,7 @@ def should_notify_teams(
         "teamsAlertScoreBreakdown": alert_model["breakdown"],
         "editorialReview": editorial_review,
         "editorialScore": editorial_review["score"],
+        "selectionScore": selection_score,
         "predictedOR": predicted_or,
         "minScore": min_score,
         "minOR": min_or,
@@ -418,6 +427,8 @@ def evaluate_teams_alert_candidates(
         selected_candidate, _selected_decision = max(
             eligible,
             key=lambda item: (
+                float(item[1].get("selectionScore") or 0.0),
+                float(item[1].get("editorialScore") or 0.0),
                 float(item[1].get("teamsAlertScore") or 0.0),
                 *_candidate_rank(item[0]),
             ),
@@ -448,7 +459,7 @@ def evaluate_teams_alert_candidates(
                 if competitors:
                     decision["reasons"] = [
                         *decision.get("reasons", []),
-                        "Beste Kombination aus Score, Prognose und Dringlichkeit im Kandidatenfeld",
+                        "Beste CvD-Eignung aus Nachrichtenwert, Timing und Nutzerbelastung im Kandidatenfeld",
                     ]
         final.append({"candidate": candidate, "decision": decision})
 
@@ -510,6 +521,7 @@ def build_teams_push_recommendation(
     editorial_review = decision.get("editorialReview") or {}
     editorial_score = float(editorial_review.get("score") or 0.0)
     editorial_reasons = list(editorial_review.get("reasons") or [])
+    selection_score = float(decision.get("selectionScore") or 0.0)
     push_text = str(candidate.get("recommendedText") or title)
     push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
@@ -548,7 +560,7 @@ def build_teams_push_recommendation(
         timing_reason = "Ein letzter Push-Zeitpunkt ist aktuell nicht bekannt."
     editorial_reason = (
         f"CvD-Einordnung: {_format_number(editorial_score)} von 100 Punkten; "
-        "redaktionelle Freigabe erteilt."
+        f"Auswahlwert {_format_number(selection_score)}."
         if editorial_review.get("approved", True)
         else "CvD-Einordnung: keine redaktionelle Freigabe."
     )
@@ -581,6 +593,7 @@ def build_teams_push_recommendation(
             f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
             f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
             f"- CvD-Score: {_format_number(editorial_score)}",
+            f"- Auswahlwert: {_format_number(selection_score)}",
             f"- Prognose: {_format_or(predicted_or)}",
             f"- Letzter Push: {_format_minutes(minutes)}",
             f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
@@ -621,6 +634,7 @@ def build_teams_push_recommendation(
             "editorialReview": editorial_review,
             "editorialScore": editorial_score,
             "editorialReasons": editorial_reasons,
+            "selectionScore": selection_score,
             "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
             "predictedORAvailable": predicted_or is not None,
             "predictedORLabel": _format_or(predicted_or),
@@ -843,6 +857,30 @@ def normalize_predicted_or(value: Any) -> float | None:
     if numeric <= 0:
         return None
     return numeric * 100.0 if numeric <= 1.0 else numeric
+
+
+def _recommendation_selection_score(
+    *,
+    score: float,
+    alert_score: float,
+    editorial_score: float,
+    predicted_or: float | None,
+    dashboard_rank: int,
+    breaking: bool,
+) -> float:
+    """Rank eligible candidates by editorial suitability, not dashboard order."""
+    forecast_bonus = min(float(predicted_or or 0.0), 10.0) * 0.4
+    rank_bonus = max(0.0, 4.0 - max(0, dashboard_rank - 1) * 0.4) if dashboard_rank > 0 else 0.0
+    breaking_bonus = 2.0 if breaking else 0.0
+    total = (
+        editorial_score * 0.55
+        + alert_score * 0.30
+        + score * 0.10
+        + forecast_bonus
+        + rank_bonus
+        + breaking_bonus
+    )
+    return round(_clamp(total, 0.0, 100.0), 1)
 
 
 def _editorial_cvd_review(
@@ -1251,13 +1289,16 @@ def _log_decision(candidate: dict[str, Any], decision: dict[str, Any]) -> None:
     reason_text = "; ".join([*blocking_reasons, *positive_reasons])
     log.info(
         "[TeamsAlert] decision candidateId=%s articleId=%s url=%s score=%.1f predicted_or=%s "
-        "teams_alert_score=%s last_push=%s decision=%s reasons=%s evaluated_at=%s",
+        "teams_alert_score=%s editorial_score=%s selection_score=%s last_push=%s "
+        "decision=%s reasons=%s evaluated_at=%s",
         decision.get("candidateId"),
         decision.get("articleId"),
         decision.get("articleUrl"),
         float(decision.get("score") or 0.0),
         decision.get("predictedOR"),
         decision.get("teamsAlertScore"),
+        decision.get("editorialScore"),
+        decision.get("selectionScore"),
         decision.get("lastPushAt"),
         "notify" if decision.get("shouldNotify") else "skip",
         reason_text,
