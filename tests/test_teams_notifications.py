@@ -65,10 +65,10 @@ def _candidate(**overrides):
     return candidate
 
 
-def _history(minutes_since_last_push=42, **overrides):
+def _history(minutes_since_last_push=42, now_ts=NOW_TS, **overrides):
     item = {
         "message_id": "push-previous",
-        "ts_num": NOW_TS - minutes_since_last_push * 60,
+        "ts_num": now_ts - minutes_since_last_push * 60,
         "or": 5.4,
         "title": "Vorheriger Push mit anderem Thema",
         "headline": "Vorheriger Push mit anderem Thema",
@@ -79,13 +79,13 @@ def _history(minutes_since_last_push=42, **overrides):
     return [item]
 
 
-def _context(candidate, *, history=None, alert_state=None):
+def _context(candidate, *, history=None, alert_state=None, now_ts=NOW_TS):
     return build_teams_alert_context(
         [candidate],
-        history=history if history is not None else _history(),
+        history=history if history is not None else _history(now_ts=now_ts),
         alert_state=alert_state or {},
         last_teams_alert_ts=0,
-        now_ts=NOW_TS,
+        now_ts=now_ts,
     )
 
 
@@ -553,6 +553,55 @@ def test_auto_push_calibration_still_blocks_soft_topic():
     assert any("CvD:" in reason for reason in decision["blockingReasons"])
 
 
+def test_cvd_time_fit_blocks_normal_push_at_night():
+    night_ts = NOW_TS - 7 * 3600
+    candidate = _candidate(
+        score=95.0,
+        predictedOR=0.08,
+        category="news",
+        title="Wetterdienst gibt Hitzewarnung fuer Deutschland raus",
+        url="https://www.bild.de/news/wetter/hitzewarnung-nacht",
+        isBreaking=False,
+        isEilmeldung=False,
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45, now_ts=night_ts), now_ts=night_ts)
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(min_alert_score=60.0, min_editorial_score=50.0, min_time_fit_score=4.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("unguens" in reason for reason in decision["blockingReasons"])
+    assert decision["editorialReview"]["breakdown"]["localHour"] == 2
+
+
+def test_cvd_time_fit_allows_breaking_push_at_night():
+    night_ts = NOW_TS - 7 * 3600
+    candidate = _candidate(
+        score=95.0,
+        predictedOR=0.08,
+        category="news",
+        title="Eilmeldung: Israel und Iran einigen sich auf Feuerpause",
+        url="https://www.bild.de/news/breaking-nacht",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45, now_ts=night_ts), now_ts=night_ts)
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(min_alert_score=60.0, min_editorial_score=50.0, min_time_fit_score=4.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["editorialReview"]["breakdown"]["timeFit"] >= 4.0
+
+
 def test_teams_message_contains_required_editorial_fields():
     candidate = _candidate()
     context = _context(candidate)
@@ -570,6 +619,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Teams-Alert-Score: " in text
     assert "CvD-Score: " in text
     assert "Auswahlwert: " in text
+    assert "Zeitfenster: " in text
     assert "Push-Score: 78,4" in text
     assert "Prognose: 5,20 % OR" in text
     assert "Letzter Push: vor 42 Minuten" in text
@@ -581,6 +631,8 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["editorialReview"]["approved"] is True
     assert payload["editorialScore"] >= 82.0
     assert payload["selectionScore"] > 0
+    assert payload["timeFitScore"] > 0
+    assert payload["timeFitLabel"]
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]

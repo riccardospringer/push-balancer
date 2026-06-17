@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import (
     PUSH_TEAMS_ALERT_COOLDOWN_MINUTES,
@@ -39,6 +40,7 @@ from app.config import (
     PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE,
     PUSH_TEAMS_MIN_OR,
     PUSH_TEAMS_MIN_SCORE,
+    PUSH_TEAMS_MIN_TIME_FIT_SCORE,
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
@@ -79,6 +81,7 @@ class TeamsAlertConfig:
     editorial_top_limit: int = PUSH_TEAMS_EDITORIAL_TOP_LIMIT
     min_editorial_score: float = PUSH_TEAMS_MIN_EDITORIAL_SCORE
     min_editorial_news_value: float = PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
+    min_time_fit_score: float = PUSH_TEAMS_MIN_TIME_FIT_SCORE
     min_or: float = PUSH_TEAMS_MIN_OR
     min_minutes_since_last_push: int = PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -253,6 +256,7 @@ def should_notify_teams(
         minutes_since_last_push=minutes_since_last_push,
         dashboard_rank=dashboard_rank,
         alert_score=alert_score,
+        now_ts=now_ts,
         config=config,
     )
     positive.extend(editorial_review["reasons"])
@@ -521,6 +525,9 @@ def build_teams_push_recommendation(
     editorial_review = decision.get("editorialReview") or {}
     editorial_score = float(editorial_review.get("score") or 0.0)
     editorial_reasons = list(editorial_review.get("reasons") or [])
+    editorial_breakdown = editorial_review.get("breakdown") or {}
+    time_fit_score = float(editorial_breakdown.get("timeFit") or 0.0)
+    time_fit_label = str(editorial_breakdown.get("timeFitLabel") or "").strip()
     selection_score = float(decision.get("selectionScore") or 0.0)
     push_text = str(candidate.get("recommendedText") or title)
     push_text_matches_title = _same_editorial_text(push_text, title)
@@ -564,8 +571,13 @@ def build_teams_push_recommendation(
         if editorial_review.get("approved", True)
         else "CvD-Einordnung: keine redaktionelle Freigabe."
     )
+    time_fit_reason = (
+        f"Zeitfenster: {time_fit_label} ({_format_number(time_fit_score)} von 10)."
+        if time_fit_label
+        else ""
+    )
     why_now = _dedupe(
-        [editorial_reason, threshold_reason, score_reason, timing_reason, competition, duplicate_reason]
+        [editorial_reason, time_fit_reason, threshold_reason, score_reason, timing_reason, competition, duplicate_reason]
     )[:5]
     why_pushworthy = _dedupe([editorial_reason, score_reason, forecast_reason, timing_reason, competition])[:4]
 
@@ -594,6 +606,7 @@ def build_teams_push_recommendation(
             f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
             f"- CvD-Score: {_format_number(editorial_score)}",
             f"- Auswahlwert: {_format_number(selection_score)}",
+            f"- Zeitfenster: {time_fit_label or 'nicht bewertet'}",
             f"- Prognose: {_format_or(predicted_or)}",
             f"- Letzter Push: {_format_minutes(minutes)}",
             f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
@@ -634,6 +647,8 @@ def build_teams_push_recommendation(
             "editorialReview": editorial_review,
             "editorialScore": editorial_score,
             "editorialReasons": editorial_reasons,
+            "timeFitScore": time_fit_score,
+            "timeFitLabel": time_fit_label,
             "selectionScore": selection_score,
             "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
             "predictedORAvailable": predicted_or is not None,
@@ -892,6 +907,7 @@ def _editorial_cvd_review(
     minutes_since_last_push: float | None,
     dashboard_rank: int,
     alert_score: float,
+    now_ts: int,
     config: TeamsAlertConfig,
 ) -> dict[str, Any]:
     """Hard editorial gate before Teams can become an action recommendation."""
@@ -927,6 +943,7 @@ def _editorial_cvd_review(
     soft_terms = (
         "quiz", "horoskop", "shopping", "rabatt", "sommertrend", "fans", "star",
         "stars", "app", "promi", "liebe", "beauty", "mode", "urlaub", "reise",
+        "peinlich", "witzig",
     )
     vague_terms = ("diese", "dieser", "darum", "so ", "jetzt wissen", "experte erklaert")
 
@@ -992,6 +1009,8 @@ def _editorial_cvd_review(
     else:
         timing = 2.0
 
+    time_fit = _time_fit_review(now_ts=now_ts, section=section, breaking=breaking)
+
     clarity = 8.0 if len(title) >= 35 else 5.0
     if any(term in title_l for term in vague_terms):
         clarity -= 2.0
@@ -1011,11 +1030,12 @@ def _editorial_cvd_review(
     else:
         load = 0.0
 
-    total = _clamp(news_value + urgency + user_need + timing + clarity + load, 0.0, 100.0)
+    total = _clamp(news_value + urgency + user_need + timing + clarity + load + time_fit["score"], 0.0, 100.0)
     blockers: list[str] = []
     reasons: list[str] = [
         f"CvD-Score {total:.1f}/100",
         f"CvD-Nachrichtenwert {news_value:.1f}/40",
+        f"CvD-Zeitfenster {time_fit['score']:.1f}/10: {time_fit['label']}",
     ]
 
     if dashboard_rank > rank_limit and not breaking:
@@ -1030,6 +1050,10 @@ def _editorial_cvd_review(
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
         blockers.append("CvD: ohne belastbare OR-Prognose nur bei absoluter Top-Lage")
+    if not breaking and time_fit["score"] < config.min_time_fit_score:
+        blockers.append(
+            f"CvD: unguenstiges Zeitfenster ({time_fit['score']:.1f} < {config.min_time_fit_score:.1f})"
+        )
 
     if not blockers:
         reasons.append("CvD-Freigabe: klare Push-Lage mit aktueller Relevanz")
@@ -1046,9 +1070,63 @@ def _editorial_cvd_review(
             "urgency": round(urgency, 1),
             "userNeed": round(user_need, 1),
             "timing": round(timing, 1),
+            "timeFit": round(float(time_fit["score"]), 1),
+            "timeFitLabel": time_fit["label"],
+            "localHour": time_fit["localHour"],
+            "weekday": time_fit["weekday"],
             "clarity": round(clarity, 1),
             "load": round(load, 1),
         },
+    }
+
+
+def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, Any]:
+    local_dt = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
+    hour = local_dt.hour
+    weekday = local_dt.weekday()
+    is_weekend = weekday >= 5
+
+    if 0 <= hour < 5:
+        score, label = (5.0, "Nachtfenster nur fuer Breaking") if breaking else (1.0, "Nachtfenster")
+    elif 5 <= hour < 7:
+        score, label = (6.0, "fruehes Morgenfenster") if breaking else (3.0, "fruehes Morgenfenster")
+    elif 7 <= hour < 10:
+        score, label = 10.0, "starkes Morgenfenster"
+    elif 10 <= hour < 12:
+        score, label = 8.0, "gutes Vormittagsfenster"
+    elif 12 <= hour < 14:
+        score, label = 8.0, "Mittagsfenster"
+    elif 14 <= hour < 17:
+        score, label = 7.0, "Nachmittagsfenster"
+    elif 17 <= hour < 20:
+        score, label = 10.0, "starkes Feierabendfenster"
+    elif 20 <= hour < 22:
+        score, label = 7.0, "Abendfenster"
+    elif 22 <= hour < 24:
+        score, label = (6.0, "spaetes Breaking-Fenster") if breaking else (3.0, "spaetes Abendfenster")
+    else:
+        score, label = 4.0, "unbekanntes Zeitfenster"
+
+    section_l = section.lower()
+    if is_weekend:
+        if section_l in {"wirtschaft", "digital", "service"} and not breaking:
+            score -= 1.0
+        elif section_l in {"news", "regional", "unterhaltung"}:
+            score += 0.5
+        label += " am Wochenende"
+    else:
+        if section_l in {"politik", "wirtschaft"} and 7 <= hour < 18:
+            score += 0.5
+        if section_l == "unterhaltung" and 18 <= hour < 22:
+            score += 1.0
+        label += " an einem Werktag"
+
+    return {
+        "score": round(_clamp(score, 0.0, 10.0), 1),
+        "label": label,
+        "localHour": hour,
+        "weekday": weekday,
+        "isWeekend": is_weekend,
     }
 
 

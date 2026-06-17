@@ -354,6 +354,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_EDITORIAL_TOP_LIMIT` | No | `10` | Normal non-breaking recommendations must be in the top N dashboard candidates |
 | `PUSH_TEAMS_MIN_EDITORIAL_SCORE` | No | `70` | Minimum CvD score based on news value, urgency, public need, timing, clarity, and user load |
 | `PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE` | No | `24` | Minimum hard-news value required before Teams can recommend a push |
+| `PUSH_TEAMS_MIN_TIME_FIT_SCORE` | No | `4` | Minimum CvD time-fit score; blocks normal pushes in weak daypart/weekday windows while still allowing breaking-news overrides |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |

@@ -53,6 +53,8 @@ services:
         value: "70"
       - key: PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
         value: "24"
+      - key: PUSH_TEAMS_MIN_TIME_FIT_SCORE
+        value: "4"
       - key: PUSH_TEAMS_MIN_OR
         value: "5.0"
       - key: PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
