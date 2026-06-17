@@ -871,7 +871,13 @@ def normalize_predicted_or(value: Any) -> float | None:
         return None
     if numeric <= 0:
         return None
-    return numeric * 100.0 if numeric <= 1.0 else numeric
+    percent = numeric * 100.0 if numeric <= 1.0 else numeric
+    # The prediction models are calibrated in percent and clamped to a practical
+    # editorial range. Tiny values such as 0.0004 usually mean a double-scaled
+    # ratio, not a real 0.04% opening-rate forecast.
+    if percent < 0.5 or percent > 30.0:
+        return None
+    return percent
 
 
 def _recommendation_selection_score(

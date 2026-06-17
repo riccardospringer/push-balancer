@@ -9,6 +9,7 @@ from app.notifications.teams import (
     build_teams_alert_context,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
+    normalize_predicted_or,
     sendTeamsNotification,
     shouldNotifyTeams,
 )
@@ -502,8 +503,8 @@ def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
 
 def test_auto_push_calibration_allows_public_warning_candidate():
     candidate = _candidate(
-        score=75.0,
-        predictedOR=0.0006,
+        score=80.0,
+        predictedOR=None,
         category="news",
         title="Wetterdienst gibt Hitzewarnung fuer Deutschland raus",
         url="https://www.bild.de/news/wetter/hitzewarnung",
@@ -530,7 +531,7 @@ def test_auto_push_calibration_allows_public_warning_candidate():
 def test_auto_push_calibration_still_blocks_soft_topic():
     candidate = _candidate(
         score=76.0,
-        predictedOR=0.0005,
+        predictedOR=None,
         category="politik",
         title="Peinliche Momente beim G7-Gipfel: Die grosse Buehne der witzigen Weltpolitik",
         url="https://www.bild.de/politik/g7",
@@ -655,6 +656,33 @@ def test_teams_message_does_not_repeat_identical_push_text_and_article_title():
     assert "Artikel:\n" not in text
     assert text.count(candidate["title"]) == 1
     assert "Artikel und empfohlener Push:" in message["payload"]["messageHtml"]
+
+
+def test_or_prediction_ratio_is_displayed_as_percent_not_raw_ratio():
+    candidate = _candidate(predictedOR=0.0477)
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, _config())
+
+    assert normalize_predicted_or(0.0477) == 4.77
+    assert "Prognose: 4,77 % OR" in message["text"]
+    assert message["payload"]["predictedOR"] == 4.77
+    assert message["payload"]["predictedORLabel"] == "4,77 % OR"
+
+
+def test_tiny_double_scaled_or_prediction_is_not_displayed_as_forecast():
+    candidate = _candidate(predictedOR=0.0004)
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config(score_only_mode=True))
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, _config(score_only_mode=True))
+
+    assert normalize_predicted_or(0.0004) is None
+    assert "0,04 % OR" not in message["text"]
+    assert "keine belastbare Prognose" in message["text"]
+    assert message["payload"]["predictedOR"] == 0.0
+    assert message["payload"]["predictedORAvailable"] is False
 
 
 def test_teams_message_hides_global_average_prediction_fallback():
