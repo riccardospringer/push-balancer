@@ -190,7 +190,7 @@ def should_notify_teams(
         blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
 
     allowed = {item.lower() for item in config.allowed_sections if item.strip()}
-    if not config.score_only_mode and allowed and section.lower() not in allowed:
+    if allowed and section.lower() not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
 
     if score >= min_score:

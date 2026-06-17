@@ -171,6 +171,28 @@ def test_score_only_mode_keeps_score_threshold_as_blocker():
     assert any("Score zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
+def test_sport_section_is_blocked_even_in_score_only_mode():
+    candidate = _candidate(
+        score=95.0,
+        category="sport",
+        title="Bayern-Star vor Wechsel: Entscheidung gefallen",
+        url="https://www.bild.de/sport/article-1",
+        predictedOR=None,
+    )
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(
+            score_only_mode=True,
+            allowed_sections=("news", "politik", "wirtschaft", "regional", "digital", "unterhaltung"),
+        ),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Ressort sport" in reason for reason in decision["blockingReasons"])
+
+
 def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
     candidate = _candidate(
         score=84.0,
