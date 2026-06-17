@@ -27,6 +27,7 @@ def _config(**overrides):
         "enabled": True,
         "webhook_url": "https://teams.example.test/webhook",
         "min_score": 70.0,
+        "min_alert_score": 78.0,
         "score_only_mode": False,
         "min_or": 5.0,
         "min_minutes_since_last_push": 30,
@@ -143,8 +144,8 @@ def test_bad_forecast_does_not_trigger_teams_decision():
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
-def test_score_only_mode_triggers_for_score_above_threshold_without_forecast_or_push_time():
-    candidate = _candidate(predictedOR=None)
+def test_score_only_mode_triggers_for_strong_weighted_candidate_without_forecast_or_push_time():
+    candidate = _candidate(score=82.0, predictedOR=None)
 
     decision = shouldNotifyTeams(
         candidate,
@@ -154,7 +155,7 @@ def test_score_only_mode_triggers_for_score_above_threshold_without_forecast_or_
 
     assert decision["shouldNotify"] is True
     assert decision["scoreOnlyMode"] is True
-    assert any("Score-Modus aktiv" in reason for reason in decision["reasons"])
+    assert decision["teamsAlertScore"] >= decision["teamsAlertScoreThreshold"]
 
 
 def test_score_only_mode_keeps_score_threshold_as_blocker():
@@ -168,6 +169,45 @@ def test_score_only_mode_keeps_score_threshold_as_blocker():
 
     assert decision["shouldNotify"] is False
     assert any("Score zu niedrig" in reason for reason in decision["blockingReasons"])
+
+
+def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
+    candidate = _candidate(
+        score=84.0,
+        category="unterhaltung",
+        title="Sommertrend: Diese Stars feiern neue Rabatt-App",
+        predictedOR=None,
+        isBreaking=False,
+        isEilmeldung=False,
+    )
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(score_only_mode=True, min_score=75.0, min_alert_score=78.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Teams Alert Score zu niedrig" in reason for reason in decision["blockingReasons"])
+
+
+def test_weighted_model_allows_strong_breaking_below_standard_raw_score():
+    candidate = _candidate(
+        score=78.0,
+        predictedOR=None,
+        isBreaking=True,
+        isEilmeldung=True,
+        title="Eilmeldung: Trump und Iran einigen sich auf Feuerpause",
+    )
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(score_only_mode=True, min_score=75.0, breaking_min_score=72.0, min_alert_score=78.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["teamsAlertScore"] >= 78.0
 
 
 def test_score_only_mode_does_not_use_lower_breaking_threshold():
@@ -268,13 +308,13 @@ def test_realert_requires_relevant_improvement_and_cooldown():
 
 
 def test_multiple_good_candidates_only_notify_best_candidate():
-    first = _candidate(id="article-1", url="https://www.bild.de/politik/article-1", score=81.0)
+    first = _candidate(id="article-1", url="https://www.bild.de/politik/article-1", score=95.0)
     second = _candidate(
         id="article-2",
-        url="https://www.bild.de/sport/article-2",
-        title="FC Bayern gewinnt wichtiges Finale",
-        category="sport",
-        score=74.0,
+        url="https://www.bild.de/politik/article-2",
+        title="Eilmeldung: Regierung beschliesst weiteres Paket",
+        category="politik",
+        score=82.0,
         predictedOR=0.061,
     )
     context = build_teams_alert_context([first, second], history=_history(), alert_state={}, now_ts=NOW_TS)
@@ -302,13 +342,15 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Warum genau jetzt?" in text
     assert candidate["title"] in text
     assert candidate["url"] in text
-    assert "Score: 78.4" in text
+    assert "Teams Alert Score:" in text
+    assert "Raw Score: 78.4" in text
     assert "Prognose: 5.20 % OR" in text
     assert "Letzter Push: 42 Minuten" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
     assert payload["articleTitle"] == candidate["title"]
     assert payload["articleUrl"] == candidate["url"]
+    assert payload["teamsAlertScore"] >= payload["teamsAlertScoreThreshold"]
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum genau jetzt?" in payload["messageHtml"]

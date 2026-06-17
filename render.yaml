@@ -36,7 +36,9 @@ services:
       - key: PUSH_TEAMS_WEBHOOK_URL
         sync: false
       - key: PUSH_TEAMS_MIN_SCORE
-        value: "80"
+        value: "75"
+      - key: PUSH_TEAMS_MIN_ALERT_SCORE
+        value: "78"
       - key: PUSH_TEAMS_SCORE_ONLY_MODE
         value: "true"
       - key: PUSH_TEAMS_MIN_OR
@@ -56,7 +58,7 @@ services:
       - key: PUSH_TEAMS_BREAKING_OVERRIDE
         value: "true"
       - key: PUSH_TEAMS_BREAKING_MIN_SCORE
-        value: "80"
+        value: "72"
       - key: TAGESPLAN_ON_DEMAND_BUILD_ENABLED
         value: "true"
       - key: OPENAI_API_KEY

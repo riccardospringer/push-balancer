@@ -345,8 +345,9 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `TAGESPLAN_ON_DEMAND_BUILD_ENABLED` | No | `false` in economy mode | Controls whether `/api/tagesplan` builds a fresh plan on request; when disabled it returns a lightweight loading payload |
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
-| `PUSH_TEAMS_MIN_SCORE` | No | `80` | Minimum push score for a standard Teams recommendation |
-| `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, `score >= PUSH_TEAMS_MIN_SCORE` is enough to trigger a Teams alert; forecast, pause, section, freshness, and push density become context only |
+| `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
+| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; combines raw score, news value, freshness, timing, competition, and user-load penalty |
+| `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast and last-push gaps are context signals; the weighted Teams Alert Score still decides final notification eligibility |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
@@ -355,7 +356,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |
 | `PUSH_TEAMS_ALLOWED_SECTIONS` | No | empty | Comma-separated section allowlist, e.g. `News,Politik,Sport,Regional` |
 | `PUSH_TEAMS_BREAKING_OVERRIDE` | No | `true` | Allows lower configured breaking-news thresholds |
-| `PUSH_TEAMS_BREAKING_MIN_SCORE` | No | `80` | Breaking-news score floor; score-only mode always uses the configured standard score threshold |
+| `PUSH_TEAMS_BREAKING_MIN_SCORE` | No | `72` | Breaking-news raw score floor outside score-only mode; weighted Teams Alert Score still decides final eligibility |
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
 | `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-4o-mini` | Model used for manual title generation when enabled |
