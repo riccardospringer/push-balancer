@@ -290,6 +290,41 @@ class TestStableFrontendContracts:
         assert second.json()["articles"][0]["predictedOR"] == 0.052
         assert calls["count"] == 1
 
+    def test_articles_prediction_enrichment_hides_global_average_fallback(self, monkeypatch):
+        import app.routers.feed as feed_router
+
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://www.bild.de/digital/fallback-artikel</loc>
+    <news:news>
+      <news:title>Fallback Test Artikel</news:title>
+      <news:publication_date>2026-04-10T08:00:00+00:00</news:publication_date>
+    </news:news>
+  </url>
+</urlset>"""
+
+        feed_router._article_prediction_cache.clear()
+        monkeypatch.setattr(feed_router, "ARTICLE_PREDICTION_ENRICHMENT_ENABLED", True)
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr(
+            "app.ml.predict.predict_or",
+            lambda *_args, **_kwargs: {
+                "predicted_or": 4.77,
+                "basis_method": "global_avg",
+                "confidence": 0.1,
+            },
+        )
+
+        resp = client.get("/api/articles")
+
+        assert resp.status_code == 200
+        article = resp.json()["articles"][0]
+        assert article["predictedOR"] is None
+        assert article["predictedORBasis"] == "global_avg"
+        assert article["predictedORIsFallback"] is True
+
     def test_tagesplan_returns_lightweight_payload_when_on_demand_build_disabled(self, monkeypatch):
         import app.routers.tagesplan as tagesplan_router
 

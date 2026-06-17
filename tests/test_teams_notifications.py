@@ -33,6 +33,7 @@ def _config(**overrides):
         "realert_score_delta": 8.0,
         "realert_or_delta": 0.75,
         "alert_cooldown_minutes": 60,
+        "global_cooldown_minutes": 30,
         "allowed_sections": (),
         "breaking_override": True,
         "breaking_min_score": 62.0,
@@ -81,6 +82,7 @@ def _context(candidate, *, history=None, alert_state=None):
         [candidate],
         history=history if history is not None else _history(),
         alert_state=alert_state or {},
+        last_teams_alert_ts=0,
         now_ts=NOW_TS,
     )
 
@@ -166,6 +168,36 @@ def test_score_only_mode_keeps_score_threshold_as_blocker():
 
     assert decision["shouldNotify"] is False
     assert any("Score zu niedrig" in reason for reason in decision["blockingReasons"])
+
+
+def test_score_only_mode_does_not_use_lower_breaking_threshold():
+    candidate = _candidate(score=79.0, predictedOR=None, isBreaking=True)
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=[]),
+        _config(score_only_mode=True, min_score=80.0, breaking_min_score=62.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["minScore"] == 80.0
+    assert any("Score zu niedrig: 79.0 < 80.0" in reason for reason in decision["blockingReasons"])
+
+
+def test_global_teams_cooldown_blocks_candidate_chain_spam():
+    candidate = _candidate(score=92.0)
+    context = _context(candidate)
+    context["lastTeamsAlertTs"] = NOW_TS - 8 * 60
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(global_cooldown_minutes=30),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["status"] == "observe"
+    assert any("Teams-Cooldown aktiv" in reason for reason in decision["blockingReasons"])
 
 
 def test_missing_article_link_does_not_trigger_action_recommendation():
@@ -264,16 +296,15 @@ def test_teams_message_contains_required_editorial_fields():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
     text = message["text"]
 
-    assert "Handlungsempfehlung: Jetzt pushen" in text
+    assert "Push empfohlen" in text
     assert "Was soll ich pushen?" in text
     assert "Welcher Artikel ist gemeint?" in text
     assert "Warum genau jetzt?" in text
     assert candidate["title"] in text
     assert candidate["url"] in text
-    assert "Push Score: 78.4" in text
+    assert "Score: 78.4" in text
     assert "Prognose: 5.20 % OR" in text
-    assert "Zeit seit letztem Push: 42 Minuten" in text
-    assert "Warum ist diese Nachricht pushwürdig?" in text
+    assert "Letzter Push: 42 Minuten" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
     assert payload["articleTitle"] == candidate["title"]
@@ -284,6 +315,24 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Was soll ich pushen?" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
+
+
+def test_teams_message_hides_global_average_prediction_fallback():
+    candidate = _candidate(
+        predictedOR=0.0477,
+        predictedORBasis="global_avg",
+        predictedORConfidence=0.1,
+        predictedORIsFallback=True,
+    )
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config(score_only_mode=True))
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, _config(score_only_mode=True))
+    text = message["text"]
+
+    assert "4.77" not in text
+    assert "keine belastbare Prognose" in text
+    assert "4.77" not in message["payload"]["messageHtml"]
 
 
 def test_teams_webhook_error_is_logged_and_does_not_crash(caplog):

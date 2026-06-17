@@ -103,9 +103,10 @@ _VIDEO_TITLE_MARKERS = (
 # ── In-Memory URL-Cache ────────────────────────────────────────────────────
 _url_cache: dict[str, tuple[float, bytes]] = {}
 _URL_CACHE_MAX = 80  # max. Einträge — verhindert unbegrenztes Wachstum
-_article_prediction_cache: dict[str, tuple[float, float]] = {}
+_article_prediction_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _ARTICLE_PREDICTION_CACHE_MAX = 256
 _ARTICLE_PREDICTION_CACHE_TTL = max(CACHE_TTL, 900)
+_LOW_CONFIDENCE_PREDICTION_METHODS = {"global_avg", "error_fallback"}
 
 try:
     import certifi as _certifi
@@ -137,21 +138,49 @@ def _fetch_url(url: str) -> bytes | None:
         return None
 
 
-def _article_prediction_cache_get(cache_key: str) -> float | None:
+def _article_prediction_cache_get(cache_key: str) -> dict[str, Any] | None:
     now = time.time()
     cached = _article_prediction_cache.get(cache_key)
     if cached and now - cached[0] < _ARTICLE_PREDICTION_CACHE_TTL:
-        return cached[1]
+        payload = cached[1]
+        if isinstance(payload, dict):
+            return dict(payload)
+        return {"predicted_or": payload}
     if cached:
         _article_prediction_cache.pop(cache_key, None)
     return None
 
 
-def _article_prediction_cache_set(cache_key: str, predicted_or: float) -> None:
+def _article_prediction_cache_set(cache_key: str, result: dict[str, Any]) -> None:
     if len(_article_prediction_cache) >= _ARTICLE_PREDICTION_CACHE_MAX:
         oldest = min(_article_prediction_cache, key=lambda k: _article_prediction_cache[k][0])
         del _article_prediction_cache[oldest]
-    _article_prediction_cache[cache_key] = (time.time(), predicted_or)
+    _article_prediction_cache[cache_key] = (time.time(), dict(result))
+
+
+def _apply_prediction_result(article: dict[str, Any], result: dict[str, Any] | None) -> None:
+    if not isinstance(result, dict):
+        return
+    predicted_or = result.get("predicted_or")
+    try:
+        predicted_value = float(predicted_or)
+    except (TypeError, ValueError):
+        return
+
+    basis_method = str(result.get("basis_method") or "").strip()
+    confidence_raw = result.get("confidence")
+    try:
+        confidence = float(confidence_raw) if confidence_raw is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+
+    is_fallback = basis_method in _LOW_CONFIDENCE_PREDICTION_METHODS or (
+        confidence is not None and confidence <= 0.1
+    )
+    article["predictedORBasis"] = basis_method or None
+    article["predictedORConfidence"] = round(confidence, 3) if confidence is not None else None
+    article["predictedORIsFallback"] = is_fallback
+    article["predictedOR"] = None if is_fallback else round(predicted_value / 100, 4)
 
 
 class CompetitorXorRequest(BaseModel):
@@ -338,6 +367,9 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
                 "score": min(score, 100.0),
                 "scoreReason": score_reason,
                 "predictedOR": None,
+                "predictedORBasis": None,
+                "predictedORConfidence": None,
+                "predictedORIsFallback": False,
                 "isBreaking": is_breaking,
                 "isEilmeldung": is_eilmeldung,
                 "isSport": category == "sport",
@@ -395,7 +427,7 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
                 )
                 cached_prediction = _article_prediction_cache_get(cache_key)
                 if cached_prediction is not None:
-                    article["predictedOR"] = round(float(cached_prediction) / 100, 4)
+                    _apply_prediction_result(article, cached_prediction)
                     continue
                 result = predict_or(
                     {
@@ -410,10 +442,10 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
                     },
                     _research_state,
                 )
-                predicted_or = (result or {}).get("predicted_or")
-                if predicted_or is not None:
-                    _article_prediction_cache_set(cache_key, float(predicted_or))
-                    article["predictedOR"] = round(float(predicted_or) / 100, 4)
+                if result and (result or {}).get("predicted_or") is not None:
+                    _apply_prediction_result(article, result)
+                    if not article.get("predictedORIsFallback"):
+                        _article_prediction_cache_set(cache_key, result)
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
 

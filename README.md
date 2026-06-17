@@ -318,7 +318,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, and `recommendedPushText`.
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, and `recommendedPushText`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose".
 
 ### CORS
 
@@ -345,15 +345,17 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `TAGESPLAN_ON_DEMAND_BUILD_ENABLED` | No | `false` in economy mode | Controls whether `/api/tagesplan` builds a fresh plan on request; when disabled it returns a lightweight loading payload |
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
-| `PUSH_TEAMS_MIN_SCORE` | No | `70` | Minimum push score for a standard Teams recommendation |
+| `PUSH_TEAMS_MIN_SCORE` | No | `80` | Minimum push score for a standard Teams recommendation |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, `score >= PUSH_TEAMS_MIN_SCORE` is enough to trigger a Teams alert; forecast, pause, section, freshness, and push density become context only |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
+| `PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES` | No | `30` | Minimum pause between any two Teams recommendations, even for different articles |
 | `PUSH_TEAMS_REALERT_SCORE_DELTA` | No | `8` | Required score improvement for a re-alert |
 | `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |
 | `PUSH_TEAMS_ALLOWED_SECTIONS` | No | empty | Comma-separated section allowlist, e.g. `News,Politik,Sport,Regional` |
 | `PUSH_TEAMS_BREAKING_OVERRIDE` | No | `true` | Allows lower configured breaking-news thresholds |
+| `PUSH_TEAMS_BREAKING_MIN_SCORE` | No | `80` | Breaking-news score floor; score-only mode always uses the configured standard score threshold |
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
 | `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-4o-mini` | Model used for manual title generation when enabled |

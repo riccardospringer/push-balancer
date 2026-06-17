@@ -36,7 +36,7 @@ services:
       - key: PUSH_TEAMS_WEBHOOK_URL
         sync: false
       - key: PUSH_TEAMS_MIN_SCORE
-        value: "70"
+        value: "80"
       - key: PUSH_TEAMS_SCORE_ONLY_MODE
         value: "true"
       - key: PUSH_TEAMS_MIN_OR
@@ -45,6 +45,8 @@ services:
         value: "30"
       - key: PUSH_TEAMS_ALERT_COOLDOWN_MINUTES
         value: "90"
+      - key: PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
+        value: "30"
       - key: PUSH_TEAMS_REALERT_SCORE_DELTA
         value: "8"
       - key: PUSH_TEAMS_REALERT_OR_DELTA
@@ -53,6 +55,8 @@ services:
         value: News,Politik,Sport,Regional
       - key: PUSH_TEAMS_BREAKING_OVERRIDE
         value: "true"
+      - key: PUSH_TEAMS_BREAKING_MIN_SCORE
+        value: "80"
       - key: TAGESPLAN_ON_DEMAND_BUILD_ENABLED
         value: "true"
       - key: OPENAI_API_KEY

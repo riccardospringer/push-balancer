@@ -870,6 +870,17 @@ def teams_alert_load_for_keys(article_keys: list[str]) -> dict[str, dict]:
     return {str(row["article_key"]): dict(row) for row in rows}
 
 
+def teams_alert_last_sent_ts() -> int:
+    """Return the newest successful Teams alert timestamp for global cooldown."""
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        row = conn.execute(
+            "SELECT MAX(last_alert_ts) AS last_alert_ts FROM teams_alerts WHERE status = 'sent'",
+        ).fetchone()
+        conn.close()
+    return int((row[0] if row else 0) or 0)
+
+
 def teams_alert_record(
     *,
     article_key: str,

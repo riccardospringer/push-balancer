@@ -26,6 +26,7 @@ from app.config import (
     PUSH_TEAMS_BREAKING_MIN_SCORE,
     PUSH_TEAMS_BREAKING_OVERRIDE,
     PUSH_TEAMS_CANDIDATE_LIMIT,
+    PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
     PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH,
@@ -38,6 +39,7 @@ from app.config import (
 )
 from app.database import (
     push_db_load_all,
+    teams_alert_last_sent_ts,
     teams_alert_load_for_keys,
     teams_alert_record,
 )
@@ -66,6 +68,7 @@ class TeamsAlertConfig:
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
     realert_or_delta: float = PUSH_TEAMS_REALERT_OR_DELTA
     alert_cooldown_minutes: int = PUSH_TEAMS_ALERT_COOLDOWN_MINUTES
+    global_cooldown_minutes: int = PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
     allowed_sections: tuple[str, ...] = tuple(PUSH_TEAMS_ALLOWED_SECTIONS)
     breaking_override: bool = PUSH_TEAMS_BREAKING_OVERRIDE
     breaking_min_score: float = PUSH_TEAMS_BREAKING_MIN_SCORE
@@ -95,6 +98,7 @@ def build_teams_alert_context(
     *,
     history: list[dict[str, Any]] | None = None,
     alert_state: dict[str, dict[str, Any]] | None = None,
+    last_teams_alert_ts: int | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
@@ -110,6 +114,12 @@ def build_teams_alert_context(
         except Exception as exc:
             log.warning("[TeamsAlert] Could not load alert state: %s", exc)
             alert_state = {}
+    if last_teams_alert_ts is None:
+        try:
+            last_teams_alert_ts = teams_alert_last_sent_ts()
+        except Exception as exc:
+            log.warning("[TeamsAlert] Could not load global alert cooldown state: %s", exc)
+            last_teams_alert_ts = 0
 
     last_push_ts = 0
     for item in history:
@@ -130,6 +140,7 @@ def build_teams_alert_context(
         "history": history,
         "alertState": alert_state,
         "lastPushTs": last_push_ts,
+        "lastTeamsAlertTs": int(last_teams_alert_ts or 0),
         "recentPushCount6h": recent_6h_count,
     }
 
@@ -148,12 +159,18 @@ def should_notify_teams(
     title = _title(candidate)
     section = _section(candidate)
     score = _score(candidate)
-    predicted_or = normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+    predicted_or = _candidate_predicted_or(candidate)
     breaking = _is_breaking(candidate)
     min_score, min_or, min_pause = _effective_thresholds(config, breaking)
     last_push_ts = _safe_int(context.get("lastPushTs"))
+    last_teams_alert_ts = _safe_int(context.get("lastTeamsAlertTs"))
     minutes_since_last_push = (
         round((now_ts - last_push_ts) / 60, 1) if last_push_ts > 0 and now_ts >= last_push_ts else None
+    )
+    minutes_since_last_teams_alert = (
+        round((now_ts - last_teams_alert_ts) / 60, 1)
+        if last_teams_alert_ts > 0 and now_ts >= last_teams_alert_ts
+        else None
     )
     alert_state = (context.get("alertState") or {}).get(key)
 
@@ -239,6 +256,17 @@ def should_notify_teams(
     elif realert_reason.get("positive"):
         positive.append(str(realert_reason["positive"]))
 
+    if (
+        config.global_cooldown_minutes > 0
+        and minutes_since_last_teams_alert is not None
+        and minutes_since_last_teams_alert < config.global_cooldown_minutes
+    ):
+        blockers.append(
+            "Teams-Cooldown aktiv: letzter Hinweis vor "
+            f"{minutes_since_last_teams_alert:.0f} < {config.global_cooldown_minutes} Minuten"
+        )
+        status = "observe"
+
     stronger = context.get("strongerCandidate")
     if stronger:
         stronger_title = _title(stronger)
@@ -273,6 +301,8 @@ def should_notify_teams(
         "minMinutesSinceLastPush": min_pause,
         "minutesSinceLastPush": minutes_since_last_push,
         "lastPushAt": _iso_from_ts(last_push_ts) if last_push_ts else None,
+        "lastGlobalTeamsAlertAt": _iso_from_ts(last_teams_alert_ts) if last_teams_alert_ts else None,
+        "minutesSinceLastGlobalTeamsAlert": minutes_since_last_teams_alert,
         "lastTeamsAlertAt": _iso_from_ts(_safe_int(alert_state.get("last_alert_ts"))) if alert_state else None,
         "alertCount": int(alert_state.get("alert_count") or 0) if alert_state else 0,
         "isBreaking": breaking,
@@ -383,57 +413,34 @@ def build_teams_push_recommendation(
     url = _url(candidate)
     section = _section(candidate)
     score = _score(candidate)
-    predicted_or = normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+    predicted_or = _candidate_predicted_or(candidate)
     now_ts = int(context.get("nowTs") or time.time())
     minutes = decision.get("minutesSinceLastPush")
     score_only_mode = bool(decision.get("scoreOnlyMode") or config.score_only_mode)
     score_threshold = float(decision.get("minScore", config.min_score) or config.min_score)
     push_text = str(candidate.get("recommendedText") or title)
-    competition = (decision.get("competition") or {}).get("summary") or "Kein staerkerer Kandidat aktuell verfuegbar"
+    competition_meta = decision.get("competition") or {}
+    competitors = int(competition_meta.get("eligibleCompetitors") or 0)
+    competition = (
+        f"Bester Kandidat unter {competitors + 1} passenden Artikeln"
+        if competitors
+        else "Kein staerkerer Kandidat im aktuellen Feld"
+    )
 
-    bullets = _dedupe(
-        [
-            f"Push Score: {score:.1f} und damit ueber Schwelle {decision.get('minScore', config.min_score):.1f}",
-            (
-                f"Prognose: {_format_or(predicted_or)}, aktuell guter Zeitpunkt"
-                if not score_only_mode
-                else f"Score-Modus aktiv: Teams-Hinweis wird ab Score {score_threshold:.1f} ausgeloest"
-            ),
-            (
-                f"Letzter Push vor {float(minutes):.0f} Minuten, Mindestpause erfuellt"
-                if isinstance(minutes, (int, float))
-                else (
-                    "Pause seit letztem Push blockiert im Score-Modus nicht"
-                    if score_only_mode
-                    else "Keine aktuelle Push-Pause blockiert die Empfehlung"
-                )
-            ),
-            *list(decision.get("reasons") or [])[:4],
-        ]
-    )[:6]
-
-    if score_only_mode:
-        why_now = [
-            f"Der Push Score liegt bei {score:.1f} und damit ueber der Teams-Schwelle.",
-            f"Der aktuelle Teams-Modus ist score-basiert: ab {score_threshold:.1f} wird ein Hinweis ausgeloest.",
-            "Anti-Spam-Regeln verhindern Wiederholungen fuer denselben Artikel.",
-        ]
-        if predicted_or is not None:
-            why_now.append(f"Prognose als Kontext: {_format_or(predicted_or)}.")
+    threshold_reason = f"Score {score:.1f} liegt ueber der Schwelle {score_threshold:.0f}"
+    forecast_reason = f"Prognose: {_format_or(predicted_or)}" if predicted_or is not None else ""
+    duplicate_reason = "Kein Duplicate und kein wiederholter Teams-Hinweis"
+    if not score_only_mode and isinstance(minutes, (int, float)):
+        timing_reason = f"Letzter Push vor {float(minutes):.0f} Minuten"
+    elif score_only_mode and predicted_or is not None:
+        timing_reason = forecast_reason
     else:
-        why_now = [
-            f"Prognose liegt bei {_format_or(predicted_or)} und damit ueber dem Mindestwert.",
-            (
-                f"Seit dem letzten Push sind {float(minutes):.0f} Minuten vergangen; die Mindestpause ist erfuellt."
-                if isinstance(minutes, (int, float))
-                else "In der geladenen Historie blockiert kein letzter Push die Empfehlung."
-            ),
-            "Der Kandidat ist aktuell der staerkste pushwuerdige Artikel im Feld.",
-        ]
-    why_pushworthy = [*bullets, f"Konkurrenzlage: {competition}"]
+        timing_reason = ""
+    why_now = _dedupe([threshold_reason, competition, duplicate_reason])[:3]
+    why_pushworthy = _dedupe([threshold_reason, timing_reason, competition])[:3]
 
     text_lines = [
-        "🚨 Handlungsempfehlung: Jetzt pushen",
+        "🚨 Push empfohlen",
         "",
         "Was soll ich pushen?",
         push_text,
@@ -441,17 +448,12 @@ def build_teams_push_recommendation(
         "Welcher Artikel ist gemeint?",
         f"{title}\n{url}" if url else title,
         "",
-        f"Ressort / Kategorie: {section}",
-        f"Push Score: {score:.1f}",
-        f"Prognose: {_format_or(predicted_or)}",
-        f"Zeitpunkt der Empfehlung: {_format_dt(now_ts)}",
-        f"Zeit seit letztem Push: {_format_minutes(minutes)}",
+        f"Ressort: {section}",
+        f"Score: {score:.1f} | Schwelle: {score_threshold:.0f} | Prognose: {_format_or(predicted_or)}",
+        f"Zeitpunkt: {_format_dt(now_ts)} | Letzter Push: {_format_minutes(minutes)}",
         "",
         "Warum genau jetzt?",
         *[f"- {reason}" for reason in why_now],
-        "",
-        "Warum ist diese Nachricht pushwürdig?",
-        *[f"- {reason}" for reason in why_pushworthy],
         "",
         "Empfehlung:",
         "Jetzt pushen.",
@@ -466,8 +468,8 @@ def build_teams_push_recommendation(
         recommended_text=push_text,
         now_ts=now_ts,
         minutes_since_last_push=minutes,
+        score_threshold=score_threshold,
         why_now=why_now,
-        why_pushworthy=why_pushworthy,
     )
     return {
         "text": text,
@@ -558,7 +560,7 @@ def evaluate_and_send_best_candidate(
         article_url=_url(selected),
         title_hash=title_hash(selected),
         score=_score(selected),
-        predicted_or=normalize_predicted_or(selected.get("predictedOR")) or 0.0,
+        predicted_or=_candidate_predicted_or(selected) or 0.0,
         candidate_updated_at=_candidate_updated_ts(selected),
         is_breaking=_is_breaking(selected),
         reason=reason,
@@ -649,7 +651,24 @@ def normalize_predicted_or(value: Any) -> float | None:
     return numeric * 100.0 if numeric <= 1.0 else numeric
 
 
+def _candidate_predicted_or(candidate: dict[str, Any]) -> float | None:
+    if bool(candidate.get("predictedORIsFallback")):
+        return None
+    basis = str(candidate.get("predictedORBasis") or "").strip().lower()
+    if basis in {"global_avg", "error_fallback"}:
+        return None
+    try:
+        confidence = float(candidate.get("predictedORConfidence"))
+    except (TypeError, ValueError):
+        confidence = None
+    if confidence is not None and confidence <= 0.1:
+        return None
+    return normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+
+
 def _effective_thresholds(config: TeamsAlertConfig, breaking: bool) -> tuple[float, float, int]:
+    if config.score_only_mode:
+        return config.min_score, config.min_or, config.min_minutes_since_last_push
     if breaking and config.breaking_override:
         return (
             min(config.min_score, config.breaking_min_score),
@@ -717,7 +736,7 @@ def _already_pushed_reason(candidate: dict[str, Any], history: list[dict[str, An
 
 def _candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
     score = _score(candidate)
-    predicted = normalize_predicted_or(candidate.get("predictedOR")) or 0.0
+    predicted = _candidate_predicted_or(candidate) or 0.0
     breaking = 1.0 if _is_breaking(candidate) else 0.0
     freshness = _candidate_updated_ts(candidate) or 0
     return (score, predicted, breaking, float(freshness))
@@ -818,7 +837,7 @@ def _format_dt(ts_value: int) -> str:
 
 
 def _format_or(value: float | None) -> str:
-    return f"{value:.2f} % OR" if value is not None else "keine Prognose"
+    return f"{value:.2f} % OR" if value is not None else "keine belastbare Prognose"
 
 
 def _format_minutes(value: Any) -> str:
@@ -837,8 +856,8 @@ def _build_power_automate_message_html(
     recommended_text: str,
     now_ts: int,
     minutes_since_last_push: Any,
+    score_threshold: float,
     why_now: list[str],
-    why_pushworthy: list[str],
 ) -> str:
     article_html = (
         f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
@@ -846,27 +865,23 @@ def _build_power_automate_message_html(
         else html.escape(title)
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
-    why_pushworthy_html = "".join(
-        f"<li>{html.escape(reason)}</li>" for reason in why_pushworthy
-    )
     return (
-        "<h2>🚨 Handlungsempfehlung: Jetzt pushen</h2>"
+        "<h2>🚨 Push empfohlen</h2>"
         "<p><strong>Was soll ich pushen?</strong><br>"
         f"{html.escape(recommended_text)}</p>"
         "<p><strong>Welcher Artikel ist gemeint?</strong><br>"
         f"{article_html}</p>"
         "<p>"
-        f"<strong>Ressort / Kategorie:</strong> {html.escape(section)}<br>"
-        f"<strong>Push Score:</strong> {score:.1f}<br>"
+        f"<strong>Ressort:</strong> {html.escape(section)}<br>"
+        f"<strong>Score:</strong> {score:.1f} "
+        f"(Schwelle {score_threshold:.0f})<br>"
         f"<strong>Prognose:</strong> {html.escape(_format_or(predicted_or))}<br>"
-        f"<strong>Zeitpunkt der Empfehlung:</strong> {html.escape(_format_dt(now_ts))}<br>"
-        f"<strong>Zeit seit letztem Push:</strong> "
+        f"<strong>Zeitpunkt:</strong> {html.escape(_format_dt(now_ts))}<br>"
+        f"<strong>Letzter Push:</strong> "
         f"{html.escape(_format_minutes(minutes_since_last_push))}"
         "</p>"
         "<p><strong>Warum genau jetzt?</strong></p>"
         f"<ul>{why_now_html}</ul>"
-        "<p><strong>Warum ist diese Nachricht pushwuerdig?</strong></p>"
-        f"<ul>{why_pushworthy_html}</ul>"
         "<p><strong>Empfehlung:</strong> Jetzt pushen.</p>"
     )
 

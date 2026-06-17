@@ -74,6 +74,9 @@ def _consumer_article(article: dict[str, Any], *, include_explanations: bool) ->
         "predictedOpenRate": round(predicted_open_rate, 4)
         if predicted_open_rate is not None
         else None,
+        "predictedOpenRateBasis": article.get("predictedORBasis"),
+        "predictedOpenRateConfidence": article.get("predictedORConfidence"),
+        "predictedOpenRateIsFallback": bool(article.get("predictedORIsFallback")),
         "priority": article.get("mixPriority") or "",
         "recommendedText": article.get("recommendedText") or article.get("title") or "",
         "flags": {
