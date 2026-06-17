@@ -41,6 +41,39 @@ class TestTeamsAlertHistory:
         assert rows[0]["status"] == "sent"
         assert rows[0]["last_score"] == pytest.approx(82.0)
 
+    def test_teams_alert_claim_blocks_duplicate_in_flight_send(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            first = database.teams_alert_try_claim_send(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=0.0,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                decision_ts=1_800_000_100,
+            )
+            second = database.teams_alert_try_claim_send(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=0.0,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                decision_ts=1_800_000_120,
+            )
+
+        assert first["claimed"] is True
+        assert second["claimed"] is False
+        assert second["reason"] == "article_send_in_progress"
+
 class TestPushDbUpsert:
     def test_upsert_inserts_new_records(self, tmp_db, sample_pushes):
         """Neue Pushes werden korrekt in die DB geschrieben."""

@@ -43,6 +43,7 @@ from app.database import (
     teams_alert_last_sent_ts,
     teams_alert_load_for_keys,
     teams_alert_record,
+    teams_alert_try_claim_send,
 )
 
 log = logging.getLogger("push-balancer")
@@ -444,6 +445,7 @@ def build_teams_push_recommendation(
     alert_score = float(decision.get("teamsAlertScore") or 0.0)
     alert_threshold = float(decision.get("teamsAlertScoreThreshold") or config.min_alert_score)
     push_text = str(candidate.get("recommendedText") or title)
+    push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
     competitors = int(competition_meta.get("eligibleCompetitors") or 0)
     competition = (
@@ -481,29 +483,37 @@ def build_teams_push_recommendation(
     why_now = _dedupe([threshold_reason, score_reason, timing_reason, competition, duplicate_reason])[:5]
     why_pushworthy = _dedupe([score_reason, forecast_reason, timing_reason, competition])[:4]
 
-    text_lines = [
-        "🚨 Push-Empfehlung: Jetzt pushen",
-        "",
-        "Empfohlener Push-Text:",
-        push_text,
-        "",
-        "Artikel:",
-        f"{title}\n{url}" if url else title,
-        "",
-        "Warum jetzt?",
-        *[f"- {reason}" for reason in why_now],
-        "",
-        "Einordnung:",
-        f"- Ressort: {section_label}",
-        f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
-        f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
-        f"- Prognose: {_format_or(predicted_or)}",
-        f"- Letzter Push: {_format_minutes(minutes)}",
-        f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
-        "",
-        "Empfehlung:",
-        "Jetzt pushen.",
-    ]
+    text_lines = ["🚨 Push-Empfehlung: Jetzt pushen", ""]
+    if push_text_matches_title:
+        text_lines.extend(["Artikel und empfohlener Push:", f"{title}\n{url}" if url else title])
+    else:
+        text_lines.extend(
+            [
+                "Empfohlener Push-Text:",
+                push_text,
+                "",
+                "Artikel:",
+                f"{title}\n{url}" if url else title,
+            ]
+        )
+    text_lines.extend(
+        [
+            "",
+            "Warum jetzt?",
+            *[f"- {reason}" for reason in why_now],
+            "",
+            "Einordnung:",
+            f"- Ressort: {section_label}",
+            f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
+            f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
+            f"- Prognose: {_format_or(predicted_or)}",
+            f"- Letzter Push: {_format_minutes(minutes)}",
+            f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
+            "",
+            "Empfehlung:",
+            "Jetzt pushen.",
+        ]
+    )
     text = "\n".join(text_lines)
     message_html = _build_power_automate_message_html(
         title=title,
@@ -518,6 +528,7 @@ def build_teams_push_recommendation(
         alert_score=alert_score,
         alert_threshold=alert_threshold,
         why_now=why_now,
+        push_text_matches_title=push_text_matches_title,
     )
     return {
         "text": text,
@@ -611,14 +622,49 @@ def evaluate_and_send_best_candidate(
     if not selected or not selected_decision or not selected_decision.get("shouldNotify"):
         return {"ok": True, "sent": False, "reason": "no_candidate", "evaluation": evaluation}
 
+    article_key = candidate_key(selected)
+    article_id = str(selected.get("id") or article_key)
+    article_url = _url(selected)
+    claim = teams_alert_try_claim_send(
+        article_key=article_key,
+        article_id=article_id,
+        article_url=article_url,
+        title_hash=title_hash(selected),
+        article_title=_title(selected),
+        score=_score(selected),
+        predicted_or=_candidate_predicted_or(selected) or 0.0,
+        candidate_updated_at=_candidate_updated_ts(selected),
+        is_breaking=_is_breaking(selected),
+        reason=selected_decision.get("summary") or "Push empfohlen",
+        decision_ts=int(context.get("nowTs") or time.time()),
+        alert_cooldown_minutes=config.alert_cooldown_minutes,
+        global_cooldown_minutes=config.global_cooldown_minutes,
+    )
+    if not claim.get("claimed"):
+        log.info(
+            "[TeamsAlert] send skipped by claim candidateId=%s articleId=%s url=%s reason=%s",
+            article_key,
+            article_id,
+            article_url,
+            claim.get("reason"),
+        )
+        return {
+            "ok": True,
+            "sent": False,
+            "reason": "send_claim_blocked",
+            "claim": claim,
+            "candidateId": article_key,
+            "evaluation": evaluation,
+        }
+
     message = build_teams_push_recommendation(selected, context, selected_decision, config)
     send_result = send_teams_notification(message, config)
     status = "sent" if send_result.get("ok") else "failed"
     reason = selected_decision.get("summary") or "Push empfohlen"
     teams_alert_record(
-        article_key=candidate_key(selected),
-        article_id=str(selected.get("id") or candidate_key(selected)),
-        article_url=_url(selected),
+        article_key=article_key,
+        article_id=article_id,
+        article_url=article_url,
         title_hash=title_hash(selected),
         article_title=_title(selected),
         score=_score(selected),
@@ -633,9 +679,9 @@ def evaluate_and_send_best_candidate(
 
     log.info(
         "[TeamsAlert] send_result candidateId=%s articleId=%s url=%s status=%s ok=%s",
-        candidate_key(selected),
-        selected.get("id") or "",
-        _url(selected),
+        article_key,
+        article_id,
+        article_url,
         status,
         bool(send_result.get("ok")),
     )
@@ -643,7 +689,7 @@ def evaluate_and_send_best_candidate(
         "ok": True,
         "sent": bool(send_result.get("ok")),
         "sendResult": send_result,
-        "candidateId": candidate_key(selected),
+        "candidateId": article_key,
         "evaluation": evaluation,
     }
 
@@ -873,7 +919,20 @@ def _realert_blocker_or_reason(
     now_ts: int,
     config: TeamsAlertConfig,
 ) -> dict[str, str]:
-    if not alert_state or alert_state.get("status") != "sent":
+    if not alert_state:
+        return {}
+
+    alert_status = str(alert_state.get("status") or "")
+    last_decision_ts = _safe_int(alert_state.get("last_decision_ts"))
+    if alert_status == "sending" and now_ts - last_decision_ts < 15 * 60:
+        return {"blocker": "Teams-Hinweis wird bereits versendet"}
+    if (
+        alert_status == "failed"
+        and last_decision_ts
+        and now_ts - last_decision_ts < config.alert_cooldown_minutes * 60
+    ):
+        return {"blocker": "Teams-Fehler-Cooldown aktiv"}
+    if alert_status != "sent":
         return {}
 
     last_alert_ts = _safe_int(alert_state.get("last_alert_ts"))
@@ -1047,6 +1106,12 @@ def _format_section(value: str) -> str:
     return known.get(label.lower(), label[:1].upper() + label[1:])
 
 
+def _same_editorial_text(left: str, right: str) -> bool:
+    def normalize(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+    return bool(normalize(left)) and normalize(left) == normalize(right)
+
 
 def _format_minutes(value: Any) -> str:
     if isinstance(value, (int, float)):
@@ -1068,6 +1133,7 @@ def _build_power_automate_message_html(
     alert_score: float,
     alert_threshold: float,
     why_now: list[str],
+    push_text_matches_title: bool = False,
 ) -> str:
     article_html = (
         f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
@@ -1075,12 +1141,21 @@ def _build_power_automate_message_html(
         else html.escape(title)
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
+    if push_text_matches_title:
+        lead_html = (
+            "<p><strong>Artikel und empfohlener Push:</strong><br>"
+            f"{article_html}</p>"
+        )
+    else:
+        lead_html = (
+            "<p><strong>Empfohlener Push-Text:</strong><br>"
+            f"{html.escape(recommended_text)}</p>"
+            "<p><strong>Artikel:</strong><br>"
+            f"{article_html}</p>"
+        )
     return (
         "<h2>🚨 Push-Empfehlung: Jetzt pushen</h2>"
-        "<p><strong>Empfohlener Push-Text:</strong><br>"
-        f"{html.escape(recommended_text)}</p>"
-        "<p><strong>Artikel:</strong><br>"
-        f"{article_html}</p>"
+        f"{lead_html}"
         "<p><strong>Warum jetzt?</strong></p>"
         f"<ul>{why_now_html}</ul>"
         "<p>"

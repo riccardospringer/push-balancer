@@ -881,10 +881,162 @@ def teams_alert_last_sent_ts() -> int:
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         row = conn.execute(
-            "SELECT MAX(last_alert_ts) AS last_alert_ts FROM teams_alerts WHERE status = 'sent'",
+            """SELECT MAX(
+                   CASE
+                       WHEN status = 'sent' THEN last_alert_ts
+                       WHEN status = 'sending' THEN last_decision_ts
+                       ELSE 0
+                   END
+               ) AS last_alert_ts
+               FROM teams_alerts
+               WHERE status IN ('sent', 'sending')""",
         ).fetchone()
         conn.close()
     return int((row[0] if row else 0) or 0)
+
+
+def teams_alert_try_claim_send(
+    *,
+    article_key: str,
+    article_id: str,
+    article_url: str,
+    title_hash: str,
+    score: float,
+    predicted_or: float,
+    candidate_updated_at: int,
+    is_breaking: bool,
+    reason: str,
+    decision_ts: int | None = None,
+    article_title: str = "",
+    alert_cooldown_minutes: int = 90,
+    global_cooldown_minutes: int = 30,
+    in_progress_cooldown_minutes: int = 15,
+) -> dict:
+    """Atomically reserve one Teams send before calling the external webhook."""
+    if not article_key:
+        return {"claimed": False, "reason": "missing_article_key"}
+
+    now = int(decision_ts or time.time())
+    article_cooldown_seconds = max(0, int(alert_cooldown_minutes or 0)) * 60
+    global_cooldown_seconds = max(0, int(global_cooldown_minutes or 0)) * 60
+    in_progress_seconds = max(60, int(in_progress_cooldown_minutes or 15) * 60)
+
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM teams_alerts WHERE article_key = ?",
+                (article_key,),
+            ).fetchone()
+
+            if existing:
+                existing_status = str(existing["status"] or "")
+                existing_sent_ts = int(existing["last_alert_ts"] or 0)
+                existing_decision_ts = int(existing["last_decision_ts"] or 0)
+                if (
+                    existing_status == "sending"
+                    and existing_decision_ts
+                    and now - existing_decision_ts < in_progress_seconds
+                ):
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "article_send_in_progress"}
+                if (
+                    existing_status == "sent"
+                    and existing_sent_ts
+                    and article_cooldown_seconds > 0
+                    and now - existing_sent_ts < article_cooldown_seconds
+                ):
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "article_alert_cooldown"}
+                if (
+                    existing_status == "failed"
+                    and existing_decision_ts
+                    and article_cooldown_seconds > 0
+                    and now - existing_decision_ts < article_cooldown_seconds
+                ):
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "article_failure_cooldown"}
+
+            if global_cooldown_seconds > 0:
+                global_row = conn.execute(
+                    """SELECT article_key, status, last_alert_ts, last_decision_ts
+                       FROM teams_alerts
+                       WHERE status IN ('sent', 'sending')
+                       ORDER BY CASE
+                           WHEN status = 'sent' THEN last_alert_ts
+                           ELSE last_decision_ts
+                       END DESC
+                       LIMIT 1"""
+                ).fetchone()
+                if global_row:
+                    global_ts = (
+                        int(global_row["last_alert_ts"] or 0)
+                        if str(global_row["status"] or "") == "sent"
+                        else int(global_row["last_decision_ts"] or 0)
+                    )
+                    if (
+                        global_ts
+                        and str(global_row["article_key"] or "") != article_key
+                        and now - global_ts < global_cooldown_seconds
+                    ):
+                        conn.execute("ROLLBACK")
+                        return {"claimed": False, "reason": "global_alert_cooldown"}
+
+            first_alert_ts = int(existing["first_alert_ts"] or 0) if existing else 0
+            last_alert_ts = int(existing["last_alert_ts"] or 0) if existing else 0
+            alert_count = int(existing["alert_count"] or 0) if existing else 0
+            conn.execute(
+                """INSERT INTO teams_alerts (
+                    article_key, article_id, article_url, article_title, title_hash,
+                    first_alert_ts, last_alert_ts, last_decision_ts, last_score,
+                    last_predicted_or, last_candidate_updated_at, last_is_breaking,
+                    last_reason, status, alert_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(article_key) DO UPDATE SET
+                    article_id = excluded.article_id,
+                    article_url = excluded.article_url,
+                    article_title = excluded.article_title,
+                    title_hash = excluded.title_hash,
+                    last_decision_ts = excluded.last_decision_ts,
+                    last_score = excluded.last_score,
+                    last_predicted_or = excluded.last_predicted_or,
+                    last_candidate_updated_at = excluded.last_candidate_updated_at,
+                    last_is_breaking = excluded.last_is_breaking,
+                    last_reason = excluded.last_reason,
+                    status = excluded.status,
+                    last_error = ''
+                """,
+                (
+                    article_key,
+                    article_id,
+                    article_url,
+                    article_title[:500],
+                    title_hash,
+                    first_alert_ts,
+                    last_alert_ts,
+                    now,
+                    float(score or 0.0),
+                    float(predicted_or or 0.0),
+                    int(candidate_updated_at or 0),
+                    1 if is_breaking else 0,
+                    reason[:500],
+                    "sending",
+                    alert_count,
+                    "",
+                ),
+            )
+            conn.execute("COMMIT")
+            return {"claimed": True, "reason": "claimed"}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
 
 
 def teams_alert_list_recent(limit: int = 20) -> list[dict]:

@@ -359,6 +359,21 @@ def test_teams_message_contains_required_editorial_fields():
     assert isinstance(payload["whyPushworthy"], list)
 
 
+def test_teams_message_does_not_repeat_identical_push_text_and_article_title():
+    candidate = _candidate(recommendedText=_candidate()["title"])
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, _config())
+    text = message["text"]
+
+    assert "Artikel und empfohlener Push:" in text
+    assert "Empfohlener Push-Text:" not in text
+    assert "Artikel:\n" not in text
+    assert text.count(candidate["title"]) == 1
+    assert "Artikel und empfohlener Push:" in message["payload"]["messageHtml"]
+
+
 def test_teams_message_hides_global_average_prediction_fallback():
     candidate = _candidate(
         predictedOR=0.0477,
