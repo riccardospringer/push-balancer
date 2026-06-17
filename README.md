@@ -346,13 +346,13 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
-| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; combines raw score, news value, freshness, timing, competition, and user-load penalty |
+| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `66` | Minimum weighted Teams Alert Score for a Teams recommendation; calibrated for an editorial cadence of roughly 11 push decisions per day |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
 | `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Limits Teams evaluation to the top N article candidates from the same payload used by the dashboard |
-| `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE` | No | `88` | Higher Teams Alert Score required when no reliable article-specific OR forecast is available |
+| `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE` | No | `76` | Higher Teams Alert Score required when no reliable article-specific OR forecast is available |
 | `PUSH_TEAMS_EDITORIAL_GATE_ENABLED` | No | `true` | Enables the hard CvD review layer before any Teams recommendation can be sent |
 | `PUSH_TEAMS_EDITORIAL_TOP_LIMIT` | No | `10` | Normal non-breaking recommendations must be in the top N dashboard candidates |
-| `PUSH_TEAMS_MIN_EDITORIAL_SCORE` | No | `82` | Minimum CvD score based on news value, urgency, public need, timing, clarity, and user load |
+| `PUSH_TEAMS_MIN_EDITORIAL_SCORE` | No | `70` | Minimum CvD score based on news value, urgency, public need, timing, clarity, and user load |
 | `PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE` | No | `24` | Minimum hard-news value required before Teams can recommend a push |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |

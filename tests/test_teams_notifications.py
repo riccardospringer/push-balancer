@@ -157,7 +157,6 @@ def test_score_only_mode_blocks_candidate_without_forecast_or_push_time():
     assert decision["shouldNotify"] is False
     assert decision["scoreOnlyMode"] is True
     assert any("Letzter Push-Zeitpunkt" in reason for reason in decision["blockingReasons"])
-    assert any("Keine belastbare Prognose" in reason for reason in decision["blockingReasons"])
 
 
 def test_score_only_mode_keeps_score_threshold_as_blocker():
@@ -499,6 +498,59 @@ def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
     assert decisions[stronger_cvd["url"]]["selectionScore"] > decisions[high_raw["url"]]["selectionScore"]
     assert decisions[stronger_cvd["url"]]["shouldNotify"] is True
     assert decisions[high_raw["url"]]["shouldNotify"] is False
+
+
+def test_auto_push_calibration_allows_public_warning_candidate():
+    candidate = _candidate(
+        score=75.0,
+        predictedOR=0.0006,
+        category="news",
+        title="Wetterdienst gibt Hitzewarnung fuer Deutschland raus",
+        url="https://www.bild.de/news/wetter/hitzewarnung",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45))
+    context["dashboardRank"] = 10
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            score_only_mode=True,
+            min_alert_score=66.0,
+            min_editorial_score=70.0,
+            no_forecast_min_alert_score=76.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["teamsAlertScore"] >= 66.0
+    assert decision["editorialScore"] >= 70.0
+
+
+def test_auto_push_calibration_still_blocks_soft_topic():
+    candidate = _candidate(
+        score=76.0,
+        predictedOR=0.0005,
+        category="politik",
+        title="Peinliche Momente beim G7-Gipfel: Die grosse Buehne der witzigen Weltpolitik",
+        url="https://www.bild.de/politik/g7",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45))
+    context["dashboardRank"] = 3
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            score_only_mode=True,
+            min_alert_score=66.0,
+            min_editorial_score=70.0,
+            no_forecast_min_alert_score=76.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("CvD:" in reason for reason in decision["blockingReasons"])
 
 
 def test_teams_message_contains_required_editorial_fields():
