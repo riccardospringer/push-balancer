@@ -35,6 +35,7 @@ from app.config import (
     PUSH_TEAMS_MIN_SCORE,
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
+    PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
     PUSH_TEAMS_SCORE_ONLY_MODE,
     PUSH_TEAMS_WEBHOOK_URL,
 )
@@ -71,6 +72,7 @@ class TeamsAlertConfig:
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
     realert_or_delta: float = PUSH_TEAMS_REALERT_OR_DELTA
     alert_cooldown_minutes: int = PUSH_TEAMS_ALERT_COOLDOWN_MINUTES
+    repeat_suppression_hours: int = PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS
     global_cooldown_minutes: int = PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
     allowed_sections: tuple[str, ...] = tuple(PUSH_TEAMS_ALLOWED_SECTIONS)
     breaking_override: bool = PUSH_TEAMS_BREAKING_OVERRIDE
@@ -82,13 +84,13 @@ class TeamsAlertConfig:
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
-    return str(
-        candidate.get("id")
-        or candidate.get("articleId")
-        or candidate.get("url")
-        or candidate.get("link")
-        or _title(candidate)
-    ).strip()
+    url = _normalize_url(_url(candidate))
+    if url:
+        return url
+    raw_id = str(candidate.get("id") or candidate.get("articleId") or "").strip()
+    if raw_id.startswith(("http://", "https://")):
+        return _normalize_url(raw_id)
+    return raw_id or _title(candidate)
 
 
 def title_hash(candidate: dict[str, Any]) -> str:
@@ -639,6 +641,10 @@ def evaluate_and_send_best_candidate(
         decision_ts=int(context.get("nowTs") or time.time()),
         alert_cooldown_minutes=config.alert_cooldown_minutes,
         global_cooldown_minutes=config.global_cooldown_minutes,
+        failed_cooldown_minutes=max(
+            config.alert_cooldown_minutes,
+            config.repeat_suppression_hours * 60,
+        ),
     )
     if not claim.get("claimed"):
         log.info(
@@ -929,9 +935,12 @@ def _realert_blocker_or_reason(
     if (
         alert_status == "failed"
         and last_decision_ts
-        and now_ts - last_decision_ts < config.alert_cooldown_minutes * 60
+        and now_ts - last_decision_ts < max(
+            config.alert_cooldown_minutes * 60,
+            config.repeat_suppression_hours * 3600,
+        )
     ):
-        return {"blocker": "Teams-Fehler-Cooldown aktiv"}
+        return {"blocker": f"Bereits als Teams-Kandidat versucht: Sperre {config.repeat_suppression_hours}h"}
     if alert_status != "sent":
         return {}
 

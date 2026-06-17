@@ -34,6 +34,7 @@ def _config(**overrides):
         "realert_score_delta": 8.0,
         "realert_or_delta": 0.75,
         "alert_cooldown_minutes": 60,
+        "repeat_suppression_hours": 12,
         "global_cooldown_minutes": 30,
         "allowed_sections": (),
         "breaking_override": True,
@@ -284,7 +285,7 @@ def test_already_pushed_article_does_not_trigger_teams_decision():
 def test_already_sent_teams_alert_does_not_repeat_without_relevant_change():
     candidate = _candidate()
     alert_state = {
-        candidate["id"]: {
+        candidate["url"]: {
             "status": "sent",
             "last_alert_ts": NOW_TS - 90 * 60,
             "last_score": 78.0,
@@ -302,10 +303,34 @@ def test_already_sent_teams_alert_does_not_repeat_without_relevant_change():
     assert any("Bereits per Teams gemeldet" in reason for reason in decision["blockingReasons"])
 
 
+def test_failed_teams_attempt_suppresses_same_candidate_for_repeat_window():
+    candidate = _candidate()
+    alert_state = {
+        candidate["url"]: {
+            "status": "failed",
+            "last_decision_ts": NOW_TS - 90 * 60,
+            "last_score": 78.0,
+            "last_predicted_or": 0.0,
+            "last_candidate_updated_at": NOW_TS - 10 * 60,
+            "last_is_breaking": 0,
+            "alert_count": 0,
+        }
+    }
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, alert_state=alert_state),
+        _config(alert_cooldown_minutes=60, repeat_suppression_hours=12),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Bereits als Teams-Kandidat versucht" in reason for reason in decision["blockingReasons"])
+
+
 def test_realert_requires_relevant_improvement_and_cooldown():
     candidate = _candidate(score=82.0)
     alert_state = {
-        candidate["id"]: {
+        candidate["url"]: {
             "status": "sent",
             "last_alert_ts": NOW_TS - 90 * 60,
             "last_score": 78.0,
@@ -329,6 +354,15 @@ def test_realert_requires_relevant_improvement_and_cooldown():
     assert any("Re-Alert wegen relevanter Veraenderung" in reason for reason in improved["reasons"])
 
 
+def test_candidate_key_normalizes_tracking_query_params():
+    first = _candidate(url="https://www.bild.de/politik/article-1?utm_source=x")
+    second = _candidate(url="https://www.bild.de/politik/article-1")
+
+    from app.notifications.teams import candidate_key
+
+    assert candidate_key(first) == candidate_key(second)
+
+
 def test_multiple_good_candidates_only_notify_best_candidate():
     first = _candidate(id="article-1", url="https://www.bild.de/politik/article-1", score=95.0)
     second = _candidate(
@@ -344,10 +378,10 @@ def test_multiple_good_candidates_only_notify_best_candidate():
     result = evaluate_teams_alert_candidates([first, second], context, _config())
     decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
 
-    assert result["selectedCandidateId"] == "article-1"
-    assert decisions["article-1"]["shouldNotify"] is True
-    assert decisions["article-2"]["shouldNotify"] is False
-    assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions["article-2"]["blockingReasons"])
+    assert result["selectedCandidateId"] == first["url"]
+    assert decisions[first["url"]]["shouldNotify"] is True
+    assert decisions[second["url"]]["shouldNotify"] is False
+    assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions[second["url"]]["blockingReasons"])
 
 
 def test_teams_message_contains_required_editorial_fields():

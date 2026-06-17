@@ -884,12 +884,12 @@ def teams_alert_last_sent_ts() -> int:
             """SELECT MAX(
                    CASE
                        WHEN status = 'sent' THEN last_alert_ts
-                       WHEN status = 'sending' THEN last_decision_ts
+                       WHEN status IN ('sending', 'failed') THEN last_decision_ts
                        ELSE 0
                    END
                ) AS last_alert_ts
                FROM teams_alerts
-               WHERE status IN ('sent', 'sending')""",
+               WHERE status IN ('sent', 'sending', 'failed')""",
         ).fetchone()
         conn.close()
     return int((row[0] if row else 0) or 0)
@@ -911,6 +911,7 @@ def teams_alert_try_claim_send(
     alert_cooldown_minutes: int = 90,
     global_cooldown_minutes: int = 30,
     in_progress_cooldown_minutes: int = 15,
+    failed_cooldown_minutes: int = 720,
 ) -> dict:
     """Atomically reserve one Teams send before calling the external webhook."""
     if not article_key:
@@ -920,6 +921,7 @@ def teams_alert_try_claim_send(
     article_cooldown_seconds = max(0, int(alert_cooldown_minutes or 0)) * 60
     global_cooldown_seconds = max(0, int(global_cooldown_minutes or 0)) * 60
     in_progress_seconds = max(60, int(in_progress_cooldown_minutes or 15) * 60)
+    failed_cooldown_seconds = max(0, int(failed_cooldown_minutes or 0)) * 60
 
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=30, isolation_level=None)
@@ -953,8 +955,8 @@ def teams_alert_try_claim_send(
                 if (
                     existing_status == "failed"
                     and existing_decision_ts
-                    and article_cooldown_seconds > 0
-                    and now - existing_decision_ts < article_cooldown_seconds
+                    and failed_cooldown_seconds > 0
+                    and now - existing_decision_ts < failed_cooldown_seconds
                 ):
                     conn.execute("ROLLBACK")
                     return {"claimed": False, "reason": "article_failure_cooldown"}
@@ -963,7 +965,7 @@ def teams_alert_try_claim_send(
                 global_row = conn.execute(
                     """SELECT article_key, status, last_alert_ts, last_decision_ts
                        FROM teams_alerts
-                       WHERE status IN ('sent', 'sending')
+                       WHERE status IN ('sent', 'sending', 'failed')
                        ORDER BY CASE
                            WHEN status = 'sent' THEN last_alert_ts
                            ELSE last_decision_ts

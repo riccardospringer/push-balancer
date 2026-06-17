@@ -74,6 +74,40 @@ class TestTeamsAlertHistory:
         assert second["claimed"] is False
         assert second["reason"] == "article_send_in_progress"
 
+    def test_teams_alert_claim_blocks_recent_failed_attempt(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_alert_record(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=0.0,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                status="failed",
+                decision_ts=1_800_000_100,
+            )
+            claim = database.teams_alert_try_claim_send(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                title_hash="hash-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                score=82.0,
+                predicted_or=0.0,
+                candidate_updated_at=1_800_000_000,
+                is_breaking=True,
+                reason="Push empfohlen",
+                decision_ts=1_800_000_100 + 90 * 60,
+                failed_cooldown_minutes=12 * 60,
+            )
+
+        assert claim["claimed"] is False
+        assert claim["reason"] == "article_failure_cooldown"
+
 class TestPushDbUpsert:
     def test_upsert_inserts_new_records(self, tmp_db, sample_pushes):
         """Neue Pushes werden korrekt in die DB geschrieben."""
