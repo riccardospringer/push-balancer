@@ -47,6 +47,8 @@ services:
         value: "30"
       - key: PUSH_TEAMS_ALERT_COOLDOWN_MINUTES
         value: "90"
+      - key: PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS
+        value: "12"
       - key: PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
         value: "30"
       - key: PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -54,7 +56,7 @@ services:
       - key: PUSH_TEAMS_REALERT_OR_DELTA
         value: "0.75"
       - key: PUSH_TEAMS_ALLOWED_SECTIONS
-        value: News,Politik,Sport,Regional
+        value: News,Politik,Wirtschaft,Regional,Digital,Unterhaltung
       - key: PUSH_TEAMS_BREAKING_OVERRIDE
         value: "true"
       - key: PUSH_TEAMS_BREAKING_MIN_SCORE
