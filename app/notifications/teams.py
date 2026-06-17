@@ -433,6 +433,7 @@ def build_teams_push_recommendation(
     title = _title(candidate)
     url = _url(candidate)
     section = _section(candidate)
+    section_label = _format_section(section)
     score = _score(candidate)
     predicted_or = _candidate_predicted_or(candidate)
     now_ts = int(context.get("nowTs") or time.time())
@@ -446,42 +447,59 @@ def build_teams_push_recommendation(
     competition_meta = decision.get("competition") or {}
     competitors = int(competition_meta.get("eligibleCompetitors") or 0)
     competition = (
-        f"Bester Kandidat unter {competitors + 1} passenden Artikeln"
+        f"Im aktuellen Kandidatenfeld ist das der stärkste Vorschlag ({competitors + 1} geprüft)."
         if competitors
-        else "Kein staerkerer Kandidat im aktuellen Feld"
+        else "Im aktuellen Kandidatenfeld gibt es keinen stärkeren Push-Vorschlag."
     )
 
     threshold_reason = (
-        f"Teams Alert Score {alert_score:.1f} liegt ueber der Schwelle {alert_threshold:.0f}"
+        f"Das Teams-Alert-Modell bewertet den Artikel mit {_format_number(alert_score)} "
+        f"von 100 Punkten (Schwelle: {_format_number(alert_threshold, 0)})."
     )
-    raw_score_reason = f"Raw Score {score:.1f} liegt ueber Mindestwert {score_threshold:.0f}"
-    forecast_reason = f"Prognose: {_format_or(predicted_or)}" if predicted_or is not None else ""
-    duplicate_reason = "Kein Duplicate und kein wiederholter Teams-Hinweis"
-    if not score_only_mode and isinstance(minutes, (int, float)):
-        timing_reason = f"Letzter Push vor {float(minutes):.0f} Minuten"
-    elif score_only_mode and predicted_or is not None:
-        timing_reason = forecast_reason
+    score_reason = (
+        f"Der redaktionelle Push-Score liegt bei {_format_number(score)} und damit über "
+        f"dem Mindestwert von {_format_number(score_threshold, 0)}."
+    )
+    if predicted_or is not None:
+        forecast_reason = f"Die OR-Prognose liegt aktuell bei {_format_or(predicted_or)}."
     else:
-        timing_reason = ""
-    why_now = _dedupe([threshold_reason, raw_score_reason, competition, duplicate_reason])[:4]
-    why_pushworthy = _dedupe([threshold_reason, raw_score_reason, timing_reason, competition])[:4]
+        forecast_reason = (
+            "Es gibt aktuell keine belastbare OR-Prognose; die Empfehlung basiert deshalb "
+            "auf Score, Nachrichtenwert, Aktualität und Konkurrenzlage."
+        )
+    duplicate_reason = "Der Artikel wurde nicht bereits gepusht und nicht erneut per Teams gemeldet."
+    if isinstance(minutes, (int, float)):
+        if score_only_mode:
+            timing_reason = (
+                f"Der letzte Push liegt {float(minutes):.0f} Minuten zurück; die Nutzerbelastung "
+                "ist im Teams-Alert-Score berücksichtigt."
+            )
+        else:
+            timing_reason = f"Der letzte Push liegt {float(minutes):.0f} Minuten zurück."
+    else:
+        timing_reason = "Ein letzter Push-Zeitpunkt ist aktuell nicht bekannt."
+    why_now = _dedupe([threshold_reason, score_reason, timing_reason, competition, duplicate_reason])[:5]
+    why_pushworthy = _dedupe([score_reason, forecast_reason, timing_reason, competition])[:4]
 
     text_lines = [
-        "🚨 Push empfohlen",
+        "🚨 Push-Empfehlung: Jetzt pushen",
         "",
-        "Was soll ich pushen?",
+        "Empfohlener Push-Text:",
         push_text,
         "",
-        "Welcher Artikel ist gemeint?",
+        "Artikel:",
         f"{title}\n{url}" if url else title,
         "",
-        f"Ressort: {section}",
-        f"Teams Alert Score: {alert_score:.1f} | Schwelle: {alert_threshold:.0f}",
-        f"Raw Score: {score:.1f} | Mindestwert: {score_threshold:.0f} | Prognose: {_format_or(predicted_or)}",
-        f"Zeitpunkt: {_format_dt(now_ts)} | Letzter Push: {_format_minutes(minutes)}",
-        "",
-        "Warum genau jetzt?",
+        "Warum jetzt?",
         *[f"- {reason}" for reason in why_now],
+        "",
+        "Einordnung:",
+        f"- Ressort: {section_label}",
+        f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
+        f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
+        f"- Prognose: {_format_or(predicted_or)}",
+        f"- Letzter Push: {_format_minutes(minutes)}",
+        f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
         "",
         "Empfehlung:",
         "Jetzt pushen.",
@@ -490,7 +508,7 @@ def build_teams_push_recommendation(
     message_html = _build_power_automate_message_html(
         title=title,
         url=url,
-        section=section,
+        section=section_label,
         score=score,
         predicted_or=predicted_or,
         recommended_text=push_text,
@@ -1005,13 +1023,34 @@ def _format_dt(ts_value: int) -> str:
     return dt.datetime.fromtimestamp(ts_value).strftime("%d.%m.%Y %H:%M")
 
 
+def _format_number(value: float, digits: int = 1) -> str:
+    return f"{float(value):.{digits}f}".replace(".", ",")
+
+
 def _format_or(value: float | None) -> str:
-    return f"{value:.2f} % OR" if value is not None else "keine belastbare Prognose"
+    return f"{_format_number(float(value), 2)} % OR" if value is not None else "keine belastbare Prognose"
+
+
+def _format_section(value: str) -> str:
+    label = str(value or "").strip()
+    if not label:
+        return "News"
+    known = {
+        "politik": "Politik",
+        "sport": "Sport",
+        "unterhaltung": "Unterhaltung",
+        "wirtschaft": "Wirtschaft",
+        "regional": "Regional",
+        "digital": "Digital",
+        "news": "News",
+    }
+    return known.get(label.lower(), label[:1].upper() + label[1:])
+
 
 
 def _format_minutes(value: Any) -> str:
     if isinstance(value, (int, float)):
-        return f"{float(value):.0f} Minuten"
+        return f"vor {float(value):.0f} Minuten"
     return "kein letzter Push bekannt"
 
 
@@ -1037,24 +1076,24 @@ def _build_power_automate_message_html(
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
     return (
-        "<h2>🚨 Push empfohlen</h2>"
-        "<p><strong>Was soll ich pushen?</strong><br>"
+        "<h2>🚨 Push-Empfehlung: Jetzt pushen</h2>"
+        "<p><strong>Empfohlener Push-Text:</strong><br>"
         f"{html.escape(recommended_text)}</p>"
-        "<p><strong>Welcher Artikel ist gemeint?</strong><br>"
+        "<p><strong>Artikel:</strong><br>"
         f"{article_html}</p>"
+        "<p><strong>Warum jetzt?</strong></p>"
+        f"<ul>{why_now_html}</ul>"
         "<p>"
         f"<strong>Ressort:</strong> {html.escape(section)}<br>"
-        f"<strong>Teams Alert Score:</strong> {alert_score:.1f} "
-        f"(Schwelle {alert_threshold:.0f})<br>"
-        f"<strong>Raw Score:</strong> {score:.1f} "
-        f"(Mindestwert {score_threshold:.0f})<br>"
+        f"<strong>Push-Score:</strong> {html.escape(_format_number(score))} "
+        f"(Mindestwert {html.escape(_format_number(score_threshold, 0))})<br>"
+        f"<strong>Teams-Alert-Score:</strong> {html.escape(_format_number(alert_score))} "
+        f"(Schwelle {html.escape(_format_number(alert_threshold, 0))})<br>"
         f"<strong>Prognose:</strong> {html.escape(_format_or(predicted_or))}<br>"
-        f"<strong>Zeitpunkt:</strong> {html.escape(_format_dt(now_ts))}<br>"
         f"<strong>Letzter Push:</strong> "
-        f"{html.escape(_format_minutes(minutes_since_last_push))}"
+        f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
+        f"<strong>Empfehlung um:</strong> {html.escape(_format_dt(now_ts))} Uhr"
         "</p>"
-        "<p><strong>Warum genau jetzt?</strong></p>"
-        f"<ul>{why_now_html}</ul>"
         "<p><strong>Empfehlung:</strong> Jetzt pushen.</p>"
     )
 

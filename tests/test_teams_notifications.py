@@ -336,16 +336,16 @@ def test_teams_message_contains_required_editorial_fields():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
     text = message["text"]
 
-    assert "Push empfohlen" in text
-    assert "Was soll ich pushen?" in text
-    assert "Welcher Artikel ist gemeint?" in text
-    assert "Warum genau jetzt?" in text
+    assert "Push-Empfehlung: Jetzt pushen" in text
+    assert "Empfohlener Push-Text:" in text
+    assert "Artikel:" in text
+    assert "Warum jetzt?" in text
     assert candidate["title"] in text
     assert candidate["url"] in text
-    assert "Teams Alert Score:" in text
-    assert "Raw Score: 78.4" in text
-    assert "Prognose: 5.20 % OR" in text
-    assert "Letzter Push: 42 Minuten" in text
+    assert "Teams-Alert-Score: " in text
+    assert "Push-Score: 78,4" in text
+    assert "Prognose: 5,20 % OR" in text
+    assert "Letzter Push: vor 42 Minuten" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
     assert payload["articleTitle"] == candidate["title"]
@@ -353,8 +353,8 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["teamsAlertScore"] >= payload["teamsAlertScoreThreshold"]
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
-    assert "Warum genau jetzt?" in payload["messageHtml"]
-    assert "Was soll ich pushen?" in payload["messageHtml"]
+    assert "Warum jetzt?" in payload["messageHtml"]
+    assert "Empfohlener Push-Text:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
 
