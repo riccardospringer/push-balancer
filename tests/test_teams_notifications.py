@@ -333,6 +333,9 @@ def test_teams_message_hides_global_average_prediction_fallback():
     assert "4.77" not in text
     assert "keine belastbare Prognose" in text
     assert "4.77" not in message["payload"]["messageHtml"]
+    assert message["payload"]["predictedOR"] == 0.0
+    assert message["payload"]["predictedORAvailable"] is False
+    assert message["payload"]["minutesSinceLastPush"] == 42.0
 
 
 def test_teams_webhook_error_is_logged_and_does_not_crash(caplog):

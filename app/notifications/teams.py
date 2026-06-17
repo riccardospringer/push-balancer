@@ -416,6 +416,7 @@ def build_teams_push_recommendation(
     predicted_or = _candidate_predicted_or(candidate)
     now_ts = int(context.get("nowTs") or time.time())
     minutes = decision.get("minutesSinceLastPush")
+    minutes_known = isinstance(minutes, (int, float))
     score_only_mode = bool(decision.get("scoreOnlyMode") or config.score_only_mode)
     score_threshold = float(decision.get("minScore", config.min_score) or config.min_score)
     push_text = str(candidate.get("recommendedText") or title)
@@ -480,11 +481,13 @@ def build_teams_push_recommendation(
             "articleUrl": url,
             "category": section,
             "pushScore": score,
-            "predictedOR": predicted_or,
+            "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
+            "predictedORAvailable": predicted_or is not None,
             "predictedORLabel": _format_or(predicted_or),
             "recommendedPushText": push_text,
             "recommendedAt": _format_dt(now_ts),
-            "minutesSinceLastPush": minutes,
+            "minutesSinceLastPush": round(float(minutes), 1) if minutes_known else 0.0,
+            "lastPushKnown": minutes_known,
             "timeSinceLastPushLabel": _format_minutes(minutes),
             "whyNow": why_now,
             "whyPushworthy": why_pushworthy,
@@ -520,6 +523,14 @@ def send_teams_notification(
             response.read()
             status = getattr(response, "status", 200)
         return {"ok": True, "status": status}
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            body = ""
+        error = f"HTTP {exc.code}: {body or exc.reason}"
+        log.warning("[TeamsAlert] Teams webhook send failed: %s", error)
+        return {"ok": False, "error": error}
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         error = str(exc)
         log.warning("[TeamsAlert] Teams webhook send failed: %s", error)
