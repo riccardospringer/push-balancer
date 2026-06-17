@@ -179,7 +179,8 @@ def should_notify_teams(
     title = _title(candidate)
     section = _section(candidate)
     score = _score(candidate)
-    predicted_or = _candidate_predicted_or(candidate)
+    forecast = _candidate_forecast(candidate, now_ts)
+    predicted_or = forecast["value"]
     breaking = _is_breaking(candidate)
     min_score, min_or, min_pause = _effective_thresholds(config, breaking)
     last_push_ts = _safe_int(context.get("lastPushTs"))
@@ -384,6 +385,10 @@ def should_notify_teams(
         "editorialScore": editorial_review["score"],
         "selectionScore": selection_score,
         "predictedOR": predicted_or,
+        "forecast": forecast,
+        "predictedORSource": forecast["source"],
+        "predictedORBasis": forecast["basis"],
+        "predictedORConfidence": forecast["confidence"],
         "minScore": min_score,
         "minOR": min_or,
         "minMinutesSinceLastPush": min_pause,
@@ -514,8 +519,11 @@ def build_teams_push_recommendation(
     section = _section(candidate)
     section_label = _format_section(section)
     score = _score(candidate)
-    predicted_or = _candidate_predicted_or(candidate)
     now_ts = int(context.get("nowTs") or time.time())
+    forecast = decision.get("forecast") if isinstance(decision.get("forecast"), dict) else None
+    if not forecast:
+        forecast = _candidate_forecast(candidate, now_ts)
+    predicted_or = forecast["value"]
     minutes = decision.get("minutesSinceLastPush")
     minutes_known = isinstance(minutes, (int, float))
     score_only_mode = bool(decision.get("scoreOnlyMode") or config.score_only_mode)
@@ -547,13 +555,7 @@ def build_teams_push_recommendation(
         f"Der redaktionelle Push-Score liegt bei {_format_number(score)} und damit über "
         f"dem Mindestwert von {_format_number(score_threshold, 0)}."
     )
-    if predicted_or is not None:
-        forecast_reason = f"Die OR-Prognose liegt aktuell bei {_format_or(predicted_or)}."
-    else:
-        forecast_reason = (
-            "Es gibt aktuell keine belastbare OR-Prognose; die Empfehlung basiert deshalb "
-            "auf Score, Nachrichtenwert, Aktualität und Konkurrenzlage."
-        )
+    forecast_reason = _forecast_sentence(forecast)
     duplicate_reason = "Der Artikel wurde nicht bereits gepusht und nicht erneut per Teams gemeldet."
     if isinstance(minutes, (int, float)):
         if score_only_mode:
@@ -577,8 +579,17 @@ def build_teams_push_recommendation(
         else ""
     )
     why_now = _dedupe(
-        [editorial_reason, time_fit_reason, threshold_reason, score_reason, timing_reason, competition, duplicate_reason]
-    )[:5]
+        [
+            editorial_reason,
+            time_fit_reason,
+            forecast_reason,
+            threshold_reason,
+            score_reason,
+            timing_reason,
+            competition,
+            duplicate_reason,
+        ]
+    )[:6]
     why_pushworthy = _dedupe([editorial_reason, score_reason, forecast_reason, timing_reason, competition])[:4]
 
     text_lines = ["🚨 Push-Empfehlung: Jetzt pushen", ""]
@@ -607,7 +618,7 @@ def build_teams_push_recommendation(
             f"- CvD-Score: {_format_number(editorial_score)}",
             f"- Auswahlwert: {_format_number(selection_score)}",
             f"- Zeitfenster: {time_fit_label or 'nicht bewertet'}",
-            f"- Prognose: {_format_or(predicted_or)}",
+            f"- Prognose: {_format_forecast(forecast)}",
             f"- Letzter Push: {_format_minutes(minutes)}",
             f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
             "",
@@ -622,6 +633,7 @@ def build_teams_push_recommendation(
         section=section_label,
         score=score,
         predicted_or=predicted_or,
+        forecast=forecast,
         recommended_text=push_text,
         now_ts=now_ts,
         minutes_since_last_push=minutes,
@@ -653,6 +665,10 @@ def build_teams_push_recommendation(
             "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
             "predictedORAvailable": predicted_or is not None,
             "predictedORLabel": _format_or(predicted_or),
+            "predictedORSource": forecast["source"],
+            "predictedORBasis": forecast["basis"],
+            "predictedORConfidence": forecast["confidence"],
+            "predictedORExplanation": forecast["explanation"],
             "recommendedPushText": push_text,
             "recommendedAt": _format_dt(now_ts),
             "minutesSinceLastPush": round(float(minutes), 1) if minutes_known else 0.0,
@@ -734,6 +750,7 @@ def evaluate_and_send_best_candidate(
     article_key = candidate_key(selected)
     article_id = str(selected.get("id") or article_key)
     article_url = _url(selected)
+    selected_forecast = _candidate_forecast(selected, int(context.get("nowTs") or time.time()))
     claim = teams_alert_try_claim_send(
         article_key=article_key,
         article_id=article_id,
@@ -741,7 +758,7 @@ def evaluate_and_send_best_candidate(
         title_hash=title_hash(selected),
         article_title=_title(selected),
         score=_score(selected),
-        predicted_or=_candidate_predicted_or(selected) or 0.0,
+        predicted_or=selected_forecast["value"] or 0.0,
         candidate_updated_at=_candidate_updated_ts(selected),
         is_breaking=_is_breaking(selected),
         reason=selected_decision.get("summary") or "Push empfohlen",
@@ -781,7 +798,7 @@ def evaluate_and_send_best_candidate(
         title_hash=title_hash(selected),
         article_title=_title(selected),
         score=_score(selected),
-        predicted_or=_candidate_predicted_or(selected) or 0.0,
+        predicted_or=selected_forecast["value"] or 0.0,
         candidate_updated_at=_candidate_updated_ts(selected),
         is_breaking=_is_breaking(selected),
         reason=reason,
@@ -1257,6 +1274,31 @@ def _teams_alert_score(
 
 
 def _candidate_predicted_or(candidate: dict[str, Any]) -> float | None:
+    return _candidate_model_forecast(candidate)
+
+
+def _candidate_forecast(candidate: dict[str, Any], now_ts: int | None = None) -> dict[str, Any]:
+    model_value = _candidate_model_forecast(candidate)
+    basis = str(candidate.get("predictedORBasis") or "").strip()
+    confidence = _safe_float(candidate.get("predictedORConfidence"))
+    if model_value is not None:
+        explanation = "Artikelmodell"
+        if basis:
+            explanation += f": {basis}"
+        if confidence is not None:
+            explanation += f", Konfidenz {_format_number(confidence * 100, 0)} %"
+        return {
+            "value": model_value,
+            "source": "article_model",
+            "basis": basis or "model",
+            "confidence": confidence,
+            "explanation": explanation,
+        }
+
+    return _historical_slot_forecast(candidate, now_ts)
+
+
+def _candidate_model_forecast(candidate: dict[str, Any]) -> float | None:
     if bool(candidate.get("predictedORIsFallback")):
         return None
     basis = str(candidate.get("predictedORBasis") or "").strip().lower()
@@ -1269,6 +1311,49 @@ def _candidate_predicted_or(candidate: dict[str, Any]) -> float | None:
     if confidence is not None and confidence <= 0.1:
         return None
     return normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+
+
+def _historical_slot_forecast(candidate: dict[str, Any], now_ts: int | None = None) -> dict[str, Any]:
+    local_dt = dt.datetime.fromtimestamp(int(now_ts or time.time()), ZoneInfo("Europe/Berlin"))
+    hour = local_dt.hour
+    weekday = local_dt.weekday()
+    value: float | None = None
+    basis = "historical_slot_baseline"
+    confidence: float | None = None
+    explanation = ""
+
+    try:
+        from app.push_schedule.weekly_baseline import (
+            PDF_HOUR_AVG,
+            PDF_OVERALL_AVG,
+            baseline_for,
+        )
+
+        slot = baseline_for(hour, weekday)
+        if isinstance(slot, dict) and slot.get("avg_or"):
+            value = float(slot["avg_or"])
+            count = int(slot.get("count") or 0)
+            confidence = round(_clamp(count / 250.0, 0.25, 0.75), 3)
+            explanation = (
+                f"historische Slot-Prognose: {_weekday_label(weekday)} {hour:02d}:00, "
+                f"n={count}"
+            )
+        else:
+            value = float(PDF_HOUR_AVG.get(hour, PDF_OVERALL_AVG))
+            confidence = 0.25
+            basis = "historical_hour_baseline"
+            explanation = f"historische Stunden-Prognose: {hour:02d}:00"
+    except Exception as exc:
+        log.warning("[TeamsAlert] historical forecast unavailable: %s", exc)
+
+    normalized = normalize_predicted_or(value)
+    return {
+        "value": normalized,
+        "source": "historical_slot_baseline" if basis == "historical_slot_baseline" else basis,
+        "basis": basis,
+        "confidence": confidence,
+        "explanation": explanation or "historische OR-Prognose",
+    }
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -1455,6 +1540,20 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _weekday_label(weekday: int) -> str:
+    labels = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+    if 0 <= int(weekday) < len(labels):
+        return labels[int(weekday)]
+    return "Wochentag"
+
+
 def _iso_from_ts(ts_value: int) -> str | None:
     if not ts_value:
         return None
@@ -1471,6 +1570,23 @@ def _format_number(value: float, digits: int = 1) -> str:
 
 def _format_or(value: float | None) -> str:
     return f"{_format_number(float(value), 2)} % OR" if value is not None else "keine belastbare Prognose"
+
+
+def _format_forecast(forecast: dict[str, Any] | None) -> str:
+    if not forecast or forecast.get("value") is None:
+        return "keine belastbare Prognose"
+    label = _format_or(float(forecast["value"]))
+    explanation = str(forecast.get("explanation") or "").strip()
+    return f"{label} ({explanation})" if explanation else label
+
+
+def _forecast_sentence(forecast: dict[str, Any] | None) -> str:
+    if not forecast or forecast.get("value") is None:
+        return "Es gibt aktuell keine belastbare OR-Prognose."
+    source = str(forecast.get("source") or "")
+    if source == "article_model":
+        return f"Die Artikel-Prognose liegt aktuell bei {_format_or(float(forecast['value']))}."
+    return f"Die Zeitfenster-Prognose liegt aktuell bei {_format_or(float(forecast['value']))}."
 
 
 def _format_section(value: str) -> str:
@@ -1509,6 +1625,7 @@ def _build_power_automate_message_html(
     section: str,
     score: float,
     predicted_or: float | None,
+    forecast: dict[str, Any] | None,
     recommended_text: str,
     now_ts: int,
     minutes_since_last_push: Any,
@@ -1549,7 +1666,7 @@ def _build_power_automate_message_html(
         f"<strong>Teams-Alert-Score:</strong> {html.escape(_format_number(alert_score))} "
         f"(Schwelle {html.escape(_format_number(alert_threshold, 0))})<br>"
         f"<strong>CvD-Score:</strong> {html.escape(_format_number(editorial_score))}<br>"
-        f"<strong>Prognose:</strong> {html.escape(_format_or(predicted_or))}<br>"
+        f"<strong>Prognose:</strong> {html.escape(_format_forecast(forecast))}<br>"
         f"<strong>Letzter Push:</strong> "
         f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
         f"<strong>Empfehlung um:</strong> {html.escape(_format_dt(now_ts))} Uhr"

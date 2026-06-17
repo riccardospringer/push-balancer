@@ -623,6 +623,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Zeitfenster: " in text
     assert "Push-Score: 78,4" in text
     assert "Prognose: 5,20 % OR" in text
+    assert "Die Artikel-Prognose liegt aktuell bei 5,20 % OR." in text
     assert "Letzter Push: vor 42 Minuten" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
@@ -669,6 +670,7 @@ def test_or_prediction_ratio_is_displayed_as_percent_not_raw_ratio():
     assert "Prognose: 4,77 % OR" in message["text"]
     assert message["payload"]["predictedOR"] == 4.77
     assert message["payload"]["predictedORLabel"] == "4,77 % OR"
+    assert message["payload"]["predictedORSource"] == "article_model"
 
 
 def test_tiny_double_scaled_or_prediction_is_not_displayed_as_forecast():
@@ -680,9 +682,10 @@ def test_tiny_double_scaled_or_prediction_is_not_displayed_as_forecast():
 
     assert normalize_predicted_or(0.0004) is None
     assert "0,04 % OR" not in message["text"]
-    assert "keine belastbare Prognose" in message["text"]
-    assert message["payload"]["predictedOR"] == 0.0
-    assert message["payload"]["predictedORAvailable"] is False
+    assert "historische Slot-Prognose" in message["text"]
+    assert message["payload"]["predictedOR"] > 0.0
+    assert message["payload"]["predictedORAvailable"] is True
+    assert message["payload"]["predictedORSource"] == "historical_slot_baseline"
 
 
 def test_teams_message_hides_global_average_prediction_fallback():
@@ -699,10 +702,11 @@ def test_teams_message_hides_global_average_prediction_fallback():
     text = message["text"]
 
     assert "4.77" not in text
-    assert "keine belastbare Prognose" in text
+    assert "historische Slot-Prognose" in text
     assert "4.77" not in message["payload"]["messageHtml"]
-    assert message["payload"]["predictedOR"] == 0.0
-    assert message["payload"]["predictedORAvailable"] is False
+    assert message["payload"]["predictedOR"] > 0.0
+    assert message["payload"]["predictedORAvailable"] is True
+    assert message["payload"]["predictedORSource"] == "historical_slot_baseline"
     assert message["payload"]["minutesSinceLastPush"] == 42.0
 
 
