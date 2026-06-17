@@ -145,7 +145,7 @@ def test_bad_forecast_does_not_trigger_teams_decision():
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
-def test_score_only_mode_triggers_for_strong_weighted_candidate_without_forecast_or_push_time():
+def test_score_only_mode_blocks_candidate_without_forecast_or_push_time():
     candidate = _candidate(score=82.0, predictedOR=None)
 
     decision = shouldNotifyTeams(
@@ -154,9 +154,10 @@ def test_score_only_mode_triggers_for_strong_weighted_candidate_without_forecast
         _config(score_only_mode=True),
     )
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["scoreOnlyMode"] is True
-    assert decision["teamsAlertScore"] >= decision["teamsAlertScoreThreshold"]
+    assert any("Letzter Push-Zeitpunkt" in reason for reason in decision["blockingReasons"])
+    assert any("Keine belastbare Prognose" in reason for reason in decision["blockingReasons"])
 
 
 def test_score_only_mode_keeps_score_threshold_as_blocker():
@@ -194,6 +195,21 @@ def test_sport_section_is_blocked_even_in_score_only_mode():
     assert any("Ressort sport" in reason for reason in decision["blockingReasons"])
 
 
+def test_candidate_outside_dashboard_top_limit_is_blocked():
+    candidate = _candidate(score=92.0, predictedOR=0.07)
+    context = _context(candidate)
+    context["dashboardRank"] = 25
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dashboard_top_limit=20),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"])
+
+
 def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
     candidate = _candidate(
         score=84.0,
@@ -214,7 +230,7 @@ def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
     assert any("Teams Alert Score zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
-def test_weighted_model_allows_strong_breaking_below_standard_raw_score():
+def test_weighted_model_blocks_breaking_without_timing_and_forecast():
     candidate = _candidate(
         score=78.0,
         predictedOR=None,
@@ -229,8 +245,8 @@ def test_weighted_model_allows_strong_breaking_below_standard_raw_score():
         _config(score_only_mode=True, min_score=75.0, breaking_min_score=72.0, min_alert_score=78.0),
     )
 
-    assert decision["shouldNotify"] is True
-    assert decision["teamsAlertScore"] >= 78.0
+    assert decision["shouldNotify"] is False
+    assert any("Letzter Push-Zeitpunkt" in reason for reason in decision["blockingReasons"])
 
 
 def test_score_only_mode_does_not_use_lower_breaking_threshold():

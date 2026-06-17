@@ -41,6 +41,10 @@ services:
         value: "78"
       - key: PUSH_TEAMS_SCORE_ONLY_MODE
         value: "true"
+      - key: PUSH_TEAMS_DASHBOARD_TOP_LIMIT
+        value: "20"
+      - key: PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
+        value: "88"
       - key: PUSH_TEAMS_MIN_OR
         value: "5.0"
       - key: PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH

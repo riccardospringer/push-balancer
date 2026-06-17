@@ -26,11 +26,13 @@ from app.config import (
     PUSH_TEAMS_BREAKING_MIN_SCORE,
     PUSH_TEAMS_BREAKING_OVERRIDE,
     PUSH_TEAMS_CANDIDATE_LIMIT,
+    PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
     PUSH_TEAMS_MIN_ALERT_SCORE,
     PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH,
+    PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE,
     PUSH_TEAMS_MIN_OR,
     PUSH_TEAMS_MIN_SCORE,
     PUSH_TEAMS_REALERT_OR_DELTA,
@@ -67,6 +69,8 @@ class TeamsAlertConfig:
     min_score: float = PUSH_TEAMS_MIN_SCORE
     min_alert_score: float = PUSH_TEAMS_MIN_ALERT_SCORE
     score_only_mode: bool = PUSH_TEAMS_SCORE_ONLY_MODE
+    dashboard_top_limit: int = PUSH_TEAMS_DASHBOARD_TOP_LIMIT
+    no_forecast_min_alert_score: float = PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
     min_or: float = PUSH_TEAMS_MIN_OR
     min_minutes_since_last_push: int = PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -178,6 +182,8 @@ def should_notify_teams(
         else None
     )
     alert_state = (context.get("alertState") or {}).get(key)
+    dashboard_rank = _safe_int(context.get("dashboardRank"))
+    dashboard_top_limit = max(1, int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
 
     positive: list[str] = []
     blockers: list[str] = []
@@ -190,6 +196,14 @@ def should_notify_teams(
         blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
     if not url:
         blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
+
+    if dashboard_rank > 0:
+        if dashboard_rank <= dashboard_top_limit:
+            positive.append(f"Top-Kandidat im Push Balancer: Rang {dashboard_rank}")
+        else:
+            blockers.append(
+                f"Nicht im oberen Push-Balancer-Feld: Rang {dashboard_rank} > {dashboard_top_limit}"
+            )
 
     allowed = {item.lower() for item in config.allowed_sections if item.strip()}
     if allowed and section.lower() not in allowed:
@@ -216,9 +230,26 @@ def should_notify_teams(
         blockers.append(
             f"Teams Alert Score zu niedrig: {alert_score:.1f} < {config.min_alert_score:.1f}"
         )
+    if predicted_or is None and alert_score < config.no_forecast_min_alert_score:
+        blockers.append(
+            "Keine belastbare Prognose und Teams Alert Score nicht hoch genug: "
+            f"{alert_score:.1f} < {config.no_forecast_min_alert_score:.1f}"
+        )
 
     if config.score_only_mode:
-        positive.append("Score-Modus aktiv: Raw Score ist Eingangskriterium, Teams Alert Score entscheidet final")
+        positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
+        if minutes_since_last_push is None:
+            blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
+            status = "observe"
+        elif minutes_since_last_push >= min_pause:
+            positive.append(
+                f"Letzter Push vor {minutes_since_last_push:.0f} Minuten, Mindestpause erfuellt"
+            )
+        else:
+            blockers.append(
+                f"Pause seit letztem Push zu kurz: {minutes_since_last_push:.0f} < {min_pause} Minuten"
+            )
+            status = "observe"
     else:
         if predicted_or is None:
             blockers.append("Prognose fehlt")
@@ -321,6 +352,8 @@ def should_notify_teams(
         "minOR": min_or,
         "minMinutesSinceLastPush": min_pause,
         "minutesSinceLastPush": minutes_since_last_push,
+        "dashboardRank": dashboard_rank or None,
+        "dashboardTopLimit": dashboard_top_limit,
         "lastPushAt": _iso_from_ts(last_push_ts) if last_push_ts else None,
         "lastGlobalTeamsAlertAt": _iso_from_ts(last_teams_alert_ts) if last_teams_alert_ts else None,
         "minutesSinceLastGlobalTeamsAlert": minutes_since_last_teams_alert,
@@ -344,10 +377,13 @@ def evaluate_teams_alert_candidates(
     base_context = dict(context)
     base_context.pop("strongerCandidate", None)
 
-    base_decisions = [
-        (candidate, should_notify_teams(candidate, base_context, config))
-        for candidate in candidates
-    ]
+    top_limit = max(1, int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
+    base_decisions = []
+    for index, candidate in enumerate(candidates, start=1):
+        decision_context = dict(base_context)
+        decision_context["dashboardRank"] = index
+        decision_context["dashboardTopLimit"] = top_limit
+        base_decisions.append((candidate, should_notify_teams(candidate, decision_context, config)))
     eligible = [
         (candidate, decision)
         for candidate, decision in base_decisions
@@ -366,11 +402,13 @@ def evaluate_teams_alert_candidates(
         selected_key = candidate_key(selected_candidate)
 
     final: list[dict[str, Any]] = []
-    for candidate, base_decision in base_decisions:
+    for index, (candidate, base_decision) in enumerate(base_decisions, start=1):
         key = candidate_key(candidate)
         if selected_key and key != selected_key and base_decision.get("shouldNotify"):
             decision_context = dict(base_context)
             decision_context["strongerCandidate"] = selected_candidate
+            decision_context["dashboardRank"] = index
+            decision_context["dashboardTopLimit"] = top_limit
             decision = should_notify_teams(candidate, decision_context, config)
         else:
             decision = dict(base_decision)
@@ -608,7 +646,8 @@ def evaluate_and_send_best_candidate(
 ) -> dict[str, Any]:
     """Evaluate a candidate batch, send the best recommendation, and persist state."""
     config = config or TeamsAlertConfig()
-    limited = candidates[: max(1, PUSH_TEAMS_CANDIDATE_LIMIT)]
+    dashboard_limit = max(1, min(int(config.dashboard_top_limit or 20), PUSH_TEAMS_CANDIDATE_LIMIT))
+    limited = candidates[:dashboard_limit]
     context = build_teams_alert_context(limited, now_ts=now_ts)
     evaluation = evaluate_teams_alert_candidates(limited, context, config)
     selected = evaluation.get("selectedCandidate")
@@ -706,9 +745,11 @@ def run_teams_alert_cycle() -> dict[str, Any]:
         _refresh_push_history_for_timing()
         from app.routers.feed import build_articles_payload
 
-        payload = build_articles_payload(offset=0, limit=PUSH_TEAMS_CANDIDATE_LIMIT)
+        config = TeamsAlertConfig()
+        dashboard_limit = max(1, min(int(config.dashboard_top_limit or 20), PUSH_TEAMS_CANDIDATE_LIMIT))
+        payload = build_articles_payload(offset=0, limit=dashboard_limit)
         candidates = payload.get("articles") or []
-        return evaluate_and_send_best_candidate(candidates)
+        return evaluate_and_send_best_candidate(candidates, config=config)
     except Exception as exc:
         log.exception("[TeamsAlert] Cycle failed")
         return {"ok": False, "sent": False, "error": str(exc)}

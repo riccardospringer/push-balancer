@@ -310,7 +310,7 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 ### Microsoft Teams Push Recommendations
 
-`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates the current article candidates and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
+`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates the same top article field shown in the Push Balancer dashboard and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
 
 For Power Automate, use the trigger body field `messageHtml` as the Teams message content:
 
@@ -318,7 +318,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, and `recommendedPushText`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose".
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, and `recommendedPushText`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
 
 ### CORS
 
@@ -347,7 +347,9 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
 | `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; combines raw score, news value, freshness, timing, competition, and user-load penalty |
-| `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast and last-push gaps are context signals; the weighted Teams Alert Score still decides final notification eligibility |
+| `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
+| `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Limits Teams evaluation to the top N article candidates from the same payload used by the dashboard |
+| `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE` | No | `88` | Higher Teams Alert Score required when no reliable article-specific OR forecast is available |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
