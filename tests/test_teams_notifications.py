@@ -210,6 +210,67 @@ def test_candidate_outside_dashboard_top_limit_is_blocked():
     assert any("Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"])
 
 
+def test_cvd_gate_blocks_soft_topic_even_with_high_score_and_forecast():
+    candidate = _candidate(
+        score=95.0,
+        predictedOR=0.09,
+        category="digital",
+        title="Schock fuer Fans: Beliebte Sprachlern-App vor dem Aus",
+        url="https://www.bild.de/digital/sprachlern-app",
+        isBreaking=False,
+        isEilmeldung=False,
+    )
+    context = _context(candidate)
+    context["dashboardRank"] = 3
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(min_alert_score=60.0, min_editorial_score=82.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["editorialReview"]["approved"] is False
+    assert any("CvD:" in reason for reason in decision["blockingReasons"])
+
+
+def test_cvd_gate_blocks_non_breaking_candidate_outside_editorial_top_ten():
+    candidate = _candidate(score=96.0, predictedOR=0.08)
+    context = _context(candidate)
+    context["dashboardRank"] = 11
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dashboard_top_limit=20, editorial_top_limit=10),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Top 10" in reason for reason in decision["blockingReasons"])
+
+
+def test_cvd_gate_allows_breaking_candidate_beyond_editorial_top_ten():
+    candidate = _candidate(
+        score=91.0,
+        predictedOR=0.065,
+        title="Eilmeldung: Iran und Israel einigen sich auf Feuerpause",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    context = _context(candidate)
+    context["dashboardRank"] = 12
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dashboard_top_limit=20, editorial_top_limit=10),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["editorialReview"]["approved"] is True
+    assert any("CvD-Freigabe" in reason for reason in decision["reasons"])
+
+
 def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
     candidate = _candidate(
         score=84.0,
@@ -415,6 +476,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert candidate["title"] in text
     assert candidate["url"] in text
     assert "Teams-Alert-Score: " in text
+    assert "CvD-Score: " in text
     assert "Push-Score: 78,4" in text
     assert "Prognose: 5,20 % OR" in text
     assert "Letzter Push: vor 42 Minuten" in text
@@ -423,9 +485,12 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["articleTitle"] == candidate["title"]
     assert payload["articleUrl"] == candidate["url"]
     assert payload["teamsAlertScore"] >= payload["teamsAlertScoreThreshold"]
+    assert payload["editorialReview"]["approved"] is True
+    assert payload["editorialScore"] >= 82.0
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]
+    assert "CvD-Score" in payload["messageHtml"]
     assert "Empfohlener Push-Text:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)

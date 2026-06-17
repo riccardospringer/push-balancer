@@ -27,9 +27,13 @@ from app.config import (
     PUSH_TEAMS_BREAKING_OVERRIDE,
     PUSH_TEAMS_CANDIDATE_LIMIT,
     PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
+    PUSH_TEAMS_EDITORIAL_GATE_ENABLED,
+    PUSH_TEAMS_EDITORIAL_TOP_LIMIT,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
+    PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE,
+    PUSH_TEAMS_MIN_EDITORIAL_SCORE,
     PUSH_TEAMS_MIN_ALERT_SCORE,
     PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH,
     PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE,
@@ -71,6 +75,10 @@ class TeamsAlertConfig:
     score_only_mode: bool = PUSH_TEAMS_SCORE_ONLY_MODE
     dashboard_top_limit: int = PUSH_TEAMS_DASHBOARD_TOP_LIMIT
     no_forecast_min_alert_score: float = PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
+    editorial_gate_enabled: bool = PUSH_TEAMS_EDITORIAL_GATE_ENABLED
+    editorial_top_limit: int = PUSH_TEAMS_EDITORIAL_TOP_LIMIT
+    min_editorial_score: float = PUSH_TEAMS_MIN_EDITORIAL_SCORE
+    min_editorial_news_value: float = PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
     min_or: float = PUSH_TEAMS_MIN_OR
     min_minutes_since_last_push: int = PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -236,6 +244,20 @@ def should_notify_teams(
             f"{alert_score:.1f} < {config.no_forecast_min_alert_score:.1f}"
         )
 
+    freshness_hours = _freshness_hours(candidate, now_ts)
+    editorial_review = _editorial_cvd_review(
+        candidate,
+        score=score,
+        predicted_or=predicted_or,
+        freshness_hours=freshness_hours,
+        minutes_since_last_push=minutes_since_last_push,
+        dashboard_rank=dashboard_rank,
+        alert_score=alert_score,
+        config=config,
+    )
+    positive.extend(editorial_review["reasons"])
+    blockers.extend(editorial_review["blockers"])
+
     if config.score_only_mode:
         positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
         if minutes_since_last_push is None:
@@ -271,7 +293,6 @@ def should_notify_teams(
             )
             status = "observe"
 
-    freshness_hours = _freshness_hours(candidate, now_ts)
     if freshness_hours is not None:
         if freshness_hours <= config.max_article_age_hours:
             positive.append(f"Aktuell: Artikel vor {freshness_hours:.1f} Stunden veroeffentlicht")
@@ -347,6 +368,8 @@ def should_notify_teams(
         "teamsAlertScore": alert_score,
         "teamsAlertScoreThreshold": config.min_alert_score,
         "teamsAlertScoreBreakdown": alert_model["breakdown"],
+        "editorialReview": editorial_review,
+        "editorialScore": editorial_review["score"],
         "predictedOR": predicted_or,
         "minScore": min_score,
         "minOR": min_or,
@@ -484,6 +507,9 @@ def build_teams_push_recommendation(
     score_threshold = float(decision.get("minScore", config.min_score) or config.min_score)
     alert_score = float(decision.get("teamsAlertScore") or 0.0)
     alert_threshold = float(decision.get("teamsAlertScoreThreshold") or config.min_alert_score)
+    editorial_review = decision.get("editorialReview") or {}
+    editorial_score = float(editorial_review.get("score") or 0.0)
+    editorial_reasons = list(editorial_review.get("reasons") or [])
     push_text = str(candidate.get("recommendedText") or title)
     push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
@@ -520,8 +546,16 @@ def build_teams_push_recommendation(
             timing_reason = f"Der letzte Push liegt {float(minutes):.0f} Minuten zurück."
     else:
         timing_reason = "Ein letzter Push-Zeitpunkt ist aktuell nicht bekannt."
-    why_now = _dedupe([threshold_reason, score_reason, timing_reason, competition, duplicate_reason])[:5]
-    why_pushworthy = _dedupe([score_reason, forecast_reason, timing_reason, competition])[:4]
+    editorial_reason = (
+        f"CvD-Einordnung: {_format_number(editorial_score)} von 100 Punkten; "
+        "redaktionelle Freigabe erteilt."
+        if editorial_review.get("approved", True)
+        else "CvD-Einordnung: keine redaktionelle Freigabe."
+    )
+    why_now = _dedupe(
+        [editorial_reason, threshold_reason, score_reason, timing_reason, competition, duplicate_reason]
+    )[:5]
+    why_pushworthy = _dedupe([editorial_reason, score_reason, forecast_reason, timing_reason, competition])[:4]
 
     text_lines = ["🚨 Push-Empfehlung: Jetzt pushen", ""]
     if push_text_matches_title:
@@ -546,6 +580,7 @@ def build_teams_push_recommendation(
             f"- Ressort: {section_label}",
             f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
             f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
+            f"- CvD-Score: {_format_number(editorial_score)}",
             f"- Prognose: {_format_or(predicted_or)}",
             f"- Letzter Push: {_format_minutes(minutes)}",
             f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
@@ -567,6 +602,7 @@ def build_teams_push_recommendation(
         score_threshold=score_threshold,
         alert_score=alert_score,
         alert_threshold=alert_threshold,
+        editorial_score=editorial_score,
         why_now=why_now,
         push_text_matches_title=push_text_matches_title,
     )
@@ -582,6 +618,9 @@ def build_teams_push_recommendation(
             "teamsAlertScore": alert_score,
             "teamsAlertScoreThreshold": alert_threshold,
             "teamsAlertScoreBreakdown": decision.get("teamsAlertScoreBreakdown") or {},
+            "editorialReview": editorial_review,
+            "editorialScore": editorial_score,
+            "editorialReasons": editorial_reasons,
             "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
             "predictedORAvailable": predicted_or is not None,
             "predictedORLabel": _format_or(predicted_or),
@@ -804,6 +843,175 @@ def normalize_predicted_or(value: Any) -> float | None:
     if numeric <= 0:
         return None
     return numeric * 100.0 if numeric <= 1.0 else numeric
+
+
+def _editorial_cvd_review(
+    candidate: dict[str, Any],
+    *,
+    score: float,
+    predicted_or: float | None,
+    freshness_hours: float | None,
+    minutes_since_last_push: float | None,
+    dashboard_rank: int,
+    alert_score: float,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Hard editorial gate before Teams can become an action recommendation."""
+    if not config.editorial_gate_enabled:
+        return {
+            "enabled": False,
+            "approved": True,
+            "score": 100.0,
+            "newsValue": 100.0,
+            "blockers": [],
+            "reasons": ["CvD-Gate deaktiviert"],
+            "breakdown": {},
+        }
+
+    title = _title(candidate)
+    title_l = title.lower()
+    section = _section(candidate).lower()
+    breaking = _is_breaking(candidate)
+    rank_limit = max(1, min(int(config.editorial_top_limit or 10), int(config.dashboard_top_limit or 20)))
+
+    high_impact_terms = (
+        "krieg", "terror", "anschlag", "iran", "israel", "ukraine", "russland",
+        "putin", "trump", "merz", "kanzler", "regierung", "bundestag", "polizei",
+        "tote", "tot", "vermisst", "verletzte", "gefahr", "warnung", "evakuierung",
+        "ruecktritt", "rücktritt", "feuerpause", "atom", "nato", "gericht",
+        "urteil", "streik", "insolvenz", "festnahme",
+    )
+    public_need_terms = (
+        "warnung", "gefahr", "polizei", "streik", "ausfall", "sperrung", "rueckruf",
+        "rückruf", "steuer", "rente", "krankenkasse", "geld", "preis", "verbraucher",
+        "gericht", "urteil", "regierung", "bundestag", "nato", "krieg", "feuerpause",
+    )
+    soft_terms = (
+        "quiz", "horoskop", "shopping", "rabatt", "sommertrend", "fans", "star",
+        "stars", "app", "promi", "liebe", "beauty", "mode", "urlaub", "reise",
+    )
+    vague_terms = ("diese", "dieser", "darum", "so ", "jetzt wissen", "experte erklaert")
+
+    section_points = {
+        "politik": 30.0,
+        "news": 28.0,
+        "wirtschaft": 23.0,
+        "regional": 22.0,
+        "digital": 16.0,
+        "unterhaltung": 10.0,
+        "leben": 10.0,
+        "leben-wissen": 12.0,
+        "service": 7.0,
+    }.get(section, 17.0)
+
+    impact_bonus = 0.0
+    if breaking:
+        impact_bonus += 8.0
+    impact_matches = [term for term in high_impact_terms if term in title_l]
+    if impact_matches:
+        impact_bonus += min(10.0, 4.0 + 2.0 * (len(impact_matches) - 1))
+    if "live-ticker" in title_l or "liveticker" in title_l or "liveblog" in title_l:
+        impact_bonus += 3.0
+    soft_matches = [term for term in soft_terms if term in title_l]
+    if soft_matches and not impact_matches and not breaking:
+        impact_bonus -= 8.0
+
+    news_value = _clamp(section_points + impact_bonus, 0.0, 40.0)
+
+    if freshness_hours is None:
+        urgency = 8.0
+    elif freshness_hours <= 0.5:
+        urgency = 16.0
+    elif freshness_hours <= 1.5:
+        urgency = 14.0
+    elif freshness_hours <= 3.0:
+        urgency = 11.0
+    elif freshness_hours <= 6.0:
+        urgency = 7.0
+    else:
+        urgency = 2.0
+    if breaking:
+        urgency = max(urgency, 14.0)
+
+    user_need = 6.0
+    need_matches = [term for term in public_need_terms if term in title_l]
+    if need_matches:
+        user_need += min(9.0, 4.0 + 1.5 * (len(need_matches) - 1))
+    if section in {"politik", "news", "wirtschaft", "regional"}:
+        user_need += 2.0
+    if soft_matches and not need_matches and not impact_matches:
+        user_need -= 4.0
+    user_need = _clamp(user_need, 0.0, 15.0)
+
+    if predicted_or is None:
+        timing = 4.0
+    elif predicted_or >= config.min_or + 1.0:
+        timing = 10.0
+    elif predicted_or >= config.min_or:
+        timing = 8.0
+    elif predicted_or >= max(4.0, config.min_or - 0.5):
+        timing = 5.0
+    else:
+        timing = 2.0
+
+    clarity = 8.0 if len(title) >= 35 else 5.0
+    if any(term in title_l for term in vague_terms):
+        clarity -= 2.0
+    if _url(candidate):
+        clarity += 1.0
+    clarity = _clamp(clarity, 0.0, 10.0)
+
+    load = 4.0
+    if minutes_since_last_push is None:
+        load = 0.0
+    elif minutes_since_last_push >= config.min_minutes_since_last_push + 20:
+        load = 5.0
+    elif minutes_since_last_push >= config.min_minutes_since_last_push:
+        load = 3.0
+    elif breaking:
+        load = 2.0
+    else:
+        load = 0.0
+
+    total = _clamp(news_value + urgency + user_need + timing + clarity + load, 0.0, 100.0)
+    blockers: list[str] = []
+    reasons: list[str] = [
+        f"CvD-Score {total:.1f}/100",
+        f"CvD-Nachrichtenwert {news_value:.1f}/40",
+    ]
+
+    if dashboard_rank > rank_limit and not breaking:
+        blockers.append(f"CvD: nicht in den Top {rank_limit} des Dashboard-Felds")
+    if news_value < config.min_editorial_news_value:
+        blockers.append(
+            f"CvD: Nachrichtenwert zu niedrig ({news_value:.1f} < {config.min_editorial_news_value:.1f})"
+        )
+    if total < config.min_editorial_score:
+        blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {config.min_editorial_score:.1f})")
+    if soft_matches and not breaking and news_value < config.min_editorial_news_value + 6.0:
+        blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
+    if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
+        blockers.append("CvD: ohne belastbare OR-Prognose nur bei absoluter Top-Lage")
+
+    if not blockers:
+        reasons.append("CvD-Freigabe: klare Push-Lage mit aktueller Relevanz")
+
+    return {
+        "enabled": True,
+        "approved": not blockers,
+        "score": round(total, 1),
+        "newsValue": round(news_value, 1),
+        "blockers": blockers,
+        "reasons": reasons,
+        "breakdown": {
+            "newsValue": round(news_value, 1),
+            "urgency": round(urgency, 1),
+            "userNeed": round(user_need, 1),
+            "timing": round(timing, 1),
+            "clarity": round(clarity, 1),
+            "load": round(load, 1),
+        },
+    }
 
 
 def _teams_alert_score(
@@ -1182,6 +1390,7 @@ def _build_power_automate_message_html(
     score_threshold: float,
     alert_score: float,
     alert_threshold: float,
+    editorial_score: float,
     why_now: list[str],
     push_text_matches_title: bool = False,
 ) -> str:
@@ -1214,6 +1423,7 @@ def _build_power_automate_message_html(
         f"(Mindestwert {html.escape(_format_number(score_threshold, 0))})<br>"
         f"<strong>Teams-Alert-Score:</strong> {html.escape(_format_number(alert_score))} "
         f"(Schwelle {html.escape(_format_number(alert_threshold, 0))})<br>"
+        f"<strong>CvD-Score:</strong> {html.escape(_format_number(editorial_score))}<br>"
         f"<strong>Prognose:</strong> {html.escape(_format_or(predicted_or))}<br>"
         f"<strong>Letzter Push:</strong> "
         f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
