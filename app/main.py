@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from app.config import (
     ALLOWED_ORIGINS,
@@ -1024,8 +1024,16 @@ def _legacy_frontend_response() -> Response:
 
 
 @app.get("/", include_in_schema=False)
-@app.get("/push-balancer.html", include_in_schema=False)
 async def frontend_entrypoint(request: Request) -> Response:
+    """Liefert die gebaute React-App; Legacy bleibt unter /push-balancer.html erreichbar."""
+    response = _frontend_html_response(request.url.path)
+    if response is not None:
+        return response
+    return _legacy_frontend_response()
+
+
+@app.get("/push-balancer.html", include_in_schema=False)
+async def legacy_frontend_entrypoint(request: Request) -> Response:
     """Liefert das klassische push-balancer.html Frontend."""
     return _legacy_frontend_response()
 
@@ -1035,7 +1043,21 @@ async def frontend_entrypoint(request: Request) -> Response:
 @app.get("/app", include_in_schema=False)
 @app.get("/app/", include_in_schema=False)
 async def frontend_spa_entrypoint(request: Request) -> Response:
-    """Komplett deaktiviert — liefert klassisches push-balancer.html."""
+    """Alte SPA-Einstiege auf die aktuelle Kandidaten-Ansicht führen."""
+    return RedirectResponse(url="/kandidaten", status_code=307)
+
+
+@app.get("/kandidaten", include_in_schema=False)
+@app.get("/live", include_in_schema=False)
+@app.get("/analyse", include_in_schema=False)
+@app.get("/konkurrenz", include_in_schema=False)
+@app.get("/forschung", include_in_schema=False)
+@app.get("/tagesplan", include_in_schema=False)
+async def frontend_spa_route(request: Request) -> Response:
+    """Liefert die React-SPA für ihre Browser-Routen."""
+    response = _frontend_html_response(request.url.path)
+    if response is not None:
+        return response
     return _legacy_frontend_response()
 
 
@@ -1051,7 +1073,13 @@ async def serve_frontend_asset(asset_path: str) -> Response:
 
 @app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
 async def frontend_dist_assets(asset_path: str = "") -> Response:
-    """Compat-Route — keine React-SPA-Assets mehr, alles auf push-balancer.html."""
+    """Kompatibilitaet fuer alte dist-frontend-Asset-URLs."""
+    if asset_path.startswith("assets/"):
+        return await serve_frontend_asset(asset_path.removeprefix("assets/"))
+
+    response = _frontend_html_response("/kandidaten")
+    if response is not None:
+        return response
     return _legacy_frontend_response()
 
 

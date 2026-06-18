@@ -616,17 +616,31 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
         assert "javascript" in resp.headers.get("content-type", "")
 
-    def test_dist_frontend_root_serves_spa_shell_for_allowlisted_clients(self, monkeypatch):
+    def test_dist_frontend_root_redirects_to_react_entry_for_allowlisted_clients(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
 
-        resp = client.get("/dist-frontend/", headers={"CF-Connecting-IP": "145.243.163.23"})
+        resp = client.get(
+            "/dist-frontend/",
+            headers={"CF-Connecting-IP": "145.243.163.23"},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 307
+        assert resp.headers.get("location") == "/kandidaten"
+
+    def test_kandidaten_route_serves_react_shell_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+
+        resp = client.get("/kandidaten", headers={"CF-Connecting-IP": "145.243.163.23"})
 
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert "Push Balancer" in resp.text
-        assert 'data-tab="konkurrenz"' in resp.text
+        assert 'id="root"' in resp.text
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
 
     def test_prepare_frontend_html_rewrites_legacy_bundle_paths_for_compat_route(self):
@@ -679,6 +693,7 @@ class TestInternalAccessControl:
         assert "text/html" in resp.headers.get("content-type", "")
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
         assert "Push Balancer" in resp.text
+        assert 'id="root"' in resp.text
 
 
 class TestPushApiBaseCandidates:
