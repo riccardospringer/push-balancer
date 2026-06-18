@@ -572,6 +572,23 @@ class TestInternalAccessControl:
 
         assert resp.status_code == 200
 
+    def test_legacy_feed_stays_reachable_for_public_frontend(self, monkeypatch):
+        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>
+  <url><loc>https://www.bild.de/test</loc></url>
+</urlset>"""
+
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+
+        resp = client.get("/api/feed", headers={"X-Forwarded-For": "203.0.113.7"})
+
+        assert resp.status_code == 200
+        assert "application/xml" in resp.headers.get("content-type", "")
+        assert "https://www.bild.de/test" in resp.text
+
     def test_legacy_frontend_path_serves_index_for_allowlisted_clients(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])

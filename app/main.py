@@ -400,9 +400,12 @@ _ALWAYS_PUBLIC_PREFIXES = (
     "/favicon",
     "/robots.txt",
 )
+_ALWAYS_PUBLIC_PATHS = {
+    "/api/feed",
+}
 
 def _is_always_public(path: str) -> bool:
-    return any(path.startswith(p) for p in _ALWAYS_PUBLIC_PREFIXES)
+    return path in _ALWAYS_PUBLIC_PATHS or any(path.startswith(p) for p in _ALWAYS_PUBLIC_PREFIXES)
 
 def _is_frontend_navigation_request(method: str, path: str) -> bool:
     if method != "GET":
