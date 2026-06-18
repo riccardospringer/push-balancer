@@ -96,7 +96,7 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
                 return {
                     **llm_result,
                     "title": llm_result.get("title") or gewinner.get("titel", body.title),
-                    "alternativeTitles": alt_titles[:5],
+                    "alternativeTitles": alt_titles[:3],
                     "reasoning": llm_result.get("reasoning") or gewinner.get("warum_dieser", ""),
                     "advisoryOnly": True,
                 }

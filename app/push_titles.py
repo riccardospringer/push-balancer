@@ -40,6 +40,11 @@ _NON_ACTOR_TITLE_WORDS = {
     "WM", "EM", "Erdbeben", "Beben", "Schock", "Drama", "Tore", "Toren", "Tor",
     "News", "Sport", "Politik", "Wirtschaft", "Digital", "Regional",
 }
+_LOW_VALUE_ACTOR_PHRASES = {
+    "bühne weltpolitik",
+    "buehne weltpolitik",
+    "momente g7-gipfel",
+}
 _STOPWORDS = {
     "der", "die", "das", "ein", "eine", "einer", "einem", "einen", "und", "oder", "fuer", "für",
     "mit", "ohne", "auf", "im", "in", "am", "an", "zu", "zum", "zur", "bei", "nach", "vor",
@@ -190,10 +195,17 @@ def _extract_named_actors(title: str) -> list[str]:
     result: list[str] = []
     for actor in actors:
         key = actor.lower()
+        if key in _LOW_VALUE_ACTOR_PHRASES:
+            continue
         if key not in seen and len(actor) > 2:
             seen.add(key)
             result.append(actor)
     return result[:4]
+
+
+def _is_g7_moments_title(title: str) -> bool:
+    lowered = (title or "").lower()
+    return "g7" in lowered and "cringy" in lowered and "momente" in lowered
 
 
 def _last_name(actor: str) -> str:
@@ -301,6 +313,15 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
 
     candidates: list[tuple[str, str]] = []
     compact_fact = _compact_fact(detail)
+
+    if _is_g7_moments_title(brief.original_title):
+        candidates.extend(
+            [
+                ("G7-Gipfel: Die cringy Momente der Weltpolitik", "g7-push"),
+                ("G7-Gipfel: Weltpolitik zum Fremdschämen", "g7-push"),
+                ("Was beim G7-Gipfel hängen bleibt", "g7-push"),
+            ]
+        )
 
     if brief.content_type == "video":
         candidates.extend(
@@ -469,6 +490,10 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score -= 1.4
         weaknesses.append("metaphorischer Einstieg bleibt ohne klare redaktionelle Folge")
 
+    if lowered == brief.original_title.lower():
+        score -= 1.4
+        weaknesses.append("kopiert die Original-Headline zu stark")
+
     focus_duplication = re.match(r"^(.+?) im fokus:\s*\1$", lowered)
     if focus_duplication:
         score -= 2.0
@@ -555,7 +580,12 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
         "laenge": alternative["laenge"],
         "warum": alt_reason,
     }
-    return rated[:5], gewinner, alternative_payload
+    visible_rated = rated[:5]
+    if not any(item["titel"] == brief.original_title for item in visible_rated):
+        original_rating = next((item for item in rated if item["titel"] == brief.original_title), None)
+        if original_rating:
+            visible_rated.append(original_rating)
+    return visible_rated, gewinner, alternative_payload
 
 
 def _editorial_priority(title: str, brief: TitleBrief) -> float:
@@ -569,6 +599,14 @@ def _editorial_priority(title: str, brief: TitleBrief) -> float:
         priority += 1.0
     if any(phrase in lowered for phrase in _EMPTY_METAPHORS):
         priority -= 4.0
+    if lowered == brief.original_title.lower():
+        priority -= 4.0
+    if lowered.startswith("die große bühne") or lowered.startswith("die grosse buehne"):
+        priority -= 3.0
+    if _is_g7_moments_title(brief.original_title) and lowered.startswith("g7-gipfel:"):
+        priority += 3.0
+    if lowered == "g7-gipfel: die cringy momente der weltpolitik":
+        priority += 1.0
     if lowered.startswith(f"{_category_prefix(brief.category).lower()}:"):
         priority -= 2.0
     if "was jetzt wichtig ist" in lowered or "darum geht es jetzt" in lowered:

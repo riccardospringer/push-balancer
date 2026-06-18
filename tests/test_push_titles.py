@@ -48,3 +48,16 @@ def test_agent_local_fallback_uses_deep_title_engine(monkeypatch):
 
     assert result["gewinner"]["titel"] == "Haaland schießt sich Richtung WM 2026"
     assert result["meta"]["analyse"]["akteure"] == ["Erling Haaland"]
+
+
+def test_g7_soft_politics_title_is_not_copied():
+    headline = "Die große Bühne der witzigen Weltpolitik: Die cringy Momente beim G7-Gipfel"
+
+    result = build_push_title_suggestions(headline, category="politik")
+
+    assert result["title"] == "G7-Gipfel: Die cringy Momente der Weltpolitik"
+    assert result["title"] != headline
+    assert result["meta"]["analyse"]["akteure"] == []
+    original_rating = next(item for item in result["bewertungen"] if item["titel"] == headline)
+    assert original_rating["gesamt"] < result["gewinner"]["gesamt_score"]
+    assert "kopiert die Original-Headline" in original_rating["schwaeche"]
