@@ -245,6 +245,12 @@ curl -H "Authorization: Bearer $CONSUMER_API_KEY" \
 
 The responses are read-only and advisory-only (`actionAllowed=false`). Production deployments should expose `/api/health` for platform checks and `/api/v1/*` for authenticated consumers only. Keep `/api/docs`, `/api/openapi.json`, and legacy `/api/*` routes behind the internal CIDR allowlist.
 
+### Editorial Push Scoring
+
+Article candidates are ranked by an editorial push score in [`app/scoring/editorial.py`](app/scoring/editorial.py). The score combines predicted opening-rate potential with BILD-specific signals: freshness, real news development, headline clarity, outrage/curiosity/emotion, broad audience relevance, video fit, and section mix. Politics remains eligible for top ranks when there is a concrete current development, but stale, abstract, complex, or debate-only politics receives explicit penalties.
+
+The ranking is rebalanced after scoring so strong non-politics candidates from news, sport, entertainment, crime, consumer, service, and curiosity have a realistic chance when the top field is otherwise dominated by politics. Each article returns `scoreReason`, `performanceDrivers`, `risks`, `mixPriority`, `recommendedText`, and a structured `scoreBreakdown` so editors can see why the candidate is high or low.
+
 ---
 
 ## Database
@@ -318,7 +324,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, and `selectionScore`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, and blocks soft topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, `selectionScore`, `scoreReason`, `performanceDrivers`, `risks`, and `scoreBreakdown`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, and blocks soft topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
 
 ### CORS
 
