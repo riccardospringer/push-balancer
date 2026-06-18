@@ -602,7 +602,7 @@ def test_cvd_time_fit_blocks_normal_push_at_night():
     assert decision["editorialReview"]["breakdown"]["localHour"] == 2
 
 
-def test_cvd_time_fit_allows_breaking_push_at_night():
+def test_quiet_hours_block_breaking_push_at_night():
     night_ts = NOW_TS - 7 * 3600
     candidate = _candidate(
         score=95.0,
@@ -622,7 +622,8 @@ def test_cvd_time_fit_allows_breaking_push_at_night():
         _config(min_alert_score=60.0, min_editorial_score=50.0, min_time_fit_score=4.0),
     )
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
+    assert any("Ruhezeit" in reason for reason in decision["blockingReasons"])
     assert decision["editorialReview"]["breakdown"]["timeFit"] >= 4.0
 
 
@@ -634,25 +635,17 @@ def test_teams_message_contains_required_editorial_fields():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
     text = message["text"]
 
-    assert "Push-Empfehlung: Jetzt pushen" in text
-    assert "Empfohlener Push-Text:" in text
+    assert text.startswith("🚨 Jetzt pushen: Eilmeldung: Das bedeutet das neue Paket")
+    assert "Empfohlener Push-Text:" not in text
     assert "Artikel:" in text
     assert "Warum jetzt?" in text
     assert candidate["title"] in text
     assert candidate["url"] in text
-    assert "Teams-Alert-Score: " in text
-    assert "CvD-Score: " in text
-    assert "Auswahlwert: " in text
-    assert "Zeitfenster: " in text
-    assert "Push-Score: 78,4" in text
-    assert "Push-Balancer-Begründung:" in text
-    assert "Was spricht dafür?" in text
-    assert "Was bremst?" in text
-    assert "Push-Balancer-Breakdown:" in text
-    assert "BILD-Reiz: 84.0/100" in text
-    assert "Prognose: 5,20 % OR" in text
+    assert "Politik | Score 78,4 | Prognose 5,20 % OR" in text
+    assert "Teams-Alert-Score: " not in text
+    assert "Push-Balancer-Breakdown:" not in text
     assert "Die Artikel-Prognose liegt aktuell bei 5,20 % OR." in text
-    assert "Letzter Push: vor 42 Minuten" in text
+    assert "letzter Push vor 42 Minuten" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
     assert payload["articleTitle"] == candidate["title"]
@@ -671,8 +664,8 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["recommendedPushText"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]
-    assert "CvD-Score" in payload["messageHtml"]
-    assert "Push-Balancer-Breakdown" in payload["messageHtml"]
+    assert payload["subject"].startswith("🚨 Jetzt pushen:")
+    assert "Push-Balancer-Breakdown" not in payload["messageHtml"]
     assert "Empfohlener Push-Text:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
@@ -686,11 +679,11 @@ def test_teams_message_does_not_repeat_identical_push_text_and_article_title():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
     text = message["text"]
 
-    assert "Artikel und empfohlener Push:" in text
+    assert text.startswith("🚨 Jetzt pushen: Eilmeldung: Regierung beschliesst wichtiges Paket")
     assert "Empfohlener Push-Text:" not in text
     assert "Artikel:\n" not in text
     assert text.count(candidate["title"]) == 1
-    assert "Artikel und empfohlener Push:" in message["payload"]["messageHtml"]
+    assert "Artikel:</strong>" in message["payload"]["messageHtml"]
 
 
 def test_or_prediction_ratio_is_displayed_as_percent_not_raw_ratio():
@@ -701,7 +694,7 @@ def test_or_prediction_ratio_is_displayed_as_percent_not_raw_ratio():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
 
     assert normalize_predicted_or(0.0477) == 4.77
-    assert "Prognose: 4,77 % OR" in message["text"]
+    assert "Prognose 4,77 % OR" in message["text"]
     assert message["payload"]["predictedOR"] == 4.77
     assert message["payload"]["predictedORLabel"] == "4,77 % OR"
     assert message["payload"]["predictedORSource"] == "article_model"
@@ -716,7 +709,7 @@ def test_tiny_double_scaled_or_prediction_is_not_displayed_as_forecast():
 
     assert normalize_predicted_or(0.0004) is None
     assert "0,04 % OR" not in message["text"]
-    assert "historische Slot-Prognose" in message["text"]
+    assert "Zeitfenster-Prognose" in message["text"]
     assert message["payload"]["predictedOR"] > 0.0
     assert message["payload"]["predictedORAvailable"] is True
     assert message["payload"]["predictedORSource"] == "historical_slot_baseline"
@@ -736,7 +729,7 @@ def test_teams_message_hides_global_average_prediction_fallback():
     text = message["text"]
 
     assert "4.77" not in text
-    assert "historische Slot-Prognose" in text
+    assert "Zeitfenster-Prognose" in text
     assert "4.77" not in message["payload"]["messageHtml"]
     assert message["payload"]["predictedOR"] > 0.0
     assert message["payload"]["predictedORAvailable"] is True

@@ -41,6 +41,8 @@ from app.config import (
     PUSH_TEAMS_MIN_OR,
     PUSH_TEAMS_MIN_SCORE,
     PUSH_TEAMS_MIN_TIME_FIT_SCORE,
+    PUSH_TEAMS_QUIET_HOURS_END,
+    PUSH_TEAMS_QUIET_HOURS_START,
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
@@ -82,6 +84,8 @@ class TeamsAlertConfig:
     min_editorial_score: float = PUSH_TEAMS_MIN_EDITORIAL_SCORE
     min_editorial_news_value: float = PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
     min_time_fit_score: float = PUSH_TEAMS_MIN_TIME_FIT_SCORE
+    quiet_hours_start: str = PUSH_TEAMS_QUIET_HOURS_START
+    quiet_hours_end: str = PUSH_TEAMS_QUIET_HOURS_END
     min_or: float = PUSH_TEAMS_MIN_OR
     min_minutes_since_last_push: int = PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH
     realert_score_delta: float = PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -207,6 +211,11 @@ def should_notify_teams(
 
     if not config.enabled:
         blockers.append("Teams Alerts deaktiviert")
+
+    quiet_reason = _quiet_hours_reason(now_ts, config)
+    if quiet_reason:
+        blockers.append(quiet_reason)
+        status = "observe"
 
     if not title:
         blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
@@ -617,49 +626,26 @@ def build_teams_push_recommendation(
         competition,
     ])[:7]
     what_speaks_against = candidate_risks[:5] or ["Keine harten Gegenargumente im Push-Balancer-Score."]
+    compact_reasons = _dedupe([time_fit_reason, forecast_reason, timing_reason, competition])[:3]
+    subject = f"🚨 Jetzt pushen: {_compact_text(push_text or title, 120)}"
 
-    text_lines = ["🚨 Push-Empfehlung: Jetzt pushen", ""]
-    if push_text_matches_title:
-        text_lines.extend(["Artikel und empfohlener Push:", f"{title}\n{url}" if url else title])
-    else:
-        text_lines.extend(
-            [
-                "Empfohlener Push-Text:",
-                push_text,
-                "",
-                "Artikel:",
-                f"{title}\n{url}" if url else title,
-            ]
-        )
+    text_lines = [subject, ""]
+    if not push_text_matches_title:
+        text_lines.extend(["Artikel:", title])
+    if url:
+        text_lines.append(url)
     text_lines.extend(
         [
             "",
+            (
+                f"{section_label} | Score {_format_number(score)} | "
+                f"Prognose {_format_or(predicted_or)} | letzter Push {_format_minutes(minutes)}"
+            ),
+            "",
             "Warum jetzt?",
-            *[f"- {reason}" for reason in why_now],
+            *[f"- {reason}" for reason in compact_reasons],
             "",
-            "Einordnung:",
-            f"- Ressort: {section_label}",
-            f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
-            *( [f"- Push-Balancer-Begründung: {candidate_score_reason}"] if candidate_score_reason else [] ),
-            f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
-            f"- CvD-Score: {_format_number(editorial_score)}",
-            f"- Auswahlwert: {_format_number(selection_score)}",
-            f"- Zeitfenster: {time_fit_label or 'nicht bewertet'}",
-            f"- Prognose: {_format_forecast(forecast)}",
-            f"- Letzter Push: {_format_minutes(minutes)}",
-            f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
-            "",
-            "Was spricht dafür?",
-            *[f"- {reason}" for reason in (candidate_drivers or editorial_reasons[:4])],
-            "",
-            "Was bremst?",
-            *[f"- {reason}" for reason in what_speaks_against],
-            "",
-            "Push-Balancer-Breakdown:",
-            *[f"- {reason}" for reason in (candidate_breakdown_lines or ["Kein Detail-Breakdown verfügbar."])],
-            "",
-            "Empfehlung:",
-            "Jetzt pushen.",
+            f"Empfehlung um {_format_dt(now_ts)} Uhr: Jetzt pushen.",
         ]
     )
     text = "\n".join(text_lines)
@@ -677,7 +663,8 @@ def build_teams_push_recommendation(
         alert_score=alert_score,
         alert_threshold=alert_threshold,
         editorial_score=editorial_score,
-        why_now=why_now,
+        why_now=compact_reasons,
+        subject=subject,
         push_text_matches_title=push_text_matches_title,
         score_reason=candidate_score_reason,
         performance_drivers=candidate_drivers,
@@ -688,6 +675,7 @@ def build_teams_push_recommendation(
         "text": text,
         "payload": {
             "type": "push_recommendation",
+            "subject": subject,
             "recommendedAction": "Jetzt pushen",
             "articleTitle": title,
             "articleUrl": url,
@@ -720,13 +708,14 @@ def build_teams_push_recommendation(
             "lastPushKnown": minutes_known,
             "timeSinceLastPushLabel": _format_minutes(minutes),
             "whyNow": why_now,
+            "compactWhyNow": compact_reasons,
             "whyPushworthy": why_pushworthy,
             "competition": competition,
             "messageText": text,
             "messageHtml": message_html,
             "text": text,
         },
-        "summary": f"Handlungsempfehlung: Jetzt pushen - {title}",
+        "summary": subject,
     }
 
 
@@ -1196,6 +1185,39 @@ def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, 
         "weekday": weekday,
         "isWeekend": is_weekend,
     }
+
+
+def _quiet_hours_reason(now_ts: int, config: TeamsAlertConfig) -> str:
+    start = _parse_hhmm_to_minutes(config.quiet_hours_start)
+    end = _parse_hhmm_to_minutes(config.quiet_hours_end)
+    if start is None or end is None or start == end:
+        return ""
+    local_dt = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
+    current = local_dt.hour * 60 + local_dt.minute
+    if start < end:
+        in_quiet_hours = start <= current < end
+    else:
+        in_quiet_hours = current >= start or current < end
+    if not in_quiet_hours:
+        return ""
+    return f"Teams-Ruhezeit aktiv: {_format_hhmm(start)} bis {_format_hhmm(end)} Uhr"
+
+
+def _parse_hhmm_to_minutes(value: Any) -> int | None:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _format_hhmm(minutes: int) -> str:
+    hour, minute = divmod(int(minutes), 60)
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _teams_alert_score(
@@ -1704,6 +1726,13 @@ def _format_minutes(value: Any) -> str:
     return "kein letzter Push bekannt"
 
 
+def _compact_text(value: str, max_len: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(1, max_len - 1)].rstrip() + "…"
+
+
 def _build_power_automate_message_html(
     *,
     title: str,
@@ -1720,6 +1749,7 @@ def _build_power_automate_message_html(
     alert_threshold: float,
     editorial_score: float,
     why_now: list[str],
+    subject: str,
     push_text_matches_title: bool = False,
     score_reason: str = "",
     performance_drivers: list[str] | None = None,
@@ -1732,16 +1762,9 @@ def _build_power_automate_message_html(
         else html.escape(title)
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
-    drivers_html = "".join(
-        f"<li>{html.escape(reason)}</li>" for reason in (performance_drivers or [])
-    )
-    risks_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in (risks or []))
-    breakdown_html = "".join(
-        f"<li>{html.escape(reason)}</li>" for reason in (score_breakdown_lines or [])
-    )
     if push_text_matches_title:
         lead_html = (
-            "<p><strong>Artikel und empfohlener Push:</strong><br>"
+            "<p><strong>Artikel:</strong><br>"
             f"{article_html}</p>"
         )
     else:
@@ -1752,34 +1775,19 @@ def _build_power_automate_message_html(
             f"{article_html}</p>"
         )
     return (
-        "<h2>🚨 Push-Empfehlung: Jetzt pushen</h2>"
+        f"<h2>{html.escape(subject)}</h2>"
         f"{lead_html}"
-        "<p><strong>Warum jetzt?</strong></p>"
-        f"<ul>{why_now_html}</ul>"
         "<p>"
         f"<strong>Ressort:</strong> {html.escape(section)}<br>"
         f"<strong>Push-Score:</strong> {html.escape(_format_number(score))} "
         f"(Mindestwert {html.escape(_format_number(score_threshold, 0))})<br>"
-        + (
-            f"<strong>Push-Balancer-Begründung:</strong> {html.escape(score_reason)}<br>"
-            if score_reason
-            else ""
-        )
-        +
-        f"<strong>Teams-Alert-Score:</strong> {html.escape(_format_number(alert_score))} "
-        f"(Schwelle {html.escape(_format_number(alert_threshold, 0))})<br>"
-        f"<strong>CvD-Score:</strong> {html.escape(_format_number(editorial_score))}<br>"
         f"<strong>Prognose:</strong> {html.escape(_format_forecast(forecast))}<br>"
         f"<strong>Letzter Push:</strong> "
         f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
         f"<strong>Empfehlung um:</strong> {html.escape(_format_dt(now_ts))} Uhr"
         "</p>"
-        "<p><strong>Was spricht dafür?</strong></p>"
-        f"<ul>{drivers_html}</ul>"
-        "<p><strong>Was bremst?</strong></p>"
-        f"<ul>{risks_html}</ul>"
-        "<p><strong>Push-Balancer-Breakdown</strong></p>"
-        f"<ul>{breakdown_html}</ul>"
+        "<p><strong>Warum jetzt?</strong></p>"
+        f"<ul>{why_now_html}</ul>"
         "<p><strong>Empfehlung:</strong> Jetzt pushen.</p>"
     )
 
