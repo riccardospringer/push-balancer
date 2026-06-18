@@ -8,7 +8,7 @@ EDITORIAL_EXAMPLES = [
         "Politik",
         "Merz plant neue Renten-Reform für Millionen Deutsche",
         "politik",
-        "Renten-Reform: Was Merz jetzt plant",
+        "Millionen Deutsche: Merz plant Renten-Reform",
     ),
     (
         "Sport",
@@ -76,6 +76,41 @@ def test_editorial_examples_are_visible_as_original_to_push_to_score():
 
     assert len(rows) == 8
     assert all(score >= 8.0 for _article_type, _headline, _title, score in rows)
+
+
+@pytest.mark.parametrize(
+    "headline,expected",
+    [
+        (
+            "Studie zeigt: Diese Zimmerpflanzen verbessern das Raumklima",
+            "Diese Zimmerpflanzen verbessern das Raumklima",
+        ),
+        (
+            "Experten erklären, warum viele Menschen schlecht schlafen",
+            "Darum schlafen viele Menschen schlecht",
+        ),
+    ],
+)
+def test_low_push_value_topics_are_not_overhyped(headline, expected):
+    result = build_push_title_suggestions(headline, category="news")
+
+    assert result["title"] == expected
+    assert result["warnhinweis"]
+    assert result["gewinner"]["gesamt_score"] < 8.0
+    assert "Warnhinweis" in result["reasoning"]
+    assert all(title != headline for title in result["alternativeTitles"])
+    assert not any(title.startswith("News:") for title in result["alternativeTitles"])
+    assert not any("Was jetzt wichtig ist" in title for title in result["alternativeTitles"])
+
+
+def test_visible_alternative_reason_uses_strength_not_generic_weakness():
+    result = build_push_title_suggestions(
+        "Neue Regeln beim Bürgergeld: Für diese Familien ändert sich jetzt alles",
+        category="wirtschaft",
+    )
+
+    assert "noch zu wenig Akteur-Handlung" not in result["alternative"]["warum"]
+    assert "kompakten Push" in result["alternative"]["warum"]
 
 
 def test_push_title_generator_prefers_editorial_depth_over_surface_length():

@@ -81,6 +81,18 @@ _WEATHER_TERMS = (
     "unwetter", "warnung", "gewitter", "sturm", "regen", "hitze", "schnee",
     "hochwasser", "orkan",
 )
+_WEAK_SUBJECTS = (
+    "studie zeigt",
+    "experten erklären",
+    "experten erklaeren",
+    "forscher erklären",
+    "forscher erklaeren",
+)
+_LOW_PUSH_MARKERS = (
+    "studie zeigt",
+    "experten erklären",
+    "experten erklaeren",
+)
 
 
 @dataclass
@@ -203,6 +215,7 @@ def _is_weak_subject(subject: str) -> bool:
     lowered = f" {subject.lower()} "
     return (
         not subject
+        or subject.strip().lower() in _WEAK_SUBJECTS
         or subject.startswith("„")
         or subject.startswith('"')
         or any(pronoun in lowered for pronoun in _GENERIC_PRONOUNS)
@@ -392,6 +405,15 @@ def _build_brief(title: str, category: str = "news", url: str = "") -> TitleBrie
     )
 
 
+def _low_push_warning(brief: TitleBrief) -> str:
+    lowered = brief.original_title.lower()
+    if not any(marker in lowered for marker in _LOW_PUSH_MARKERS):
+        return ""
+    if brief.is_breaking or _has_any(lowered, _CRIME_TERMS) or _has_any(lowered, _WEATHER_TERMS):
+        return ""
+    return "Warnhinweis: eher Nutzwert als harter Push-Anlass; nur mit klarem Timing/Zielgruppenbezug pushen"
+
+
 def _dedupe_keep_order(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
     seen: set[str] = set()
     ordered: list[tuple[str, str]] = []
@@ -423,6 +445,40 @@ def _generate_editorial_variants(brief: TitleBrief) -> list[tuple[str, str]]:
                 ("G7-Gipfel: Weltpolitik zum Fremdschämen", "B-zugespitzt"),
                 ("Was beim G7-Gipfel hängen bleibt", "D-neugier"),
                 ("Diese G7-Momente bleiben hängen", "D-neugier"),
+            ]
+        )
+
+    study_match = re.match(
+        r"(?:Studie zeigt|Forscher(?:\s+erklären|\s+erklaeren)?):?\s+Diese\s+(.+?)\s+verbessern\s+(.+)$",
+        original,
+        flags=re.I,
+    )
+    if study_match:
+        topic = _cap_first(study_match.group(1))
+        effect = _clean(study_match.group(2))
+        effect_topic = re.sub(r"^(das|die|der)\s+", "", effect, flags=re.I)
+        candidates.extend(
+            [
+                (f"Diese {topic} verbessern {effect}", "A-klare-news-push"),
+                (f"Welche {topic} {effect} verbessern", "D-neugier"),
+                (f"{topic}: Welche {effect} verbessern", "D-neugier"),
+                (f"{_cap_first(effect_topic)}: Welche {topic} es verbessern", "C-nutzwert-betroffenheit"),
+            ]
+        )
+
+    sleep_match = re.match(
+        r"Experten\s+erklären,\s+warum\s+(?P<group>.+?)\s+schlecht\s+schlafen$",
+        original,
+        flags=re.I,
+    )
+    if sleep_match:
+        group = _clean(sleep_match.group("group"))
+        candidates.extend(
+            [
+                (f"Darum schlafen {group} schlecht", "A-klare-news-push"),
+                (f"Schlecht schlafen: Das steckt dahinter", "D-neugier"),
+                (f"Warum {group} schlecht schlafen", "C-nutzwert-betroffenheit"),
+                (f"{_cap_first(group)} schlafen schlecht: Experten erklären warum", "A-klare-news-push"),
             ]
         )
 
@@ -496,6 +552,7 @@ def _generate_editorial_variants(brief: TitleBrief) -> list[tuple[str, str]]:
         if audience:
             candidates.extend(
                 [
+                    (f"{audience}: {actor} plant {obj}", "A-klare-news-push"),
                     (f"{actor} plant {obj} für {audience}", "A-klare-news-push"),
                     (f"{obj}: Was {actor} jetzt plant", "D-neugier"),
                     (f"{audience}: Diese {obj} plant {actor}", "C-nutzwert-betroffenheit"),
@@ -677,17 +734,22 @@ def _is_strong_visible_alternative(item: dict, winner_title: str, brief: TitleBr
         return False
     if " im fokus:" in lowered:
         return False
+    colon_lead = re.match(r"^([^:]{5,32}):\s+(.+)$", lowered)
+    if colon_lead and colon_lead.group(1).strip() in colon_lead.group(2):
+        return False
     if any(phrase in lowered for phrase in _WEAK_PHRASES):
         return False
     if _title_similarity(title, brief.original_title) >= 0.94 and len(title) >= len(brief.original_title) * 0.85:
         return False
-    return float(item.get("gesamt", 0.0)) >= 7.0
+    min_score = 6.0 if _low_push_warning(brief) else 7.0
+    return float(item.get("gesamt", 0.0)) >= min_score
 
 
 def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str], list[str]]:
     score = 5.0
     strengths: list[str] = []
     weaknesses: list[str] = []
+    low_push_warning = _low_push_warning(brief)
     signal_tokens = [
         token.lower()
         for token in re.findall(r"[A-Za-zÄÖÜäöüß0-9-]+", brief.original_title)
@@ -716,7 +778,7 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
     actor_hits = sum(1 for actor in brief.actors if _last_name(actor).lower() in lowered or actor.lower() in lowered)
     if actor_hits:
         score += min(1.4, 0.7 * actor_hits)
-        strengths.append("macht den zentralen Akteur sofort sichtbar")
+        strengths.append("macht den zentralen Begriff sofort sichtbar")
 
     action_hits = sum(1 for term in brief.action_terms if term in lowered)
     candidate_action_hits = sum(1 for term in _ACTION_WORDS if term in lowered)
@@ -758,6 +820,10 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score += 0.6
         strengths.append("macht konkrete Betroffenheit sichtbar")
 
+    if lowered.startswith("darum "):
+        score += 1.2
+        strengths.append("macht den Erklaer-Nutzwert sofort sichtbar")
+
     if lowered.endswith("?"):
         score -= 0.5
         weaknesses.append("wirkt als Frage schwächer und weniger konkret")
@@ -793,6 +859,14 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
     if duplicated_lead:
         score -= 1.8
         weaknesses.append("doppelt den Einstieg statt ihn redaktionell zu verdichten")
+
+    repeated_colon_lead = re.match(r"^([^:]{5,32}):\s+(.+)$", lowered)
+    repeated_hook = bool(
+        repeated_colon_lead and repeated_colon_lead.group(1).strip() in repeated_colon_lead.group(2)
+    )
+    if repeated_hook:
+        score -= 1.2
+        weaknesses.append("wiederholt den Hook zu sichtbar")
 
     if " im fokus:" in lowered:
         score -= 1.3
@@ -835,10 +909,14 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score = min(score, 6.4)
     elif similarity >= 0.92 and length >= len(brief.original_title) * 0.8:
         score = min(score, 7.2)
-    if duplicated_lead or " im fokus:" in lowered:
+    if duplicated_lead or repeated_hook or " im fokus:" in lowered:
         score = min(score, 7.0)
     if lowered.startswith(category_prefix):
         score = min(score, 6.8)
+    if low_push_warning:
+        score = min(score - 0.4, 7.4)
+        if not weaknesses:
+            weaknesses.append("kein harter Push-Anlass, eher Nutzwert")
     if not (actor_hits and (action_hits or candidate_action_hits or consequence_hits)) and not brief.is_breaking:
         score = min(score, 8.1)
         if not weaknesses:
@@ -877,12 +955,19 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
         rated[1] if len(rated) > 1 else winner,
     )
 
-    winner_reason = (
-        "; ".join(winner.get("staerken", [])[:2])
-        if winner.get("staerken")
-        else "liefert die klarste, kompakteste Version des Themas"
-    )
-    alt_reason = alternative["schwaeche"] or "setzt einen anderen Schwerpunkt"
+    def display_reason(item: dict, fallback: str) -> str:
+        if item.get("staerken"):
+            return "; ".join(item.get("staerken", [])[:2])
+        weakness = item.get("schwaeche", "")
+        if weakness and "noch zu wenig Akteur-Handlung" not in weakness:
+            return weakness
+        return fallback
+
+    winner_reason = display_reason(winner, "liefert die klarste, kompakteste Version des Themas")
+    low_warning = _low_push_warning(brief)
+    if low_warning and winner["gesamt"] < 7.5:
+        winner_reason = f"{winner_reason}; {low_warning}"
+    alt_reason = display_reason(alternative, "setzt einen anderen Schwerpunkt")
 
     gewinner = {
         "titel": winner["titel"],
@@ -912,6 +997,12 @@ def _editorial_priority(title: str, brief: TitleBrief) -> float:
         priority += 2.0
     if re.search(r"\bfür wen\b|\bfuer wen\b|\bwen die\b", lowered):
         priority += 1.3
+    if "millionen deutsche" in lowered or "für millionen" in lowered or "fuer millionen" in lowered:
+        priority += 1.4
+    if lowered.startswith("diese ") and " verbessern " in lowered:
+        priority += 1.0
+    if lowered.startswith("darum "):
+        priority += 1.2
     if lowered.startswith("jetzt spricht "):
         priority += 1.2
     if "schießt" in lowered or "schiesst" in lowered:
@@ -966,10 +1057,12 @@ def build_push_title_suggestions(title: str, category: str = "news", url: str = 
         )
 
     reasoning = winner["warum_dieser"]
+    warning = _low_push_warning(brief)
     return {
         "title": winner["titel"],
         "alternativeTitles": alternative_titles,
         "reasoning": reasoning,
+        "warnhinweis": warning,
         "advisoryOnly": True,
         "contentType": brief.content_type,
         "gewinner": winner,
@@ -987,6 +1080,7 @@ def build_push_title_suggestions(title: str, category: str = "news", url: str = 
                 "aktionen": brief.action_terms,
                 "fallhoehe": brief.consequence_terms,
                 "redaktionelle_tiefe": brief.depth_summary,
+                "warnhinweis": warning,
             },
             "anzahl_kandidaten": len(candidates),
             "dauer_gesamt_s": 0.0,
