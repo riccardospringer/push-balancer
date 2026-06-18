@@ -1,4 +1,81 @@
+import pytest
+
 from app.push_titles import build_push_title_suggestions
+
+
+EDITORIAL_EXAMPLES = [
+    (
+        "Politik",
+        "Merz plant neue Renten-Reform für Millionen Deutsche",
+        "politik",
+        "Renten-Reform: Was Merz jetzt plant",
+    ),
+    (
+        "Sport",
+        "WM 2026: Erdbeben nach Toren von Erling Haaland",
+        "sport",
+        "Haaland schießt sich Richtung WM 2026",
+    ),
+    (
+        "Crime",
+        "Mann nach Messerattacke am Bahnhof festgenommen",
+        "news",
+        "Messerattacke am Bahnhof: Mann festgenommen",
+    ),
+    (
+        "Verbraucher",
+        "Neue Regeln beim Bürgergeld: Für diese Familien ändert sich jetzt alles",
+        "wirtschaft",
+        "Bürgergeld: Wen die neuen Regeln treffen",
+    ),
+    (
+        "Promi/Unterhaltung",
+        "Helene Fischer spricht erstmals über ihr Familienglück",
+        "unterhaltung",
+        "Jetzt spricht Helene Fischer über ihr Familienglück",
+    ),
+    (
+        "Wetter/Unwetter",
+        "Unwetter-Warnung: Heftige Gewitter ziehen auf Deutschland zu",
+        "news",
+        "Warnung: Heftige Gewitter ziehen auf Deutschland zu",
+    ),
+    (
+        "Breaking News",
+        "Eilmeldung: Bundesregierung beschließt Milliarden-Paket für die Ukraine",
+        "politik",
+        "EIL: Milliarden-Paket für die Ukraine beschlossen",
+    ),
+    (
+        "Kurios/emotional",
+        "Hund läuft 20 Kilometer zurück zu seinem alten Besitzer",
+        "news",
+        "20 Kilometer: Hund läuft zurück zum alten Besitzer",
+    ),
+]
+
+
+@pytest.mark.parametrize("article_type,headline,category,expected", EDITORIAL_EXAMPLES)
+def test_editorial_examples_generate_push_first_titles(article_type, headline, category, expected):
+    result = build_push_title_suggestions(headline, category=category)
+
+    assert article_type
+    assert result["title"] == expected
+    assert result["title"] != headline
+    assert 35 <= len(result["title"]) <= 65
+    assert len(result["alternativeTitles"]) == 3
+    assert all(title != headline for title in result["alternativeTitles"])
+    assert not any(title.lower().startswith(f"{category}:") for title in result["alternativeTitles"])
+
+
+def test_editorial_examples_are_visible_as_original_to_push_to_score():
+    rows = []
+    for article_type, headline, category, _expected in EDITORIAL_EXAMPLES:
+        result = build_push_title_suggestions(headline, category=category)
+        rows.append((article_type, headline, result["title"], result["gewinner"]["gesamt_score"]))
+
+    assert len(rows) == 8
+    assert all(score >= 8.0 for _article_type, _headline, _title, score in rows)
 
 
 def test_push_title_generator_prefers_editorial_depth_over_surface_length():

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import re
 
-MAX_TITLE_LENGTH = 78
-IDEAL_MIN_LENGTH = 28
-IDEAL_MAX_LENGTH = 58
+MAX_TITLE_LENGTH = 80
+IDEAL_MIN_LENGTH = 35
+IDEAL_MAX_LENGTH = 65
 HARD_MIN_LENGTH = 18
 
 _VIDEO_MARKERS = ("/video/", "/videos/", "-video-", " im video", "video:", "clip", "aufnahmen")
-_BREAKING_MARKERS = ("eil", "breaking", "live", "exklusiv", "warnung", "enthüllt", "enthuellt")
+_BREAKING_MARKERS = ("eil", "breaking", "live", "exklusiv", "enthüllt", "enthuellt")
 _WEAK_PHRASES = (
     "das ist jetzt wichtig",
     "das musst du jetzt wissen",
@@ -22,13 +23,13 @@ _WEAK_PHRASES = (
     "was jetzt wichtig ist",
 )
 _HYPE_WORDS = ("mega", "hammer", "krass", "irre", "sensation", "wahnsinn")
-_GENERIC_PRONOUNS = (" sie ", " er ", " ihr ", " ihm ", " ihnen ", " ihn ")
+_GENERIC_PRONOUNS = (" sie ", " er ", " ihm ", " ihnen ", " ihn ")
 _ACTION_WORDS = (
     "trifft", "schiesst", "schießt", "gewinnt", "verliert", "stoppt", "warnt", "droht",
-    "plant", "fordert", "beschliesst", "beschließt", "entscheidet", "kippt", "rettet",
+    "plant", "fordert", "beschliesst", "beschließt", "beschlossen", "entscheidet", "kippt", "rettet",
     "steigt", "faellt", "fällt", "explodiert", "startet", "endet", "greift", "verlaesst",
     "verlässt", "wechselt", "sichert", "verpasst", "bremst", "loest", "löst",
-    "tor", "tore", "toren",
+    "läuft", "laeuft", "festgenommen", "spricht", "zieht", "tor", "tore", "toren",
 )
 _CONSEQUENCE_WORDS = (
     "wm", "em", "wahl", "krieg", "krise", "gefahr", "warnung", "streik", "ausfall",
@@ -39,11 +40,18 @@ _EMPTY_METAPHORS = ("erdbeben nach", "beben nach", "schock nach", "drama nach")
 _NON_ACTOR_TITLE_WORDS = {
     "WM", "EM", "Erdbeben", "Beben", "Schock", "Drama", "Tore", "Toren", "Tor",
     "News", "Sport", "Politik", "Wirtschaft", "Digital", "Regional",
+    "Mann", "Frau", "Hund", "Katze", "Kilometer", "Millionen", "Deutsche",
+    "Familien", "Regeln", "Messerattacke", "Bahnhof", "Warnung", "Gewitter",
+    "Unwetter", "Bürgergeld", "Buergergeld", "Renten-Reform", "Ukraine", "Neue",
 }
 _LOW_VALUE_ACTOR_PHRASES = {
     "bühne weltpolitik",
     "buehne weltpolitik",
     "momente g7-gipfel",
+    "millionen deutsche",
+    "diese familien",
+    "heftige gewitter",
+    "alter besitzer",
 }
 _STOPWORDS = {
     "der", "die", "das", "ein", "eine", "einer", "einem", "einen", "und", "oder", "fuer", "für",
@@ -60,6 +68,19 @@ _CATEGORY_PREFIXES: dict[str, str] = {
     "digital": "Digital",
     "news": "News",
 }
+
+_CONSUMER_TERMS = (
+    "bürgergeld", "buergergeld", "rente", "steuer", "preise", "kosten", "geld",
+    "familien", "mieter", "kunden", "verbraucher", "krankenkasse",
+)
+_CRIME_TERMS = (
+    "messerattacke", "mord", "polizei", "festgenommen", "festnahme", "razzia",
+    "überfall", "ueberfall", "bahnhof", "täter", "taeter", "opfer",
+)
+_WEATHER_TERMS = (
+    "unwetter", "warnung", "gewitter", "sturm", "regen", "hitze", "schnee",
+    "hochwasser", "orkan",
+)
 
 
 @dataclass
@@ -97,6 +118,59 @@ def _trim_push_title(text: str, max_len: int = MAX_TITLE_LENGTH) -> str:
         return compact
     shortened = compact[: max_len - 1].rsplit(" ", 1)[0].strip()
     return (shortened or compact[: max_len - 1]).rstrip(":,;.-") + "..."
+
+
+def _cap_first(text: str) -> str:
+    cleaned = _clean(text)
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else cleaned
+
+
+def _normalize_for_similarity(text: str) -> str:
+    lowered = (text or "").lower()
+    lowered = lowered.replace("ß", "ss").replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+    return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+
+
+def _title_similarity(left: str, right: str) -> float:
+    norm_left = _normalize_for_similarity(left)
+    norm_right = _normalize_for_similarity(right)
+    if not norm_left or not norm_right:
+        return 0.0
+    return SequenceMatcher(None, norm_left, norm_right).ratio()
+
+
+def _has_any(text: str, terms: tuple[str, ...]) -> bool:
+    lowered = (text or "").lower()
+    return any(term in lowered for term in terms)
+
+
+def _without_leading_fillers(text: str) -> str:
+    cleaned = _clean(text)
+    cleaned = re.sub(r"\bneue[nrms]?\s+", "", cleaned, count=1, flags=re.I)
+    cleaned = re.sub(r"\bjetzt\s+", "", cleaned, count=1, flags=re.I)
+    return _clean(cleaned)
+
+
+def _topic_from_subject(subject: str, detail: str = "") -> str:
+    lowered = f"{subject} {detail}".lower()
+    if "bürgergeld" in lowered or "buergergeld" in lowered:
+        return "Bürgergeld"
+    if "rente" in lowered:
+        return "Rente"
+    if "steuer" in lowered:
+        return "Steuer"
+    if "unwetter" in lowered:
+        return "Unwetter-Warnung"
+    if "gewitter" in lowered:
+        return "Gewitter"
+    if "ukraine" in lowered:
+        return "Ukraine"
+    if "g7" in lowered:
+        return "G7-Gipfel"
+    cleaned = _clean(subject)
+    cleaned = re.sub(r"^neue regeln beim\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^neue\s+", "", cleaned, flags=re.I)
+    return _cap_first(cleaned)
 
 
 def _category_prefix(category: str) -> str:
@@ -152,50 +226,83 @@ def _compact_fact(detail: str) -> str:
 
 
 def _extract_focus_term(detail: str, subject: str) -> str:
-    tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9-]+", f"{subject} {detail}")
-    candidates = [token for token in tokens if token.lower() not in _STOPWORDS and len(token) > 3]
+    combined = f"{subject} {detail}"
+    lowered = combined.lower()
+    preferred = [
+        (r"\bG7-Gipfel\b", "G7-Gipfel"),
+        (r"\bRenten-Reform\b", "Renten-Reform"),
+        (r"\bBürgergeld\b", "Bürgergeld"),
+        (r"\bBuergergeld\b", "Bürgergeld"),
+        (r"\bMesserattacke\b", "Messerattacke"),
+        (r"\bUnwetter-Warnung\b", "Unwetter-Warnung"),
+        (r"\bGewitter\b", "Gewitter"),
+        (r"\bUkraine\b", "Ukraine"),
+        (r"\bWM\s+20\d{2}\b", ""),
+    ]
+    for pattern, label in preferred:
+        match = re.search(pattern, combined, flags=re.I)
+        if match:
+            return label or match.group(0)
+
+    if subject and not _is_weak_subject(subject):
+        return _topic_from_subject(subject, detail)
+
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9-]+", combined)
+    candidates = [
+        token for token in tokens
+        if token.lower() not in _STOPWORDS
+        and token not in _NON_ACTOR_TITLE_WORDS
+        and len(token) > 3
+    ]
     if not candidates:
         return _clean(detail)
-    return candidates[-1]
+    for token in candidates:
+        if "-" in token:
+            return token
+    if _has_any(lowered, _CRIME_TERMS):
+        return next((token for token in candidates if token.lower() in _CRIME_TERMS), candidates[0])
+    return candidates[0]
 
 
 def _extract_named_actors(title: str) -> list[str]:
-    multi_word = re.findall(
-        r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+)+)\b",
-        title or "",
-    )
+    text = title or ""
     actors: list[str] = []
-    for phrase in multi_word:
-        parts = [part for part in phrase.split() if part not in _NON_ACTOR_TITLE_WORDS]
-        if len(parts) >= 2:
-            actors.append(" ".join(parts[:2]))
+    leading_action = re.match(
+        r"^\s*([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+){0,2})\s+"
+        r"(plant|warnt|fordert|kritisiert|attackiert|beschließt|beschliesst|spricht|trifft|"
+        r"verlässt|verlaesst|wechselt|entscheidet|stoppt|droht)\b",
+        text,
+    )
+    if leading_action:
+        actors.append(leading_action.group(1))
 
-    tokens = re.findall(r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+|\b[A-Z]{2,}\b|\b\d{4}\b", title or "")
-    current: list[str] = []
-    for token in tokens:
-        low = token.lower()
-        if (
-            token in _NON_ACTOR_TITLE_WORDS
-            or low in _STOPWORDS
-            or low in {"wm", "em"}
-            or re.fullmatch(r"\d{4}", token)
-        ):
-            if current:
-                actors.append(" ".join(current))
-                current = []
-            continue
-        current.append(token)
-        if len(current) == 2:
-            actors.append(" ".join(current))
-            current = []
-    if current:
-        actors.append(" ".join(current))
+    for pattern in (
+        r"\bvon\s+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+){0,2})\b",
+        r"\bmit\s+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+){0,2})\b",
+    ):
+        actors.extend(re.findall(pattern, text))
+
+    multi_word = re.findall(
+        r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+)+)\b",
+        text,
+    )
+    actors.extend(multi_word)
+
+    for token in re.findall(r"\b[A-ZÄÖÜ]{2,}\b", text):
+        if token.lower() not in {"wm", "em", "g7"}:
+            actors.append(token)
 
     seen: set[str] = set()
     result: list[str] = []
     for actor in actors:
+        actor = re.sub(r"^(Eilmeldung|Breaking|Live)\s+", "", actor).strip()
+        actor = " ".join(part for part in actor.split() if part not in _NON_ACTOR_TITLE_WORDS)
         key = actor.lower()
+        if not actor or len(actor) < 3:
+            continue
         if key in _LOW_VALUE_ACTOR_PHRASES:
+            continue
+        if any(word in key.split() for word in ("millionen", "familien", "kilometer", "momente")):
             continue
         if key not in seen and len(actor) > 2:
             seen.add(key)
@@ -242,8 +349,6 @@ def _derive_audience_value(detail: str, focus_term: str) -> str:
         if re.search(pattern, lowered):
             rewritten = re.sub(pattern, replacement, detail, flags=re.I)
             return _clean(rewritten)
-    if focus_term and focus_term.lower() not in lowered:
-        return _clean(f"{focus_term}: Was jetzt wichtig ist")
     return _clean(detail)
 
 
@@ -302,6 +407,157 @@ def _dedupe_keep_order(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return ordered
 
 
+def _generate_editorial_variants(brief: TitleBrief) -> list[tuple[str, str]]:
+    """Build push-first variants: clear news, pointed, useful, curiosity."""
+    original = brief.original_title
+    lowered = original.lower()
+    subject = brief.subject
+    detail = brief.detail
+    detail_clean = _without_leading_fillers(detail)
+    candidates: list[tuple[str, str]] = []
+
+    if _is_g7_moments_title(original):
+        candidates.extend(
+            [
+                ("G7-Gipfel: Die cringy Momente der Weltpolitik", "A-klare-news-push"),
+                ("G7-Gipfel: Weltpolitik zum Fremdschämen", "B-zugespitzt"),
+                ("Was beim G7-Gipfel hängen bleibt", "D-neugier"),
+                ("Diese G7-Momente bleiben hängen", "D-neugier"),
+            ]
+        )
+
+    if brief.is_breaking or subject.lower().startswith(("eilmeldung", "breaking")):
+        candidates.append((f"EIL: {detail_clean}", "A-klare-news-push"))
+        decision = re.match(
+            r"(?P<actor>.+?)\s+beschlie(?:ß|ss)t\s+(?P<object>.+)$",
+            detail_clean,
+            flags=re.I,
+        )
+        if decision:
+            obj = _cap_first(decision.group("object"))
+            candidates.append((f"EIL: {obj} beschlossen", "B-zugespitzt"))
+            if "ukraine" in obj.lower() and "milliarden" in obj.lower():
+                candidates.extend(
+                    [
+                        ("Ukraine-Paket: Bundesregierung beschließt Milliarden", "A-klare-news-push"),
+                        ("Bundesregierung beschließt Ukraine-Milliarden", "B-zugespitzt"),
+                        ("Ukraine-Milliarden beschlossen", "A-klare-news-push"),
+                    ]
+                )
+
+    if _has_any(lowered, _WEATHER_TERMS):
+        weather_core = detail_clean if subject else _without_leading_fillers(original)
+        if "warnung" in lowered:
+            candidates.append((f"Warnung: {weather_core}", "A-klare-news-push"))
+        candidates.extend(
+            [
+                (weather_core, "A-klare-news-push"),
+                ("Gewitter-Warnung für Deutschland", "B-zugespitzt") if "gewitter" in lowered and "deutschland" in lowered else ("", "B-zugespitzt"),
+                ("Heftige Gewitter: Das kommt auf Deutschland zu", "D-neugier") if "heftige gewitter" in lowered and "deutschland" in lowered else ("", "D-neugier"),
+                (f"{_topic_from_subject(subject, detail)}: {weather_core}", "B-zugespitzt"),
+            ]
+        )
+
+    crime_match = re.match(
+        r"(?P<person>Mann|Frau|Jugendlicher|Jugendliche|Teenager|Polizist|Polizistin)\s+"
+        r"nach\s+(?P<event>.+?)\s+festgenommen\b",
+        original,
+        flags=re.I,
+    )
+    if crime_match:
+        person = _cap_first(crime_match.group("person"))
+        event = _cap_first(crime_match.group("event"))
+        candidates.extend(
+            [
+                (f"{event}: {person} festgenommen", "A-klare-news-push"),
+                (f"Festnahme nach {event}", "B-zugespitzt"),
+                (f"Was zur {event} bekannt ist", "D-neugier"),
+                (f"Nach {event}: {person} festgenommen", "A-klare-news-push"),
+            ]
+        )
+
+    if subject and _has_any(lowered, _CONSUMER_TERMS):
+        topic = _topic_from_subject(subject, detail)
+        candidates.append((f"{topic}: {detail_clean}", "C-nutzwert-betroffenheit"))
+        if re.search(r"\bfür diese\b|\bfuer diese\b", detail_clean, flags=re.I):
+            candidates.append((f"{topic}: Für wen sich jetzt etwas ändert", "C-nutzwert-betroffenheit"))
+            candidates.append((f"{topic}: Wen die neuen Regeln treffen", "D-neugier"))
+
+    politics_plan = re.match(
+        r"(?P<actor>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+){0,1})\s+"
+        r"plant\s+(?P<object>.+?)(?:\s+für\s+(?P<audience>.+))?$",
+        original,
+        flags=re.I,
+    )
+    if politics_plan:
+        actor = politics_plan.group("actor")
+        obj = _without_leading_fillers(politics_plan.group("object"))
+        audience = _clean(politics_plan.group("audience") or "")
+        if audience:
+            candidates.extend(
+                [
+                    (f"{actor} plant {obj} für {audience}", "A-klare-news-push"),
+                    (f"{obj}: Was {actor} jetzt plant", "D-neugier"),
+                    (f"{audience}: Diese {obj} plant {actor}", "C-nutzwert-betroffenheit"),
+                    (f"{obj} für {audience}", "A-klare-news-push"),
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    (f"{actor} plant {obj}", "A-klare-news-push"),
+                    (f"{obj}: Was {actor} jetzt plant", "D-neugier"),
+                ]
+            )
+
+    promi_match = re.match(
+        r"(?P<actor>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+){1,2})\s+"
+        r"spricht\s+erstmals\s+über\s+(?P<topic>.+)$",
+        original,
+        flags=re.I,
+    )
+    if promi_match:
+        actor = promi_match.group("actor")
+        topic = _clean(promi_match.group("topic"))
+        topic_label = re.sub(r"^(ihr|sein|seine|seinen)\s+", "", topic, flags=re.I)
+        candidates.extend(
+            [
+                (f"Jetzt spricht {actor} über {topic}", "A-klare-news-push"),
+                (f"{_cap_first(topic_label)}: Jetzt spricht {actor}", "B-zugespitzt"),
+                (f"{actor} über {topic}", "B-zugespitzt"),
+                (f"{actor} spricht über {topic_label}", "A-klare-news-push"),
+                (f"{actor}: Was sie über {topic} sagt", "D-neugier"),
+            ]
+        )
+
+    emotional_match = re.match(
+        r"(?P<who>Hund|Katze|Kind|Junge|Mädchen|Maedchen)\s+läuft\s+"
+        r"(?P<distance>\d+\s+[A-Za-zÄÖÜäöüß-]+)\s+zurück\s+zu\s+seinem\s+alten\s+Besitzer\b",
+        original,
+        flags=re.I,
+    )
+    if emotional_match:
+        who = _cap_first(emotional_match.group("who"))
+        distance = emotional_match.group("distance")
+        distance_compound = distance.replace(" ", "-")
+        candidates.extend(
+            [
+                (f"{distance}: {who} läuft zurück zum alten Besitzer", "B-zugespitzt"),
+                (f"{who} läuft {distance} zurück zu seinem Besitzer", "A-klare-news-push"),
+                (f"{distance} zurück zum alten Besitzer", "D-neugier"),
+                (f"Der {distance_compound}-Weg zurück zum Besitzer", "D-neugier"),
+            ]
+        )
+
+    if subject and detail_clean and subject.lower() not in {"news", "politik", "sport"}:
+        topic = _topic_from_subject(subject, detail)
+        candidates.append((f"{topic}: {detail_clean}", "A-klare-news-push"))
+    elif detail_clean and detail_clean != original:
+        candidates.append((detail_clean, "A-klare-news-push"))
+
+    return candidates
+
+
 def _generate_candidates(brief: TitleBrief) -> list[dict]:
     prefix = _category_prefix(brief.category)
     subject = brief.subject
@@ -311,17 +567,8 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     actor = brief.actors[0] if brief.actors else subject
     actor_short = _last_name(actor) if actor else ""
 
-    candidates: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str]] = _generate_editorial_variants(brief)
     compact_fact = _compact_fact(detail)
-
-    if _is_g7_moments_title(brief.original_title):
-        candidates.extend(
-            [
-                ("G7-Gipfel: Die cringy Momente der Weltpolitik", "g7-push"),
-                ("G7-Gipfel: Weltpolitik zum Fremdschämen", "g7-push"),
-                ("Was beim G7-Gipfel hängen bleibt", "g7-push"),
-            ]
-        )
 
     if brief.content_type == "video":
         candidates.extend(
@@ -361,7 +608,14 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
         compact_fact.lower(),
         detail.lower(),
         audience_value.lower(),
-    }
+    } or (
+        actor_short
+        and (
+            compact_fact.lower().startswith(actor_short.lower())
+            or detail.lower().startswith(actor_short.lower())
+            or audience_value.lower().startswith(actor_short.lower())
+        )
+    )
     if actor_short and actor_short.lower() not in {"wm", "em"} and not actor_is_redundant:
         candidates.extend(
             [
@@ -411,6 +665,25 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     ]
 
 
+def _is_strong_visible_alternative(item: dict, winner_title: str, brief: TitleBrief) -> bool:
+    title = item.get("titel", "")
+    if not title or title == winner_title:
+        return False
+    lowered = title.lower()
+    category_prefix = f"{_category_prefix(brief.category).lower()}:"
+    if lowered == brief.original_title.lower():
+        return False
+    if lowered.startswith(category_prefix):
+        return False
+    if " im fokus:" in lowered:
+        return False
+    if any(phrase in lowered for phrase in _WEAK_PHRASES):
+        return False
+    if _title_similarity(title, brief.original_title) >= 0.94 and len(title) >= len(brief.original_title) * 0.85:
+        return False
+    return float(item.get("gesamt", 0.0)) >= 7.0
+
+
 def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str], list[str]]:
     score = 5.0
     strengths: list[str] = []
@@ -432,6 +705,7 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         weaknesses.append("ist zu lang oder zu knapp fuer einen Lock-Screen-Titel")
 
     lowered = candidate.lower()
+    similarity = _title_similarity(candidate, brief.original_title)
     if brief.subject and brief.subject.lower() in lowered:
         score += 1.0
         strengths.append("haelt das zentrale Subjekt sichtbar")
@@ -466,6 +740,24 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score += 0.8
         strengths.append("arbeitet mit einer konkreten Bewegung statt nur mit Buzzwords")
 
+    if _is_g7_moments_title(brief.original_title) and "g7" in lowered and (
+        "momente" in lowered or "hängen" in lowered or "haengen" in lowered
+    ):
+        score += 1.2
+        strengths.append("setzt den G7-Hook redaktionell neu")
+
+    if lowered.startswith(("eil:", "warnung:")):
+        score += 0.7
+        strengths.append("setzt Dringlichkeit sofort sichtbar")
+
+    if re.search(r":\s+(mann|frau|jugendlicher|jugendliche|teenager)\s+festgenommen\b", lowered):
+        score += 0.7
+        strengths.append("verdichtet Tat und Folge fuer den Sperrbildschirm")
+
+    if re.search(r"\bfür wen\b|\bfuer wen\b|\bwen die\b", lowered):
+        score += 0.6
+        strengths.append("macht konkrete Betroffenheit sichtbar")
+
     if lowered.endswith("?"):
         score -= 0.5
         weaknesses.append("wirkt als Frage schwächer und weniger konkret")
@@ -491,8 +783,20 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         weaknesses.append("metaphorischer Einstieg bleibt ohne klare redaktionelle Folge")
 
     if lowered == brief.original_title.lower():
-        score -= 1.4
+        score -= 3.4
         weaknesses.append("kopiert die Original-Headline zu stark")
+    elif similarity >= 0.9 and length >= len(brief.original_title) * 0.85:
+        score -= 1.8
+        weaknesses.append("liegt noch zu nah an der Original-Headline")
+
+    duplicated_lead = re.match(r"^([^:]{3,32}):\s*\1\b", lowered)
+    if duplicated_lead:
+        score -= 1.8
+        weaknesses.append("doppelt den Einstieg statt ihn redaktionell zu verdichten")
+
+    if " im fokus:" in lowered:
+        score -= 1.3
+        weaknesses.append("wirkt wie ein generischer Fokus-Prefix")
 
     focus_duplication = re.match(r"^(.+?) im fokus:\s*\1$", lowered)
     if focus_duplication:
@@ -521,12 +825,20 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
 
     category_prefix = f"{_category_prefix(brief.category).lower()}:"
     if lowered.startswith(category_prefix):
-        score -= 0.9
+        score -= 1.4
         weaknesses.append("nutzt nur einen Ressort-Prefix statt direkt mit der Nachricht zu starten")
 
     score += max(-0.6, 0.6 - abs(((IDEAL_MIN_LENGTH + IDEAL_MAX_LENGTH) / 2) - length) / 20)
     if empty_metaphor:
         score = min(score, 7.4)
+    if lowered == brief.original_title.lower():
+        score = min(score, 6.4)
+    elif similarity >= 0.92 and length >= len(brief.original_title) * 0.8:
+        score = min(score, 7.2)
+    if duplicated_lead or " im fokus:" in lowered:
+        score = min(score, 7.0)
+    if lowered.startswith(category_prefix):
+        score = min(score, 6.8)
     if not (actor_hits and (action_hits or candidate_action_hits or consequence_hits)) and not brief.is_breaking:
         score = min(score, 8.1)
         if not weaknesses:
@@ -560,7 +872,10 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
         "schwaeche": "",
         "ansatz": "fallback",
     }
-    alternative = rated[1] if len(rated) > 1 else winner
+    alternative = next(
+        (item for item in rated if _is_strong_visible_alternative(item, winner["titel"], brief)),
+        rated[1] if len(rated) > 1 else winner,
+    )
 
     winner_reason = (
         "; ".join(winner.get("staerken", [])[:2])
@@ -580,7 +895,7 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
         "laenge": alternative["laenge"],
         "warum": alt_reason,
     }
-    visible_rated = rated[:5]
+    visible_rated = rated[:8]
     if not any(item["titel"] == brief.original_title for item in visible_rated):
         original_rating = next((item for item in rated if item["titel"] == brief.original_title), None)
         if original_rating:
@@ -591,6 +906,14 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
 def _editorial_priority(title: str, brief: TitleBrief) -> float:
     lowered = title.lower()
     priority = 0.0
+    if lowered.startswith(("eil:", "warnung:")):
+        priority += 2.5
+    if re.search(r":\s+(mann|frau|jugendlicher|jugendliche|teenager)\s+festgenommen\b", lowered):
+        priority += 2.0
+    if re.search(r"\bfür wen\b|\bfuer wen\b|\bwen die\b", lowered):
+        priority += 1.3
+    if lowered.startswith("jetzt spricht "):
+        priority += 1.2
     if "schießt" in lowered or "schiesst" in lowered:
         priority += 2.0
     if "richtung wm" in lowered:
@@ -600,7 +923,13 @@ def _editorial_priority(title: str, brief: TitleBrief) -> float:
     if any(phrase in lowered for phrase in _EMPTY_METAPHORS):
         priority -= 4.0
     if lowered == brief.original_title.lower():
-        priority -= 4.0
+        priority -= 6.0
+    elif _title_similarity(title, brief.original_title) >= 0.92:
+        priority -= 3.0
+    if re.match(r"^([^:]{3,32}):\s*\1\b", lowered):
+        priority -= 3.0
+    if " im fokus:" in lowered:
+        priority -= 2.0
     if lowered.startswith("die große bühne") or lowered.startswith("die grosse buehne"):
         priority -= 3.0
     if _is_g7_moments_title(brief.original_title) and lowered.startswith("g7-gipfel:"):
@@ -608,7 +937,7 @@ def _editorial_priority(title: str, brief: TitleBrief) -> float:
     if lowered == "g7-gipfel: die cringy momente der weltpolitik":
         priority += 1.0
     if lowered.startswith(f"{_category_prefix(brief.category).lower()}:"):
-        priority -= 2.0
+        priority -= 4.0
     if "was jetzt wichtig ist" in lowered or "darum geht es jetzt" in lowered:
         priority -= 2.0
     return priority
@@ -618,11 +947,17 @@ def build_push_title_suggestions(title: str, category: str = "news", url: str = 
     brief = _build_brief(title, category, url)
     candidates = _generate_candidates(brief)
     rated, winner, alternative = _select_candidates(brief, candidates)
-    alternative_titles = [
+    strong_alternatives = [
         candidate["titel"]
         for candidate in rated
-        if candidate["titel"] != winner["titel"]
-    ][:4]
+        if _is_strong_visible_alternative(candidate, winner["titel"], brief)
+    ]
+    fallback_alternatives = [
+        candidate["titel"]
+        for candidate in rated
+        if candidate["titel"] != winner["titel"] and candidate["titel"] not in strong_alternatives
+    ]
+    alternative_titles = (strong_alternatives + fallback_alternatives)[:3]
 
     grouped: dict[str, list[dict]] = {}
     for candidate in candidates:

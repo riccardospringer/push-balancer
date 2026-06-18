@@ -105,6 +105,7 @@ def _local_editorial_one_brain(
             "bewertungen": local.get("bewertungen", [])[:5],
             "gewinner": _with_video_reason(local.get("gewinner", {}), article_type, title, text),
             "alternative": local.get("alternative", {}),
+            "alternativeTitles": local.get("alternativeTitles", []),
         }
     except Exception as exc:
         log.warning("[PushTitle] Deep local fallback failed, using simple fallback: %s", exc)
@@ -405,12 +406,19 @@ def generate_push_title(article_title, article_text="", category="news",
     }
     result["alle_kandidaten"] = grouped
     result["title"] = result["gewinner"].get("titel", article_title)
-    result["alternativeTitles"] = [
+    preferred_alternatives = [
+        title for title in one_brain.get("alternativeTitles", [])
+        if title and title != result["title"]
+    ]
+    fallback_alternatives = [
         item.get("titel", "")
         for items in grouped.values()
         for item in items
         if item.get("titel") and item.get("titel") != result["title"]
-    ][:5]
+    ]
+    result["alternativeTitles"] = (preferred_alternatives + [
+        title for title in fallback_alternatives if title not in preferred_alternatives
+    ])[:3]
     result["reasoning"] = result["gewinner"].get("warum_dieser", "")
     result["advisoryOnly"] = True
     result["contentType"] = content_type
