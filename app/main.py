@@ -402,6 +402,8 @@ _ALWAYS_PUBLIC_PREFIXES = (
 )
 _ALWAYS_PUBLIC_PATHS = {
     "/api/feed",
+    "/api/push-title/generate",
+    "/api/push-title-generations",
 }
 
 def _is_always_public(path: str) -> bool:

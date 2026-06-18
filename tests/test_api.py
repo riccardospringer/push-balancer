@@ -575,10 +575,7 @@ class TestInternalAccessControl:
     def test_push_title_generator_can_stay_reachable_for_public_ui(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
-        monkeypatch.setattr(
-            "app.main.INTERNAL_ACCESS_EXEMPT_PATHS",
-            ["/api/health", "/api/push-title/generate"],
-        )
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
 
         resp = client.post(
             "/api/push-title/generate",
