@@ -108,7 +108,7 @@ services:
       - key: INTERNAL_ACCESS_ALLOWED_CIDRS
         sync: false
       - key: INTERNAL_ACCESS_EXEMPT_PATHS
-        value: /api/health,/api/v1
+        value: /api/health,/api/v1,/api/push-title/generate,/api/push-title-generations
       - key: PUSH_SYNC_SECRET
         sync: false
       - key: FOOTBALL_DATA_KEY

@@ -572,6 +572,26 @@ class TestInternalAccessControl:
 
         assert resp.status_code == 200
 
+    def test_push_title_generator_can_stay_reachable_for_public_ui(self, monkeypatch):
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
+        monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
+        monkeypatch.setattr(
+            "app.main.INTERNAL_ACCESS_EXEMPT_PATHS",
+            ["/api/health", "/api/push-title/generate"],
+        )
+
+        resp = client.post(
+            "/api/push-title/generate",
+            json={
+                "title": "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh",
+                "category": "sport",
+            },
+            headers={"X-Forwarded-For": "203.0.113.7"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Klose ahnte Messis WM-Rekord schon früh"
+
     def test_legacy_feed_stays_reachable_for_public_frontend(self, monkeypatch):
         sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>
