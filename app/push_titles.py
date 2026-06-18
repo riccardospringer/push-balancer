@@ -29,7 +29,8 @@ _ACTION_WORDS = (
     "plant", "fordert", "beschliesst", "beschließt", "beschlossen", "entscheidet", "kippt", "rettet",
     "steigt", "faellt", "fällt", "explodiert", "startet", "endet", "greift", "verlaesst",
     "verlässt", "wechselt", "sichert", "verpasst", "bremst", "loest", "löst",
-    "läuft", "laeuft", "festgenommen", "spricht", "zieht", "tor", "tore", "toren",
+    "läuft", "laeuft", "festgenommen", "spricht", "zieht", "stellt", "eingestellt",
+    "ahnte", "ahnt", "tor", "tore", "toren",
 )
 _CONSEQUENCE_WORDS = (
     "wm", "em", "wahl", "krieg", "krise", "gefahr", "warnung", "streik", "ausfall",
@@ -93,7 +94,6 @@ _LOW_PUSH_MARKERS = (
     "experten erklären",
     "experten erklaeren",
 )
-
 
 @dataclass
 class TitleBrief:
@@ -445,6 +445,25 @@ def _generate_editorial_variants(brief: TitleBrief) -> list[tuple[str, str]]:
                 ("G7-Gipfel: Weltpolitik zum Fremdschämen", "B-zugespitzt"),
                 ("Was beim G7-Gipfel hängen bleibt", "D-neugier"),
                 ("Diese G7-Momente bleiben hängen", "D-neugier"),
+            ]
+        )
+
+    sport_record_match = re.search(
+        r"WM-Rekord\s+von\s+(?P<record_actor>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+)"
+        r"\s+eingestellt:\s+(?P<witness>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9.-]+)"
+        r"\s+ahnte\s+es\s+(?:schon\s+)?früh",
+        original,
+        flags=re.I,
+    )
+    if sport_record_match:
+        record_actor = _cap_first(sport_record_match.group("record_actor"))
+        witness = _cap_first(sport_record_match.group("witness"))
+        candidates.extend(
+            [
+                (f"{witness} ahnte {record_actor}s WM-Rekord schon früh", "B-zugespitzt"),
+                (f"{record_actor} stellt WM-Rekord ein - {witness} ahnte es", "A-klare-news-push"),
+                (f"{witness}s frühe Ahnung vor {record_actor}s WM-Rekord", "D-neugier"),
+                (f"{record_actor}s WM-Rekord: Das ahnte {witness} früh", "C-nutzwert-betroffenheit"),
             ]
         )
 
@@ -1003,6 +1022,8 @@ def _editorial_priority(title: str, brief: TitleBrief) -> float:
         priority += 1.0
     if lowered.startswith("darum "):
         priority += 1.2
+    if "wm-rekord" in lowered and "ahnte" in lowered and ":" not in lowered.split("ahnte", 1)[0]:
+        priority += 1.6
     if lowered.startswith("jetzt spricht "):
         priority += 1.2
     if "schießt" in lowered or "schiesst" in lowered:

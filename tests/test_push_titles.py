@@ -113,6 +113,31 @@ def test_visible_alternative_reason_uses_strength_not_generic_weakness():
     assert "kompakten Push" in result["alternative"]["warum"]
 
 
+def test_sport_record_story_rewrites_headline_into_push_hook():
+    headline = "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh"
+
+    result = build_push_title_suggestions(headline, category="sport")
+
+    assert result["title"] == "Klose ahnte Messis WM-Rekord schon früh"
+    assert result["title"] != headline
+    assert 35 <= len(result["title"]) <= 65
+    assert result["gewinner"]["gesamt_score"] >= 8.0
+    assert "FCN:" not in result["title"]
+    assert all(" im Fokus:" not in title for title in result["alternativeTitles"])
+    assert all(title != headline for title in result["alternativeTitles"])
+
+
+def test_llm_prompt_enforces_push_first_opening_rate_rules():
+    from push_title_agent import EDITORIAL_ONE_BRAIN_SYS
+
+    assert "Opening Rate" in EDITORIAL_ONE_BRAIN_SYS
+    assert "35 bis 65 Zeichen" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Original-Headline nicht kopieren" in EDITORIAL_ONE_BRAIN_SYS
+    assert "keine Clickbait-Luege" in EDITORIAL_ONE_BRAIN_SYS
+    assert "A-klare-news-push" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Klose ahnte Messis WM-Rekord" in EDITORIAL_ONE_BRAIN_SYS
+
+
 def test_push_title_generator_prefers_editorial_depth_over_surface_length():
     result = build_push_title_suggestions(
         "WM 2026: Erdbeben nach Toren von Erling Haaland",
