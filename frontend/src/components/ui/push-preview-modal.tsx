@@ -479,7 +479,7 @@ interface PushPreviewModalProps {
 }
 
 export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
-  const [title, setTitle] = useState(article.title)
+  const [title, setTitle] = useState(article.recommendedText ?? article.title)
   const [dachzeile, setDachzeile] = useState('')
   const { time, date, dateShort } = now()
   const { mutate, isPending, data, error } = useGenerateTitle()
@@ -499,6 +499,26 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
   }, [aiResult])
 
   const scoreVar = scoreVariant(article.score)
+  const priorityVariant: 'green' | 'amber' | 'default' =
+    article.mixPriority === 'hoch'
+      ? 'green'
+      : article.mixPriority === 'mittel'
+        ? 'amber'
+        : 'default'
+  const breakdown = article.scoreBreakdown
+  const breakdownItems: Array<[string, number | undefined]> = [
+    ['BILD-Fit', breakdown?.bildFit],
+    ['Freshness', breakdown?.freshness],
+    ['BILD-Reiz', breakdown?.bildReiz],
+    ['Zeit', breakdown?.historicalTiming],
+    ['Mix', breakdown?.mixBalance],
+    ['OR-Potenzial', breakdown?.openingRatePotential],
+    ['Headline', breakdown?.headlineStrength],
+    ['Politik', breakdown?.politicsContext],
+    ['Video', breakdown?.videoFit],
+    ['Risiko', breakdown?.riskAndFatigue],
+    ['Feedback', breakdown?.editorialFeedback],
+  ]
 
   return (
     <Modal open onClose={onClose} title="Push-Vorschau" width={700}>
@@ -531,11 +551,165 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
         </div>
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
           <Badge variant={scoreVar}>Score {fmtScore(article.score)}</Badge>
+          {article.mixPriority && (
+            <Badge variant={priorityVariant}>Priorität {article.mixPriority}</Badge>
+          )}
           {article.predictedOR != null && (
             <Badge variant="default">XOR {fmtOR(article.predictedOR)}</Badge>
           )}
         </div>
       </div>
+
+      {(article.scoreReason ||
+        article.performanceDrivers?.length ||
+        article.risks?.length ||
+        article.recommendedText ||
+        breakdown) && (
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '12px 14px',
+            border: '1px solid var(--border-light)',
+            borderRadius: '6px',
+            background: 'var(--white)',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '12px',
+              fontWeight: 700,
+              color: 'var(--text)',
+              marginBottom: '8px',
+            }}
+          >
+            Redaktionelle Bewertung
+          </div>
+          {article.scoreReason && (
+            <div
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.45,
+                marginBottom: '8px',
+              }}
+            >
+              {article.scoreReason}
+            </div>
+          )}
+          {breakdown && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))',
+                gap: '6px',
+                marginBottom: '10px',
+              }}
+            >
+              {breakdownItems.map(([label, value]) => (
+                <div
+                  key={label}
+                  style={{
+                    padding: '6px 8px',
+                    background: 'var(--bg)',
+                    borderRadius: '5px',
+                    fontSize: '11px',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span>{label}</span>
+                  <strong
+                    style={{
+                      display: 'block',
+                      marginTop: '2px',
+                      color: 'var(--text)',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {typeof value === 'number' ? value.toFixed(1) : '—'}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          )}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+              gap: '12px',
+            }}
+          >
+            {article.performanceDrivers?.length ? (
+              <div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: 'var(--green)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Treiber
+                </div>
+                {article.performanceDrivers.slice(0, 4).map((driver) => (
+                  <div
+                    key={driver}
+                    style={{
+                      fontSize: '12px',
+                      color: 'var(--text-secondary)',
+                      lineHeight: 1.45,
+                      marginBottom: '3px',
+                    }}
+                  >
+                    {driver}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {article.risks?.length ? (
+              <div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: 'var(--amber)',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Risiken
+                </div>
+                {article.risks.slice(0, 4).map((risk) => (
+                  <div
+                    key={risk}
+                    style={{
+                      fontSize: '12px',
+                      color: 'var(--text-secondary)',
+                      lineHeight: 1.45,
+                      marginBottom: '3px',
+                    }}
+                  >
+                    {risk}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {article.recommendedText && (
+            <div
+              style={{
+                marginTop: '10px',
+                paddingTop: '10px',
+                borderTop: '1px solid var(--border-light)',
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.45,
+              }}
+            >
+              <strong style={{ color: 'var(--text)' }}>Empfohlener Text: </strong>
+              {article.recommendedText}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Dachzeile + Title inputs */}
       <div

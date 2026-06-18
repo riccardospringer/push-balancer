@@ -266,6 +266,13 @@ function ArticleRow({
   article: Article
   onPreview: (a: Article) => void
 }) {
+  const priorityVariant: 'green' | 'amber' | 'default' =
+    article.mixPriority === 'hoch'
+      ? 'green'
+      : article.mixPriority === 'mittel'
+        ? 'amber'
+        : 'default'
+
   return (
     <TableRow onClick={() => onPreview(article)} title="Vorschau öffnen">
       <TableCell style={{ maxWidth: '340px' }}>
@@ -283,6 +290,20 @@ function ArticleRow({
         <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
           {fmtDateTime(article.pubDate)} · {article.category}
         </div>
+        {article.scoreReason && (
+          <div
+            style={{
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              marginTop: '4px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {article.scoreReason}
+          </div>
+        )}
         {article.teamsAlert?.summary && (
           <div
             style={{
@@ -323,6 +344,9 @@ function ArticleRow({
       </TableCell>
       <TableCell>
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+          {article.mixPriority && (
+            <Badge variant={priorityVariant}>Priorität {article.mixPriority}</Badge>
+          )}
           {article.teamsAlert && (
             <Badge variant={teamsAlertVariant(article.teamsAlert)}>
               {teamsAlertLabel(article.teamsAlert)}

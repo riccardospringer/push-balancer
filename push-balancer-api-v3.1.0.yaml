@@ -1882,6 +1882,72 @@ components:
           format: float
           description: Advisory predicted opening rate.
           example: 0.055
+        scoreReason:
+          type: string
+          description: Short editorial explanation for the 0-100 push score.
+          example: "stark: hoch wegen aktuelle Entwicklung, BILD-Reiz und klare Zeile."
+        performanceDrivers:
+          type: array
+          description: Main editorial and performance drivers.
+          items:
+            type: string
+          example: ["Aktualität: sehr frisch veröffentlicht", "BILD-Reiz: große Zielgruppe unmittelbar betroffen"]
+        risks:
+          type: array
+          description: Main fatigue, mix, trust, or clickiness risks.
+          items:
+            type: string
+          example: ["Politik-Dichte: ähnliche Themen heute bereits stark vertreten"]
+        recommendedText:
+          type: string
+          description: Suggested push text improvement based on the editorial score.
+          example: "Messer-Alarm an Kita: Polizei nimmt Verdächtigen fest"
+        mixPriority:
+          type: string
+          enum: [hoch, mittel, niedrig]
+          description: Recommended priority for the candidate in the current push mix.
+          example: "hoch"
+        scoreBreakdown:
+          type: object
+          description: Dimension-level 0-100 score components.
+          properties:
+            bildFit:
+              type: number
+              format: float
+            historicalTiming:
+              type: number
+              format: float
+            mixBalance:
+              type: number
+              format: float
+            openingRatePotential:
+              type: number
+              format: float
+            riskAndFatigue:
+              type: number
+              format: float
+            freshness:
+              type: number
+              format: float
+            bildReiz:
+              type: number
+              format: float
+            headlineStrength:
+              type: number
+              format: float
+            politicsContext:
+              type: number
+              format: float
+            videoFit:
+              type: number
+              format: float
+            editorialFeedback:
+              type: number
+              format: float
+        teamsAlert:
+          type: object
+          description: Transparent Teams recommendation decision for this candidate, when Teams evaluation is enabled.
+          additionalProperties: true
         isBreaking:
           type: boolean
           description: Whether the article looks like breaking news.

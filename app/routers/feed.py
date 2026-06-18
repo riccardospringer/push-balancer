@@ -61,13 +61,16 @@ log = logging.getLogger("push-balancer")
 router = APIRouter()
 
 _ARTICLE_CATEGORY_SCORES: dict[str, float] = {
-    "politik": 82.0,
-    "sport": 78.0,
-    "news": 76.0,
-    "wirtschaft": 74.0,
-    "unterhaltung": 66.0,
-    "regional": 62.0,
-    "digital": 68.0,
+    "politik": 70.0,
+    "news": 72.0,
+    "crime": 74.0,
+    "verbraucher": 72.0,
+    "sport": 72.0,
+    "wirtschaft": 68.0,
+    "unterhaltung": 68.0,
+    "wetter": 70.0,
+    "regional": 64.0,
+    "digital": 66.0,
 }
 _ARTICLE_BREAKING_KEYWORDS = (
     "EIL",
@@ -244,10 +247,22 @@ def _infer_article_category(url: str, title: str) -> str:
         return "unterhaltung"
     if "/geld/" in url_lower or "/wirtschaft/" in url_lower:
         return "wirtschaft"
+    if "/ratgeber/" in url_lower or any(
+        word in title_lower
+        for word in ("preise", "kosten", "gebühren", "gebuehren", "abzocke", "rückruf", "rueckruf", "kunden")
+    ):
+        return "verbraucher"
     if "/digital/" in url_lower or "ki" in title_lower:
         return "digital"
     if "/regional/" in url_lower:
         return "regional"
+    if any(
+        word in title_lower
+        for word in ("mord", "messer", "polizei", "razzia", "festnahme", "gericht", "prozess", "leiche", "täter", "taeter")
+    ):
+        return "crime"
+    if any(word in title_lower for word in ("wetter", "unwetter", "sturm", "gewitter", "hitze", "schnee", "warnung")):
+        return "wetter"
     return "news"
 
 
@@ -405,18 +420,19 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
     except ET.ParseError as exc:
         raise HTTPException(status_code=502, detail=f"Invalid sitemap XML: {exc}") from exc
 
-    articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
-    selected = articles[offset : offset + limit]
+    now = datetime.datetime.now()
+    now_ts = int(now.timestamp())
+    history: list[dict[str, Any]] = []
+    research_state: dict[str, Any] = {}
 
     if ARTICLE_PREDICTION_ENRICHMENT_ENABLED:
         try:
-            import datetime as _dt
-
             from app.ml.predict import predict_or
             from app.research.worker import _research_state
 
-            now = _dt.datetime.now()
-            for article in selected:
+            research_state = _research_state
+            history = _research_state.get("push_data") or []
+            for article in articles:
                 cache_key = "|".join(
                     [
                         article["url"],
@@ -436,10 +452,11 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
                         "headline": article["title"],
                         "cat": article["category"],
                         "hour": now.hour,
-                        "ts_num": int(now.timestamp()),
+                        "ts_num": now_ts,
                         "is_eilmeldung": article["isEilmeldung"],
                         "link": article["url"],
                         "channels": [],
+                        "pubDate": article["pubDate"],
                     },
                     _research_state,
                 )
@@ -449,6 +466,40 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
                         _article_prediction_cache_set(cache_key, result)
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
+
+    try:
+        if not history:
+            from app.research.worker import _research_state
+
+            research_state = _research_state
+            history = _research_state.get("push_data") or []
+
+        from app.scoring.editorial import rebalance_push_mix, score_push_candidate
+
+        for article in articles:
+            editorial_score = score_push_candidate(
+                {
+                    "title": article["title"],
+                    "cat": article["category"],
+                    "hour": now.hour,
+                    "ts_num": now_ts,
+                    "is_eilmeldung": article["isEilmeldung"],
+                    "isVideo": article.get("isVideo"),
+                    "video": article.get("isVideo"),
+                    "pubDate": article["pubDate"],
+                    "link": article["url"],
+                },
+                history=history,
+                state=research_state,
+                predicted_or=article.get("predictedOR"),
+            )
+            article.update(editorial_score)
+        articles = rebalance_push_mix(articles, history=history, target_ts=now_ts)
+    except Exception as exc:
+        log.warning("[articles] editorial scoring enrichment failed: %s", exc)
+        articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
+
+    selected = articles[offset : offset + limit]
 
     try:
         from app.notifications.teams import annotate_candidates_with_teams_decisions

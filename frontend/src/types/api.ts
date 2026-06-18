@@ -23,7 +23,23 @@ export interface Article {
   score: number
   predictedOR?: number
   scoreReason?: string
+  performanceDrivers?: string[]
+  risks?: string[]
   recommendedText?: string
+  mixPriority?: 'hoch' | 'mittel' | 'niedrig' | string
+  scoreBreakdown?: {
+    bildFit?: number
+    historicalTiming?: number
+    mixBalance?: number
+    openingRatePotential?: number
+    riskAndFatigue?: number
+    freshness?: number
+    bildReiz?: number
+    headlineStrength?: number
+    politicsContext?: number
+    videoFit?: number
+    editorialFeedback?: number
+  }
   teamsAlert?: {
     candidateId: string
     articleId: string
@@ -33,6 +49,10 @@ export interface Article {
     summary?: string
     reasons?: string[]
     blockingReasons?: string[]
+    scoreReason?: string
+    performanceDrivers?: string[]
+    risks?: string[]
+    scoreBreakdown?: Article['scoreBreakdown']
     minutesSinceLastPush?: number | null
     lastPushAt?: string | null
     lastTeamsAlertAt?: string | null

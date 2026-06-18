@@ -58,6 +58,29 @@ def _candidate(**overrides):
         "pubDate": _iso(NOW_TS - 10 * 60),
         "score": 78.4,
         "predictedOR": 0.052,
+        "scoreReason": (
+            "stark: hoch wegen aktuelle Entwicklung, BILD-Reiz und klare Zeile. "
+            "Risiko: Politik-Dichte heute bereits hoch."
+        ),
+        "performanceDrivers": [
+            "Aktualität: sehr frisch veröffentlicht",
+            "BILD-Reiz: große Zielgruppe unmittelbar betroffen",
+            "Headline-Stärke: schnell verständlich und zuspitzbar",
+        ],
+        "risks": [
+            "Politik-Dichte: ähnliche Themen heute bereits stark vertreten",
+        ],
+        "scoreBreakdown": {
+            "freshness": 96.0,
+            "bildReiz": 84.0,
+            "headlineStrength": 78.0,
+            "openingRatePotential": 80.0,
+            "mixBalance": 72.0,
+            "politicsContext": 88.0,
+            "videoFit": 68.0,
+            "editorialFeedback": 60.0,
+            "riskAndFatigue": 75.0,
+        },
         "recommendedText": "Eilmeldung: Das bedeutet das neue Paket",
         "isBreaking": False,
         "isEilmeldung": False,
@@ -622,6 +645,11 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Auswahlwert: " in text
     assert "Zeitfenster: " in text
     assert "Push-Score: 78,4" in text
+    assert "Push-Balancer-Begründung:" in text
+    assert "Was spricht dafür?" in text
+    assert "Was bremst?" in text
+    assert "Push-Balancer-Breakdown:" in text
+    assert "BILD-Reiz: 84.0/100" in text
     assert "Prognose: 5,20 % OR" in text
     assert "Die Artikel-Prognose liegt aktuell bei 5,20 % OR." in text
     assert "Letzter Push: vor 42 Minuten" in text
@@ -631,6 +659,11 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["articleUrl"] == candidate["url"]
     assert payload["teamsAlertScore"] >= payload["teamsAlertScoreThreshold"]
     assert payload["editorialReview"]["approved"] is True
+    assert payload["scoreReason"] == candidate["scoreReason"]
+    assert payload["performanceDrivers"] == candidate["performanceDrivers"]
+    assert payload["risks"] == candidate["risks"]
+    assert payload["scoreBreakdown"]["bildReiz"] == 84.0
+    assert "BILD-Reiz: 84.0/100" in payload["scoreBreakdownLabel"]
     assert payload["editorialScore"] >= 82.0
     assert payload["selectionScore"] > 0
     assert payload["timeFitScore"] > 0
@@ -639,6 +672,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]
     assert "CvD-Score" in payload["messageHtml"]
+    assert "Push-Balancer-Breakdown" in payload["messageHtml"]
     assert "Empfohlener Push-Text:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)

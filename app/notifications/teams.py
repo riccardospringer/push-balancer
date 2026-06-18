@@ -200,6 +200,10 @@ def should_notify_teams(
     positive: list[str] = []
     blockers: list[str] = []
     status = "skip"
+    candidate_score_reason = _score_reason(candidate)
+    candidate_drivers = _editorial_list(candidate, "performanceDrivers")
+    candidate_risks = _editorial_list(candidate, "risks")
+    candidate_breakdown = candidate.get("scoreBreakdown") if isinstance(candidate.get("scoreBreakdown"), dict) else {}
 
     if not config.enabled:
         blockers.append("Teams Alerts deaktiviert")
@@ -223,6 +227,9 @@ def should_notify_teams(
 
     if score >= min_score:
         positive.append(f"Push Score {score:.1f} liegt ueber Schwelle {min_score:.1f}")
+        if candidate_score_reason:
+            positive.append(f"Push-Score-Begruendung: {candidate_score_reason}")
+        positive.extend(candidate_drivers[:3])
     else:
         blockers.append(f"Score zu niedrig: {score:.1f} < {min_score:.1f}")
 
@@ -365,6 +372,8 @@ def should_notify_teams(
         status = "sent"
 
     summary = positive[0] if status == "notify" and positive else (blockers[0] if blockers else "")
+    if status == "notify" and candidate_score_reason:
+        summary = candidate_score_reason
 
     return {
         "candidateId": key,
@@ -377,6 +386,10 @@ def should_notify_teams(
         "summary": summary,
         "reasons": positive,
         "blockingReasons": blockers,
+        "scoreReason": candidate_score_reason,
+        "performanceDrivers": candidate_drivers,
+        "risks": candidate_risks,
+        "scoreBreakdown": candidate_breakdown,
         "score": score,
         "teamsAlertScore": alert_score,
         "teamsAlertScoreThreshold": config.min_alert_score,
@@ -546,6 +559,10 @@ def build_teams_push_recommendation(
         if competitors
         else "Im aktuellen Kandidatenfeld gibt es keinen stärkeren Push-Vorschlag."
     )
+    candidate_score_reason = _score_reason(candidate)
+    candidate_drivers = _editorial_list(candidate, "performanceDrivers")
+    candidate_risks = _editorial_list(candidate, "risks")
+    candidate_breakdown_lines = _score_breakdown_lines(candidate)
 
     threshold_reason = (
         f"Das Teams-Alert-Modell bewertet den Artikel mit {_format_number(alert_score)} "
@@ -581,6 +598,7 @@ def build_teams_push_recommendation(
     why_now = _dedupe(
         [
             editorial_reason,
+            *( [f"Push-Balancer-Score: {candidate_score_reason}"] if candidate_score_reason else [] ),
             time_fit_reason,
             forecast_reason,
             threshold_reason,
@@ -590,7 +608,15 @@ def build_teams_push_recommendation(
             duplicate_reason,
         ]
     )[:6]
-    why_pushworthy = _dedupe([editorial_reason, score_reason, forecast_reason, timing_reason, competition])[:4]
+    why_pushworthy = _dedupe([
+        *candidate_drivers[:5],
+        editorial_reason,
+        score_reason,
+        forecast_reason,
+        timing_reason,
+        competition,
+    ])[:7]
+    what_speaks_against = candidate_risks[:5] or ["Keine harten Gegenargumente im Push-Balancer-Score."]
 
     text_lines = ["🚨 Push-Empfehlung: Jetzt pushen", ""]
     if push_text_matches_title:
@@ -614,6 +640,7 @@ def build_teams_push_recommendation(
             "Einordnung:",
             f"- Ressort: {section_label}",
             f"- Push-Score: {_format_number(score)} (Mindestwert: {_format_number(score_threshold, 0)})",
+            *( [f"- Push-Balancer-Begründung: {candidate_score_reason}"] if candidate_score_reason else [] ),
             f"- Teams-Alert-Score: {_format_number(alert_score)} (Schwelle: {_format_number(alert_threshold, 0)})",
             f"- CvD-Score: {_format_number(editorial_score)}",
             f"- Auswahlwert: {_format_number(selection_score)}",
@@ -621,6 +648,15 @@ def build_teams_push_recommendation(
             f"- Prognose: {_format_forecast(forecast)}",
             f"- Letzter Push: {_format_minutes(minutes)}",
             f"- Empfehlung um: {_format_dt(now_ts)} Uhr",
+            "",
+            "Was spricht dafür?",
+            *[f"- {reason}" for reason in (candidate_drivers or editorial_reasons[:4])],
+            "",
+            "Was bremst?",
+            *[f"- {reason}" for reason in what_speaks_against],
+            "",
+            "Push-Balancer-Breakdown:",
+            *[f"- {reason}" for reason in (candidate_breakdown_lines or ["Kein Detail-Breakdown verfügbar."])],
             "",
             "Empfehlung:",
             "Jetzt pushen.",
@@ -643,6 +679,10 @@ def build_teams_push_recommendation(
         editorial_score=editorial_score,
         why_now=why_now,
         push_text_matches_title=push_text_matches_title,
+        score_reason=candidate_score_reason,
+        performance_drivers=candidate_drivers,
+        risks=what_speaks_against,
+        score_breakdown_lines=candidate_breakdown_lines,
     )
     return {
         "text": text,
@@ -659,6 +699,11 @@ def build_teams_push_recommendation(
             "editorialReview": editorial_review,
             "editorialScore": editorial_score,
             "editorialReasons": editorial_reasons,
+            "scoreReason": candidate_score_reason,
+            "performanceDrivers": candidate_drivers,
+            "risks": candidate_risks,
+            "scoreBreakdown": candidate.get("scoreBreakdown") if isinstance(candidate.get("scoreBreakdown"), dict) else {},
+            "scoreBreakdownLabel": "; ".join(candidate_breakdown_lines),
             "timeFitScore": time_fit_score,
             "timeFitLabel": time_fit_label,
             "selectionScore": selection_score,
@@ -1612,6 +1657,47 @@ def _same_editorial_text(left: str, right: str) -> bool:
     return bool(normalize(left)) and normalize(left) == normalize(right)
 
 
+def _score_reason(candidate: dict[str, Any]) -> str:
+    return str(candidate.get("scoreReason") or "").strip()
+
+
+def _editorial_list(candidate: dict[str, Any], key: str) -> list[str]:
+    raw = candidate.get(key)
+    if not isinstance(raw, list):
+        return []
+    result: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text:
+            result.append(text)
+    return _dedupe(result)
+
+
+def _score_breakdown_lines(candidate: dict[str, Any]) -> list[str]:
+    raw = candidate.get("scoreBreakdown")
+    if not isinstance(raw, dict):
+        return []
+    labels = [
+        ("freshness", "Freshness"),
+        ("bildReiz", "BILD-Reiz"),
+        ("headlineStrength", "Headline"),
+        ("openingRatePotential", "OR-Potenzial"),
+        ("mixBalance", "Mix"),
+        ("politicsContext", "Politik-Kontext"),
+        ("videoFit", "Video-Fit"),
+        ("editorialFeedback", "Redaktionsfeedback"),
+        ("riskAndFatigue", "Risiko/Fatigue"),
+    ]
+    lines: list[str] = []
+    for key, label in labels:
+        try:
+            value = float(raw.get(key))
+        except (TypeError, ValueError):
+            continue
+        lines.append(f"{label}: {value:.1f}/100")
+    return lines
+
+
 def _format_minutes(value: Any) -> str:
     if isinstance(value, (int, float)):
         return f"vor {float(value):.0f} Minuten"
@@ -1635,6 +1721,10 @@ def _build_power_automate_message_html(
     editorial_score: float,
     why_now: list[str],
     push_text_matches_title: bool = False,
+    score_reason: str = "",
+    performance_drivers: list[str] | None = None,
+    risks: list[str] | None = None,
+    score_breakdown_lines: list[str] | None = None,
 ) -> str:
     article_html = (
         f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
@@ -1642,6 +1732,13 @@ def _build_power_automate_message_html(
         else html.escape(title)
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
+    drivers_html = "".join(
+        f"<li>{html.escape(reason)}</li>" for reason in (performance_drivers or [])
+    )
+    risks_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in (risks or []))
+    breakdown_html = "".join(
+        f"<li>{html.escape(reason)}</li>" for reason in (score_breakdown_lines or [])
+    )
     if push_text_matches_title:
         lead_html = (
             "<p><strong>Artikel und empfohlener Push:</strong><br>"
@@ -1663,6 +1760,12 @@ def _build_power_automate_message_html(
         f"<strong>Ressort:</strong> {html.escape(section)}<br>"
         f"<strong>Push-Score:</strong> {html.escape(_format_number(score))} "
         f"(Mindestwert {html.escape(_format_number(score_threshold, 0))})<br>"
+        + (
+            f"<strong>Push-Balancer-Begründung:</strong> {html.escape(score_reason)}<br>"
+            if score_reason
+            else ""
+        )
+        +
         f"<strong>Teams-Alert-Score:</strong> {html.escape(_format_number(alert_score))} "
         f"(Schwelle {html.escape(_format_number(alert_threshold, 0))})<br>"
         f"<strong>CvD-Score:</strong> {html.escape(_format_number(editorial_score))}<br>"
@@ -1671,6 +1774,12 @@ def _build_power_automate_message_html(
         f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
         f"<strong>Empfehlung um:</strong> {html.escape(_format_dt(now_ts))} Uhr"
         "</p>"
+        "<p><strong>Was spricht dafür?</strong></p>"
+        f"<ul>{drivers_html}</ul>"
+        "<p><strong>Was bremst?</strong></p>"
+        f"<ul>{risks_html}</ul>"
+        "<p><strong>Push-Balancer-Breakdown</strong></p>"
+        f"<ul>{breakdown_html}</ul>"
         "<p><strong>Empfehlung:</strong> Jetzt pushen.</p>"
     )
 

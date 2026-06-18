@@ -165,7 +165,9 @@ class TestStableFrontendContracts:
         article = resp.json()["articles"][0]
         assert article["isVideo"] is True
         assert article["type"] == "video"
-        assert "video" in article["scoreReason"]
+        assert "video" in article["scoreReason"].lower() or any(
+            "video" in risk.lower() for risk in article.get("risks", [])
+        )
 
     def test_international_feed_contract_falls_back_to_live_fetch_without_background_cache(self, monkeypatch):
         monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
