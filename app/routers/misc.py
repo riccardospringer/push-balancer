@@ -78,10 +78,10 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
                 category=body.category or "news",
                 kicker="",
                 headline="",
+                article_type=infer_content_type(body.url, body.title),
             )
             if llm_result.get("gewinner"):
                 gewinner = llm_result["gewinner"]
-                alternative = llm_result.get("alternative", {})
                 all_candidates = llm_result.get("alle_kandidaten", {})
                 alt_titles: list[str] = []
                 for title in llm_result.get("alternativeTitles", []):

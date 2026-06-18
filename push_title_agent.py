@@ -77,6 +77,38 @@ def _local_editorial_one_brain(
     base_title = _clean_title(title)
     base_headline = _clean_title(headline) if headline else ""
     base_kicker = _clean_title(kicker) if kicker else ""
+    base_category = (category or "news").replace("(video)", "").strip() or "news"
+    try:
+        from app.push_titles import build_push_title_suggestions
+
+        local = build_push_title_suggestions(
+            title=base_title,
+            category=base_category,
+            url="/video/" if _is_video_context(article_type, title, text) else "",
+        )
+        grouped = local.get("alle_kandidaten", {}) if isinstance(local, dict) else {}
+        kandidaten = []
+        for ansatz, items in grouped.items():
+            for item in items:
+                titel = item.get("titel")
+                if titel:
+                    kandidaten.append(
+                        {
+                            "titel": titel,
+                            "laenge": len(titel),
+                            "ansatz": ansatz,
+                        }
+                    )
+        return {
+            "analyse": (local.get("meta") or {}).get("analyse", {}),
+            "kandidaten": kandidaten[:8],
+            "bewertungen": local.get("bewertungen", [])[:5],
+            "gewinner": _with_video_reason(local.get("gewinner", {}), article_type, title, text),
+            "alternative": local.get("alternative", {}),
+        }
+    except Exception as exc:
+        log.warning("[PushTitle] Deep local fallback failed, using simple fallback: %s", exc)
+
     words = base_title.split()
     short_core = _clean_title(" ".join(words[: min(len(words), 8)])) or base_title
     is_video = _is_video_context(article_type, title, text)
@@ -274,6 +306,18 @@ def _editorial_one_brain(title, text, category, kicker="", headline=""):
     }
 
 
+def _with_video_reason(entry: dict, article_type: str, title: str, text: str = "") -> dict:
+    item = dict(entry or {})
+    if _is_video_context(article_type, title, text):
+        reason = str(item.get("warum_dieser") or item.get("warum") or "")
+        if "video" not in reason.lower():
+            if "warum_dieser" in item:
+                item["warum_dieser"] = (reason + "; Video-Kontext klar erkannt").strip("; ")
+            elif "warum" in item:
+                item["warum"] = (reason + "; Video-Kontext klar erkannt").strip("; ")
+    return item
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HAUPTFUNKTION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -344,11 +388,13 @@ def generate_push_title(article_title, article_text="", category="news",
             "laenge": len(article_title),
             "warum": "Fallback",
         }
+    result["alternative"] = _with_video_reason(result["alternative"], article_type, article_title, article_text)
 
+    content_type = "video" if _is_video_context(article_type, article_title, article_text) else "editorial"
     result["meta"] = {
         "original_titel": article_title,
         "kategorie": category_label,
-        "content_type": article_type,
+        "content_type": content_type,
         "dauer_gesamt_s": round(t1 - t0, 1),
         "dauer_call1_s": round(t1 - t0, 1),
         "dauer_call2_s": 0.0,
@@ -358,6 +404,16 @@ def generate_push_title(article_title, article_text="", category="news",
         "modus": "editorial-one-brain" if use_llm else "local-fallback",
     }
     result["alle_kandidaten"] = grouped
+    result["title"] = result["gewinner"].get("titel", article_title)
+    result["alternativeTitles"] = [
+        item.get("titel", "")
+        for items in grouped.values()
+        for item in items
+        if item.get("titel") and item.get("titel") != result["title"]
+    ][:5]
+    result["reasoning"] = result["gewinner"].get("warum_dieser", "")
+    result["advisoryOnly"] = True
+    result["contentType"] = content_type
 
     w = result.get("gewinner", {})
     log.info(f"[PushTitle] ERGEBNIS: '{w.get('titel', '?')[:80]}' "

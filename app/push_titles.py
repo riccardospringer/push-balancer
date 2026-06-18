@@ -18,9 +18,28 @@ _WEAK_PHRASES = (
     "das musst du wissen",
     "hier alle infos",
     "so reagiert das netz",
+    "darum geht es jetzt",
+    "was jetzt wichtig ist",
 )
 _HYPE_WORDS = ("mega", "hammer", "krass", "irre", "sensation", "wahnsinn")
 _GENERIC_PRONOUNS = (" sie ", " er ", " ihr ", " ihm ", " ihnen ", " ihn ")
+_ACTION_WORDS = (
+    "trifft", "schiesst", "schießt", "gewinnt", "verliert", "stoppt", "warnt", "droht",
+    "plant", "fordert", "beschliesst", "beschließt", "entscheidet", "kippt", "rettet",
+    "steigt", "faellt", "fällt", "explodiert", "startet", "endet", "greift", "verlaesst",
+    "verlässt", "wechselt", "sichert", "verpasst", "bremst", "loest", "löst",
+    "tor", "tore", "toren",
+)
+_CONSEQUENCE_WORDS = (
+    "wm", "em", "wahl", "krieg", "krise", "gefahr", "warnung", "streik", "ausfall",
+    "rente", "steuer", "preise", "geld", "urteil", "entscheidung", "folge", "folgen",
+    "beben", "drama", "wende", "schock", "rekord", "chance", "titel", "finale",
+)
+_EMPTY_METAPHORS = ("erdbeben nach", "beben nach", "schock nach", "drama nach")
+_NON_ACTOR_TITLE_WORDS = {
+    "WM", "EM", "Erdbeben", "Beben", "Schock", "Drama", "Tore", "Toren", "Tor",
+    "News", "Sport", "Politik", "Wirtschaft", "Digital", "Regional",
+}
 _STOPWORDS = {
     "der", "die", "das", "ein", "eine", "einer", "einem", "einen", "und", "oder", "fuer", "für",
     "mit", "ohne", "auf", "im", "in", "am", "an", "zu", "zum", "zur", "bei", "nach", "vor",
@@ -50,6 +69,10 @@ class TitleBrief:
     focus_term: str
     hook: str
     audience_value: str
+    actors: list[str]
+    action_terms: list[str]
+    consequence_terms: list[str]
+    depth_summary: str
 
 
 def _clean(text: str) -> str:
@@ -131,6 +154,69 @@ def _extract_focus_term(detail: str, subject: str) -> str:
     return candidates[-1]
 
 
+def _extract_named_actors(title: str) -> list[str]:
+    multi_word = re.findall(
+        r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+)+)\b",
+        title or "",
+    )
+    actors: list[str] = []
+    for phrase in multi_word:
+        parts = [part for part in phrase.split() if part not in _NON_ACTOR_TITLE_WORDS]
+        if len(parts) >= 2:
+            actors.append(" ".join(parts[:2]))
+
+    tokens = re.findall(r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9-]+|\b[A-Z]{2,}\b|\b\d{4}\b", title or "")
+    current: list[str] = []
+    for token in tokens:
+        low = token.lower()
+        if (
+            token in _NON_ACTOR_TITLE_WORDS
+            or low in _STOPWORDS
+            or low in {"wm", "em"}
+            or re.fullmatch(r"\d{4}", token)
+        ):
+            if current:
+                actors.append(" ".join(current))
+                current = []
+            continue
+        current.append(token)
+        if len(current) == 2:
+            actors.append(" ".join(current))
+            current = []
+    if current:
+        actors.append(" ".join(current))
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for actor in actors:
+        key = actor.lower()
+        if key not in seen and len(actor) > 2:
+            seen.add(key)
+            result.append(actor)
+    return result[:4]
+
+
+def _last_name(actor: str) -> str:
+    parts = [part for part in re.split(r"\s+", actor.strip()) if part]
+    return parts[-1] if parts else actor
+
+
+def _extract_terms(text: str, vocabulary: tuple[str, ...]) -> list[str]:
+    lowered = (text or "").lower()
+    return [term for term in vocabulary if term in lowered][:5]
+
+
+def _depth_summary(actors: list[str], action_terms: list[str], consequence_terms: list[str]) -> str:
+    parts = []
+    if actors:
+        parts.append("Akteur: " + ", ".join(actors[:2]))
+    if action_terms:
+        parts.append("Aktion: " + ", ".join(action_terms[:2]))
+    if consequence_terms:
+        parts.append("Fallhoehe: " + ", ".join(consequence_terms[:2]))
+    return "; ".join(parts) if parts else "Kern/Fallhoehe noch zu unscharf"
+
+
 def _derive_audience_value(detail: str, focus_term: str) -> str:
     lowered = detail.lower()
     transforms = [
@@ -165,6 +251,9 @@ def _build_brief(title: str, category: str = "news", url: str = "") -> TitleBrie
     content_type = infer_content_type(url, original)
     is_breaking = any(marker in original.lower() for marker in _BREAKING_MARKERS)
     focus_term = _extract_focus_term(detail, subject)
+    actors = _extract_named_actors(original)
+    action_terms = _extract_terms(original, _ACTION_WORDS)
+    consequence_terms = _extract_terms(original, _CONSEQUENCE_WORDS)
     audience_value = _derive_audience_value(detail, focus_term)
     hook = focus_term or subject or detail
 
@@ -179,6 +268,10 @@ def _build_brief(title: str, category: str = "news", url: str = "") -> TitleBrie
         focus_term=focus_term,
         hook=hook,
         audience_value=audience_value,
+        actors=actors,
+        action_terms=action_terms,
+        consequence_terms=consequence_terms,
+        depth_summary=_depth_summary(actors, action_terms, consequence_terms),
     )
 
 
@@ -203,6 +296,8 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     detail = brief.detail
     focus = brief.focus_term
     audience_value = brief.audience_value
+    actor = brief.actors[0] if brief.actors else subject
+    actor_short = _last_name(actor) if actor else ""
 
     candidates: list[tuple[str, str]] = []
     compact_fact = _compact_fact(detail)
@@ -240,6 +335,39 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
                 (f"{focus}: Darum geht es jetzt", "erklaerer"),
             ]
         )
+
+    actor_is_redundant = actor_short and actor_short.lower() in {
+        compact_fact.lower(),
+        detail.lower(),
+        audience_value.lower(),
+    }
+    if actor_short and actor_short.lower() not in {"wm", "em"} and not actor_is_redundant:
+        candidates.extend(
+            [
+                (f"{actor_short}: {audience_value}", "akteur"),
+                (f"{actor_short} im Fokus: {compact_fact}", "akteur"),
+            ]
+        )
+
+    if brief.category == "sport":
+        lowered_original = brief.original_title.lower()
+        if actor_short and ("tor" in lowered_original or "trifft" in lowered_original):
+            if "wm" in lowered_original:
+                candidates.extend(
+                    [
+                        (f"{actor_short} schießt sich Richtung WM 2026", "sport-folge"),
+                        (f"{actor_short}-Tore lösen WM-Beben aus", "sport-folge"),
+                    ]
+                )
+            else:
+                candidates.extend(
+                    [
+                        (f"{actor_short}-Tore verändern die Lage", "sport-folge"),
+                        (f"{actor_short} trifft - und alles ist offen", "sport-folge"),
+                    ]
+                )
+        if "erdbeben nach" in lowered_original and actor_short:
+            candidates.append((f"{actor_short}-Tore lösen das Beben aus", "sport-folge"))
 
     if brief.is_breaking:
         candidates.extend(
@@ -290,6 +418,24 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
         score += 1.0
         strengths.append("enthaelt den wichtigsten inhaltlichen Hook")
 
+    actor_hits = sum(1 for actor in brief.actors if _last_name(actor).lower() in lowered or actor.lower() in lowered)
+    if actor_hits:
+        score += min(1.4, 0.7 * actor_hits)
+        strengths.append("macht den zentralen Akteur sofort sichtbar")
+
+    action_hits = sum(1 for term in brief.action_terms if term in lowered)
+    candidate_action_hits = sum(1 for term in _ACTION_WORDS if term in lowered)
+    consequence_hits = sum(1 for term in brief.consequence_terms if term in lowered)
+    if action_hits or candidate_action_hits:
+        score += 0.8
+        strengths.append("enthaelt eine konkrete Handlung")
+    if consequence_hits:
+        score += 0.8
+        strengths.append("zeigt Fallhoehe oder Konsequenz")
+    if actor_hits and (action_hits or candidate_action_hits or consequence_hits):
+        score += 0.6
+        strengths.append("verbindet Akteur mit Fallhoehe statt nur Schlagworten")
+
     signal_matches = sum(1 for token in signal_tokens if token in lowered)
     if signal_matches >= 2:
         score += min(1.5, 0.5 * signal_matches)
@@ -318,6 +464,16 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
             score -= 0.8
             weaknesses.append("verliert gegenueber dem Original zu viel konkrete Information")
 
+    empty_metaphor = any(phrase in lowered for phrase in _EMPTY_METAPHORS)
+    if empty_metaphor:
+        score -= 1.4
+        weaknesses.append("metaphorischer Einstieg bleibt ohne klare redaktionelle Folge")
+
+    focus_duplication = re.match(r"^(.+?) im fokus:\s*\1$", lowered)
+    if focus_duplication:
+        score -= 2.0
+        weaknesses.append("doppelt denselben Begriff statt eine neue Erkenntnis zu liefern")
+
     if sum(word in lowered for word in _HYPE_WORDS) >= 1:
         score -= 0.7
         weaknesses.append("ist sprachlich zu aufgeheizt")
@@ -340,10 +496,18 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
 
     category_prefix = f"{_category_prefix(brief.category).lower()}:"
     if lowered.startswith(category_prefix):
-        score -= 0.4
+        score -= 0.9
         weaknesses.append("nutzt nur einen Ressort-Prefix statt direkt mit der Nachricht zu starten")
 
     score += max(-0.6, 0.6 - abs(((IDEAL_MIN_LENGTH + IDEAL_MAX_LENGTH) / 2) - length) / 20)
+    if empty_metaphor:
+        score = min(score, 7.4)
+    if not (actor_hits and (action_hits or candidate_action_hits or consequence_hits)) and not brief.is_breaking:
+        score = min(score, 8.1)
+        if not weaknesses:
+            weaknesses.append("noch zu wenig Akteur-Handlung-Fallhoehe fuer eine Top-Bewertung")
+    if brief.category == "sport" and lowered.startswith("sport:"):
+        score = min(score, 7.2)
     return round(max(0.0, min(score, 10.0)), 1), strengths, weaknesses
 
 
@@ -362,7 +526,7 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
             }
         )
 
-    rated.sort(key=lambda item: (-item["gesamt"], item["laenge"]))
+    rated.sort(key=lambda item: (-item["gesamt"], -_editorial_priority(item["titel"], brief), item["laenge"]))
     winner = rated[0] if rated else {
         "titel": brief.original_title,
         "laenge": len(brief.original_title),
@@ -373,7 +537,11 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
     }
     alternative = rated[1] if len(rated) > 1 else winner
 
-    winner_reason = winner["staerken"][0] if winner.get("staerken") else "liefert die klarste, kompakteste Version des Themas"
+    winner_reason = (
+        "; ".join(winner.get("staerken", [])[:2])
+        if winner.get("staerken")
+        else "liefert die klarste, kompakteste Version des Themas"
+    )
     alt_reason = alternative["schwaeche"] or "setzt einen anderen Schwerpunkt"
 
     gewinner = {
@@ -388,6 +556,24 @@ def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[
         "warum": alt_reason,
     }
     return rated[:5], gewinner, alternative_payload
+
+
+def _editorial_priority(title: str, brief: TitleBrief) -> float:
+    lowered = title.lower()
+    priority = 0.0
+    if "schießt" in lowered or "schiesst" in lowered:
+        priority += 2.0
+    if "richtung wm" in lowered:
+        priority += 1.5
+    if any(term in lowered for term in ("löst", "loest", "verändert", "veraendert", "entscheidet")):
+        priority += 1.0
+    if any(phrase in lowered for phrase in _EMPTY_METAPHORS):
+        priority -= 4.0
+    if lowered.startswith(f"{_category_prefix(brief.category).lower()}:"):
+        priority -= 2.0
+    if "was jetzt wichtig ist" in lowered or "darum geht es jetzt" in lowered:
+        priority -= 2.0
+    return priority
 
 
 def build_push_title_suggestions(title: str, category: str = "news", url: str = "") -> dict:
@@ -424,6 +610,10 @@ def build_push_title_suggestions(title: str, category: str = "news", url: str = 
                 "hook": brief.hook,
                 "emotion": "dringlich" if brief.is_breaking else "konkret-direkt",
                 "leserwert": brief.audience_value,
+                "akteure": brief.actors,
+                "aktionen": brief.action_terms,
+                "fallhoehe": brief.consequence_terms,
+                "redaktionelle_tiefe": brief.depth_summary,
             },
             "anzahl_kandidaten": len(candidates),
             "dauer_gesamt_s": 0.0,
