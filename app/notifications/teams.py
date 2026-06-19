@@ -738,7 +738,7 @@ def build_teams_push_recommendation(
     time_fit_score = float(editorial_breakdown.get("timeFit") or 0.0)
     time_fit_label = str(editorial_breakdown.get("timeFitLabel") or "").strip()
     selection_score = float(decision.get("selectionScore") or 0.0)
-    push_text = str(candidate.get("recommendedText") or title)
+    push_text = _teams_push_title_recommendation(candidate, title, section, url)
     push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
     competitors = int(competition_meta.get("eligibleCompetitors") or 0)
@@ -813,9 +813,9 @@ def build_teams_push_recommendation(
     )[:3]
     subject = f"🚨 Jetzt pushen: {_compact_text(push_text or title, 120)}"
 
-    text_lines = [subject, ""]
+    text_lines = [subject, "", "Alternativer Push-Titel:", push_text]
     if not push_text_matches_title:
-        text_lines.extend(["Artikel:", title])
+        text_lines.extend(["", "Artikel:", title])
     if url:
         text_lines.append(url)
     text_lines.extend(
@@ -887,6 +887,7 @@ def build_teams_push_recommendation(
             "predictedORConfidence": forecast["confidence"],
             "predictedORExplanation": forecast["explanation"],
             "recommendedPushText": push_text,
+            "alternativePushTitle": push_text,
             "recommendedAt": _format_dt(now_ts),
             "minutesSinceLastPush": round(float(minutes), 1) if minutes_known else 0.0,
             "lastPushKnown": minutes_known,
@@ -2052,6 +2053,51 @@ def _same_editorial_text(left: str, right: str) -> bool:
     return bool(normalize(left)) and normalize(left) == normalize(right)
 
 
+def _teams_push_title_recommendation(
+    candidate: dict[str, Any],
+    title: str,
+    section: str,
+    url: str,
+) -> str:
+    explicit_candidates: list[str] = []
+    for key in (
+        "alternativePushTitle",
+        "pushTitleAlternative",
+        "recommendedPushTitle",
+        "recommendedPushText",
+        "recommendedText",
+    ):
+        value = str(candidate.get(key) or "").strip()
+        if value:
+            explicit_candidates.append(value)
+    for key in ("alternativeTitles", "pushTitleAlternatives"):
+        values = candidate.get(key)
+        if isinstance(values, list):
+            explicit_candidates.extend(str(item or "").strip() for item in values if str(item or "").strip())
+
+    for value in _dedupe(explicit_candidates):
+        if not _same_editorial_text(value, title):
+            return _compact_text(value, 100)
+
+    try:
+        from app.push_titles import build_push_title_suggestions
+
+        result = build_push_title_suggestions(title, category=section, url=url)
+        generated = [
+            str(result.get("title") or "").strip(),
+            *[str(item or "").strip() for item in result.get("alternativeTitles", [])],
+            str((result.get("alternative") or {}).get("titel") or "").strip(),
+        ]
+        for value in _dedupe([item for item in generated if item]):
+            if not _same_editorial_text(value, title):
+                return _compact_text(value, 100)
+    except Exception as exc:
+        log.warning("[TeamsAlert] could not build alternative push title: %s", exc)
+
+    fallback = explicit_candidates[0] if explicit_candidates else title
+    return _compact_text(fallback, 100)
+
+
 def _score_reason(candidate: dict[str, Any]) -> str:
     return str(candidate.get("scoreReason") or "").strip()
 
@@ -2135,18 +2181,12 @@ def _build_power_automate_message_html(
         else html.escape(title)
     )
     why_now_html = "".join(f"<li>{html.escape(reason)}</li>" for reason in why_now)
-    if push_text_matches_title:
-        lead_html = (
-            "<p><strong>Artikel:</strong><br>"
-            f"{article_html}</p>"
-        )
-    else:
-        lead_html = (
-            "<p><strong>Empfohlener Push-Text:</strong><br>"
-            f"{html.escape(recommended_text)}</p>"
-            "<p><strong>Artikel:</strong><br>"
-            f"{article_html}</p>"
-        )
+    lead_html = (
+        "<p><strong>Alternativer Push-Titel:</strong><br>"
+        f"{html.escape(recommended_text)}</p>"
+        "<p><strong>Artikel:</strong><br>"
+        f"{article_html}</p>"
+    )
     return (
         f"<h2>{html.escape(subject)}</h2>"
         f"{lead_html}"

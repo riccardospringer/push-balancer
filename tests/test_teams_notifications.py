@@ -646,6 +646,7 @@ def test_teams_message_contains_required_editorial_fields():
 
     assert text.startswith("🚨 Jetzt pushen: Eilmeldung: Das bedeutet das neue Paket")
     assert "Empfohlener Push-Text:" not in text
+    assert "Alternativer Push-Titel:\nEilmeldung: Das bedeutet das neue Paket" in text
     assert "Artikel:" in text
     assert "Warum jetzt?" in text
     assert candidate["title"] in text
@@ -671,11 +672,12 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["timeFitScore"] > 0
     assert payload["timeFitLabel"]
     assert payload["recommendedPushText"] == candidate["recommendedText"]
+    assert payload["alternativePushTitle"] == candidate["recommendedText"]
     assert payload["messageText"] == text
     assert "Warum jetzt?" in payload["messageHtml"]
     assert payload["subject"].startswith("🚨 Jetzt pushen:")
     assert "Push-Balancer-Breakdown" not in payload["messageHtml"]
-    assert "Empfohlener Push-Text:" in payload["messageHtml"]
+    assert "Alternativer Push-Titel:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
 
@@ -688,11 +690,13 @@ def test_teams_message_does_not_repeat_identical_push_text_and_article_title():
     message = buildTeamsPushRecommendation(candidate, context, decision, _config())
     text = message["text"]
 
-    assert text.startswith("🚨 Jetzt pushen: Eilmeldung: Regierung beschliesst wichtiges Paket")
+    assert text.startswith("🚨 Jetzt pushen:")
+    assert "Alternativer Push-Titel:" in text
     assert "Empfohlener Push-Text:" not in text
-    assert "Artikel:\n" not in text
+    assert "Artikel:\n" in text
     assert text.count(candidate["title"]) == 1
     assert "Artikel:</strong>" in message["payload"]["messageHtml"]
+    assert message["payload"]["alternativePushTitle"] != candidate["title"]
 
 
 def test_or_prediction_ratio_is_displayed_as_percent_not_raw_ratio():
