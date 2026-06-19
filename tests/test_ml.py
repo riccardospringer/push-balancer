@@ -383,3 +383,55 @@ def test_generate_push_title_local_fallback_when_budget_is_zero(monkeypatch):
     assert result["gewinner"]["titel"]
     assert result["meta"]["modus"] == "local-fallback"
     assert result["meta"]["modell"] == "local-fallback"
+
+
+def test_generate_push_title_starts_individual_llm_call_when_enabled(monkeypatch):
+    import push_title_agent
+    from push_title_agent import generate_push_title
+
+    calls = []
+
+    def fake_llm_call(system, user, temperature=0.7, max_tokens=800):
+        calls.append({"system": system, "user": user, "temperature": temperature, "max_tokens": max_tokens})
+        return """
+        {
+          "analyse": {"kern": "Messi stellt WM-Rekord ein", "hook": "Kloses fruehe Ahnung", "emotion": "sportlich-ueberraschend"},
+          "kandidaten": [
+            {"titel": "Klose ahnte Messis WM-Rekord schon frueh", "ansatz": "B-zugespitzt"},
+            {"titel": "Messi zieht gleich - Klose wusste es laengst", "ansatz": "D-neugier"},
+            {"titel": "Messi stellt WM-Rekord ein - Klose ahnte es", "ansatz": "A-klare-news-push"},
+            {"titel": "Kloses fruehe Ahnung vor Messis Rekord", "ansatz": "C-nutzwert-betroffenheit"}
+          ],
+          "bewertungen": [
+            {"titel": "Klose ahnte Messis WM-Rekord schon frueh", "gesamt": 9.4, "schwaeche": ""}
+          ],
+          "gewinner": {"titel": "Klose ahnte Messis WM-Rekord schon frueh", "laenge": 39, "gesamt_score": 9.4, "warum_dieser": "konkreter Hook statt Original-Kuerzung"},
+          "alternative": {"titel": "Messi zieht gleich - Klose wusste es laengst", "laenge": 45, "warum": "neugierig, aber gedeckt"},
+          "warnhinweis": ""
+        }
+        """
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", "10")
+    monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", "50")
+    monkeypatch.setattr(push_title_agent, "allow_calls", lambda _limits: True)
+    monkeypatch.setattr(push_title_agent, "_llm_call", fake_llm_call)
+
+    result = generate_push_title(
+        article_title="FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh",
+        article_text="Miroslav Klose hatte schon früh mit Lionel Messis Rekordmoment gerechnet.",
+        category="sport",
+        kicker="Sport",
+        headline="FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh",
+        force_llm=True,
+    )
+
+    assert len(calls) == 1
+    assert "FCN - WM-Rekord von Messi" in calls[0]["user"]
+    assert "INDIVIDUELL" in calls[0]["system"]
+    assert result["title"] == "Klose ahnte Messis WM-Rekord schon frueh"
+    assert result["meta"]["modus"] == "llm-individual-headline"
+    assert result["meta"]["llm_requested"] is True
+    assert result["meta"]["llm_call_started"] is True

@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET, OPENAI_API_KEY
+from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET
 from app.push_titles import build_push_title_suggestions, infer_content_type
 
 log = logging.getLogger("push-balancer")
@@ -66,6 +66,7 @@ class PushTitleGenerateRequest(BaseModel):
     kicker: str = ""
     headline: str = ""
     category: str = "news"
+    force_llm: bool = True
 
 
 _PUSH_TITLE_CONTEXT_MAX_CHARS = 1200
@@ -94,40 +95,40 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
     if not request_title:
         raise HTTPException(status_code=400, detail="title is required")
 
-    if OPENAI_API_KEY:
-        try:
-            from push_title_agent import generate_push_title
+    try:
+        from push_title_agent import generate_push_title
 
-            llm_result = generate_push_title(
-                article_title=request_title,
-                article_text=request_text,
-                category=body.category or "news",
-                kicker=body.kicker,
-                headline=request_headline,
-                article_type=infer_content_type(body.url, request_title),
-            )
-            if llm_result.get("gewinner"):
-                gewinner = llm_result["gewinner"]
-                all_candidates = llm_result.get("alle_kandidaten", {})
-                alt_titles: list[str] = []
-                for title in llm_result.get("alternativeTitles", []):
-                    if title and title != gewinner.get("titel") and title not in alt_titles:
-                        alt_titles.append(title)
-                for gruppe in all_candidates.values():
-                    for kandidat in gruppe:
-                        titel = kandidat.get("titel", "")
-                        if titel and titel != gewinner.get("titel") and titel not in alt_titles:
-                            alt_titles.append(titel)
+        llm_result = generate_push_title(
+            article_title=request_title,
+            article_text=request_text,
+            category=body.category or "news",
+            kicker=body.kicker,
+            headline=request_headline,
+            article_type=infer_content_type(body.url, request_title),
+            force_llm=body.force_llm,
+        )
+        if llm_result.get("gewinner"):
+            gewinner = llm_result["gewinner"]
+            all_candidates = llm_result.get("alle_kandidaten", {})
+            alt_titles: list[str] = []
+            for title in llm_result.get("alternativeTitles", []):
+                if title and title != gewinner.get("titel") and title not in alt_titles:
+                    alt_titles.append(title)
+            for gruppe in all_candidates.values():
+                for kandidat in gruppe:
+                    titel = kandidat.get("titel", "")
+                    if titel and titel != gewinner.get("titel") and titel not in alt_titles:
+                        alt_titles.append(titel)
 
-                return {
-                    **llm_result,
-                    "title": llm_result.get("title") or gewinner.get("titel", request_title),
-                    "alternativeTitles": alt_titles[:3],
-                    "reasoning": llm_result.get("reasoning") or gewinner.get("warum_dieser", ""),
-                    "advisoryOnly": True,
-                }
-        except Exception:
-            log.exception("[PushTitle] LLM-Chain Pfad fehlgeschlagen, falle lokal zurueck")
+            return {
+                **llm_result,
+                "title": llm_result.get("title") or gewinner.get("titel", request_title),
+                "alternativeTitles": alt_titles[:3],
+                "reasoning": llm_result.get("reasoning") or gewinner.get("warum_dieser", ""),
+                "advisoryOnly": True,
+            }
+    except Exception:
+        log.exception("[PushTitle] LLM-First Agent fehlgeschlagen, falle lokal zurueck")
 
     try:
         return build_push_title_suggestions(

@@ -14576,6 +14576,7 @@ async function generateKiPushTitle() {
       category: article.category || requestKicker || 'news',
       kicker: requestKicker,
       headline: requestTitle,
+      force_llm: true,
     };
 
     const resp = await fetch('/api/push-title/generate', {

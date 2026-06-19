@@ -22,6 +22,24 @@ _OPENAI_CLIENT = None
 _OPENAI_CLIENT_KEY = ""
 
 
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _llm_unavailable_reason() -> str:
+    if not os.environ.get("OPENAI_API_KEY", ""):
+        return "OPENAI_API_KEY fehlt"
+    if not _env_enabled("PAID_EXTERNAL_APIS_ENABLED"):
+        return "PAID_EXTERNAL_APIS_ENABLED ist deaktiviert"
+    if not _env_enabled("OPENAI_TITLE_GENERATION_ENABLED"):
+        return "OPENAI_TITLE_GENERATION_ENABLED ist deaktiviert"
+    hourly = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", "0") or "0")
+    daily = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", "0") or "0")
+    if hourly <= 0 or daily <= 0:
+        return "OPENAI_TITLE_GENERATION Call-Budget ist 0"
+    return ""
+
+
 def _clean_title(text: str) -> str:
     text = (text or "").strip()
     text = re.sub(r"\s+", " ", text)
@@ -221,6 +239,11 @@ ZENTRALE AUFGABE:
   emotional anschlussfaehig, mobil sofort verstaendlich und BILD-typisch zugespitzt.
 - Verdichte den staerksten Oeffnungsreiz: Was ist neu? Wer ist betroffen? Warum jetzt?
   Wo liegen Konflikt, Ueberraschung, Nutzen, Emotion oder Fallhoehe?
+- Du generierst INDIVIDUELL fuer genau diese Headline. Keine Schablonen, keine Standard-
+  Ersatzsaetze, keine generischen Ressort-Prefixes.
+- Jede Variante muss konkrete Signalwoerter aus diesem Input nutzen: Namen, Orte,
+  Ereignis, Konflikt, Zahl, Folge oder ueberraschender Dreh. Wenn dieser konkrete
+  Hook nicht im Input steckt, darfst du ihn nicht erfinden.
 
 WICHTIGSTE REGEL:
 - Jeder Titel muss faktisch vollstaendig durch Headline, Kicker oder Artikeltext gedeckt sein.
@@ -249,6 +272,8 @@ HARTE VERBOTE:
 - Keine Variante darf nur ein Wort vor die Headline setzen
 - Keine generischen Titel wie "Was jetzt wichtig ist" oder "Darum geht es jetzt"
 - Keine leeren Phrasen wie "im Fokus"
+- Keine austauschbaren Titel, die auf beliebige Artikel passen wuerden
+- Kein reines Ressort-Label plus umgestellte Headline
 - Keine Behauptung, die nicht im Input steht
 - Keine falsche Eilmeldung
 - Keine kuenstliche Skandalisierung
@@ -322,6 +347,7 @@ def _editorial_one_brain(title, text, category, kicker="", headline=""):
                 "bewertungen": data.get("bewertungen", []),
                 "gewinner": data.get("gewinner", {}),
                 "alternative": data.get("alternative", {}),
+                "warnhinweis": data.get("warnhinweis", ""),
             }
     except (json.JSONDecodeError, ValueError) as e:
         log.warning(f"[EditorialOneBrain] JSON-Parse: {e}")
@@ -364,15 +390,15 @@ def _with_video_reason(entry: dict, article_type: str, title: str, text: str = "
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def generate_push_title(article_title, article_text="", category="news",
-                        kicker="", headline="", model=None, article_type="editorial"):
+                        kicker="", headline="", model=None, article_type="editorial",
+                        force_llm=False):
     """Editorial-One-Brain Pipeline (Single Call)."""
     t0 = time.monotonic()
     log.info(f"[PushTitle] Start: '{article_title[:60]}' ({category})")
 
+    llm_unavailable_reason = _llm_unavailable_reason()
     use_llm = (
-        os.environ.get("PAID_EXTERNAL_APIS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
-        and os.environ.get("OPENAI_TITLE_GENERATION_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
-        and bool(os.environ.get("OPENAI_API_KEY", ""))
+        not llm_unavailable_reason
         and allow_calls(
             [
                 (
@@ -390,8 +416,11 @@ def generate_push_title(article_title, article_text="", category="news",
     )
     category_label = f"{category} (video)" if _is_video_context(article_type, article_title, article_text) else category
     if use_llm:
+        log.info("[PushTitle] LLM-Call gestartet: individuelle Headline-Generierung")
         one_brain = _editorial_one_brain(article_title, article_text, category_label, kicker, headline)
     else:
+        if force_llm:
+            log.warning("[PushTitle] LLM angefordert, aber nicht verfuegbar: %s", llm_unavailable_reason or "Budget erschoepft")
         one_brain = _local_editorial_one_brain(
             article_title,
             article_text,
@@ -443,7 +472,10 @@ def generate_push_title(article_title, article_text="", category="news",
         "anzahl_kandidaten": len(kandidaten),
         "modell": MODEL if use_llm else "local-fallback",
         "analyse": analyse,
-        "modus": "editorial-one-brain" if use_llm else "local-fallback",
+        "modus": "llm-individual-headline" if use_llm else "local-fallback",
+        "llm_requested": bool(force_llm),
+        "llm_call_started": bool(use_llm),
+        "llm_unavailable_reason": "" if use_llm else (llm_unavailable_reason or "Budget erschoepft"),
     }
     result["alle_kandidaten"] = grouped
     result["title"] = result["gewinner"].get("titel", article_title)

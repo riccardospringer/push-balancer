@@ -92,6 +92,7 @@ class TestStableFrontendContracts:
             assert "const visibleKicker = (document.getElementById('pushDachzeile')?.value || '').trim();" in html
             assert "title: requestTitle" in html
             assert "headline: requestTitle" in html
+            assert "force_llm: true" in html
 
     def test_pushes_contract_returns_collection(self):
         resp = client.get("/api/pushes")
@@ -980,7 +981,6 @@ class TestPushTitleGenerateEndpoint:
                 "meta": {"modus": "llm-test"},
             }
 
-        monkeypatch.setattr("app.routers.misc.OPENAI_API_KEY", "test-key")
         monkeypatch.setattr("push_title_agent.generate_push_title", fake_generate_push_title)
 
         resp = client.post(
@@ -1008,6 +1008,7 @@ class TestPushTitleGenerateEndpoint:
         assert captured["headline"].startswith("FCN - WM-Rekord")
         assert captured["category"] == "sport"
         assert captured["article_type"] == "editorial"
+        assert captured["force_llm"] is True
 
     def test_generate_push_title_falls_back_cleanly_when_generator_crashes(self):
         with patch("app.routers.misc.build_push_title_suggestions", side_effect=Exception("boom")):
