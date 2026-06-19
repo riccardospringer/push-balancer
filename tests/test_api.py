@@ -79,6 +79,20 @@ class TestTeamsAlertsEndpoint:
 
 
 class TestStableFrontendContracts:
+    def test_ki_push_title_request_prefers_visible_overlay_fields(self):
+        repo_root = Path(__file__).resolve().parents[1]
+
+        for frontend_path in (
+            repo_root / "push-balancer.html",
+            repo_root / "app" / "legacy_push_balancer.html",
+        ):
+            html = frontend_path.read_text(encoding="utf-8")
+
+            assert "const visibleTitle = (document.getElementById('pushTitle')?.value || '').trim();" in html
+            assert "const visibleKicker = (document.getElementById('pushDachzeile')?.value || '').trim();" in html
+            assert "title: requestTitle" in html
+            assert "headline: requestTitle" in html
+
     def test_pushes_contract_returns_collection(self):
         resp = client.get("/api/pushes")
         assert resp.status_code == 200
@@ -945,6 +959,55 @@ class TestPushTitleGenerateEndpoint:
         )
         assert isinstance(data["alternativeTitles"], list)
         assert data["advisoryOnly"] is True
+
+    def test_generate_push_title_passes_editorial_context_to_llm(self, monkeypatch):
+        captured = {}
+
+        def fake_generate_push_title(**kwargs):
+            captured.update(kwargs)
+            return {
+                "title": "Klose ahnte Messis WM-Rekord schon früh",
+                "alternativeTitles": ["Messi stellt WM-Rekord ein - Klose ahnte es"],
+                "reasoning": "staerkerer Push-Hook",
+                "contentType": "editorial",
+                "gewinner": {
+                    "titel": "Klose ahnte Messis WM-Rekord schon früh",
+                    "laenge": 39,
+                    "gesamt_score": 10.0,
+                    "warum_dieser": "staerkerer Push-Hook",
+                },
+                "alle_kandidaten": {},
+                "meta": {"modus": "llm-test"},
+            }
+
+        monkeypatch.setattr("app.routers.misc.OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr("push_title_agent.generate_push_title", fake_generate_push_title)
+
+        resp = client.post(
+            "/api/push-title/generate",
+            json={
+                "title": "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh",
+                "text": (
+                    "Miroslav Klose sagte schon früh, dass Lionel Messi diesen Rekord erreichen kann. "
+                    "Kontakt: redaktion@example.com, Tel. +49 30 12345678, Link: https://example.com. "
+                    + "Weitere Einordnung. " * 120
+                ),
+                "kicker": "Sport",
+                "headline": "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon früh",
+                "category": "sport",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert captured["article_text"].startswith("Miroslav Klose")
+        assert len(captured["article_text"]) <= 1200
+        assert "redaktion@example.com" not in captured["article_text"]
+        assert "https://example.com" not in captured["article_text"]
+        assert "[E-Mail]" in captured["article_text"]
+        assert captured["kicker"] == "Sport"
+        assert captured["headline"].startswith("FCN - WM-Rekord")
+        assert captured["category"] == "sport"
+        assert captured["article_type"] == "editorial"
 
     def test_generate_push_title_falls_back_cleanly_when_generator_crashes(self):
         with patch("app.routers.misc.build_push_title_suggestions", side_effect=Exception("boom")):

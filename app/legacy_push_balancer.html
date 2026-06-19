@@ -14433,12 +14433,16 @@ async function generateKiPushTitle() {
 
   try {
     const article = currentPushArticle;
+    const visibleTitle = (document.getElementById('pushTitle')?.value || '').trim();
+    const visibleKicker = (document.getElementById('pushDachzeile')?.value || '').trim();
+    const requestTitle = visibleTitle || article.title || article.headline || '';
+    const requestKicker = visibleKicker || article.kicker || '';
     const body = {
-      title: article.title || '',
+      title: requestTitle,
       text: article.bodyText || article.description || '',
-      category: article.category || 'news',
-      kicker: article.kicker || '',
-      headline: article.headline || '',
+      category: article.category || requestKicker || 'news',
+      kicker: requestKicker,
+      headline: requestTitle,
     };
 
     const resp = await fetch('/api/push-title/generate', {

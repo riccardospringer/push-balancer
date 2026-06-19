@@ -10,6 +10,7 @@ POST /api/push-title/generate    — Push-Titel-Generator (LLM)
 import concurrent.futures
 import json
 import logging
+import re
 import ssl
 import time
 import urllib.request
@@ -61,11 +62,36 @@ class SchwabApprovalRequest(BaseModel):
 class PushTitleGenerateRequest(BaseModel):
     url: str = ""
     title: str = ""
+    text: str = ""
+    kicker: str = ""
+    headline: str = ""
     category: str = "news"
 
 
+_PUSH_TITLE_CONTEXT_MAX_CHARS = 1200
+
+
+def _minimize_push_title_context(text: str) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if not compact:
+        return ""
+
+    compact = re.sub(r"https?://\S+", "[URL]", compact)
+    compact = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[E-Mail]", compact)
+    compact = re.sub(r"\b(?:\+?\d[\d\s()./-]{6,}\d)\b", "[Telefon]", compact)
+    compact = re.sub(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){11,30}\b", "[Kennung]", compact)
+    if len(compact) <= _PUSH_TITLE_CONTEXT_MAX_CHARS:
+        return compact
+
+    shortened = compact[:_PUSH_TITLE_CONTEXT_MAX_CHARS].rsplit(" ", 1)[0]
+    return shortened or compact[:_PUSH_TITLE_CONTEXT_MAX_CHARS]
+
+
 def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
-    if not body.title:
+    request_title = body.title or body.headline
+    request_headline = body.headline or request_title
+    request_text = _minimize_push_title_context(body.text)
+    if not request_title:
         raise HTTPException(status_code=400, detail="title is required")
 
     if OPENAI_API_KEY:
@@ -73,12 +99,12 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
             from push_title_agent import generate_push_title
 
             llm_result = generate_push_title(
-                article_title=body.title,
-                article_text="",
+                article_title=request_title,
+                article_text=request_text,
                 category=body.category or "news",
-                kicker="",
-                headline="",
-                article_type=infer_content_type(body.url, body.title),
+                kicker=body.kicker,
+                headline=request_headline,
+                article_type=infer_content_type(body.url, request_title),
             )
             if llm_result.get("gewinner"):
                 gewinner = llm_result["gewinner"]
@@ -95,7 +121,7 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
 
                 return {
                     **llm_result,
-                    "title": llm_result.get("title") or gewinner.get("titel", body.title),
+                    "title": llm_result.get("title") or gewinner.get("titel", request_title),
                     "alternativeTitles": alt_titles[:3],
                     "reasoning": llm_result.get("reasoning") or gewinner.get("warum_dieser", ""),
                     "advisoryOnly": True,
@@ -105,19 +131,19 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
 
     try:
         return build_push_title_suggestions(
-            title=body.title,
+            title=request_title,
             category=body.category or "news",
             url=body.url,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        article_type = infer_content_type(body.url, body.title)
+        article_type = infer_content_type(body.url, request_title)
         log.exception("[PushTitle] Lokaler Vorschlagsdienst fehlgeschlagen")
-        fallback_title = body.title if article_type != "video" else f"Im Video: {body.title}"[:78]
+        fallback_title = request_title if article_type != "video" else f"Im Video: {request_title}"[:78]
         return {
             "title": fallback_title,
-            "alternativeTitles": [body.title] if body.title != fallback_title else [],
+            "alternativeTitles": [request_title] if request_title != fallback_title else [],
             "reasoning": f"Robuster Notfall-Fallback nach internem Fehler: {exc}",
             "advisoryOnly": True,
             "contentType": article_type,
@@ -128,8 +154,8 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
                 "warum_dieser": "Robuster Notfall-Fallback ohne externe KI-Abhaengigkeit.",
             },
             "alternative": {
-                "titel": body.title,
-                "laenge": len(body.title),
+                "titel": request_title,
+                "laenge": len(request_title),
                 "warum": "Originaltitel als sichere Rueckfalloption.",
             },
             "alle_kandidaten": {
@@ -138,7 +164,7 @@ def _build_push_title_response(body: PushTitleGenerateRequest) -> dict:
             "meta": {
                 "content_type": article_type,
                 "analyse": {
-                    "kern": body.title,
+                    "kern": request_title,
                     "hook": body.category or "news",
                     "emotion": "fallback",
                 },
