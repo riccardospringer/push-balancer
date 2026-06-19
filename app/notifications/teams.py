@@ -19,6 +19,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import (
+    PUSH_TEAMS_ACTIVE_HOURS_END,
+    PUSH_TEAMS_ACTIVE_HOURS_START,
     PUSH_TEAMS_ALERT_COOLDOWN_MINUTES,
     PUSH_TEAMS_ALERTS_ENABLED,
     PUSH_TEAMS_ALLOWED_SECTIONS,
@@ -28,9 +30,14 @@ from app.config import (
     PUSH_TEAMS_BREAKING_OVERRIDE,
     PUSH_TEAMS_CANDIDATE_LIMIT,
     PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
+    PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED,
+    PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP,
+    PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE,
     PUSH_TEAMS_EDITORIAL_GATE_ENABLED,
     PUSH_TEAMS_EDITORIAL_TOP_LIMIT,
+    PUSH_TEAMS_EXCLUDED_SECTIONS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
+    PUSH_TEAMS_MAX_ALERTS_PER_DAY,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
     PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE,
@@ -46,7 +53,9 @@ from app.config import (
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
+    PUSH_TEAMS_REQUIRE_VALID_PREDICTION,
     PUSH_TEAMS_SCORE_ONLY_MODE,
+    PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_WEBHOOK_URL,
 )
 from app.database import (
@@ -54,6 +63,7 @@ from app.database import (
     teams_alert_last_sent_ts,
     teams_alert_load_for_keys,
     teams_alert_record,
+    teams_alert_sent_count_since,
     teams_alert_try_claim_send,
 )
 
@@ -94,12 +104,21 @@ class TeamsAlertConfig:
     repeat_suppression_hours: int = PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS
     global_cooldown_minutes: int = PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
     allowed_sections: tuple[str, ...] = tuple(PUSH_TEAMS_ALLOWED_SECTIONS)
+    excluded_sections: tuple[str, ...] = tuple(PUSH_TEAMS_EXCLUDED_SECTIONS)
     breaking_override: bool = PUSH_TEAMS_BREAKING_OVERRIDE
     breaking_min_score: float = PUSH_TEAMS_BREAKING_MIN_SCORE
     breaking_min_or: float = PUSH_TEAMS_BREAKING_MIN_OR
     breaking_min_minutes_since_last_push: int = PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH
     max_article_age_hours: int = PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS
     max_pushes_last_6h: int = PUSH_TEAMS_MAX_PUSHES_LAST_6H
+    require_valid_prediction: bool = PUSH_TEAMS_REQUIRE_VALID_PREDICTION
+    target_pushes_per_day: int = PUSH_TEAMS_TARGET_PUSHES_PER_DAY
+    max_alerts_per_day: int = PUSH_TEAMS_MAX_ALERTS_PER_DAY
+    dynamic_threshold_enabled: bool = PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED
+    dynamic_threshold_max_drop: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
+    dynamic_threshold_max_rise: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE
+    active_hours_start: int = PUSH_TEAMS_ACTIVE_HOURS_START
+    active_hours_end: int = PUSH_TEAMS_ACTIVE_HOURS_END
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -123,6 +142,7 @@ def build_teams_alert_context(
     history: list[dict[str, Any]] | None = None,
     alert_state: dict[str, dict[str, Any]] | None = None,
     last_teams_alert_ts: int | None = None,
+    teams_alerts_today: int | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
     now = int(now_ts or time.time())
@@ -159,6 +179,21 @@ def build_teams_alert_context(
         if _safe_int(item.get("ts_num", item.get("ts", 0))) >= now - 6 * 3600
     )
 
+    day_start = _local_day_start_ts(now)
+    pushes_today = sum(
+        1
+        for item in history
+        if _safe_int(item.get("ts_num", item.get("ts", 0))) >= day_start
+    )
+
+    alerts_today = teams_alerts_today
+    if alerts_today is None:
+        try:
+            alerts_today = teams_alert_sent_count_since(day_start)
+        except Exception as exc:
+            log.warning("[TeamsAlert] Could not load alert-of-day count: %s", exc)
+            alerts_today = 0
+
     return {
         "nowTs": now,
         "history": history,
@@ -166,6 +201,8 @@ def build_teams_alert_context(
         "lastPushTs": last_push_ts,
         "lastTeamsAlertTs": int(last_teams_alert_ts or 0),
         "recentPushCount6h": recent_6h_count,
+        "pushesToday": pushes_today,
+        "teamsAlertsToday": int(alerts_today or 0),
     }
 
 
@@ -230,6 +267,9 @@ def should_notify_teams(
                 f"Nicht im oberen Push-Balancer-Feld: Rang {dashboard_rank} > {dashboard_top_limit}"
             )
 
+    excluded = {item.lower() for item in config.excluded_sections if item.strip()}
+    if section.lower() in excluded:
+        blockers.append(f"Ressort {section} ist fuer Teams Alerts ausgeschlossen")
     allowed = {item.lower() for item in config.allowed_sections if item.strip()}
     if allowed and section.lower() not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
@@ -254,15 +294,29 @@ def should_notify_teams(
     alert_score = float(alert_model["score"])
     positive.append(f"Teams Alert Score {alert_score:.1f}/100")
     positive.extend(list(alert_model["reasons"])[:4])
-    if alert_score < config.min_alert_score:
+    pushes_today = context.get("pushesToday")
+    pushes_today = _safe_int(pushes_today) if pushes_today is not None else None
+    effective_min_alert_score, push_budget_reason = _dynamic_alert_threshold(
+        config.min_alert_score,
+        pushes_today,
+        now_ts,
+        breaking,
+        config,
+    )
+    if push_budget_reason:
+        positive.append(push_budget_reason)
+    if alert_score < effective_min_alert_score:
         blockers.append(
-            f"Teams Alert Score zu niedrig: {alert_score:.1f} < {config.min_alert_score:.1f}"
+            f"Teams Alert Score zu niedrig: {alert_score:.1f} < {effective_min_alert_score:.1f}"
         )
     if predicted_or is None and alert_score < config.no_forecast_min_alert_score:
         blockers.append(
             "Keine belastbare Prognose und Teams Alert Score nicht hoch genug: "
             f"{alert_score:.1f} < {config.no_forecast_min_alert_score:.1f}"
         )
+    forecast_is_reliable = forecast.get("source") == "article_model" and predicted_or is not None
+    if config.require_valid_prediction and not forecast_is_reliable:
+        blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
 
     freshness_hours = _freshness_hours(candidate, now_ts)
     editorial_review = _editorial_cvd_review(
@@ -366,6 +420,17 @@ def should_notify_teams(
         )
         status = "observe"
 
+    teams_alerts_today = _safe_int(context.get("teamsAlertsToday"))
+    if (
+        config.max_alerts_per_day > 0
+        and teams_alerts_today >= config.max_alerts_per_day
+        and not (breaking and config.breaking_override)
+    ):
+        blockers.append(
+            f"Tageslimit fuer Teams-Hinweise erreicht: {teams_alerts_today} von "
+            f"{config.max_alerts_per_day}"
+        )
+
     stronger = context.get("strongerCandidate")
     if stronger:
         stronger_title = _title(stronger)
@@ -401,8 +466,14 @@ def should_notify_teams(
         "scoreBreakdown": candidate_breakdown,
         "score": score,
         "teamsAlertScore": alert_score,
-        "teamsAlertScoreThreshold": config.min_alert_score,
+        "teamsAlertScoreThreshold": round(effective_min_alert_score, 1),
+        "teamsAlertScoreBaseThreshold": config.min_alert_score,
         "teamsAlertScoreBreakdown": alert_model["breakdown"],
+        "pushesToday": pushes_today,
+        "teamsAlertsToday": teams_alerts_today,
+        "pushBudgetReason": push_budget_reason,
+        "pushBudgetTarget": config.target_pushes_per_day,
+        "maxAlertsPerDay": config.max_alerts_per_day,
         "editorialReview": editorial_review,
         "editorialScore": editorial_review["score"],
         "selectionScore": selection_score,
@@ -1425,6 +1496,75 @@ def _historical_slot_forecast(candidate: dict[str, Any], now_ts: int | None = No
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, float(value)))
+
+
+def _local_day_start_ts(now_ts: int) -> int:
+    """Unix timestamp of the current local (Europe/Berlin) day start."""
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    midnight = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp())
+
+
+def _expected_pushes_by_now(now_ts: int, config: TeamsAlertConfig) -> float:
+    """Estimate how many pushes a CvD should have sent by this time of day."""
+    target = max(0, int(config.target_pushes_per_day or 0))
+    if target <= 0:
+        return 0.0
+    start = _clamp(config.active_hours_start, 0.0, 23.0)
+    end = _clamp(config.active_hours_end, start + 0.1, 24.0)
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    hour = local_dt.hour + local_dt.minute / 60.0
+    if hour <= start:
+        return 0.0
+    if hour >= end:
+        return float(target)
+    fraction = (hour - start) / (end - start)
+    return round(target * fraction, 2)
+
+
+def _dynamic_alert_threshold(
+    base_threshold: float,
+    pushes_today: int | None,
+    now_ts: int,
+    breaking: bool,
+    config: TeamsAlertConfig,
+) -> tuple[float, str]:
+    """Adjust the Teams-readiness threshold based on the daily push budget.
+
+    Too few pushes so far → threshold may drop slightly so good chances are
+    not missed. Already many pushes today → threshold rises to protect users.
+    Breaking news never raises the threshold.
+    """
+    if not config.dynamic_threshold_enabled or pushes_today is None:
+        return base_threshold, ""
+
+    target = max(0, int(config.target_pushes_per_day or 0))
+    expected = _expected_pushes_by_now(now_ts, config)
+    max_drop = max(0.0, float(config.dynamic_threshold_max_drop or 0.0))
+    max_rise = max(0.0, float(config.dynamic_threshold_max_rise or 0.0))
+
+    if target and pushes_today >= target and not breaking:
+        surplus = pushes_today - target
+        rise = min(max_rise, 4.0 + surplus * 3.0)
+        return base_threshold + rise, (
+            f"Tagesbudget erreicht ({pushes_today}/{target} Pushes): Schwelle +{rise:.0f}"
+        )
+
+    ahead = pushes_today - expected
+    if ahead >= 2.0 and not breaking:
+        rise = min(max_rise, ahead * 1.5)
+        return base_threshold + rise, (
+            f"Push-Vorsprung heute ({pushes_today} statt {expected:.0f}): Schwelle +{rise:.0f}"
+        )
+
+    deficit = expected - pushes_today
+    if deficit >= 1.5:
+        drop = min(max_drop, deficit * 1.5)
+        return base_threshold - drop, (
+            f"Push-Rueckstand heute ({pushes_today} statt {expected:.0f}): Schwelle -{drop:.0f}"
+        )
+
+    return base_threshold, ""
 
 
 def _effective_thresholds(config: TeamsAlertConfig, breaking: bool) -> tuple[float, float, int]:

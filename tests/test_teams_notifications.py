@@ -2,6 +2,7 @@ import datetime as dt
 import logging
 import urllib.error
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from app.notifications.teams import (
     TeamsAlertConfig,
@@ -38,12 +39,18 @@ def _config(**overrides):
         "repeat_suppression_hours": 12,
         "global_cooldown_minutes": 30,
         "allowed_sections": (),
+        "excluded_sections": ("sport",),
         "breaking_override": True,
         "breaking_min_score": 62.0,
         "breaking_min_or": 4.0,
         "breaking_min_minutes_since_last_push": 10,
         "max_article_age_hours": 24,
         "max_pushes_last_6h": 8,
+        # Dynamische Schwelle in den Basistests aus, damit Schwellen deterministisch sind.
+        "dynamic_threshold_enabled": False,
+        "require_valid_prediction": False,
+        "target_pushes_per_day": 11,
+        "max_alerts_per_day": 14,
     }
     values.update(overrides)
     return TeamsAlertConfig(**values)
@@ -103,12 +110,13 @@ def _history(minutes_since_last_push=42, now_ts=NOW_TS, **overrides):
     return [item]
 
 
-def _context(candidate, *, history=None, alert_state=None, now_ts=NOW_TS):
+def _context(candidate, *, history=None, alert_state=None, teams_alerts_today=0, now_ts=NOW_TS):
     return build_teams_alert_context(
         [candidate],
         history=history if history is not None else _history(now_ts=now_ts),
         alert_state=alert_state or {},
         last_teams_alert_ts=0,
+        teams_alerts_today=teams_alerts_today,
         now_ts=now_ts,
     )
 
@@ -766,6 +774,146 @@ def test_send_failure_is_recorded_without_crashing_cycle(tmp_db):
     assert result["ok"] is True
     assert result["sent"] is False
     assert result["sendResult"]["ok"] is False
+
+
+def test_sport_excluded_by_default_even_without_allow_list():
+    candidate = _candidate(
+        score=95.0,
+        category="sport",
+        title="Bayern-Star vor Wechsel: Entscheidung gefallen",
+        url="https://www.bild.de/sport/article-1",
+        predictedOR=0.07,
+    )
+
+    # Allow-Liste leer (= alles erlaubt), Sport muss trotzdem ausgeschlossen sein.
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate),
+        _config(allowed_sections=()),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("ausgeschlossen" in reason for reason in decision["blockingReasons"])
+
+
+def test_sport_allowed_when_explicitly_configured():
+    candidate = _candidate(
+        score=92.0,
+        category="sport",
+        title="Eilmeldung: DFB-Team verliert Trainer ueberraschend",
+        url="https://www.bild.de/sport/article-2",
+        predictedOR=0.07,
+    )
+    context = _context(candidate)
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(allowed_sections=("sport",), excluded_sections=()),
+    )
+
+    assert not any("ausgeschlossen" in reason for reason in decision["blockingReasons"])
+
+
+def _afternoon_ts() -> int:
+    return int(dt.datetime(2026, 6, 19, 15, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+
+
+def test_dynamic_threshold_drops_when_too_few_pushes_today():
+    ts = _afternoon_ts()
+    candidate = _candidate()
+
+    base = shouldNotifyTeams(
+        candidate,
+        _context(candidate, now_ts=ts),
+        _config(dynamic_threshold_enabled=False),
+    )
+    low_context = _context(candidate, now_ts=ts)
+    low_context["pushesToday"] = 1
+    lowered = shouldNotifyTeams(
+        candidate,
+        low_context,
+        _config(dynamic_threshold_enabled=True, target_pushes_per_day=11),
+    )
+
+    assert lowered["teamsAlertScoreThreshold"] < base["teamsAlertScoreThreshold"]
+    assert "Rueckstand" in lowered["pushBudgetReason"]
+
+
+def test_dynamic_threshold_rises_when_too_many_pushes_today():
+    ts = _afternoon_ts()
+    candidate = _candidate()
+
+    base = shouldNotifyTeams(
+        candidate,
+        _context(candidate, now_ts=ts),
+        _config(dynamic_threshold_enabled=False),
+    )
+    high_context = _context(candidate, now_ts=ts)
+    high_context["pushesToday"] = 15
+    raised = shouldNotifyTeams(
+        candidate,
+        high_context,
+        _config(dynamic_threshold_enabled=True, target_pushes_per_day=11),
+    )
+
+    assert raised["teamsAlertScoreThreshold"] > base["teamsAlertScoreThreshold"]
+    assert "budget" in raised["pushBudgetReason"].lower()
+
+
+def test_max_alerts_per_day_blocks_further_alerts():
+    candidate = _candidate(score=95.0, predictedOR=0.08)
+    context = _context(candidate, teams_alerts_today=14)
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(max_alerts_per_day=14),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Tageslimit" in reason for reason in decision["blockingReasons"])
+
+
+def test_max_alerts_per_day_override_for_breaking():
+    candidate = _candidate(
+        score=95.0,
+        predictedOR=0.08,
+        title="Eilmeldung: Israel und Iran einigen sich auf Feuerpause",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    context = _context(candidate, teams_alerts_today=20)
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(max_alerts_per_day=14, breaking_override=True),
+    )
+
+    assert not any("Tageslimit" in reason for reason in decision["blockingReasons"])
+
+
+def test_require_valid_prediction_blocks_fallback_forecast():
+    candidate = _candidate(
+        score=90.0,
+        predictedOR=None,
+        title="Wetterdienst gibt Hitzewarnung fuer Deutschland raus",
+        url="https://www.bild.de/news/wetter/hitzewarnung-pred",
+        category="news",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, require_valid_prediction=True, min_alert_score=50.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Belastbare OR-Prognose erforderlich" in reason for reason in decision["blockingReasons"])
 
 
 def test_eil_substring_inside_word_is_not_eilmeldung():

@@ -395,7 +395,12 @@ INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
 PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
 PUSH_TEAMS_MIN_SCORE: float = _env_float("PUSH_TEAMS_MIN_SCORE", 75.0)
-PUSH_TEAMS_MIN_ALERT_SCORE: float = _env_float("PUSH_TEAMS_MIN_ALERT_SCORE", 66.0)
+# Teams-Reife-Schwelle. PUSH_TEAMS_MIN_TEAMS_SCORE ist der bevorzugte Name,
+# PUSH_TEAMS_MIN_ALERT_SCORE bleibt als Alias erhalten.
+PUSH_TEAMS_MIN_ALERT_SCORE: float = _env_float(
+    "PUSH_TEAMS_MIN_TEAMS_SCORE",
+    _env_float("PUSH_TEAMS_MIN_ALERT_SCORE", 66.0),
+)
 PUSH_TEAMS_SCORE_ONLY_MODE: bool = _env_flag("PUSH_TEAMS_SCORE_ONLY_MODE", False)
 PUSH_TEAMS_DASHBOARD_TOP_LIMIT: int = _env_int("PUSH_TEAMS_DASHBOARD_TOP_LIMIT", 20)
 PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE: float = _env_float(
@@ -419,9 +424,11 @@ PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH: int = _env_int(
 )
 PUSH_TEAMS_REALERT_SCORE_DELTA: float = _env_float("PUSH_TEAMS_REALERT_SCORE_DELTA", 8.0)
 PUSH_TEAMS_REALERT_OR_DELTA: float = _env_float("PUSH_TEAMS_REALERT_OR_DELTA", 0.75)
+# Re-Alert-Cooldown. PUSH_TEAMS_REALERT_COOLDOWN_MINUTES ist der bevorzugte Name,
+# PUSH_TEAMS_ALERT_COOLDOWN_MINUTES bleibt als Alias erhalten.
 PUSH_TEAMS_ALERT_COOLDOWN_MINUTES: int = _env_int(
-    "PUSH_TEAMS_ALERT_COOLDOWN_MINUTES",
-    90,
+    "PUSH_TEAMS_REALERT_COOLDOWN_MINUTES",
+    _env_int("PUSH_TEAMS_ALERT_COOLDOWN_MINUTES", 90),
 )
 PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS: int = _env_int(
     "PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS",
@@ -436,6 +443,35 @@ PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_ALLOWED_SECTIONS",
     _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS,
 ) or _csv_env("_PUSH_TEAMS_ALLOWED_SECTIONS_DEFAULT", _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS)
+# Ressorts, die NIE als Teams-Handlungsempfehlung vorgeschlagen werden — auch
+# dann nicht, wenn die Allow-Liste leer (= alles erlaubt) ist. Standard: Sport.
+PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
+    "PUSH_TEAMS_EXCLUDED_SECTIONS",
+    "Sport",
+)
+# Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
+PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
+PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 14)
+PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
+    "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
+    False,
+)
+PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED",
+    True,
+)
+# Maximale Absenkung/Anhebung der Teams-Reife-Schwelle durch die Push-Bestand-Logik.
+PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP: float = _env_float(
+    "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP",
+    6.0,
+)
+PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE: float = _env_float(
+    "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE",
+    14.0,
+)
+# Aktives Push-Fenster (Berlin-Stunden) fuer die Pace-Berechnung des Tagesziels.
+PUSH_TEAMS_ACTIVE_HOURS_START: int = _env_int("PUSH_TEAMS_ACTIVE_HOURS_START", 6)
+PUSH_TEAMS_ACTIVE_HOURS_END: int = _env_int("PUSH_TEAMS_ACTIVE_HOURS_END", 23)
 PUSH_TEAMS_BREAKING_OVERRIDE: bool = _env_flag("PUSH_TEAMS_BREAKING_OVERRIDE", True)
 PUSH_TEAMS_BREAKING_MIN_SCORE: float = _env_float("PUSH_TEAMS_BREAKING_MIN_SCORE", 72.0)
 PUSH_TEAMS_BREAKING_MIN_OR: float = _env_float("PUSH_TEAMS_BREAKING_MIN_OR", 4.0)

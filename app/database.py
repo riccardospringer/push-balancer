@@ -1041,6 +1041,28 @@ def teams_alert_try_claim_send(
             conn.close()
 
 
+def teams_alert_sent_count_since(start_ts: int) -> int:
+    """Count successfully sent Teams alerts since start_ts (for daily caps)."""
+    try:
+        cutoff = int(start_ts or 0)
+    except (TypeError, ValueError):
+        return 0
+    if cutoff <= 0:
+        return 0
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM teams_alerts WHERE status = 'sent' AND last_alert_ts >= ?",
+                (cutoff,),
+            ).fetchone()
+        except sqlite3.Error:
+            return 0
+        finally:
+            conn.close()
+    return int((row[0] if row else 0) or 0)
+
+
 def teams_alert_list_recent(limit: int = 20) -> list[dict]:
     """Return recent Teams alert decisions for dashboard transparency."""
     safe_limit = max(1, min(int(limit or 20), 100))
