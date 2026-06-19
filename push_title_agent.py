@@ -22,13 +22,17 @@ _OPENAI_CLIENT = None
 _OPENAI_CLIENT_KEY = ""
 
 
+def _openai_api_key() -> str:
+    return os.environ.get("OPENAI_API_KEY", "") or os.environ.get("AI_API_KEY", "")
+
+
 def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _llm_unavailable_reason() -> str:
-    if not os.environ.get("OPENAI_API_KEY", ""):
-        return "OPENAI_API_KEY fehlt"
+    if not _openai_api_key():
+        return "OPENAI_API_KEY/AI_API_KEY fehlt"
     if not _env_enabled("PAID_EXTERNAL_APIS_ENABLED"):
         return "PAID_EXTERNAL_APIS_ENABLED ist deaktiviert"
     if not _env_enabled("OPENAI_TITLE_GENERATION_ENABLED"):
@@ -211,9 +215,9 @@ def _local_editorial_one_brain(
 
 
 def _llm_call(system: str, user: str, temperature: float = 0.7, max_tokens: int = 800) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    api_key = _openai_api_key()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY nicht gesetzt")
+        raise RuntimeError("OPENAI_API_KEY/AI_API_KEY nicht gesetzt")
     global _OPENAI_CLIENT, _OPENAI_CLIENT_KEY
     if _OPENAI_CLIENT is None or _OPENAI_CLIENT_KEY != api_key:
         from openai import OpenAI

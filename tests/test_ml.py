@@ -335,6 +335,7 @@ def test_generate_push_title_local_fallback_without_openai(monkeypatch):
     from push_title_agent import generate_push_title
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_API_KEY", raising=False)
     monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "false")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "false")
 
@@ -353,6 +354,7 @@ def test_generate_push_title_local_fallback_marks_video_context(monkeypatch):
     from push_title_agent import generate_push_title
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_API_KEY", raising=False)
     monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "false")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "false")
 
@@ -369,7 +371,8 @@ def test_generate_push_title_local_fallback_marks_video_context(monkeypatch):
 def test_generate_push_title_local_fallback_when_budget_is_zero(monkeypatch):
     from push_title_agent import generate_push_title
 
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "true")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "true")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", "0")
@@ -411,7 +414,8 @@ def test_generate_push_title_starts_individual_llm_call_when_enabled(monkeypatch
         }
         """
 
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.setenv("PAID_EXTERNAL_APIS_ENABLED", "true")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_ENABLED", "true")
     monkeypatch.setenv("OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", "10")
