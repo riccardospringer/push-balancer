@@ -1046,6 +1046,56 @@ def evaluate_and_send_best_candidate(
     }
 
 
+def send_teams_test_notification(
+    config: TeamsAlertConfig | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build and send a clearly marked test message to the configured Teams channel.
+
+    Uses the server-side webhook configuration, so no secret needs to be handled
+    by the caller. The message uses the real recommendation format with a TEST
+    banner so nobody mistakes it for an actual push recommendation.
+    """
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    sample = {
+        "id": "teams-test",
+        "url": "https://www.bild.de/",
+        "title": "TEST: Integrationstest der Push-Empfehlung",
+        "category": "news",
+        "pubDate": _iso_from_ts(now - 15 * 60),
+        "score": 84.0,
+        "predictedOR": 0.061,
+        "performanceDrivers": [
+            "Dies ist eine Testnachricht aus dem Push Balancer",
+            "Format-Check: Substanz zuerst, kompakt, echte Umlaute",
+        ],
+        "risks": ["Kein echter Artikel – bitte nicht pushen"],
+        "recommendedText": "TEST: Push-Empfehlung (bitte ignorieren)",
+        "isBreaking": False,
+    }
+    context = build_teams_alert_context([sample], now_ts=now, config=config)
+    decision = should_notify_teams(sample, context, config)
+    message = build_teams_push_recommendation(sample, context, decision, config)
+
+    banner = "TESTNACHRICHT – keine echte Push-Empfehlung (Integrationstest Push Balancer)"
+    text = f"{banner}\n\n{message['text']}"
+    message["text"] = text
+    message["summary"] = banner
+    payload = message["payload"]
+    payload["text"] = text
+    payload["messageText"] = text
+    payload["subject"] = "TEST: Push-Empfehlung"
+    payload["isTest"] = True
+    payload["messageHtml"] = (
+        f"<p><strong>{html.escape(banner)}</strong></p>" + str(payload.get("messageHtml") or "")
+    )
+
+    result = send_teams_notification(message, config)
+    log.info("[TeamsAlert] test message send ok=%s", bool(result.get("ok")))
+    return result
+
+
 def run_teams_alert_cycle() -> dict[str, Any]:
     """Fetch current article candidates and run one Teams alert cycle."""
     try:

@@ -17,8 +17,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response, JSONResponse
+
+from app.auth import require_admin_key
 from pydantic import BaseModel
 
 from app.config import (
@@ -575,6 +577,39 @@ def get_teams_alerts(limit: int = Query(default=20, ge=1, le=100)) -> JSONRespon
             "total": len(items),
             "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
+    )
+
+
+@router.post("/api/teams-alerts/test", dependencies=[Depends(require_admin_key)])
+def post_teams_alert_test() -> JSONResponse:
+    """Send a clearly marked test message to the configured Teams channel.
+
+    Uses the server-side webhook secret; the URL is never returned or logged.
+    """
+    from app.notifications.teams import TeamsAlertConfig, send_teams_test_notification
+
+    config = TeamsAlertConfig()
+    if not config.enabled:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "error": "Teams alerts disabled (PUSH_TEAMS_ALERTS_ENABLED=false)"},
+        )
+    if not config.webhook_url:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "error": "Teams webhook URL not configured"},
+        )
+
+    result = send_teams_test_notification(config)
+    ok = bool(result.get("ok"))
+    return JSONResponse(
+        status_code=200 if ok else 502,
+        content={
+            "ok": ok,
+            "sent": ok,
+            "error": str(result.get("error") or ""),
+            "sentAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
     )
 
 
