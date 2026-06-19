@@ -1071,6 +1071,54 @@ def test_clear_strong_winner_still_alerts_despite_margin_rule():
     assert result["fieldUncertain"] is False
 
 
+def test_teams_message_is_compact_and_jargon_free():
+    candidate = _candidate()
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, _config())
+    text = message["text"]
+
+    # Kein internes Modell-Jargon in der Nachricht.
+    assert "von 10" not in text
+    assert "von 100" not in text
+    assert "Teams-Alert-Modell" not in text
+    # Sauberer, nicht doppelter Abschluss (kein wiederholtes "Jetzt pushen" mit vollem Datum).
+    assert "Empfehlung um" not in text
+    assert "Empfehlung: Jetzt pushen. (Stand " in text
+    # "Warum jetzt?" fuehrt mit der inhaltlichen Substanz (Top-Performance-Driver).
+    why_block = text.split("Warum jetzt?\n", 1)[1]
+    first_bullet = why_block.splitlines()[0]
+    assert first_bullet == f"- {candidate['performanceDrivers'][0]}"
+
+
+def test_time_fit_label_uses_real_umlauts_for_early_window():
+    early = int(dt.datetime(2026, 6, 19, 6, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        title="Eilmeldung: Israel und Iran einigen sich auf Feuerpause",
+        url="https://www.bild.de/politik/feuerpause-frueh",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=45, now_ts=early),
+        now_ts=early,
+    )
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(min_alert_score=50.0, min_editorial_score=50.0, min_time_fit_score=4.0),
+    )
+    label = decision["editorialReview"]["breakdown"]["timeFitLabel"]
+
+    assert "frühes" in label
+    assert "fruehes" not in label
+    assert "fuer" not in label
+
+
 def test_eil_substring_inside_word_is_not_eilmeldung():
     sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'

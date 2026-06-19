@@ -778,11 +778,7 @@ def build_teams_push_recommendation(
         if editorial_review.get("approved", True)
         else "CvD-Einordnung: keine redaktionelle Freigabe."
     )
-    time_fit_reason = (
-        f"Zeitfenster: {time_fit_label} ({_format_number(time_fit_score)} von 10)."
-        if time_fit_label
-        else ""
-    )
+    time_fit_reason = f"Zeitfenster: {time_fit_label}." if time_fit_label else ""
     why_now = _dedupe(
         [
             editorial_reason,
@@ -805,7 +801,16 @@ def build_teams_push_recommendation(
         competition,
     ])[:7]
     what_speaks_against = candidate_risks[:5] or ["Keine harten Gegenargumente im Push-Balancer-Score."]
-    compact_reasons = _dedupe([time_fit_reason, forecast_reason, timing_reason, competition])[:3]
+    # "Warum jetzt?" fuehrt mit der inhaltlichen Substanz (was die Story stark macht),
+    # dann Zeitfenster und Prognose. Kein Modell-Jargon ("X von 100").
+    compact_reasons = _dedupe(
+        [
+            *candidate_drivers[:1],
+            time_fit_reason,
+            forecast_reason,
+            timing_reason,
+        ]
+    )[:3]
     subject = f"🚨 Jetzt pushen: {_compact_text(push_text or title, 120)}"
 
     text_lines = [subject, ""]
@@ -824,7 +829,7 @@ def build_teams_push_recommendation(
             "Warum jetzt?",
             *[f"- {reason}" for reason in compact_reasons],
             "",
-            f"Empfehlung um {_format_dt(now_ts)} Uhr: Jetzt pushen.",
+            f"Empfehlung: Jetzt pushen. (Stand {_format_time(now_ts)} Uhr)",
         ]
     )
     text = "\n".join(text_lines)
@@ -1378,9 +1383,9 @@ def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, 
     is_weekend = weekday >= 5
 
     if 0 <= hour < 5:
-        score, label = (5.0, "Nachtfenster nur fuer Breaking") if breaking else (1.0, "Nachtfenster")
+        score, label = (5.0, "Nachtfenster nur für Breaking") if breaking else (1.0, "Nachtfenster")
     elif 5 <= hour < 7:
-        score, label = (6.0, "fruehes Morgenfenster") if breaking else (3.0, "fruehes Morgenfenster")
+        score, label = (6.0, "frühes Morgenfenster") if breaking else (3.0, "frühes Morgenfenster")
     elif 7 <= hour < 10:
         score, label = 10.0, "starkes Morgenfenster"
     elif 10 <= hour < 12:
@@ -1394,7 +1399,7 @@ def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, 
     elif 20 <= hour < 22:
         score, label = 7.0, "Abendfenster"
     elif 22 <= hour < 24:
-        score, label = (6.0, "spaetes Breaking-Fenster") if breaking else (3.0, "spaetes Abendfenster")
+        score, label = (6.0, "spätes Breaking-Fenster") if breaking else (3.0, "spätes Abendfenster")
     else:
         score, label = 4.0, "unbekanntes Zeitfenster"
 
@@ -1945,6 +1950,10 @@ def _format_dt(ts_value: int) -> str:
     return dt.datetime.fromtimestamp(ts_value).strftime("%d.%m.%Y %H:%M")
 
 
+def _format_time(ts_value: int) -> str:
+    return dt.datetime.fromtimestamp(ts_value).strftime("%H:%M")
+
+
 def _format_number(value: float, digits: int = 1) -> str:
     return f"{float(value):.{digits}f}".replace(".", ",")
 
@@ -2098,7 +2107,7 @@ def _build_power_automate_message_html(
         f"<strong>Prognose:</strong> {html.escape(_format_forecast(forecast))}<br>"
         f"<strong>Letzter Push:</strong> "
         f"{html.escape(_format_minutes(minutes_since_last_push))}<br>"
-        f"<strong>Empfehlung um:</strong> {html.escape(_format_dt(now_ts))} Uhr"
+        f"<strong>Stand:</strong> {html.escape(_format_time(now_ts))} Uhr"
         "</p>"
         "<p><strong>Warum jetzt?</strong></p>"
         f"<ul>{why_now_html}</ul>"
