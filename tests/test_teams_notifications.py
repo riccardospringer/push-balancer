@@ -11,6 +11,7 @@ from app.notifications.teams import (
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
     normalize_predicted_or,
+    selectTeamsPushRecommendation,
     sendTeamsNotification,
     shouldNotifyTeams,
 )
@@ -914,6 +915,160 @@ def test_require_valid_prediction_blocks_fallback_forecast():
 
     assert decision["shouldNotify"] is False
     assert any("Belastbare OR-Prognose erforderlich" in reason for reason in decision["blockingReasons"])
+
+
+def test_constant_field_forecast_is_treated_as_non_belastbar():
+    cands = [
+        _candidate(
+            id=f"const-{i}",
+            url=f"https://www.bild.de/news/const-{i}",
+            title=f"Wichtige Nachricht Nummer {i} aus der Politik heute Abend",
+            predictedOR=0.0477,
+        )
+        for i in range(4)
+    ]
+    context = build_teams_alert_context(
+        cands,
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    assert 4.77 in context["suspectForecastValues"]
+
+    decision = shouldNotifyTeams(cands[0], context, _config())
+
+    assert decision["forecast"]["source"] != "article_model"
+    assert decision["forecastSuspectedDefault"] is True
+    assert decision["forecastSuspectValue"] == 4.77
+
+
+def test_two_known_default_forecasts_are_flagged():
+    cands = [
+        _candidate(id="kd-1", url="https://www.bild.de/news/kd-1", predictedOR=0.0477),
+        _candidate(
+            id="kd-2",
+            url="https://www.bild.de/news/kd-2",
+            title="Ganz anderer Aufmacher mit eigener Schlagzeile heute",
+            predictedOR=0.0477,
+        ),
+    ]
+    context = build_teams_alert_context(
+        cands,
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    assert 4.77 in context["suspectForecastValues"]
+
+
+def test_lone_forecast_value_is_not_flagged_as_default():
+    candidate = _candidate(predictedOR=0.0477)
+    context = _context(candidate)
+
+    assert 4.77 not in context["suspectForecastValues"]
+
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    assert decision["forecast"]["source"] == "article_model"
+    assert decision["forecastSuspectedDefault"] is False
+
+
+def test_select_teams_push_recommendation_picks_best_and_builds_message():
+    first = _candidate(id="article-1", url="https://www.bild.de/politik/article-1", score=95.0)
+    second = _candidate(
+        id="article-2",
+        url="https://www.bild.de/politik/article-2",
+        title="Eilmeldung: Regierung beschliesst weiteres Paket",
+        score=82.0,
+        predictedOR=0.061,
+    )
+    context = build_teams_alert_context(
+        [first, second],
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    result = selectTeamsPushRecommendation([first, second], context, _config())
+
+    assert result["selected"]["url"] == first["url"]
+    assert result["decision"]["shouldNotify"] is True
+    assert result["recommendation"]["text"].startswith("🚨 Jetzt pushen:")
+
+
+def test_select_teams_push_recommendation_returns_none_for_weak_field():
+    candidate = _candidate(score=50.0)
+    context = _context(candidate)
+
+    result = selectTeamsPushRecommendation([candidate], context, _config())
+
+    assert result["selected"] is None
+    assert result["recommendation"] is None
+
+
+def test_uncertain_field_without_clear_winner_sends_no_alert():
+    first = _candidate(id="u1", url="https://www.bild.de/politik/u1", score=84.0, predictedOR=0.06)
+    second = _candidate(
+        id="u2",
+        url="https://www.bild.de/politik/u2",
+        title="Eilmeldung: Regierung beschliesst weiteres Paket heute Mittag",
+        score=83.5,
+        predictedOR=0.06,
+    )
+    context = build_teams_alert_context(
+        [first, second],
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    # Hoher Margin-Schwellenwert + hoher Clear-Buffer erzwingen die Unsicherheits-Pruefung.
+    result = evaluate_teams_alert_candidates(
+        [first, second],
+        context,
+        _config(min_selection_margin=40.0, selection_clear_editorial_buffer=25.0, min_editorial_score=70.0),
+    )
+
+    assert result["selectedCandidateId"] is None
+    assert result["fieldUncertain"] is True
+    decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
+    assert all(not d["shouldNotify"] for d in decisions.values())
+    assert any("Feld unsicher" in reason for reason in decisions[first["url"]]["blockingReasons"])
+
+
+def test_clear_strong_winner_still_alerts_despite_margin_rule():
+    strong = _candidate(id="w1", url="https://www.bild.de/politik/w1", score=95.0, predictedOR=0.08)
+    weak = _candidate(
+        id="w2",
+        url="https://www.bild.de/unterhaltung/w2",
+        title="Sommertrend: Diese Stars feiern neue Rabatt-App",
+        category="unterhaltung",
+        score=72.0,
+        predictedOR=0.052,
+    )
+    context = build_teams_alert_context(
+        [strong, weak],
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    result = evaluate_teams_alert_candidates([strong, weak], context, _config())
+
+    assert result["selectedCandidateId"] == strong["url"]
+    assert result["fieldUncertain"] is False
 
 
 def test_eil_substring_inside_word_is_not_eilmeldung():

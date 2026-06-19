@@ -29,6 +29,7 @@ from app.config import (
     PUSH_TEAMS_BREAKING_MIN_SCORE,
     PUSH_TEAMS_BREAKING_OVERRIDE,
     PUSH_TEAMS_CANDIDATE_LIMIT,
+    PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD,
     PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP,
@@ -37,6 +38,8 @@ from app.config import (
     PUSH_TEAMS_EDITORIAL_TOP_LIMIT,
     PUSH_TEAMS_EXCLUDED_SECTIONS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
+    PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS,
+    PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD,
     PUSH_TEAMS_MAX_ALERTS_PER_DAY,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
@@ -47,6 +50,7 @@ from app.config import (
     PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE,
     PUSH_TEAMS_MIN_OR,
     PUSH_TEAMS_MIN_SCORE,
+    PUSH_TEAMS_MIN_SELECTION_MARGIN,
     PUSH_TEAMS_MIN_TIME_FIT_SCORE,
     PUSH_TEAMS_QUIET_HOURS_END,
     PUSH_TEAMS_QUIET_HOURS_START,
@@ -55,6 +59,7 @@ from app.config import (
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
     PUSH_TEAMS_REQUIRE_VALID_PREDICTION,
     PUSH_TEAMS_SCORE_ONLY_MODE,
+    PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_WEBHOOK_URL,
 )
@@ -112,6 +117,9 @@ class TeamsAlertConfig:
     max_article_age_hours: int = PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS
     max_pushes_last_6h: int = PUSH_TEAMS_MAX_PUSHES_LAST_6H
     require_valid_prediction: bool = PUSH_TEAMS_REQUIRE_VALID_PREDICTION
+    known_default_forecasts: tuple[float, ...] = tuple(PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS)
+    constant_forecast_min_field: int = PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD
+    known_default_min_field: int = PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD
     target_pushes_per_day: int = PUSH_TEAMS_TARGET_PUSHES_PER_DAY
     max_alerts_per_day: int = PUSH_TEAMS_MAX_ALERTS_PER_DAY
     dynamic_threshold_enabled: bool = PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED
@@ -119,6 +127,8 @@ class TeamsAlertConfig:
     dynamic_threshold_max_rise: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE
     active_hours_start: int = PUSH_TEAMS_ACTIVE_HOURS_START
     active_hours_end: int = PUSH_TEAMS_ACTIVE_HOURS_END
+    min_selection_margin: float = PUSH_TEAMS_MIN_SELECTION_MARGIN
+    selection_clear_editorial_buffer: float = PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -144,7 +154,9 @@ def build_teams_alert_context(
     last_teams_alert_ts: int | None = None,
     teams_alerts_today: int | None = None,
     now_ts: int | None = None,
+    config: TeamsAlertConfig | None = None,
 ) -> dict[str, Any]:
+    config = config or TeamsAlertConfig()
     now = int(now_ts or time.time())
     if history is None:
         try:
@@ -203,7 +215,43 @@ def build_teams_alert_context(
         "recentPushCount6h": recent_6h_count,
         "pushesToday": pushes_today,
         "teamsAlertsToday": int(alerts_today or 0),
+        "suspectForecastValues": _detect_suspect_forecast_values(candidates, config),
     }
+
+
+def _detect_suspect_forecast_values(
+    candidates: list[dict[str, Any]],
+    config: TeamsAlertConfig,
+) -> list[float]:
+    """Find OR forecast values that look like a constant default, not a real prediction.
+
+    A value that repeats across the candidate field (e.g. a global-average default
+    such as 4.77 %) is treated as not belastbar. Known defaults trip at a lower
+    repetition count than unknown ones.
+    """
+    counts: dict[float, int] = {}
+    for candidate in candidates or []:
+        if bool(candidate.get("predictedORIsFallback")):
+            continue
+        basis = str(candidate.get("predictedORBasis") or "").strip().lower()
+        if basis in {"global_avg", "error_fallback"}:
+            continue
+        value = normalize_predicted_or(
+            candidate.get("predictedOR", candidate.get("predictedOpenRate"))
+        )
+        if value is None:
+            continue
+        rounded = round(value, 2)
+        counts[rounded] = counts.get(rounded, 0) + 1
+
+    known = {round(float(v), 2) for v in config.known_default_forecasts}
+    min_field = max(2, int(config.constant_forecast_min_field or 3))
+    known_min = max(2, int(config.known_default_min_field or 2))
+    suspects: list[float] = []
+    for value, count in counts.items():
+        if count >= min_field or (value in known and count >= known_min):
+            suspects.append(value)
+    return sorted(suspects)
 
 
 def should_notify_teams(
@@ -220,8 +268,17 @@ def should_notify_teams(
     title = _title(candidate)
     section = _section(candidate)
     score = _score(candidate)
-    forecast = _candidate_forecast(candidate, now_ts)
+    suspect_values = {float(v) for v in (context.get("suspectForecastValues") or [])}
+    forecast = _candidate_forecast(candidate, now_ts, suspect_values)
     predicted_or = forecast["value"]
+    raw_model_or = normalize_predicted_or(
+        candidate.get("predictedOR", candidate.get("predictedOpenRate"))
+    )
+    forecast_suspected_default = bool(
+        raw_model_or is not None
+        and forecast.get("source") != "article_model"
+        and any(abs(raw_model_or - suspect) <= 0.01 for suspect in suspect_values)
+    )
     breaking = _is_breaking(candidate)
     min_score, min_or, min_pause = _effective_thresholds(config, breaking)
     last_push_ts = _safe_int(context.get("lastPushTs"))
@@ -479,6 +536,8 @@ def should_notify_teams(
         "selectionScore": selection_score,
         "predictedOR": predicted_or,
         "forecast": forecast,
+        "forecastSuspectedDefault": forecast_suspected_default,
+        "forecastSuspectValue": round(raw_model_or, 2) if forecast_suspected_default else None,
         "predictedORSource": forecast["source"],
         "predictedORBasis": forecast["basis"],
         "predictedORConfidence": forecast["confidence"],
@@ -506,8 +565,8 @@ def evaluate_teams_alert_candidates(
     config: TeamsAlertConfig | None = None,
 ) -> dict[str, Any]:
     """Evaluate a batch and mark only the strongest eligible candidate notify."""
-    context = context or build_teams_alert_context(candidates)
     config = config or TeamsAlertConfig()
+    context = context or build_teams_alert_context(candidates, config=config)
     base_context = dict(context)
     base_context.pop("strongerCandidate", None)
 
@@ -525,8 +584,9 @@ def evaluate_teams_alert_candidates(
     ]
     selected_key: str | None = None
     selected_candidate: dict[str, Any] | None = None
+    selected_decision: dict[str, Any] | None = None
     if eligible:
-        selected_candidate, _selected_decision = max(
+        selected_candidate, selected_decision = max(
             eligible,
             key=lambda item: (
                 float(item[1].get("selectionScore") or 0.0),
@@ -537,9 +597,53 @@ def evaluate_teams_alert_candidates(
         )
         selected_key = candidate_key(selected_candidate)
 
+    # "Klarer Gewinner"-Regel: wenn der Top-Kandidat nur knapp vor dem Verfolger
+    # liegt und selbst nicht eindeutig stark ist, ist das Feld unsicher -> kein Alert.
+    uncertainty_reason = ""
+    if (
+        selected_decision is not None
+        and len(eligible) >= 2
+        and config.min_selection_margin > 0
+        and not bool(selected_decision.get("isBreaking"))
+    ):
+        runner_up = max(
+            (
+                decision
+                for candidate, decision in eligible
+                if candidate_key(candidate) != selected_key
+            ),
+            key=lambda decision: float(decision.get("selectionScore") or 0.0),
+            default=None,
+        )
+        if runner_up is not None:
+            margin = float(selected_decision.get("selectionScore") or 0.0) - float(
+                runner_up.get("selectionScore") or 0.0
+            )
+            winner_editorial = float(selected_decision.get("editorialScore") or 0.0)
+            clear_level = config.min_editorial_score + config.selection_clear_editorial_buffer
+            if winner_editorial < clear_level and margin < config.min_selection_margin:
+                uncertainty_reason = (
+                    f"Feld unsicher: kein klarer Gewinner (Abstand {margin:.1f} < "
+                    f"{config.min_selection_margin:.1f} Punkte)"
+                )
+                selected_key = None
+                selected_candidate = None
+                selected_decision = None
+
     final: list[dict[str, Any]] = []
     for index, (candidate, base_decision) in enumerate(base_decisions, start=1):
         key = candidate_key(candidate)
+        if uncertainty_reason and base_decision.get("shouldNotify"):
+            decision = dict(base_decision)
+            decision["shouldNotify"] = False
+            decision["status"] = "observe"
+            decision["recommendedAction"] = ""
+            decision["blockingReasons"] = [
+                *decision.get("blockingReasons", []),
+                uncertainty_reason,
+            ]
+            final.append({"candidate": candidate, "decision": decision})
+            continue
         if selected_key and key != selected_key and base_decision.get("shouldNotify"):
             decision_context = dict(base_context)
             decision_context["strongerCandidate"] = selected_candidate
@@ -569,6 +673,8 @@ def evaluate_teams_alert_candidates(
         "selectedCandidateId": selected_key,
         "selectedCandidate": selected_candidate,
         "decisions": final,
+        "fieldUncertain": bool(uncertainty_reason),
+        "uncertaintyReason": uncertainty_reason,
         "evaluatedAt": _iso_from_ts(int(context.get("nowTs") or time.time())),
     }
 
@@ -582,8 +688,9 @@ def annotate_candidates_with_teams_decisions(
     """Attach transparent Teams decision metadata without sending anything."""
     if not candidates:
         return candidates
-    context = build_teams_alert_context(candidates, now_ts=now_ts)
-    evaluations = evaluate_teams_alert_candidates(candidates, context, config or TeamsAlertConfig())
+    config = config or TeamsAlertConfig()
+    context = build_teams_alert_context(candidates, now_ts=now_ts, config=config)
+    evaluations = evaluate_teams_alert_candidates(candidates, context, config)
     by_key = {
         item["decision"]["candidateId"]: item["decision"]
         for item in evaluations["decisions"]
@@ -615,7 +722,8 @@ def build_teams_push_recommendation(
     now_ts = int(context.get("nowTs") or time.time())
     forecast = decision.get("forecast") if isinstance(decision.get("forecast"), dict) else None
     if not forecast:
-        forecast = _candidate_forecast(candidate, now_ts)
+        suspect_values = {float(v) for v in (context.get("suspectForecastValues") or [])}
+        forecast = _candidate_forecast(candidate, now_ts, suspect_values)
     predicted_or = forecast["value"]
     minutes = decision.get("minutesSinceLastPush")
     minutes_known = isinstance(minutes, (int, float))
@@ -837,7 +945,7 @@ def evaluate_and_send_best_candidate(
     config = config or TeamsAlertConfig()
     dashboard_limit = max(1, min(int(config.dashboard_top_limit or 20), PUSH_TEAMS_CANDIDATE_LIMIT))
     limited = candidates[:dashboard_limit]
-    context = build_teams_alert_context(limited, now_ts=now_ts)
+    context = build_teams_alert_context(limited, now_ts=now_ts, config=config)
     evaluation = evaluate_teams_alert_candidates(limited, context, config)
     selected = evaluation.get("selectedCandidate")
     selected_decision = None
@@ -855,7 +963,11 @@ def evaluate_and_send_best_candidate(
     article_key = candidate_key(selected)
     article_id = str(selected.get("id") or article_key)
     article_url = _url(selected)
-    selected_forecast = _candidate_forecast(selected, int(context.get("nowTs") or time.time()))
+    selected_forecast = _candidate_forecast(
+        selected,
+        int(context.get("nowTs") or time.time()),
+        {float(v) for v in (context.get("suspectForecastValues") or [])},
+    )
     claim = teams_alert_try_claim_send(
         article_key=article_key,
         article_id=article_id,
@@ -961,7 +1073,58 @@ def _refresh_push_history_for_timing() -> None:
         log.warning("[TeamsAlert] push history refresh skipped: %s", exc)
 
 
+def select_teams_push_recommendation(
+    candidates: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+    config: TeamsAlertConfig | None = None,
+) -> dict[str, Any]:
+    """Pick the single best CvD-fit candidate and build its recommendation.
+
+    Returns the selected candidate, its decision and a ready-to-send message
+    (or None when the field has no truly push-worthy candidate right now).
+    """
+    config = config or TeamsAlertConfig()
+    context = context or build_teams_alert_context(candidates, config=config)
+    evaluation = evaluate_teams_alert_candidates(candidates, context, config)
+    selected = evaluation.get("selectedCandidate")
+    if not selected:
+        return {
+            "selected": None,
+            "decision": None,
+            "recommendation": None,
+            "evaluation": evaluation,
+        }
+    selected_key = candidate_key(selected)
+    decision = next(
+        (
+            item["decision"]
+            for item in evaluation["decisions"]
+            if item["decision"].get("candidateId") == selected_key
+        ),
+        None,
+    )
+    recommendation = (
+        build_teams_push_recommendation(selected, context, decision, config)
+        if decision and decision.get("shouldNotify")
+        else None
+    )
+    return {
+        "selected": selected,
+        "decision": decision,
+        "recommendation": recommendation,
+        "evaluation": evaluation,
+    }
+
+
 # Compatibility aliases requested in the implementation brief.
+def selectTeamsPushRecommendation(
+    candidates: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+    config: TeamsAlertConfig | None = None,
+) -> dict[str, Any]:
+    return select_teams_push_recommendation(candidates, context, config)
+
+
 def shouldNotifyTeams(
     candidate: dict[str, Any],
     context: dict[str, Any] | None = None,
@@ -1415,8 +1578,12 @@ def _candidate_predicted_or(candidate: dict[str, Any]) -> float | None:
     return _candidate_model_forecast(candidate)
 
 
-def _candidate_forecast(candidate: dict[str, Any], now_ts: int | None = None) -> dict[str, Any]:
-    model_value = _candidate_model_forecast(candidate)
+def _candidate_forecast(
+    candidate: dict[str, Any],
+    now_ts: int | None = None,
+    suspect_values: set[float] | None = None,
+) -> dict[str, Any]:
+    model_value = _candidate_model_forecast(candidate, suspect_values)
     basis = str(candidate.get("predictedORBasis") or "").strip()
     confidence = _safe_float(candidate.get("predictedORConfidence"))
     if model_value is not None:
@@ -1436,7 +1603,10 @@ def _candidate_forecast(candidate: dict[str, Any], now_ts: int | None = None) ->
     return _historical_slot_forecast(candidate, now_ts)
 
 
-def _candidate_model_forecast(candidate: dict[str, Any]) -> float | None:
+def _candidate_model_forecast(
+    candidate: dict[str, Any],
+    suspect_values: set[float] | None = None,
+) -> float | None:
     if bool(candidate.get("predictedORIsFallback")):
         return None
     basis = str(candidate.get("predictedORBasis") or "").strip().lower()
@@ -1448,7 +1618,11 @@ def _candidate_model_forecast(candidate: dict[str, Any]) -> float | None:
         confidence = None
     if confidence is not None and confidence <= 0.1:
         return None
-    return normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+    value = normalize_predicted_or(candidate.get("predictedOR", candidate.get("predictedOpenRate")))
+    if value is not None and suspect_values:
+        if any(abs(value - suspect) <= 0.01 for suspect in suspect_values):
+            return None
+    return value
 
 
 def _historical_slot_forecast(candidate: dict[str, Any], now_ts: int | None = None) -> dict[str, Any]:

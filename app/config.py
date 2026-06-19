@@ -24,6 +24,16 @@ def _csv_env(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _csv_floats(name: str, default: str = "") -> list[float]:
+    out: list[float] = []
+    for item in _csv_env(name, default):
+        try:
+            out.append(float(item.replace(",", ".")))
+        except ValueError:
+            log.warning("Invalid float in env %s: %r (ignored)", name, item)
+    return out
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -455,6 +465,30 @@ PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 1
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
     False,
+)
+# Erkennung konstanter Fake-/Default-Prognosen (z. B. globaler Durchschnitt 4.77 %).
+# Ein OR-Wert, der sich ueber das Kandidatenfeld wiederholt, ist ein Default und
+# wird NICHT als belastbare Prognose gewertet.
+PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS: list[float] = _csv_floats(
+    "PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS",
+    "4.77",
+)
+PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD: int = _env_int(
+    "PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD",
+    3,
+)
+PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD: int = _env_int(
+    "PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD",
+    2,
+)
+# "Klarer Gewinner"-Regel: ist das Feld unsicher (Top-Kandidat nur knapp vor dem
+# Verfolger und selbst nicht eindeutig stark), wird kein Alert gesendet.
+# Breaking und eindeutig starke Kandidaten (Editorial >= Schwelle + Buffer) sind
+# von der Margin-Pruefung ausgenommen.
+PUSH_TEAMS_MIN_SELECTION_MARGIN: float = _env_float("PUSH_TEAMS_MIN_SELECTION_MARGIN", 5.0)
+PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
+    "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",
+    6.0,
 )
 PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED",
