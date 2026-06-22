@@ -485,6 +485,11 @@ PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD: int = _env_int(
 # Verfolger und selbst nicht eindeutig stark), wird kein Alert gesendet.
 # Breaking und eindeutig starke Kandidaten (Editorial >= Schwelle + Buffer) sind
 # von der Margin-Pruefung ausgenommen.
+# Spekulative/erwartete Lagen ("wohl", "bereitet ... vor", "soll zuruecktreten")
+# altern schlecht: die Realitaet kann sie ueberholt haben. Aelter als X Stunden ->
+# nicht mehr pushen (wahrscheinlich ueberholt). Frisch -> nur als Risiko markieren.
+PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED: bool = _env_flag("PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED", True)
+PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS: float = _env_float("PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS", 3.0)
 PUSH_TEAMS_MIN_SELECTION_MARGIN: float = _env_float("PUSH_TEAMS_MIN_SELECTION_MARGIN", 5.0)
 PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",

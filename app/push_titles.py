@@ -495,7 +495,7 @@ def _generate_editorial_variants(brief: TitleBrief) -> list[tuple[str, str]]:
         candidates.extend(
             [
                 (f"Darum schlafen {group} schlecht", "A-klare-news-push"),
-                (f"Schlecht schlafen: Das steckt dahinter", "D-neugier"),
+                ("Schlecht schlafen: Das steckt dahinter", "D-neugier"),
                 (f"Warum {group} schlecht schlafen", "C-nutzwert-betroffenheit"),
                 (f"{_cap_first(group)} schlafen schlecht: Experten erklären warum", "A-klare-news-push"),
             ]
@@ -638,7 +638,6 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     prefix = _category_prefix(brief.category)
     subject = brief.subject
     detail = brief.detail
-    focus = brief.focus_term
     audience_value = brief.audience_value
     actor = brief.actors[0] if brief.actors else subject
     actor_short = _last_name(actor) if actor else ""
@@ -672,13 +671,9 @@ def _generate_candidates(brief: TitleBrief) -> list[dict]:
     if compact_fact and compact_fact != detail:
         candidates.append((compact_fact, "fakt"))
 
-    if focus:
-        candidates.extend(
-            [
-                (f"{focus}: Was jetzt wichtig ist", "nutzwert"),
-                (f"{focus}: Darum geht es jetzt", "erklaerer"),
-            ]
-        )
+    # Bewusst KEINE generischen Erklaerer-Floskeln ("Was jetzt wichtig ist",
+    # "Darum geht es jetzt") erzeugen - sie bringen keinen Mehrwert und landeten
+    # zuletzt als Push-Titel in den Teams-Empfehlungen.
 
     actor_is_redundant = actor_short and actor_short.lower() in {
         compact_fact.lower(),
@@ -946,6 +941,13 @@ def _score_candidate(candidate: str, brief: TitleBrief) -> tuple[float, list[str
 
 
 def _select_candidates(brief: TitleBrief, candidates: list[dict]) -> tuple[list[dict], dict, dict]:
+    # Generische Floskel-Titel hart aussortieren, bevor ueberhaupt bewertet wird -
+    # so koennen sie weder Gewinner noch Alternative werden.
+    candidates = [
+        candidate
+        for candidate in candidates
+        if not any(phrase in candidate["titel"].lower() for phrase in _WEAK_PHRASES)
+    ]
     rated: list[dict] = []
     for candidate in candidates:
         score, strengths, weaknesses = _score_candidate(candidate["titel"], brief)

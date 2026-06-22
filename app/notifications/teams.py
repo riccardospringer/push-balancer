@@ -60,6 +60,8 @@ from app.config import (
     PUSH_TEAMS_REQUIRE_VALID_PREDICTION,
     PUSH_TEAMS_SCORE_ONLY_MODE,
     PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER,
+    PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED,
+    PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_WEBHOOK_URL,
 )
@@ -129,6 +131,8 @@ class TeamsAlertConfig:
     active_hours_end: int = PUSH_TEAMS_ACTIVE_HOURS_END
     min_selection_margin: float = PUSH_TEAMS_MIN_SELECTION_MARGIN
     selection_clear_editorial_buffer: float = PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER
+    speculative_guard_enabled: bool = PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED
+    speculative_max_age_hours: float = PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -441,6 +445,25 @@ def should_notify_teams(
                 f"Artikel nicht frisch genug: {freshness_hours:.1f}h > {config.max_article_age_hours}h"
             )
 
+    # Spekulative/erwartete Lagen koennen von der Realitaet ueberholt sein
+    # (z. B. "bereitet wohl Ruecktritt vor", obwohl bereits zurueckgetreten).
+    # Ohne externe Faktenpruefung ist das nur eine Heuristik: aelter als die
+    # Schwelle -> nicht mehr pushen; frisch -> als Risiko markieren.
+    is_speculative = bool(config.speculative_guard_enabled and _is_speculative(title))
+    speculative_caution = ""
+    if is_speculative and not breaking:
+        if freshness_hours is not None and freshness_hours > config.speculative_max_age_hours:
+            blockers.append(
+                "Spekulative/erwartete Lage ('wohl', 'bereitet vor', 'soll zuruecktreten') "
+                f"und nicht mehr frisch ({freshness_hours:.1f}h) - wahrscheinlich ueberholt, nicht pushen"
+            )
+        else:
+            speculative_caution = (
+                "Spekulative/erwartete Lage - vor Push gegen die aktuelle Meldungslage pruefen "
+                "(koennte bereits ueberholt sein)"
+            )
+            candidate_risks = [speculative_caution, *candidate_risks]
+
     if (
         not config.score_only_mode
         and int(context.get("recentPushCount6h") or 0) > config.max_pushes_last_6h
@@ -520,6 +543,8 @@ def should_notify_teams(
         "scoreReason": candidate_score_reason,
         "performanceDrivers": candidate_drivers,
         "risks": candidate_risks,
+        "isSpeculative": is_speculative,
+        "speculativeCaution": speculative_caution,
         "scoreBreakdown": candidate_breakdown,
         "score": score,
         "teamsAlertScore": alert_score,
@@ -800,6 +825,9 @@ def build_teams_push_recommendation(
         timing_reason,
         competition,
     ])[:7]
+    speculative_caution = str(decision.get("speculativeCaution") or "").strip()
+    if speculative_caution and speculative_caution not in candidate_risks:
+        candidate_risks = [speculative_caution, *candidate_risks]
     what_speaks_against = candidate_risks[:5] or ["Keine harten Gegenargumente im Push-Balancer-Score."]
     # "Warum jetzt?" fuehrt mit der inhaltlichen Substanz (was die Story stark macht),
     # dann Zeitfenster und Prognose. Kein Modell-Jargon ("X von 100").
@@ -2059,6 +2087,56 @@ def _same_editorial_text(left: str, right: str) -> bool:
     return bool(normalize(left)) and normalize(left) == normalize(right)
 
 
+_GENERIC_PUSH_PHRASES = (
+    "darum geht es jetzt",
+    "das ist jetzt wichtig",
+    "was jetzt wichtig ist",
+    "was jetzt passiert",
+    "das bedeutet das für sie",
+    "das bedeutet das fuer sie",
+    "das musst du wissen",
+    "das musst du jetzt wissen",
+    "hier alle infos",
+    "alle infos",
+    "das steckt dahinter",
+    "so reagiert das netz",
+)
+
+
+def _is_generic_push_title(text: str) -> bool:
+    """True if a push title is just a generic, value-free filler phrase."""
+    lowered = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    if not lowered:
+        return True
+    return any(phrase in lowered for phrase in _GENERIC_PUSH_PHRASES)
+
+
+_SPECULATIVE_MARKERS = (
+    "wohl", "offenbar", "angeblich", "vermutlich", "moeglicherweise", "möglicherweise",
+    "koennte", "könnte", "duerfte", "dürfte",
+)
+_SPECULATIVE_PATTERNS = (
+    r"bereitet\s+.*\bvor\b",
+    r"steht\s+vor\s+dem\b",
+    r"vor\s+dem\s+(?:r[uü]cktritt|aus)\b",
+    r"soll\s+.*zur[uü]ck",
+    r"plant\s+.*r[uü]cktritt",
+    r"droht\s+der\s+r[uü]cktritt",
+)
+
+
+def _is_speculative(title: str) -> bool:
+    """Heuristic: anticipatory/uncertain framing that reality may have overtaken.
+
+    No external ground truth - this only flags speculative wording so a stale
+    "soll wohl zuruecktreten" is not pushed after the fact.
+    """
+    lowered = " " + re.sub(r"\s+", " ", str(title or "")).strip().lower() + " "
+    if any(f" {marker} " in lowered for marker in _SPECULATIVE_MARKERS):
+        return True
+    return any(re.search(pattern, lowered) for pattern in _SPECULATIVE_PATTERNS)
+
+
 def _teams_push_title_recommendation(
     candidate: dict[str, Any],
     title: str,
@@ -2081,8 +2159,10 @@ def _teams_push_title_recommendation(
         if isinstance(values, list):
             explicit_candidates.extend(str(item or "").strip() for item in values if str(item or "").strip())
 
+    # Eine nicht-generische Empfehlung, die sich von der Schlagzeile unterscheidet,
+    # gewinnt. Generische Floskeln werden grundsaetzlich uebersprungen.
     for value in _dedupe(explicit_candidates):
-        if not _same_editorial_text(value, title):
+        if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
             return _compact_text(value, 100)
 
     try:
@@ -2095,13 +2175,16 @@ def _teams_push_title_recommendation(
             str((result.get("alternative") or {}).get("titel") or "").strip(),
         ]
         for value in _dedupe([item for item in generated if item]):
-            if not _same_editorial_text(value, title):
+            if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
                 return _compact_text(value, 100)
     except Exception as exc:
         log.warning("[TeamsAlert] could not build alternative push title: %s", exc)
 
-    fallback = explicit_candidates[0] if explicit_candidates else title
-    return _compact_text(fallback, 100)
+    # Lieber die echte Schlagzeile als eine generische Floskel.
+    for value in explicit_candidates:
+        if not _is_generic_push_title(value):
+            return _compact_text(value, 100)
+    return _compact_text(title or (explicit_candidates[0] if explicit_candidates else ""), 100)
 
 
 def _score_reason(candidate: dict[str, Any]) -> str:

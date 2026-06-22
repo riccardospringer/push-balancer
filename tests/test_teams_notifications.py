@@ -513,6 +513,59 @@ def test_substantially_changed_headline_allows_realert():
     assert any("Schlagzeile" in reason for reason in decision["reasons"])
 
 
+def test_stale_speculative_resignation_is_blocked():
+    # "bereitet wohl Ruecktritt vor" + nicht mehr frisch -> wahrscheinlich ueberholt.
+    candidate = _candidate(
+        score=92.0,
+        predictedOR=0.08,
+        title="Briten-Premier bereitet wohl Rücktritt vor",
+        url="https://www.bild.de/politik/premier-ruecktritt",
+        pubDate=_iso(NOW_TS - 6 * 3600),
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=50.0, min_editorial_score=50.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["isSpeculative"] is True
+    assert any("ueberholt" in reason for reason in decision["blockingReasons"])
+
+
+def test_fresh_speculative_item_is_flagged_but_not_blocked():
+    candidate = _candidate(
+        score=92.0,
+        predictedOR=0.08,
+        title="Briten-Premier bereitet wohl Rücktritt vor",
+        url="https://www.bild.de/politik/premier-ruecktritt",
+        pubDate=_iso(NOW_TS - 30 * 60),
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=45))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=50.0, min_editorial_score=50.0),
+    )
+
+    assert decision["isSpeculative"] is True
+    assert not any("ueberholt" in reason for reason in decision["blockingReasons"])
+    assert any("pekulativ" in risk for risk in decision["risks"])
+
+
+def test_non_speculative_headline_is_not_flagged():
+    candidate = _candidate(title="Regierung beschliesst neues Rentenpaket")
+
+    decision = shouldNotifyTeams(candidate, _context(candidate), _config())
+
+    assert decision["isSpeculative"] is False
+
+
 def test_candidate_key_normalizes_tracking_query_params():
     first = _candidate(url="https://www.bild.de/politik/article-1?utm_source=x")
     second = _candidate(url="https://www.bild.de/politik/article-1")

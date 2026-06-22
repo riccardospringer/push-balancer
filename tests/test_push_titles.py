@@ -198,3 +198,19 @@ def test_g7_soft_politics_title_is_not_copied():
     original_rating = next(item for item in result["bewertungen"] if item["titel"] == headline)
     assert original_rating["gesamt"] < result["gewinner"]["gesamt_score"]
     assert "kopiert die Original-Headline" in original_rating["schwaeche"]
+
+
+def test_no_generic_filler_titles_for_political_headline():
+    result = build_push_title_suggestions(
+        "Briten-Premier bereitet wohl Rücktritt vor", category="politik"
+    )
+
+    all_titles = [
+        result["title"],
+        *result.get("alternativeTitles", []),
+        (result.get("alternative") or {}).get("titel", ""),
+    ]
+    for title in all_titles:
+        lowered = (title or "").lower()
+        assert "darum geht es jetzt" not in lowered
+        assert "was jetzt wichtig ist" not in lowered
