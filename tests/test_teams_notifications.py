@@ -558,6 +558,57 @@ def test_fresh_speculative_item_is_flagged_but_not_blocked():
     assert any("pekulativ" in risk for risk in decision["risks"])
 
 
+def test_soft_quiz_or_service_content_is_blocked():
+    for bad_title in (
+        "Bundesländer in Deutschland: Erkennen Sie das Gesuchte?",
+        "Bester Strand Europas 2026: Lohnt sich Portugal?",
+        "Alkohol genießen und Kalorien sparen? Diese Drinks machen es möglich",
+    ):
+        candidate = _candidate(
+            title=bad_title,
+            category="news",
+            score=85.0,
+            predictedOR=0.07,
+            url="https://www.bild.de/news/soft",
+        )
+        context = _context(candidate, history=_history(minutes_since_last_push=120))
+        context["dashboardRank"] = 1
+
+        decision = shouldNotifyTeams(
+            candidate,
+            context,
+            _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+        )
+
+        assert decision["shouldNotify"] is False, bad_title
+        assert any("Service-/Raetsel" in reason for reason in decision["blockingReasons"]), bad_title
+
+
+def test_feed_overtaken_blocks_speculative_resignation():
+    candidate = _candidate(
+        title="Briten-Premier bereitet wohl Rücktritt vor: Tritt Starmer heute wirklich zurück?",
+        category="politik",
+        score=90.0,
+        predictedOR=0.07,
+        url="https://www.bild.de/politik/starmer",
+        pubDate=_iso(NOW_TS - 20 * 60),  # frisch -> Alters-Guard wuerde NICHT blocken
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=120))
+    context["dashboardRank"] = 1
+
+    feeds = {"bbc": [{"t": "Keir Starmer resigns as UK prime minister"}]}
+    with patch("app.research.worker.get_cached_feeds", return_value=feeds):
+        decision = shouldNotifyTeams(
+            candidate,
+            context,
+            _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+        )
+
+    assert decision["shouldNotify"] is False
+    assert decision["overtakenByFeed"]
+    assert any("vollzogen gemeldet" in reason for reason in decision["blockingReasons"])
+
+
 def test_non_speculative_headline_is_not_flagged():
     candidate = _candidate(title="Regierung beschliesst neues Rentenpaket")
 

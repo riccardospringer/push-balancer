@@ -490,6 +490,10 @@ PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD: int = _env_int(
 # nicht mehr pushen (wahrscheinlich ueberholt). Frisch -> nur als Risiko markieren.
 PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED: bool = _env_flag("PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED", True)
 PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS: float = _env_float("PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS", 3.0)
+# Abgleich gegen die (gecachten) Konkurrenz-/International-Feeds: meldet eine
+# frischere Quelle die spekulierte Lage bereits als vollzogen (z. B. "Starmer
+# tritt zurueck" / "resigns"), wird die Spekulation als ueberholt geblockt.
+PUSH_TEAMS_FEED_OVERTAKEN_ENABLED: bool = _env_flag("PUSH_TEAMS_FEED_OVERTAKEN_ENABLED", True)
 PUSH_TEAMS_MIN_SELECTION_MARGIN: float = _env_float("PUSH_TEAMS_MIN_SELECTION_MARGIN", 5.0)
 PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",

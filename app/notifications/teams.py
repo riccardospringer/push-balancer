@@ -58,6 +58,7 @@ from app.config import (
     PUSH_TEAMS_REALERT_SCORE_DELTA,
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
     PUSH_TEAMS_REQUIRE_VALID_PREDICTION,
+    PUSH_TEAMS_FEED_OVERTAKEN_ENABLED,
     PUSH_TEAMS_SCORE_ONLY_MODE,
     PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER,
     PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED,
@@ -133,6 +134,7 @@ class TeamsAlertConfig:
     selection_clear_editorial_buffer: float = PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER
     speculative_guard_enabled: bool = PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED
     speculative_max_age_hours: float = PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS
+    feed_overtaken_enabled: bool = PUSH_TEAMS_FEED_OVERTAKEN_ENABLED
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -451,6 +453,10 @@ def should_notify_teams(
     # Schwelle -> nicht mehr pushen; frisch -> als Risiko markieren.
     is_speculative = bool(config.speculative_guard_enabled and _is_speculative(title))
     speculative_caution = ""
+    overtaken_reason = _overtaken_by_feed(title, config) if is_speculative else ""
+    if overtaken_reason:
+        # Hartes Signal: eine frischere Quelle meldet die Lage bereits als vollzogen.
+        blockers.append(overtaken_reason)
     if is_speculative and not breaking:
         if freshness_hours is not None and freshness_hours > config.speculative_max_age_hours:
             blockers.append(
@@ -545,6 +551,7 @@ def should_notify_teams(
         "risks": candidate_risks,
         "isSpeculative": is_speculative,
         "speculativeCaution": speculative_caution,
+        "overtakenByFeed": overtaken_reason,
         "scoreBreakdown": candidate_breakdown,
         "score": score,
         "teamsAlertScore": alert_score,
@@ -1345,6 +1352,9 @@ def _editorial_cvd_review(
     soft_matches = [term for term in soft_terms if term in title_l]
     if soft_matches and not impact_matches and not breaking:
         impact_bonus -= 8.0
+    is_soft_service = _is_soft_service_or_quiz(title)
+    if is_soft_service and not breaking:
+        impact_bonus -= 18.0
 
     news_value = _clamp(section_points + impact_bonus, 0.0, 40.0)
 
@@ -1423,6 +1433,8 @@ def _editorial_cvd_review(
         blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {config.min_editorial_score:.1f})")
     if soft_matches and not breaking and news_value < config.min_editorial_news_value + 6.0:
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
+    if is_soft_service and not breaking:
+        blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
         blockers.append("CvD: ohne belastbare OR-Prognose nur bei absoluter Top-Lage")
     if not breaking and time_fit["score"] < config.min_time_fit_score:
@@ -2125,6 +2137,36 @@ _SPECULATIVE_PATTERNS = (
 )
 
 
+_SOFT_CONTENT_PATTERNS = (
+    # Raetsel / Quiz / Mitmach-Formate
+    r"\berkennen sie\b",
+    r"\braten sie\b",
+    r"\bkennen sie\b",
+    r"\bsch[aä]tzen sie\b",
+    r"\btesten sie\b",
+    r"\bdas gesuchte\b",
+    r"\b(bilder)?r[aä]tsel\b",
+    r"\bquiz\b",
+    r"\bwer ist das\b",
+    # Service / Ratgeber / Lifestyle-Listicle
+    r"\blohnt sich\b",
+    r"\bkalorien spar",
+    r"\bdiese (drinks|tricks|hausmittel|lebensmittel|fehler|tipps)\b",
+    r"machen es m[oö]glich",
+    r"\bso (gelingt|sparen|klappt|funktioniert)\b",
+    r"\bdarum sollten sie\b",
+    r"\bdas m[uü]ssen sie (wissen|beachten)\b",
+    r"\bdie besten \w+ tipps\b",
+    r"\babnehmen\b",
+)
+_SOFT_CONTENT_RE = re.compile("|".join(_SOFT_CONTENT_PATTERNS), re.IGNORECASE)
+
+
+def _is_soft_service_or_quiz(title: str) -> bool:
+    """True for Raetsel/Quiz/Service/Ratgeber-Formate - kein CvD-Push-Stoff."""
+    return bool(_SOFT_CONTENT_RE.search(str(title or "")))
+
+
 def _is_speculative(title: str) -> bool:
     """Heuristic: anticipatory/uncertain framing that reality may have overtaken.
 
@@ -2135,6 +2177,70 @@ def _is_speculative(title: str) -> bool:
     if any(f" {marker} " in lowered for marker in _SPECULATIVE_MARKERS):
         return True
     return any(re.search(pattern, lowered) for pattern in _SPECULATIVE_PATTERNS)
+
+
+# Lagen, deren Vollzug sich gegen die Konkurrenz-Feeds pruefen laesst, plus die
+# Cues, die einen bereits vollzogenen Vollzug signalisieren (DE + EN).
+_RESIGNATION_TOPIC_CUES = ("rücktritt", "ruecktritt", "zurücktreten", "zurueck", "abdank", "amt nieder")
+_RESIGNATION_DONE_CUES = (
+    "zurückgetreten", "zurueckgetreten", "tritt zurück", "tritt zurueck",
+    "ist zurückgetreten", "rücktritt erklärt", "ruecktritt erklaert", "tritt ab",
+    "ist abgetreten", "nachfolger", "nachfolge steht",
+    "resigns", "resigned", "steps down", "stepped down", "quits", "has quit",
+)
+
+
+def _recent_feed_headlines() -> list[str]:
+    """Cached competitor/international headlines (no live fetch in the alert cycle)."""
+    headlines: list[str] = []
+    try:
+        from app.research.worker import get_cached_feeds
+    except Exception:
+        return headlines
+    for feed_type in ("competitors", "international"):
+        try:
+            data = get_cached_feeds(feed_type)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for items in data.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                text = str((item or {}).get("t") or "").strip()
+                if text:
+                    headlines.append(text)
+    return headlines
+
+
+def _overtaken_by_feed(title: str, config: TeamsAlertConfig) -> str:
+    """Return a reason if a fresher feed source already reports the speculated
+    event as done (e.g. candidate 'bereitet wohl Ruecktritt vor' while BBC/Welt
+    already report 'Starmer resigns'). Currently covers resignation-type events.
+    """
+    if not config.feed_overtaken_enabled:
+        return ""
+    title_l = title.lower()
+    if not (_is_speculative(title) and any(cue in title_l for cue in _RESIGNATION_TOPIC_CUES)):
+        return ""
+    # Markante Entitaets-Tokens (Eigennamen/lange Begriffe) aus dem Kandidaten.
+    entity_tokens = {token for token in _tokens(title) if len(token) >= 5}
+    if not entity_tokens:
+        return ""
+    for headline in _recent_feed_headlines():
+        hl = headline.lower()
+        if not any(cue in hl for cue in _RESIGNATION_DONE_CUES):
+            continue
+        if _is_speculative(headline):
+            continue
+        shared = entity_tokens & _tokens(headline)
+        if shared:
+            return (
+                "Bereits als vollzogen gemeldet (Feed-Abgleich: "
+                f"{', '.join(sorted(shared))}): \"{_compact_text(headline, 80)}\""
+            )
+    return ""
 
 
 def _teams_push_title_recommendation(
