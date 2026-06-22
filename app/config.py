@@ -494,6 +494,11 @@ PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS: float = _env_float("PUSH_TEAMS_SPECULATIVE
 # frischere Quelle die spekulierte Lage bereits als vollzogen (z. B. "Starmer
 # tritt zurueck" / "resigns"), wird die Spekulation als ueberholt geblockt.
 PUSH_TEAMS_FEED_OVERTAKEN_ENABLED: bool = _env_flag("PUSH_TEAMS_FEED_OVERTAKEN_ENABLED", True)
+# Themen-Dublette: ein anderer Artikel zum selben Ereignis wurde bereits per Teams
+# gemeldet (z. B. zwei Schlagzeilen zur selben Explosion). Innerhalb des Fensters
+# und ueber der Token-Aehnlichkeit -> kein zweiter Alert.
+PUSH_TEAMS_TOPIC_DEDUP_HOURS: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_HOURS", 12.0)
+PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY", 0.5)
 PUSH_TEAMS_MIN_SELECTION_MARGIN: float = _env_float("PUSH_TEAMS_MIN_SELECTION_MARGIN", 5.0)
 PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",

@@ -64,11 +64,14 @@ from app.config import (
     PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED,
     PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
+    PUSH_TEAMS_TOPIC_DEDUP_HOURS,
+    PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
     PUSH_TEAMS_WEBHOOK_URL,
 )
 from app.database import (
     push_db_load_all,
     teams_alert_last_sent_ts,
+    teams_alert_list_recent,
     teams_alert_load_for_keys,
     teams_alert_record,
     teams_alert_sent_count_since,
@@ -135,6 +138,8 @@ class TeamsAlertConfig:
     speculative_guard_enabled: bool = PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED
     speculative_max_age_hours: float = PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS
     feed_overtaken_enabled: bool = PUSH_TEAMS_FEED_OVERTAKEN_ENABLED
+    topic_dedup_hours: float = PUSH_TEAMS_TOPIC_DEDUP_HOURS
+    topic_dedup_similarity: float = PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -159,6 +164,7 @@ def build_teams_alert_context(
     alert_state: dict[str, dict[str, Any]] | None = None,
     last_teams_alert_ts: int | None = None,
     teams_alerts_today: int | None = None,
+    recent_alerts: list[dict[str, Any]] | None = None,
     now_ts: int | None = None,
     config: TeamsAlertConfig | None = None,
 ) -> dict[str, Any]:
@@ -212,6 +218,22 @@ def build_teams_alert_context(
             log.warning("[TeamsAlert] Could not load alert-of-day count: %s", exc)
             alerts_today = 0
 
+    if recent_alerts is None:
+        window_start = now - int(max(0.0, config.topic_dedup_hours) * 3600)
+        recent_alerts = []
+        try:
+            for row in teams_alert_list_recent(limit=40):
+                if str(row.get("status") or "") != "sent":
+                    continue
+                if _safe_int(row.get("last_alert_ts")) < window_start:
+                    continue
+                recent_alerts.append(
+                    {"key": str(row.get("article_key") or ""), "title": str(row.get("article_title") or "")}
+                )
+        except Exception as exc:
+            log.warning("[TeamsAlert] Could not load recent alert titles: %s", exc)
+            recent_alerts = []
+
     return {
         "nowTs": now,
         "history": history,
@@ -221,6 +243,7 @@ def build_teams_alert_context(
         "recentPushCount6h": recent_6h_count,
         "pushesToday": pushes_today,
         "teamsAlertsToday": int(alerts_today or 0),
+        "recentTeamsAlerts": recent_alerts,
         "suspectForecastValues": _detect_suspect_forecast_values(candidates, config),
     }
 
@@ -480,6 +503,12 @@ def should_notify_teams(
     duplicate_reason = _already_pushed_reason(candidate, context.get("history") or [])
     if duplicate_reason:
         blockers.append(duplicate_reason)
+
+    topic_dup_reason = _topic_already_alerted_reason(
+        candidate, key, context.get("recentTeamsAlerts") or [], config
+    )
+    if topic_dup_reason:
+        blockers.append(topic_dup_reason)
 
     realert_reason = _realert_blocker_or_reason(
         candidate,
@@ -1927,6 +1956,46 @@ def _already_pushed_reason(candidate: dict[str, Any], history: list[dict[str, An
     return ""
 
 
+def _topic_already_alerted_reason(
+    candidate: dict[str, Any],
+    candidate_key_value: str,
+    recent_alerts: list[dict[str, Any]],
+    config: TeamsAlertConfig,
+) -> str:
+    """Block a second alert about the same event already reported via Teams.
+
+    Catches near-duplicate topics from different articles (e.g. two headlines
+    about the same explosion). The candidate's own key is handled by the re-alert
+    logic and is skipped here.
+    """
+    title = _title(candidate)
+    title_tokens = _tokens(title)
+    if not title_tokens:
+        return ""
+    threshold = float(config.topic_dedup_similarity or 0.5)
+    for entry in recent_alerts:
+        other_key = str(entry.get("key") or "")
+        if other_key and other_key == candidate_key_value:
+            continue
+        other_tokens = _tokens(str(entry.get("title") or ""))
+        if not other_tokens:
+            continue
+        shared = title_tokens & other_tokens
+        # Mindestens ein markantes (Eigennamen-/langes) gemeinsames Token verlangen,
+        # damit nur echte Themen-Dubletten greifen, nicht zufaellige Wortueberschneidung.
+        if not any(len(token) >= 5 for token in shared):
+            continue
+        # Overlap-Koeffizient: robust gegen unterschiedlich lange Schlagzeilen
+        # zur selben Lage ("13 Tote in Hafen" vs "13 Tote bei Explosion in Katar").
+        overlap = len(shared) / max(1, min(len(title_tokens), len(other_tokens)))
+        if overlap >= threshold:
+            return (
+                "Thema bereits per Teams gemeldet (Dublette): "
+                f"\"{_compact_text(str(entry.get('title') or ''), 80)}\""
+            )
+    return ""
+
+
 def _candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
     score = _score(candidate)
     predicted = _candidate_predicted_or(candidate) or 0.0
@@ -2148,16 +2217,35 @@ _SOFT_CONTENT_PATTERNS = (
     r"\b(bilder)?r[aä]tsel\b",
     r"\bquiz\b",
     r"\bwer ist das\b",
+    # Gewinnspiel / Promo / Lotto
+    r"\bgewinnspiel\b",
+    r"\blotto\b",
+    r"\bjackpot\b",
+    r"\bverlosung\b",
+    r"\bzu gewinnen\b",
+    r"\bgewinnen sie\b",
+    r"\bwer holt sich\b",
     # Service / Ratgeber / Lifestyle-Listicle
     r"\blohnt sich\b",
     r"\bkalorien spar",
-    r"\bdiese (drinks|tricks|hausmittel|lebensmittel|fehler|tipps)\b",
+    r"\bdiese (drinks|tricks|hausmittel|lebensmittel|fehler|tipps|rechte)\b",
     r"machen es m[oö]glich",
-    r"\bso (gelingt|sparen|klappt|funktioniert)\b",
+    r"\bso (gelingt|sparen|klappt|funktioniert|sch[uü]tzen|erkennen|vermeiden|reagieren) sie\b",
     r"\bdarum sollten sie\b",
     r"\bdas m[uü]ssen sie (wissen|beachten)\b",
     r"\bdie besten \w+ tipps\b",
     r"\babnehmen\b",
+    # Verbraucher-/Finanz-Ratgeber (Frage-/Hinweis-Formate)
+    r"\bkommt man\b",
+    r"\bbietet \w+ nur\b",
+    r"\bscheinsicherheit\b",
+    r"\bk[aä]uferschutz\b",
+    r"\bfestgeld",
+    r"\bwertsachen verstecken\b",
+    r"\bgeld verstecken\b",
+    r"\bwo \w+ suchen\b",
+    r"\bworauf (sie achten|es ankommt)\b",
+    r"\bdas hilft (gegen|bei)\b",
 )
 _SOFT_CONTENT_RE = re.compile("|".join(_SOFT_CONTENT_PATTERNS), re.IGNORECASE)
 

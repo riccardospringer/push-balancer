@@ -111,13 +111,22 @@ def _history(minutes_since_last_push=42, now_ts=NOW_TS, **overrides):
     return [item]
 
 
-def _context(candidate, *, history=None, alert_state=None, teams_alerts_today=0, now_ts=NOW_TS):
+def _context(
+    candidate,
+    *,
+    history=None,
+    alert_state=None,
+    teams_alerts_today=0,
+    recent_alerts=None,
+    now_ts=NOW_TS,
+):
     return build_teams_alert_context(
         [candidate],
         history=history if history is not None else _history(now_ts=now_ts),
         alert_state=alert_state or {},
         last_teams_alert_ts=0,
         teams_alerts_today=teams_alerts_today,
+        recent_alerts=recent_alerts if recent_alerts is not None else [],
         now_ts=now_ts,
     )
 
@@ -582,6 +591,62 @@ def test_soft_quiz_or_service_content_is_blocked():
 
         assert decision["shouldNotify"] is False, bad_title
         assert any("Service-/Raetsel" in reason for reason in decision["blockingReasons"]), bad_title
+
+
+def test_ratgeber_and_gewinnspiel_content_is_blocked():
+    for bad_title in (
+        "Inflation frisst Zinsen: Kommt man vorzeitig aus einer Festgeldanlage?",
+        "Aktuelles Ösi-Urteil: Bietet Ebay-Käuferschutz nur eine Scheinsicherheit?",
+        "Geld und Wertsachen verstecken: Wo Einbrecher suchen",
+        "LOTTO-Gewinnspiel!: Wer holt sich die 50 Millionen?",
+    ):
+        candidate = _candidate(
+            title=bad_title,
+            category="news",
+            score=85.0,
+            predictedOR=0.07,
+            url="https://www.bild.de/news/ratgeber",
+        )
+        context = _context(candidate, history=_history(minutes_since_last_push=120))
+        context["dashboardRank"] = 1
+
+        decision = shouldNotifyTeams(
+            candidate,
+            context,
+            _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+        )
+
+        assert decision["shouldNotify"] is False, bad_title
+        assert any("Service-/Raetsel" in reason for reason in decision["blockingReasons"]), bad_title
+
+
+def test_topic_duplicate_against_recent_teams_alert_is_blocked():
+    candidate = _candidate(
+        title="Große Gasanlage betroffen: 13 Tote bei Explosion in Katar",
+        category="news",
+        score=88.0,
+        predictedOR=0.07,
+        url="https://www.bild.de/news/katar-gas",
+    )
+    recent = [
+        {
+            "key": "https://www.bild.de/news/katar-hafen",
+            "title": "Katar: Mindestens 13 Tote nach Explosion in Hafen",
+        }
+    ]
+    context = _context(
+        candidate, history=_history(minutes_since_last_push=120), recent_alerts=recent
+    )
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Dublette" in reason for reason in decision["blockingReasons"])
 
 
 def test_feed_overtaken_blocks_speculative_resignation():
