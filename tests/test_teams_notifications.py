@@ -463,6 +463,56 @@ def test_realert_requires_relevant_improvement_and_cooldown():
     assert any("Re-Alert wegen relevanter Veraenderung" in reason for reason in improved["reasons"])
 
 
+def test_retimestamped_article_does_not_trigger_realert():
+    # Gleiche Schlagzeile, nur neuer modDate (BILD-Re-Timestamp) -> KEIN Re-Alert.
+    candidate = _candidate(modDate=_iso(NOW_TS))
+    alert_state = {
+        candidate["url"]: {
+            "status": "sent",
+            "last_alert_ts": NOW_TS - 180 * 60,
+            "last_score": 78.4,
+            "last_predicted_or": 5.2,
+            "last_candidate_updated_at": NOW_TS - 24 * 3600,
+            "last_is_breaking": 0,
+            "article_title": candidate["title"],
+            "alert_count": 1,
+        }
+    }
+
+    decision = shouldNotifyTeams(candidate, _context(candidate, alert_state=alert_state), _config())
+
+    assert decision["shouldNotify"] is False
+    assert any("Bereits per Teams gemeldet" in reason for reason in decision["blockingReasons"])
+
+
+def test_substantially_changed_headline_allows_realert():
+    candidate = _candidate(
+        score=80.0,
+        title="Bundestag stoppt ueberraschend das geplante Rentenpaket",
+    )
+    alert_state = {
+        candidate["url"]: {
+            "status": "sent",
+            "last_alert_ts": NOW_TS - 180 * 60,
+            "last_score": 78.0,
+            "last_predicted_or": 5.1,
+            "last_candidate_updated_at": NOW_TS - 24 * 3600,
+            "last_is_breaking": 0,
+            "article_title": "Promi zeigt neues Sommer-Outfit im Urlaub",
+            "alert_count": 1,
+        }
+    }
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, alert_state=alert_state),
+        _config(min_editorial_score=50.0, min_alert_score=50.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert any("Schlagzeile" in reason for reason in decision["reasons"])
+
+
 def test_candidate_key_normalizes_tracking_query_params():
     first = _candidate(url="https://www.bild.de/politik/article-1?utm_source=x")
     second = _candidate(url="https://www.bild.de/politik/article-1")

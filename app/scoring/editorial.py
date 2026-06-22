@@ -1177,12 +1177,9 @@ def _recommend_text(title: str, cat: str, tone: str, is_eil: bool, risks: list[s
 
     if is_eil and not re.search(r"(?i)^eilmeldung|\+\+", text):
         return f"Eilmeldung: {text}"
-    if tone == "utility" and not re.search(r"(?i)\bsie\b|das bedeutet|müssen|muessen", text):
-        return _shorten(f"{text}: Das bedeutet das für Sie", 96)
-    if cat == "sport" and tone in {"conflict", "result", "breaking"} and "was jetzt" not in text.lower():
-        return _shorten(f"{text}: Was jetzt passiert", 96)
-    if cat == "politik" and tone != "breaking" and "wichtig" not in text.lower():
-        return _shorten(f"{text}: Was jetzt wichtig ist", 96)
+    # Bewusst KEINE generischen Floskeln anhaengen ("Was jetzt wichtig ist",
+    # "Was jetzt passiert", "Das bedeutet das fuer Sie"): sie verwaessern den
+    # Titel und bringen keinen Mehrwert. Die konkrete Schlagzeile ist staerker.
     if any("zu lang" in risk for risk in risks):
         return _shorten(text, 82)
     return text

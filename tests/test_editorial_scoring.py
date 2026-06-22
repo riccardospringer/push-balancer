@@ -388,5 +388,22 @@ def test_scoring_explanation_names_concrete_pro_and_contra_reasons():
     assert scored["risks"]
 
 
+def test_recommend_text_keeps_headline_without_generic_filler():
+    now = int(time.time())
+
+    politik = _score("Trump hebt neu ab", "politik", now=now)
+    sport = _score("Bayern-Star vor Wechsel", "sport", now=now)
+    utility = _score("Neue Strompreise ab Juli", "verbraucher", now=now)
+
+    for result in (politik, sport, utility):
+        rec = result["recommendedText"]
+        assert "Was jetzt wichtig ist" not in rec
+        assert "Was jetzt passiert" not in rec
+        assert "Das bedeutet das für Sie" not in rec
+
+    # Die konkrete Schlagzeile bleibt erhalten statt mit Floskeln verwaessert.
+    assert "Trump hebt neu ab" in politik["recommendedText"]
+
+
 def scored_breakdown_value(result: dict, key: str) -> float:
     return float(result["scoreBreakdown"][key])

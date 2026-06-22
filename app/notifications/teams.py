@@ -1843,16 +1843,22 @@ def _realert_blocker_or_reason(
 
     old_score = float(alert_state.get("last_score") or 0.0)
     old_or = float(alert_state.get("last_predicted_or") or 0.0)
-    old_updated = _safe_int(alert_state.get("last_candidate_updated_at"))
     old_breaking = bool(alert_state.get("last_is_breaking"))
-    current_updated = _candidate_updated_ts(candidate)
+    old_title = str(alert_state.get("article_title") or "")
+    cur_title = _title(candidate)
 
     if score - old_score >= config.realert_score_delta:
         improvements.append(f"Score deutlich gestiegen (+{score - old_score:.1f})")
     if predicted_or is not None and predicted_or - old_or >= config.realert_or_delta:
         improvements.append(f"Prognose deutlich besser (+{predicted_or - old_or:.2f}pp)")
-    if current_updated and current_updated > old_updated:
-        improvements.append("Artikel wurde aktualisiert")
+    # Ein bloßer modDate-Bump ist KEIN Re-Alert-Grund: BILD setzt Artikel
+    # (gerade Evergreens/Ticker) staendig neu, das wuerde dieselbe Empfehlung
+    # taeglich wiederholen. Nur eine inhaltlich deutlich geaenderte Schlagzeile
+    # zaehlt als echte neue Lage.
+    if old_title and cur_title:
+        similarity = _token_similarity(_tokens(cur_title), _tokens(old_title))
+        if similarity < 0.5:
+            improvements.append("Schlagzeile inhaltlich deutlich geaendert")
     if breaking and not old_breaking:
         improvements.append("Breaking-News-Status neu")
 
