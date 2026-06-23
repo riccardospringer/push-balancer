@@ -49,6 +49,45 @@ _unified_state: dict = {
 _unified_lock = threading.Lock()
 
 
+def load_seed_model() -> bool:
+    """Laedt das mitgelieferte Seed-LightGBM-Modell in _ml_state (Cold-Start).
+
+    Noetig, weil die Render-DB anfangs zu wenig Historie zum Selbst-Trainieren hat.
+    Wird von einem spaeteren erfolgreichen Training ueberschrieben; ueberschreibt
+    selbst kein bereits vorhandenes (frisch trainiertes) Modell.
+    """
+    try:
+        import joblib
+    except ImportError:
+        return False
+    path = os.path.join(os.path.dirname(__file__), "seed_model.pkl")
+    if not os.path.exists(path):
+        return False
+    try:
+        data = joblib.load(path)
+    except Exception as exc:
+        log.warning("[lightgbm] Seed-Modell laden fehlgeschlagen: %s", exc)
+        return False
+    with _ml_lock:
+        if _ml_state.get("model") is not None:
+            return True
+        _ml_state["model"] = data.get("model")
+        _ml_state["stats"] = data.get("stats")
+        _ml_state["feature_names"] = data.get("feature_names", []) or []
+        _ml_state["calibrator"] = data.get("calibrator")
+        _ml_state["metrics"] = data.get("metrics", {}) or {}
+        _ml_state["last_train_ts"] = int(data.get("trained_at", 0) or 0)
+        _ml_state["training"] = False
+        loaded = _ml_state.get("model") is not None
+    if loaded:
+        log.info(
+            "[lightgbm] Seed-Modell geladen: %d Features, MAE=%s",
+            len(_ml_state.get("feature_names") or []),
+            (_ml_state.get("metrics") or {}).get("mae"),
+        )
+    return loaded
+
+
 def ml_train_model() -> None:
     """Trainiert das LightGBM-Modell auf der gesamten Push-Historie."""
     try:

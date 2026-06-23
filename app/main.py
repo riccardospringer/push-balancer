@@ -570,6 +570,21 @@ def _start_background_workers() -> None:
     else:
         log.info("[Research] Deaktiviert, Analyse wird nur bei Bedarf berechnet")
 
+    # 6a. Cold-Start: mitgeliefertes Seed-LightGBM-Modell laden, damit sofort
+    # belastbare Pro-Artikel-Prognosen verfuegbar sind. Noetig, weil die Render-DB
+    # anfangs zu wenig eigene Push-Historie zum Selbst-Trainieren hat. Ein spaeteres
+    # erfolgreiches Training (Worker oder Standalone-Trainer) ueberschreibt es.
+    if ARTICLE_PREDICTION_ENRICHMENT_ENABLED:
+        try:
+            from app.ml.lightgbm_model import load_seed_model
+
+            if load_seed_model():
+                log.info("[ML] Seed-Modell aktiv (Cold-Start-Prognose)")
+            else:
+                log.info("[ML] Kein Seed-Modell gefunden")
+        except Exception as e:
+            log.warning("[ML] Seed-Modell-Load fehlgeschlagen: %s", e)
+
     # 6b. Eigenstaendiger LightGBM-Trainer — sorgt fuer belastbare Pro-Artikel-OR-
     # Prognosen, auch wenn der schwere Research-Worker aus ist. Ohne trainiertes
     # Modell liefert predict_or nur den globalen Durchschnitt (Fallback), wodurch
