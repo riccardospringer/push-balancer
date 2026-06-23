@@ -51,6 +51,7 @@ def _config(**overrides):
         "dynamic_threshold_enabled": False,
         "require_valid_prediction": False,
         "target_pushes_per_day": 11,
+        "min_alerts_per_day": 11,
         "max_alerts_per_day": 14,
     }
     values.update(overrides)
@@ -212,6 +213,8 @@ def test_historical_slot_forecast_alone_does_not_allow_normal_alert():
     )
     context = _context(candidate, history=_history(minutes_since_last_push=90))
     context["dashboardRank"] = 1
+    context["pushesToday"] = 3
+    context["teamsAlertsToday"] = 3
 
     decision = shouldNotifyTeams(
         candidate,
@@ -221,6 +224,74 @@ def test_historical_slot_forecast_alone_does_not_allow_normal_alert():
 
     assert decision["shouldNotify"] is False
     assert any("Artikel-Prognose fehlt" in reason for reason in decision["blockingReasons"])
+
+
+def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind():
+    evening_ts = NOW_TS + 11 * 3600
+    candidate = _candidate(
+        score=80.0,
+        predictedOR=None,
+        category="news",
+        title="Polizei nimmt mutmaßlichen Täter nach Angriff fest",
+        url="https://www.bild.de/news/polizei-festnahme-angriff",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=evening_ts),
+        now_ts=evening_ts,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 4
+    context["teamsAlertsToday"] = 4
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=78.0,
+            min_editorial_score=74.0,
+            max_alerts_per_day=11,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["active"] is True
+    assert any("Mindest-Pacing" in reason for reason in decision["reasons"])
+
+
+def test_minimum_pacing_does_not_allow_curiosity_story():
+    evening_ts = NOW_TS + 11 * 3600
+    candidate = _candidate(
+        score=82.0,
+        predictedOR=None,
+        category="news",
+        title="Schock auf dem Highway: Millionen Bienen entkommen nach Lkw-Unfall",
+        url="https://www.bild.de/news/highway-lkw-unfall-minimum",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=evening_ts),
+        now_ts=evening_ts,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 4
+    context["teamsAlertsToday"] = 4
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=78.0,
+            min_editorial_score=74.0,
+            max_alerts_per_day=11,
+        ),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["minimumPressure"]["active"] is True
+    assert any("Kurios-/Click-Reiz" in reason for reason in decision["blockingReasons"])
 
 
 def test_live_ticker_without_real_new_development_is_blocked():

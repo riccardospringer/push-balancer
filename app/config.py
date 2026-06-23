@@ -469,6 +469,7 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
 )
 # Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
+PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 11)
 PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 11)
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
@@ -531,7 +532,7 @@ PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
 # Maximale Absenkung/Anhebung der Teams-Reife-Schwelle durch die Push-Bestand-Logik.
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP",
-    4.0,
+    10.0,
 )
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE",

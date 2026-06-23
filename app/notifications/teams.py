@@ -46,6 +46,7 @@ from app.config import (
     PUSH_TEAMS_MAX_ALERTS_PER_DAY,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
+    PUSH_TEAMS_MIN_ALERTS_PER_DAY,
     PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE,
     PUSH_TEAMS_MIN_EDITORIAL_SCORE,
     PUSH_TEAMS_MIN_ALERT_SCORE,
@@ -138,6 +139,7 @@ class TeamsAlertConfig:
     constant_forecast_min_field: int = PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD
     known_default_min_field: int = PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD
     target_pushes_per_day: int = PUSH_TEAMS_TARGET_PUSHES_PER_DAY
+    min_alerts_per_day: int = PUSH_TEAMS_MIN_ALERTS_PER_DAY
     max_alerts_per_day: int = PUSH_TEAMS_MAX_ALERTS_PER_DAY
     dynamic_threshold_enabled: bool = PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED
     dynamic_threshold_max_drop: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
@@ -460,7 +462,9 @@ def should_notify_teams(
 
     pushes_today = context.get("pushesToday")
     pushes_today = _safe_int(pushes_today) if pushes_today is not None else None
+    teams_alerts_today = _safe_int(context.get("teamsAlertsToday"))
     push_pacing = _push_pacing_review(pushes_today, now_ts, config)
+    minimum_pressure = _minimum_pressure_review(push_pacing, teams_alerts_today, now_ts, config)
 
     alert_model = _teams_alert_score(
         candidate,
@@ -485,6 +489,10 @@ def should_notify_teams(
     )
     if push_budget_reason:
         positive.append(push_budget_reason)
+    if minimum_pressure["active"]:
+        floor_drop = float(minimum_pressure.get("thresholdDrop") or 0.0)
+        effective_min_alert_score = max(66.0, effective_min_alert_score - floor_drop)
+        positive.append(str(minimum_pressure["label"]))
     if alert_score < effective_min_alert_score:
         blockers.append(
             f"Teams Alert Score zu niedrig: {alert_score:.1f} < {effective_min_alert_score:.1f}"
@@ -505,7 +513,9 @@ def should_notify_teams(
         blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
-    forecast_quality = _forecast_quality_review(candidate, forecast, alert_score, breaking, config)
+    forecast_quality = _forecast_quality_review(
+        candidate, forecast, alert_score, breaking, config, minimum_pressure
+    )
     positive.extend(forecast_quality["reasons"])
     blockers.extend(forecast_quality["blockers"])
 
@@ -521,6 +531,7 @@ def should_notify_teams(
         pushes_today=pushes_today,
         now_ts=now_ts,
         config=config,
+        minimum_pressure=minimum_pressure,
     )
     positive.extend(editorial_review["reasons"])
     blockers.extend(editorial_review["blockers"])
@@ -652,7 +663,6 @@ def should_notify_teams(
         )
         status = "observe"
 
-    teams_alerts_today = _safe_int(context.get("teamsAlertsToday"))
     if (
         config.max_alerts_per_day > 0
         and teams_alerts_today >= config.max_alerts_per_day
@@ -708,6 +718,8 @@ def should_notify_teams(
         "teamsAlertsToday": teams_alerts_today,
         "pushBudgetReason": push_budget_reason,
         "pushPacing": push_pacing,
+        "minimumPressure": minimum_pressure,
+        "minAlertsPerDay": config.min_alerts_per_day,
         "pushBudgetTarget": config.target_pushes_per_day,
         "maxAlertsPerDay": config.max_alerts_per_day,
         "editorialReview": editorial_review,
@@ -1461,6 +1473,7 @@ def _forecast_quality_review(
     alert_score: float,
     breaking: bool,
     config: TeamsAlertConfig,
+    minimum_pressure: dict[str, Any] | None = None,
 ) -> dict[str, list[str]]:
     if not config.require_article_forecast:
         return {"reasons": [], "blockers": []}
@@ -1473,6 +1486,20 @@ def _forecast_quality_review(
     if _has_hard_public_need(_title(candidate), _section(candidate)) and alert_score >= config.no_forecast_min_alert_score:
         return {
             "reasons": ["Öffentliche Warn-/Nutzwertlage: auch ohne Artikelmodell prüfbar"],
+            "blockers": [],
+        }
+    minimum_pressure = minimum_pressure or {}
+    if (
+        minimum_pressure.get("active")
+        and _has_news_event(_title(candidate))
+        and alert_score >= 68.0
+        and not _is_soft_service_or_quiz(_title(candidate))
+        and not _is_nonessential_curiosity(_title(candidate))
+        and not _is_abstract_explainer_without_update(_title(candidate))
+        and not _is_scheduled_process_without_update(_title(candidate))
+    ):
+        return {
+            "reasons": ["Mindest-Pacing: historische Slot-Prognose als Timing-Kontext akzeptiert"],
             "blockers": [],
         }
     return {
@@ -1520,6 +1547,47 @@ def _daily_strategy_review(
     return {"reasons": reasons, "blockers": blockers}
 
 
+def _minimum_pressure_review(
+    push_pacing: dict[str, Any],
+    teams_alerts_today: int,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    minimum = max(0, int(config.min_alerts_per_day or 0))
+    if minimum <= 0:
+        return {"active": False, "label": "Mindest-Pacing deaktiviert", "thresholdDrop": 0.0}
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    hour = local_dt.hour + local_dt.minute / 60.0
+    expected = float(push_pacing.get("expectedByNow") or 0.0)
+    pushes_today = push_pacing.get("pushesToday")
+    current = _safe_int(pushes_today) if pushes_today is not None else _safe_int(teams_alerts_today)
+    deficit = max(0.0, expected - current)
+    late_day_floor = 0.0
+    if hour >= 18:
+        late_day_floor = max(0.0, minimum * 0.72 - current)
+    if hour >= 21:
+        late_day_floor = max(late_day_floor, minimum * 0.9 - current)
+    pressure = max(deficit, late_day_floor)
+    active = pressure >= 1.0
+    threshold_drop = min(10.0, 3.0 + pressure * 2.0) if active else 0.0
+    if not active:
+        label = f"Mindest-Pacing: im Plan fuer mindestens {minimum} Pushes"
+    else:
+        label = (
+            f"Mindest-Pacing aktiv: Rueckstand {pressure:.1f} auf mindestens "
+            f"{minimum} Pushes, Schwellen werden kontrolliert gelockert"
+        )
+    return {
+        "active": active,
+        "minimum": minimum,
+        "current": current,
+        "expectedByNow": round(expected, 2),
+        "pressure": round(pressure, 2),
+        "thresholdDrop": round(threshold_drop, 1),
+        "label": label,
+    }
+
+
 def _editorial_cvd_review(
     candidate: dict[str, Any],
     *,
@@ -1532,6 +1600,7 @@ def _editorial_cvd_review(
     pushes_today: int | None,
     now_ts: int,
     config: TeamsAlertConfig,
+    minimum_pressure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Hard editorial gate before Teams can become an action recommendation."""
     if not config.editorial_gate_enabled:
@@ -1696,14 +1765,21 @@ def _editorial_cvd_review(
         str(pacing["label"]),
     ]
 
+    minimum_pressure = minimum_pressure or {}
+    minimum_active = bool(minimum_pressure.get("active"))
+    min_editorial_score = max(
+        66.0,
+        config.min_editorial_score - (6.0 if minimum_active and not breaking else 0.0),
+    )
+
     if dashboard_rank > rank_limit and not breaking:
         blockers.append(f"CvD: nicht in den Top {rank_limit} des Dashboard-Felds")
     if news_value < config.min_editorial_news_value:
         blockers.append(
             f"CvD: Nachrichtenwert zu niedrig ({news_value:.1f} < {config.min_editorial_news_value:.1f})"
         )
-    if total < config.min_editorial_score:
-        blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {config.min_editorial_score:.1f})")
+    if total < min_editorial_score:
+        blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {min_editorial_score:.1f})")
     if soft_matches and not breaking and news_value < config.min_editorial_news_value + 6.0:
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
     if is_soft_service and not breaking:
@@ -1756,6 +1832,8 @@ def _editorial_cvd_review(
             "weekday": time_fit["weekday"],
             "clarity": round(clarity, 1),
             "load": round(load, 1),
+            "minEditorialScore": round(min_editorial_score, 1),
+            "minimumPressure": minimum_pressure,
         },
     }
 

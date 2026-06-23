@@ -73,6 +73,10 @@ services:
         value: "0.75"
       - key: PUSH_TEAMS_ALLOWED_SECTIONS
         value: News,Politik,Wirtschaft,Regional,Digital,Unterhaltung
+      - key: PUSH_TEAMS_MIN_ALERTS_PER_DAY
+        value: "11"
+      - key: PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
+        value: "10"
       - key: PUSH_TEAMS_BREAKING_OVERRIDE
         value: "true"
       - key: PUSH_TEAMS_BREAKING_MIN_SCORE
