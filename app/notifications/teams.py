@@ -374,6 +374,10 @@ def should_notify_teams(
     else:
         blockers.append(f"Score zu niedrig: {score:.1f} < {min_score:.1f}")
 
+    pushes_today = context.get("pushesToday")
+    pushes_today = _safe_int(pushes_today) if pushes_today is not None else None
+    push_pacing = _push_pacing_review(pushes_today, now_ts, config)
+
     alert_model = _teams_alert_score(
         candidate,
         score=score,
@@ -381,13 +385,13 @@ def should_notify_teams(
         freshness_hours=_freshness_hours(candidate, now_ts),
         minutes_since_last_push=minutes_since_last_push,
         recent_push_count_6h=int(context.get("recentPushCount6h") or 0),
+        pushes_today=pushes_today,
+        now_ts=now_ts,
         config=config,
     )
     alert_score = float(alert_model["score"])
     positive.append(f"Teams Alert Score {alert_score:.1f}/100")
     positive.extend(list(alert_model["reasons"])[:4])
-    pushes_today = context.get("pushesToday")
-    pushes_today = _safe_int(pushes_today) if pushes_today is not None else None
     effective_min_alert_score, push_budget_reason = _dynamic_alert_threshold(
         config.min_alert_score,
         pushes_today,
@@ -419,6 +423,7 @@ def should_notify_teams(
         minutes_since_last_push=minutes_since_last_push,
         dashboard_rank=dashboard_rank,
         alert_score=alert_score,
+        pushes_today=pushes_today,
         now_ts=now_ts,
         config=config,
     )
@@ -596,6 +601,7 @@ def should_notify_teams(
         "pushesToday": pushes_today,
         "teamsAlertsToday": teams_alerts_today,
         "pushBudgetReason": push_budget_reason,
+        "pushPacing": push_pacing,
         "pushBudgetTarget": config.target_pushes_per_day,
         "maxAlertsPerDay": config.max_alerts_per_day,
         "editorialReview": editorial_review,
@@ -804,6 +810,8 @@ def build_teams_push_recommendation(
     editorial_breakdown = editorial_review.get("breakdown") or {}
     time_fit_score = float(editorial_breakdown.get("timeFit") or 0.0)
     time_fit_label = str(editorial_breakdown.get("timeFitLabel") or "").strip()
+    pacing = decision.get("pushPacing") if isinstance(decision.get("pushPacing"), dict) else {}
+    pacing_label = str(pacing.get("label") or "").strip()
     selection_score = float(decision.get("selectionScore") or 0.0)
     push_text, push_title_source = _teams_push_title_recommendation(candidate, title, section, url, config)
     push_text_matches_title = _same_editorial_text(push_text, title)
@@ -877,10 +885,11 @@ def build_teams_push_recommendation(
         [
             *candidate_drivers[:1],
             time_fit_reason,
+            pacing_label,
             forecast_reason,
             timing_reason,
         ]
-    )[:3]
+    )[:4]
     subject = f"🚨 Jetzt pushen: {_compact_text(push_text or title, 120)}"
 
     text_lines = [subject, "", "Alternativer Push-Titel:", push_text]
@@ -1325,6 +1334,7 @@ def _editorial_cvd_review(
     minutes_since_last_push: float | None,
     dashboard_rank: int,
     alert_score: float,
+    pushes_today: int | None,
     now_ts: int,
     config: TeamsAlertConfig,
 ) -> dict[str, Any]:
@@ -1430,7 +1440,14 @@ def _editorial_cvd_review(
     else:
         timing = 2.0
 
-    time_fit = _time_fit_review(now_ts=now_ts, section=section, breaking=breaking)
+    time_fit = _time_fit_review(
+        now_ts=now_ts,
+        section=section,
+        breaking=breaking,
+        config=config,
+        pushes_today=pushes_today,
+    )
+    pacing = _push_pacing_review(pushes_today, now_ts, config)
 
     clarity = 8.0 if len(title) >= 35 else 5.0
     if any(term in title_l for term in vague_terms):
@@ -1451,12 +1468,24 @@ def _editorial_cvd_review(
     else:
         load = 0.0
 
-    total = _clamp(news_value + urgency + user_need + timing + clarity + load + time_fit["score"], 0.0, 100.0)
+    total = _clamp(
+        news_value
+        + urgency
+        + user_need
+        + timing
+        + clarity
+        + load
+        + time_fit["score"]
+        + pacing["editorialAdjustment"],
+        0.0,
+        100.0,
+    )
     blockers: list[str] = []
     reasons: list[str] = [
         f"CvD-Score {total:.1f}/100",
         f"CvD-Nachrichtenwert {news_value:.1f}/40",
         f"CvD-Zeitfenster {time_fit['score']:.1f}/10: {time_fit['label']}",
+        str(pacing["label"]),
     ]
 
     if dashboard_rank > rank_limit and not breaking:
@@ -1479,6 +1508,12 @@ def _editorial_cvd_review(
         blockers.append(
             f"CvD: unguenstiges Zeitfenster ({time_fit['score']:.1f} < {config.min_time_fit_score:.1f})"
         )
+    if (
+        not breaking
+        and time_fit.get("waitRecommended")
+        and float(pacing.get("deficit") or 0.0) < 1.5
+    ):
+        blockers.append(str(time_fit["waitReason"]))
 
     if not blockers:
         reasons.append("CvD-Freigabe: klare Push-Lage mit aktueller Relevanz")
@@ -1497,6 +1532,10 @@ def _editorial_cvd_review(
             "timing": round(timing, 1),
             "timeFit": round(float(time_fit["score"]), 1),
             "timeFitLabel": time_fit["label"],
+            "slotAvgOR": time_fit.get("slotAvgOR"),
+            "slotStars": time_fit.get("slotStars"),
+            "slotTopCategory": time_fit.get("slotTopCategory"),
+            "pushPacing": pacing,
             "localHour": time_fit["localHour"],
             "weekday": time_fit["weekday"],
             "clarity": round(clarity, 1),
@@ -1505,7 +1544,14 @@ def _editorial_cvd_review(
     }
 
 
-def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, Any]:
+def _time_fit_review(
+    *,
+    now_ts: int,
+    section: str,
+    breaking: bool,
+    config: TeamsAlertConfig,
+    pushes_today: int | None,
+) -> dict[str, Any]:
     local_dt = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
     hour = local_dt.hour
     weekday = local_dt.weekday()
@@ -1532,26 +1578,84 @@ def _time_fit_review(*, now_ts: int, section: str, breaking: bool) -> dict[str, 
     else:
         score, label = 4.0, "unbekanntes Zeitfenster"
 
+    manual_score = score
     section_l = section.lower()
     if is_weekend:
         if section_l in {"wirtschaft", "digital", "service"} and not breaking:
-            score -= 1.0
+            manual_score -= 1.0
         elif section_l in {"news", "regional", "unterhaltung"}:
-            score += 0.5
+            manual_score += 0.5
         label += " am Wochenende"
     else:
         if section_l in {"politik", "wirtschaft"} and 7 <= hour < 18:
-            score += 0.5
+            manual_score += 0.5
         if section_l == "unterhaltung" and 18 <= hour < 22:
-            score += 1.0
+            manual_score += 1.0
         label += " an einem Werktag"
+
+    slot = _slot_baseline(hour, weekday)
+    slot_avg = float(slot.get("avg_or") or 0.0) if slot else None
+    slot_stars = int(slot.get("stars") or 0) if slot else 0
+    slot_top_cat = str(slot.get("top_cat") or "").strip().lower() if slot else ""
+    slot_score = _slot_baseline_score(hour, weekday, slot, breaking)
+    section_fit_delta = _slot_section_fit_delta(section_l, slot_top_cat)
+
+    score = manual_score * 0.55 + slot_score * 0.45 + section_fit_delta
+    label_parts = [label]
+    if slot_avg is not None:
+        label_parts.append(f"historisch {slot_avg:.2f}% OR")
+    if slot_stars >= 2:
+        label_parts.append("Top-Slot")
+    if slot_top_cat and _sections_match(section_l, slot_top_cat):
+        label_parts.append(f"Ressort passt zum Slot ({_format_section(slot_top_cat)})")
+
+    try:
+        from app.push_schedule.weekly_baseline import PDF_KPI
+
+        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
+        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
+    except Exception:
+        mandatory_hours = {20, 21}
+        avoid_hours = {10, 11}
+
+    is_mandatory = hour in mandatory_hours
+    is_avoid = hour in avoid_hours
+    if is_mandatory:
+        score = max(score, 8.5 if not breaking else 9.0)
+        label_parts.append("Pflicht-/Goldfenster")
+    if is_avoid and not breaking:
+        score = min(score, 4.0)
+        label_parts.append("historische Totzone")
+
+    next_better = _next_better_slot(now_ts, score, config)
+    pacing = _push_pacing_review(pushes_today, now_ts, config)
+    wait_recommended = bool(
+        not breaking
+        and is_avoid
+        and next_better
+        and float(pacing.get("deficit") or 0.0) < 1.5
+    )
+    wait_reason = ""
+    if wait_recommended:
+        wait_reason = (
+            "CvD: aktuelles Push-Fenster ist eine historische Totzone; "
+            f"besseres Fenster um {next_better['hour']:02d}:00 Uhr abwarten"
+        )
 
     return {
         "score": round(_clamp(score, 0.0, 10.0), 1),
-        "label": label,
+        "label": "; ".join(label_parts),
         "localHour": hour,
         "weekday": weekday,
         "isWeekend": is_weekend,
+        "slotAvgOR": round(slot_avg, 2) if slot_avg is not None else None,
+        "slotStars": slot_stars,
+        "slotTopCategory": slot_top_cat or None,
+        "isMandatorySlot": is_mandatory,
+        "isAvoidSlot": is_avoid,
+        "waitRecommended": wait_recommended,
+        "waitReason": wait_reason,
+        "nextBetterSlot": next_better,
     }
 
 
@@ -1596,6 +1700,8 @@ def _teams_alert_score(
     freshness_hours: float | None,
     minutes_since_last_push: float | None,
     recent_push_count_6h: int,
+    pushes_today: int | None,
+    now_ts: int,
     config: TeamsAlertConfig,
 ) -> dict[str, Any]:
     title = _title(candidate)
@@ -1663,6 +1769,16 @@ def _teams_alert_score(
     else:
         timing_points = 3.0
 
+    time_fit = _time_fit_review(
+        now_ts=now_ts,
+        section=section,
+        breaking=breaking,
+        config=config,
+        pushes_today=pushes_today,
+    )
+    slot_adjustment = _clamp((float(time_fit["score"]) - 5.0) * 0.9, -4.0, 4.0)
+    timing_points = _clamp(timing_points + slot_adjustment, 0.0, 12.0)
+
     load_penalty = 0.0
     if minutes_since_last_push is not None and not breaking:
         if minutes_since_last_push < 20:
@@ -1688,6 +1804,7 @@ def _teams_alert_score(
         f"Nachrichtenwert {news_value_points:.0f}/30",
         f"Aktualitaet {urgency_points:.0f}/15",
         f"Timing/OR {timing_points:.0f}/10",
+        f"Zeitfenster {time_fit['score']:.1f}/10",
     ]
     if load_penalty < 0:
         reasons.append(f"Nutzerbelastung {load_penalty:.0f} Punkte")
@@ -1702,6 +1819,8 @@ def _teams_alert_score(
             "urgency": round(urgency_points, 1),
             "competition": round(competition_points, 1),
             "timing": round(timing_points, 1),
+            "timeFit": round(float(time_fit["score"]), 1),
+            "slotAdjustment": round(slot_adjustment, 1),
             "loadPenalty": round(load_penalty, 1),
         },
         "reasons": reasons,
@@ -1813,21 +1932,203 @@ def _local_day_start_ts(now_ts: int) -> int:
     return int(midnight.timestamp())
 
 
+def _slot_baseline(hour: int, weekday: int) -> dict[str, Any]:
+    try:
+        from app.push_schedule.weekly_baseline import (
+            PDF_HOUR_AVG,
+            PDF_OVERALL_AVG,
+            baseline_for,
+        )
+
+        slot = baseline_for(hour, weekday)
+        if slot:
+            return dict(slot)
+        return {
+            "avg_or": float(PDF_HOUR_AVG.get(hour, PDF_OVERALL_AVG)),
+            "count": 0,
+            "top_cat": None,
+            "stars": 0,
+            "source": "hour_avg",
+        }
+    except Exception as exc:
+        log.warning("[TeamsAlert] slot baseline unavailable: %s", exc)
+        return {}
+
+
+def _slot_baseline_score(
+    hour: int,
+    weekday: int,
+    slot: dict[str, Any] | None,
+    breaking: bool,
+) -> float:
+    slot = slot or _slot_baseline(hour, weekday)
+    avg_or = _safe_float(slot.get("avg_or")) if slot else None
+    stars = int(slot.get("stars") or 0) if slot else 0
+    if avg_or is None:
+        score = 4.5
+    else:
+        score = 2.0 + ((avg_or - 4.2) / (7.3 - 4.2)) * 7.0
+    score += stars * 0.25
+    try:
+        from app.push_schedule.weekly_baseline import PDF_KPI
+
+        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
+        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
+    except Exception:
+        mandatory_hours = {20, 21}
+        avoid_hours = {10, 11}
+    if hour in mandatory_hours:
+        score = max(score, 8.5)
+    if hour in avoid_hours and not breaking:
+        score = min(score, 3.5)
+    return _clamp(score, 0.0, 10.0)
+
+
+def _sections_match(section: str, top_cat: str) -> bool:
+    section_l = (section or "").lower()
+    top_l = (top_cat or "").lower()
+    aliases = {
+        "geld": "wirtschaft",
+        "wirtschaft": "wirtschaft",
+        "politik": "politik",
+        "news": "news",
+        "regional": "regional",
+        "unterhaltung": "unterhaltung",
+        "digital": "digital",
+    }
+    return aliases.get(section_l, section_l) == aliases.get(top_l, top_l)
+
+
+def _slot_section_fit_delta(section: str, top_cat: str) -> float:
+    if not top_cat:
+        return 0.0
+    if _sections_match(section, top_cat):
+        return 0.8
+    if section in {"politik", "news"} and top_cat in {"politik", "news"}:
+        return 0.2
+    if top_cat in {"unterhaltung", "regional"} and section in {"politik", "wirtschaft"}:
+        return -0.4
+    return -0.2
+
+
+def _slot_weight(hour: int, weekday: int, config: TeamsAlertConfig) -> float:
+    if hour < int(config.active_hours_start) or hour > int(config.active_hours_end):
+        return 0.0
+    slot = _slot_baseline(hour, weekday)
+    avg_or = _safe_float(slot.get("avg_or")) if slot else None
+    try:
+        from app.push_schedule.weekly_baseline import PDF_KPI, PDF_OVERALL_AVG
+
+        overall = float(PDF_OVERALL_AVG)
+        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
+        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
+    except Exception:
+        overall = 5.44
+        mandatory_hours = {20, 21}
+        avoid_hours = {10, 11}
+    weight = (avg_or or overall) / overall
+    if hour in mandatory_hours:
+        weight *= 1.45
+    if hour in avoid_hours:
+        weight *= 0.35
+    return _clamp(weight, 0.15, 1.9)
+
+
+def _next_better_slot(
+    now_ts: int,
+    current_score: float,
+    config: TeamsAlertConfig,
+) -> dict[str, Any] | None:
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    weekday = local_dt.weekday()
+    current_hour = local_dt.hour
+    best: dict[str, Any] | None = None
+    for hour in range(current_hour + 1, min(23, int(config.active_hours_end)) + 1):
+        slot = _slot_baseline(hour, weekday)
+        slot_score = _slot_baseline_score(hour, weekday, slot, breaking=False)
+        if slot_score < current_score + 1.25:
+            continue
+        candidate = {
+            "hour": hour,
+            "score": round(slot_score, 1),
+            "avgOR": round(float(slot.get("avg_or") or 0.0), 2) if slot else None,
+            "stars": int(slot.get("stars") or 0) if slot else 0,
+        }
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+    return best
+
+
 def _expected_pushes_by_now(now_ts: int, config: TeamsAlertConfig) -> float:
-    """Estimate how many pushes a CvD should have sent by this time of day."""
+    """Estimate how many pushes a CvD should have sent by this time of day.
+
+    The curve is not linear: it follows the historical slot baseline, so weak
+    10/11 Uhr windows carry little target pressure while 20/21 Uhr carry more.
+    """
     target = max(0, int(config.target_pushes_per_day or 0))
     if target <= 0:
         return 0.0
-    start = _clamp(config.active_hours_start, 0.0, 23.0)
-    end = _clamp(config.active_hours_end, start + 0.1, 24.0)
     local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    weekday = local_dt.weekday()
     hour = local_dt.hour + local_dt.minute / 60.0
+    start = int(_clamp(config.active_hours_start, 0.0, 23.0))
+    end = int(_clamp(config.active_hours_end, start + 0.1, 23.0))
     if hour <= start:
         return 0.0
     if hour >= end:
         return float(target)
-    fraction = (hour - start) / (end - start)
+    weights = {h: _slot_weight(h, weekday, config) for h in range(start, end + 1)}
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        return 0.0
+    elapsed_weight = 0.0
+    for slot_hour, weight in weights.items():
+        if hour >= slot_hour + 1:
+            elapsed_weight += weight
+        elif slot_hour <= hour < slot_hour + 1:
+            elapsed_weight += weight * (hour - slot_hour)
+    fraction = _clamp(elapsed_weight / total_weight, 0.0, 1.0)
     return round(target * fraction, 2)
+
+
+def _push_pacing_review(
+    pushes_today: int | None,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    expected = _expected_pushes_by_now(now_ts, config)
+    if pushes_today is None:
+        return {
+            "known": False,
+            "pushesToday": None,
+            "expectedByNow": expected,
+            "deficit": 0.0,
+            "surplus": 0.0,
+            "editorialAdjustment": 0.0,
+            "label": "Tagespacing: Push-Bestand heute nicht bekannt",
+        }
+    deficit = max(0.0, expected - pushes_today)
+    surplus = max(0.0, pushes_today - expected)
+    adjustment = 0.0
+    if deficit >= 1.5:
+        adjustment = min(4.0, deficit * 0.8)
+    elif surplus >= 2.0:
+        adjustment = -min(7.0, surplus * 1.1)
+    if deficit >= 1.5:
+        label = f"Tagespacing: Rueckstand ({pushes_today} statt {expected:.1f} Pushes)"
+    elif surplus >= 2.0:
+        label = f"Tagespacing: Vorsprung ({pushes_today} statt {expected:.1f} Pushes)"
+    else:
+        label = f"Tagespacing: im Plan ({pushes_today} statt {expected:.1f} Pushes)"
+    return {
+        "known": True,
+        "pushesToday": pushes_today,
+        "expectedByNow": expected,
+        "deficit": round(deficit, 2),
+        "surplus": round(surplus, 2),
+        "editorialAdjustment": round(adjustment, 1),
+        "label": label,
+    }
 
 
 def _dynamic_alert_threshold(

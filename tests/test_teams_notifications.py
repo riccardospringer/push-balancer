@@ -1160,6 +1160,14 @@ def _afternoon_ts() -> int:
     return int(dt.datetime(2026, 6, 19, 15, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
 
 
+def _dead_zone_ts() -> int:
+    return int(dt.datetime(2026, 6, 19, 10, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+
+
+def _gold_slot_ts() -> int:
+    return int(dt.datetime(2026, 6, 19, 21, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+
+
 def test_dynamic_threshold_drops_when_too_few_pushes_today():
     ts = _afternoon_ts()
     candidate = _candidate()
@@ -1179,6 +1187,86 @@ def test_dynamic_threshold_drops_when_too_few_pushes_today():
 
     assert lowered["teamsAlertScoreThreshold"] < base["teamsAlertScoreThreshold"]
     assert "Rueckstand" in lowered["pushBudgetReason"]
+
+
+def test_dead_zone_waits_when_day_is_not_behind_push_pace():
+    ts = _dead_zone_ts()
+    candidate = _candidate(
+        score=84.0,
+        predictedOR=0.061,
+        title="Eilmeldung: Regierung beschliesst wichtiges Paket",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=50, now_ts=ts),
+        now_ts=ts,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 2
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True, min_alert_score=66.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["editorialReview"]["breakdown"]["timeFit"] == 4.0
+    assert "historische Totzone" in decision["editorialReview"]["breakdown"]["timeFitLabel"]
+    assert any("Totzone" in reason for reason in decision["blockingReasons"])
+
+
+def test_dead_zone_can_pass_when_cvd_is_behind_daily_push_pace():
+    ts = _dead_zone_ts()
+    candidate = _candidate(
+        score=90.0,
+        predictedOR=0.07,
+        title="Eilmeldung: Regierung beschliesst wichtiges Paket",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=50, now_ts=ts),
+        now_ts=ts,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 0
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True, min_alert_score=66.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["pushPacing"]["deficit"] >= 1.5
+    assert "Rueckstand" in decision["pushPacing"]["label"]
+
+
+def test_gold_slot_uses_historical_baseline_in_time_fit():
+    ts = _gold_slot_ts()
+    candidate = _candidate(
+        score=82.0,
+        predictedOR=0.058,
+        title="Eilmeldung: Regierung beschliesst wichtiges Paket",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=55, now_ts=ts),
+        now_ts=ts,
+    )
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True, min_alert_score=66.0),
+    )
+
+    breakdown = decision["editorialReview"]["breakdown"]
+    assert decision["shouldNotify"] is True
+    assert breakdown["timeFit"] >= 8.0
+    assert breakdown["slotAvgOR"] >= 7.0
+    assert "Pflicht-/Goldfenster" in breakdown["timeFitLabel"]
 
 
 def test_dynamic_threshold_rises_when_too_many_pushes_today():
