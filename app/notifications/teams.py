@@ -65,6 +65,7 @@ from app.config import (
     PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER,
     PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED,
     PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS,
+    PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_TOPIC_DEDUP_HOURS,
     PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
@@ -144,6 +145,7 @@ class TeamsAlertConfig:
     feed_overtaken_enabled: bool = PUSH_TEAMS_FEED_OVERTAKEN_ENABLED
     topic_dedup_hours: float = PUSH_TEAMS_TOPIC_DEDUP_HOURS
     topic_dedup_similarity: float = PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY
+    pushed_topic_window_hours: float = PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -504,7 +506,7 @@ def should_notify_teams(
     ):
         blockers.append("Push-Dichte in den letzten 6 Stunden zu hoch")
 
-    duplicate_reason = _already_pushed_reason(candidate, context.get("history") or [])
+    duplicate_reason = _already_pushed_reason(candidate, context.get("history") or [], now_ts, config)
     if duplicate_reason:
         blockers.append(duplicate_reason)
 
@@ -1945,22 +1947,73 @@ def _realert_blocker_or_reason(
     return {"positive": "Re-Alert wegen relevanter Veraenderung: " + ", ".join(improvements[:2])}
 
 
-def _already_pushed_reason(candidate: dict[str, Any], history: list[dict[str, Any]]) -> str:
+def _already_pushed_reason(
+    candidate: dict[str, Any],
+    history: list[dict[str, Any]],
+    now_ts: int | None = None,
+    config: TeamsAlertConfig | None = None,
+) -> str:
+    """Block candidates that we already pushed live (exact article OR same story).
+
+    Exakte Artikel-URL zaehlt im gesamten Verlauf; die unscharfe Themen-Erkennung
+    (URL-Slug-/Titel-Aehnlichkeit) nur innerhalb des konfigurierten Fensters, damit
+    sich entwickelnde Stories ueber Tage nicht dauerhaft gesperrt werden.
+    """
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    window_start = now - int(max(0.0, config.pushed_topic_window_hours) * 3600)
+
     url = _normalize_url(_url(candidate))
     title = _title(candidate)
     title_tokens = _tokens(title)
+    slug_tokens = _url_slug_tokens(_url(candidate))
+
     for item in history:
         item_url = _normalize_url(_url(item))
         if url and item_url and url == item_url:
-            return "Bereits gepushter Artikel"
+            return "Bereits live gepusht (gleiche Artikel-URL)"
         item_title = _title(item)
         if title and item_title and _normalize_title(title) == _normalize_title(item_title):
-            return "Duplicate: sehr aehnlicher Titel wurde bereits gepusht"
-        if title_tokens:
-            similarity = _token_similarity(title_tokens, _tokens(item_title))
-            if similarity >= 0.88:
-                return "Duplicate: fast identische Meldung wurde bereits gepusht"
+            return "Bereits live gepusht (identischer Titel)"
+
+        # Unscharfe Themen-Erkennung nur fuer kuerzlich Gepushtes.
+        item_ts = _safe_int(item.get("ts_num", item.get("ts", 0)))
+        if item_ts and item_ts < window_start:
+            continue
+        if _same_topic(slug_tokens, _url_slug_tokens(_url(item)), 0.6):
+            return "Bereits live gepusht (gleiche Story, URL-Slug)"
+        if _same_topic(title_tokens, _tokens(item_title), 0.6):
+            return "Bereits live gepusht (sehr aehnliche Meldung)"
     return ""
+
+
+def _url_slug_tokens(url: str) -> set[str]:
+    """Bedeutungstragende Tokens aus dem URL-Pfad/Slug (ohne Ressort-Segmente)."""
+    from urllib.parse import urlsplit
+
+    path = urlsplit(str(url or "")).path.lower()
+    drop = {
+        "politik", "inland", "ausland", "sport", "fussball", "fußball", "news",
+        "regional", "unterhaltung", "stars", "leute", "leben", "wissen", "auto",
+        "geld", "wirtschaft", "digital", "video", "videos", "ratgeber", "reise",
+        "spiele", "lifestyle", "mobil", "bild", "html", "amp", "www",
+    }
+    raw = re.split(r"[/\-_.]+", path)
+    return {
+        token for token in raw
+        if len(token) >= 4 and token not in drop and not token.isdigit()
+    } - _STOP_WORDS
+
+
+def _same_topic(a: set[str], b: set[str], threshold: float) -> bool:
+    """Overlap-Koeffizient + mind. ein markantes gemeinsames Token (robust gegen
+    unterschiedlich lange Slugs/Titel zur selben Story)."""
+    if not a or not b:
+        return False
+    shared = a & b
+    if len(shared) < 2 or not any(len(token) >= 5 for token in shared):
+        return False
+    return len(shared) / max(1, min(len(a), len(b))) >= threshold
 
 
 def _topic_already_alerted_reason(

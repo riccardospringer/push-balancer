@@ -397,7 +397,43 @@ def test_already_pushed_article_does_not_trigger_teams_decision():
     decision = shouldNotifyTeams(candidate, _context(candidate, history=pushed_history), _config())
 
     assert decision["shouldNotify"] is False
-    assert any("Bereits gepushter Artikel" in reason for reason in decision["blockingReasons"])
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+
+
+def test_same_story_pushed_under_different_url_is_blocked():
+    # Echter Push der gleichen Story unter anderer URL + push-optimiertem Titel.
+    candidate = _candidate(
+        title="Prozess um Mord an Fabian: Vier Polizisten sagen aus",
+        url="https://www.bild.de/regional/rostock/prozess-um-mord-an-fabian-freund-ticker",
+        category="news",
+    )
+    pushed = _history(
+        minutes_since_last_push=90,
+        link="https://www.bild.de/regional/rostock/prozess-mord-fabian-freund-zeugen-aussage",
+        title="🚨 Mordprozess Fabian: Jetzt sagen die Polizisten aus",
+    )
+
+    decision = shouldNotifyTeams(candidate, _context(candidate, history=pushed), _config())
+
+    assert decision["shouldNotify"] is False
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+
+
+def test_different_story_sharing_one_token_is_not_blocked_as_pushed():
+    candidate = _candidate(
+        title="Regierung beschließt neues Rentenpaket für Familien",
+        url="https://www.bild.de/politik/inland/regierung-rentenpaket-familien",
+        category="politik",
+    )
+    pushed = _history(
+        minutes_since_last_push=90,
+        link="https://www.bild.de/politik/inland/merz-kritik-opposition-haushalt",
+        title="Merz watscht Opposition ab",
+    )
+
+    decision = shouldNotifyTeams(candidate, _context(candidate, history=pushed), _config())
+
+    assert not any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
 
 
 def test_already_sent_teams_alert_does_not_repeat_without_relevant_change():

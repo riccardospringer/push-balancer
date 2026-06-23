@@ -507,6 +507,14 @@ PUSH_TEAMS_FEED_OVERTAKEN_ENABLED: bool = _env_flag("PUSH_TEAMS_FEED_OVERTAKEN_E
 # und ueber der Token-Aehnlichkeit -> kein zweiter Alert.
 PUSH_TEAMS_TOPIC_DEDUP_HOURS: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_HOURS", 12.0)
 PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY", 0.5)
+# Abgleich gegen ECHTE Live-Pushes: wurde dieselbe Story bereits real gepusht
+# (gleiche Artikel-URL jederzeit im Verlauf, oder dieselbe Story per URL-Slug/
+# Titel-Aehnlichkeit innerhalb dieses Fensters), wird sie in Teams nicht erneut
+# vorgeschlagen.
+PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS: float = _env_float(
+    "PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS",
+    36.0,
+)
 PUSH_TEAMS_MIN_SELECTION_MARGIN: float = _env_float("PUSH_TEAMS_MIN_SELECTION_MARGIN", 5.0)
 PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",
