@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import os
 import re
 from collections import Counter
 from typing import Any
@@ -83,6 +84,51 @@ _CLICKBAIT_RE = re.compile(
     r"(?i)\b(das glaubt keiner|was dann passiert|dieser trick|irre|krass|"
     r"unglaublich|unfassbar|netz rastet aus|so reagiert)\b"
 )
+
+# ── Reuters Digital News Report 2025 — "Walking the notification tightrope" ──
+# Kernbefund: Ueber-Sensationalismus/Clickbait und nicht-essenzielle, "nach Klicks
+# suchende" Stories sind die groessten Overload-/Abmelde-Treiber bei Push-Alerts.
+# Im bisherigen Score ist Clickbait nur mit 0.04 gewichtet, BILD-Reiz dagegen mit
+# 0.18 — die folgende Korrektur wertet Overload-Risiko direkt im Score ab.
+REUTERS_OVERLOAD_ENABLED: bool = os.environ.get(
+    "PUSH_BALANCER_REUTERS_OVERLOAD_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+_OVERLOAD_SENSATION_RE = re.compile(
+    r"(?i)\b(schock|wahnsinn|irre|unfassbar|unglaublich|skandal|horror|drama|"
+    r"hammer|mega|krass|sensation|brutal|schock-?\w*)\b"
+)
+_OVERLOAD_CURIOSITY_RE = re.compile(
+    r"(?i)(das steckt dahinter|sie werden (es )?nicht glauben|das m[uü]ssen sie sehen|"
+    r"\bkurios\b|\bskurril\b|\bverr[uü]ckt\b|darum geht es jetzt|das ist der grund|"
+    r"das m[uü]ssen sie wissen)"
+)
+
+
+def _reuters_overload_adjustment(
+    title: str,
+    tone: str,
+    is_eil: bool,
+    risks: list[str],
+) -> float:
+    """Score-Abwertung fuer Overload-Treiber nach Reuters DNR 2025.
+
+    Ueber-Sensationalismus/Clickbait und nicht-essenzielle Neugier-/Klick-Frames
+    treiben Abmeldungen; harte Breaking-Lagen sind ausgenommen (Breaking-
+    Priorisierung funktioniert laut Studie). Begrenzt auf max. -12 Punkte.
+    """
+    if not REUTERS_OVERLOAD_ENABLED or is_eil or tone == "breaking":
+        return 0.0
+    penalty = 0.0
+    sensation = len(_OVERLOAD_SENSATION_RE.findall(title))
+    if sensation:
+        penalty -= min(8.0, 4.0 + 2.0 * (sensation - 1))
+        risks.append("Overload-Risiko: ueber-sensationelle Zuspitzung (Reuters DNR 2025)")
+    if title.count("!") >= 2:
+        penalty -= 3.0
+    if _OVERLOAD_CURIOSITY_RE.search(title):
+        penalty -= 4.0
+        risks.append("Overload-Risiko: nicht-essenzieller Neugier-/Klick-Frame (Reuters DNR 2025)")
+    return max(-12.0, penalty)
 _FRESH_DEVELOPMENT_RE = re.compile(
     r"(?i)\b(heute|aktuell|neu|erstmals|plötzlich|ploetzlich|wende|"
     r"entscheidung|beschlossen|beschließt|beschliesst|festnahme|festgenommen|"
@@ -265,6 +311,11 @@ def score_push_candidate(
     if features["strong_non_politics"]:
         raw_score += 3.0
 
+    # Reuters DNR 2025: Overload-Treiber (Sensationalismus/Clickbait/Neugier-Frame)
+    # direkt abwerten, nicht nur im 0.04-gewichteten Risiko-Term.
+    overload_adjustment = _reuters_overload_adjustment(title, tone, is_eil, risks)
+    raw_score += overload_adjustment
+
     score = round(_clip(raw_score, 0.0, 100.0), 1)
     priority = _priority(score)
 
@@ -296,6 +347,7 @@ def score_push_candidate(
             "politicsContext": round(politics_context, 1),
             "videoFit": round(video_fit, 1),
             "editorialFeedback": round(feedback_score, 1),
+            "overloadAdjustment": round(overload_adjustment, 1),
         },
     }
 

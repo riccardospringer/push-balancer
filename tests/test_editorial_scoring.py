@@ -405,5 +405,31 @@ def test_recommend_text_keeps_headline_without_generic_filler():
     assert "Trump hebt neu ab" in politik["recommendedText"]
 
 
+def test_reuters_overload_penalises_sensationalism_but_not_breaking():
+    now = int(time.time())
+
+    sensational = _score("Wahnsinn! Unfassbarer Skandal erschüttert die Liga", "news", now=now)
+    neutral = _score("Liga-Reform beschlossen: neue Regeln ab Sommer", "news", now=now)
+
+    # Ueber-Sensationalismus wird abgewertet (Reuters DNR 2025).
+    assert sensational["scoreBreakdown"]["overloadAdjustment"] < 0
+    assert sensational["score"] < neutral["score"]
+
+    # Harte Breaking-Lage ist ausgenommen, auch mit "Schock" im Titel.
+    breaking = score_push_candidate(
+        {
+            "title": "Eilmeldung: Schock-Diagnose - Minister tritt zurück",
+            "cat": "news",
+            "hour": 9,
+            "ts_num": now,
+            "is_eilmeldung": True,
+        },
+        history=_history(now),
+        state={"global_avg": 5.5},
+        predicted_or=6.0,
+    )
+    assert breaking["scoreBreakdown"]["overloadAdjustment"] == 0.0
+
+
 def scored_breakdown_value(result: dict, key: str) -> float:
     return float(result["scoreBreakdown"][key])
