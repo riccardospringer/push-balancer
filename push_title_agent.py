@@ -224,14 +224,25 @@ def _llm_call(system: str, user: str, temperature: float = 0.7, max_tokens: int 
         _OPENAI_CLIENT = OpenAI(api_key=api_key)
         _OPENAI_CLIENT_KEY = api_key
     client = _OPENAI_CLIENT
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        max_tokens=min(max_tokens, DEFAULT_MAX_TOKENS),
-        temperature=temperature,
-        timeout=AGENT_TIMEOUT,
-    )
-    return resp.choices[0].message.content.strip()
+    # Ein Retry bei transienten Fehlern/Timeouts: sonst kippt ein einzelner
+    # langsamer Call die komplette KI-Titel-Generierung auf den lokalen Fallback.
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                max_tokens=min(max_tokens, DEFAULT_MAX_TOKENS),
+                temperature=temperature,
+                timeout=AGENT_TIMEOUT,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as exc:
+            last_exc = exc
+            log.warning("[PushTitle] LLM-Call Versuch %d/2 fehlgeschlagen: %s", attempt + 1, exc)
+            if attempt == 0:
+                time.sleep(0.6)
+    raise last_exc if last_exc else RuntimeError("LLM-Call fehlgeschlagen")
 
 
 EDITORIAL_ONE_BRAIN_SYS = f"""Du bist ein erfahrener BILD-Push-Redakteur mit klarem Fokus auf hohe Opening Rate.

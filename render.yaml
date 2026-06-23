@@ -83,15 +83,17 @@ services:
         value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
         value: gpt-4o-mini
+      # 8s war zu knapp -> haeufige Timeouts -> Fallback auf lokalen Titel.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "8.0"
+        value: "20.0"
+      # 320 Tokens reichten fuer die strukturierte Multi-Varianten-Antwort oft nicht.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
-        value: "320"
+        value: "600"
       # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.
       - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR
-        value: "20"
+        value: "60"
       - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY
-        value: "200"
+        value: "400"
       - key: OPENAI_BACKFILL_ENABLED
         value: "false"
       - key: OPENAI_PREDICTION_SCORING_ENABLED
