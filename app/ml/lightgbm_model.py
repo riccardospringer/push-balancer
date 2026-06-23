@@ -79,8 +79,16 @@ def _ml_train_model_impl() -> None:
         log.error("[lightgbm] push_db_load_all fehlgeschlagen: %s", exc)
         return
 
-    # 2. Mindestanzahl prüfen (nur Pushes mit valider OR)
-    valid_pushes = [p for p in pushes if p.get("or", 0) > 0]
+    # 2. Mindestanzahl prüfen — nur Pushes mit plausibler OR (Prozent-Skala).
+    # Filtert Datenmuell wie or=100.0 oder Bruchteil-Artefakte (0.01) heraus, die
+    # das Modell verzerren wuerden.
+    def _plausible_or(value) -> bool:
+        try:
+            return 0.2 <= float(value) <= 40.0
+        except (TypeError, ValueError):
+            return False
+
+    valid_pushes = [p for p in pushes if _plausible_or(p.get("or", 0))]
     if len(valid_pushes) < 50:
         log.info("[lightgbm] Zu wenige Pushes mit OR > 0 (%d < 50) — Training übersprungen", len(valid_pushes))
         return

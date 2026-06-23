@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from app.config import (
     ALLOWED_ORIGINS,
+    ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
     BACKGROUND_AUTOMATIONS_ENABLED,
     HEALTH_ACTIVE_CHECKS_ENABLED,
     INTERNAL_ACCESS_ALLOWED_CIDRS,
@@ -568,6 +569,28 @@ def _start_background_workers() -> None:
         log.info("[Research] Autonomer Research-Worker gestartet")
     else:
         log.info("[Research] Deaktiviert, Analyse wird nur bei Bedarf berechnet")
+
+    # 6b. Eigenstaendiger LightGBM-Trainer — sorgt fuer belastbare Pro-Artikel-OR-
+    # Prognosen, auch wenn der schwere Research-Worker aus ist. Ohne trainiertes
+    # Modell liefert predict_or nur den globalen Durchschnitt (Fallback), wodurch
+    # die Teams-Empfehlungen nur die historische Slot-Prognose zeigen. Bewusst
+    # leichtgewichtig: ein LightGBM-Fit aus der Push-Historie, nach Boot verzoegert
+    # (RAM), danach periodischer Refresh.
+    if ARTICLE_PREDICTION_ENRICHMENT_ENABLED and not BACKGROUND_AUTOMATIONS_ENABLED:
+        def _standalone_ml_trainer():
+            first_delay = int(os.environ.get("ML_STANDALONE_FIRST_TRAIN_DELAY_S", "150"))
+            interval = max(1800, int(os.environ.get("ML_STANDALONE_RETRAIN_INTERVAL_S", "21600")))
+            time.sleep(first_delay)
+            log.info("[ML] Standalone-LightGBM-Trainer gestartet (Refresh alle %ds)", interval)
+            while True:
+                try:
+                    ml_train_model()
+                except Exception as e:
+                    log.warning("[ML] Standalone-Training-Fehler: %s", e)
+                time.sleep(interval)
+
+        threading.Thread(target=_standalone_ml_trainer, daemon=True, name="standalone_ml_trainer").start()
+        log.info("[ML] Standalone-LightGBM-Trainer aktiv (Research-Worker aus, Enrichment an)")
 
     # 7. Health-Checker
     if HEALTH_ACTIVE_CHECKS_ENABLED:
