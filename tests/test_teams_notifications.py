@@ -944,6 +944,43 @@ def test_teams_message_contains_required_editorial_fields():
     assert isinstance(payload["whyPushworthy"], list)
 
 
+def test_teams_message_uses_llm_generated_title_when_available():
+    candidate = _candidate()
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    llm_result = {
+        "title": "Eil-Beschluss: So viel mehr Geld gibt es jetzt für Familien",
+        "meta": {"llm_call_started": True},
+    }
+    with patch("push_title_agent._llm_unavailable_reason", return_value=""), patch(
+        "push_title_agent.generate_push_title", return_value=llm_result
+    ):
+        message = buildTeamsPushRecommendation(candidate, context, decision, _config())
+
+    assert message["payload"]["pushTitleSource"] == "llm"
+    assert message["payload"]["alternativePushTitle"] == llm_result["title"]
+    assert llm_result["title"] in message["text"]
+
+
+def test_teams_message_discards_generic_llm_title():
+    candidate = _candidate()
+    context = _context(candidate)
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    llm_result = {
+        "title": "Regierung beschliesst Paket: Darum geht es jetzt",
+        "meta": {"llm_call_started": True},
+    }
+    with patch("push_title_agent._llm_unavailable_reason", return_value=""), patch(
+        "push_title_agent.generate_push_title", return_value=llm_result
+    ):
+        message = buildTeamsPushRecommendation(candidate, context, decision, _config())
+
+    assert message["payload"]["pushTitleSource"] != "llm"
+    assert "Darum geht es jetzt" not in message["payload"]["alternativePushTitle"]
+
+
 def test_teams_message_does_not_repeat_identical_push_text_and_article_title():
     candidate = _candidate(recommendedText=_candidate()["title"])
     context = _context(candidate)

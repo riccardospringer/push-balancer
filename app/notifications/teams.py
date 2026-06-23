@@ -41,6 +41,7 @@ from app.config import (
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS,
     PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD,
+    PUSH_TEAMS_LLM_TITLE_ENABLED,
     PUSH_TEAMS_MAX_ALERTS_PER_DAY,
     PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_MAX_PUSHES_LAST_6H,
@@ -104,6 +105,7 @@ class TeamsAlertConfig:
     editorial_gate_enabled: bool = PUSH_TEAMS_EDITORIAL_GATE_ENABLED
     editorial_top_limit: int = PUSH_TEAMS_EDITORIAL_TOP_LIMIT
     event_gate_enabled: bool = PUSH_TEAMS_EVENT_GATE_ENABLED
+    llm_title_enabled: bool = PUSH_TEAMS_LLM_TITLE_ENABLED
     min_editorial_score: float = PUSH_TEAMS_MIN_EDITORIAL_SCORE
     min_editorial_news_value: float = PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
     min_time_fit_score: float = PUSH_TEAMS_MIN_TIME_FIT_SCORE
@@ -801,7 +803,7 @@ def build_teams_push_recommendation(
     time_fit_score = float(editorial_breakdown.get("timeFit") or 0.0)
     time_fit_label = str(editorial_breakdown.get("timeFitLabel") or "").strip()
     selection_score = float(decision.get("selectionScore") or 0.0)
-    push_text = _teams_push_title_recommendation(candidate, title, section, url)
+    push_text, push_title_source = _teams_push_title_recommendation(candidate, title, section, url, config)
     push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
     competitors = int(competition_meta.get("eligibleCompetitors") or 0)
@@ -954,6 +956,7 @@ def build_teams_push_recommendation(
             "predictedORExplanation": forecast["explanation"],
             "recommendedPushText": push_text,
             "alternativePushTitle": push_text,
+            "pushTitleSource": push_title_source,
             "recommendedAt": _format_dt(now_ts),
             "minutesSinceLastPush": round(float(minutes), 1) if minutes_known else 0.0,
             "lastPushKnown": minutes_known,
@@ -2385,12 +2388,52 @@ def _overtaken_by_feed(title: str, config: TeamsAlertConfig) -> str:
     return ""
 
 
+def _llm_push_title(title: str, section: str, url: str, config: TeamsAlertConfig) -> str:
+    """KI-generierter Push-Titel (push_title_agent), nur wenn der LLM verfuegbar ist.
+
+    Gibt "" zurueck, wenn LLM deaktiviert/ohne Key/Budget, der LLM nicht wirklich
+    lief, oder das Ergebnis generisch/leer ist - dann greift der Fallback.
+    """
+    if not config.llm_title_enabled:
+        return ""
+    try:
+        from push_title_agent import _llm_unavailable_reason, generate_push_title
+
+        if _llm_unavailable_reason():
+            return ""
+        from app.push_titles import infer_content_type
+
+        result = generate_push_title(
+            article_title=title,
+            category=section or "news",
+            article_type=infer_content_type(url, title),
+            force_llm=True,
+        )
+        if not (result.get("meta") or {}).get("llm_call_started"):
+            return ""
+        llm_title = str(result.get("title") or "").strip()
+        if llm_title and not _is_generic_push_title(llm_title):
+            return _compact_text(llm_title, 100)
+    except Exception as exc:
+        log.warning("[TeamsAlert] LLM push title unavailable: %s", exc)
+    return ""
+
+
 def _teams_push_title_recommendation(
     candidate: dict[str, Any],
     title: str,
     section: str,
     url: str,
-) -> str:
+    config: TeamsAlertConfig | None = None,
+) -> tuple[str, str]:
+    """Return (push_title, source) where source is 'llm' | 'editorial' | 'headline'."""
+    config = config or TeamsAlertConfig()
+
+    # 1) KI-generierter Titel hat Vorrang (wenn LLM verfuegbar).
+    llm_title = _llm_push_title(title, section, url, config)
+    if llm_title:
+        return llm_title, "llm"
+
     explicit_candidates: list[str] = []
     for key in (
         "alternativePushTitle",
@@ -2411,7 +2454,7 @@ def _teams_push_title_recommendation(
     # gewinnt. Generische Floskeln werden grundsaetzlich uebersprungen.
     for value in _dedupe(explicit_candidates):
         if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
-            return _compact_text(value, 100)
+            return _compact_text(value, 100), "editorial"
 
     try:
         from app.push_titles import build_push_title_suggestions
@@ -2424,15 +2467,15 @@ def _teams_push_title_recommendation(
         ]
         for value in _dedupe([item for item in generated if item]):
             if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
-                return _compact_text(value, 100)
+                return _compact_text(value, 100), "editorial"
     except Exception as exc:
         log.warning("[TeamsAlert] could not build alternative push title: %s", exc)
 
     # Lieber die echte Schlagzeile als eine generische Floskel.
     for value in explicit_candidates:
         if not _is_generic_push_title(value):
-            return _compact_text(value, 100)
-    return _compact_text(title or (explicit_candidates[0] if explicit_candidates else ""), 100)
+            return _compact_text(value, 100), "editorial"
+    return _compact_text(title or (explicit_candidates[0] if explicit_candidates else ""), 100), "headline"
 
 
 def _score_reason(candidate: dict[str, Any]) -> str:

@@ -422,6 +422,10 @@ PUSH_TEAMS_EDITORIAL_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_EDITORIAL_GATE_E
 # (etwas ist passiert). Ohne Ereignis-Signal -> kein Push. Ersetzt die endlosen
 # Stichwortlisten durch eine positive Anforderung; Service/Ratgeber/Teaser fallen raus.
 PUSH_TEAMS_EVENT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_EVENT_GATE_ENABLED", True)
+# KI-generierten Push-Titel (push_title_agent, LLM) in den Teams-Nachrichten nutzen.
+# Greift nur, wenn der LLM tatsaechlich verfuegbar ist (OPENAI_API_KEY +
+# OPENAI_TITLE_GENERATION_ENABLED + Rate-Budget); sonst sauberer Fallback.
+PUSH_TEAMS_LLM_TITLE_ENABLED: bool = _env_flag("PUSH_TEAMS_LLM_TITLE_ENABLED", True)
 PUSH_TEAMS_EDITORIAL_TOP_LIMIT: int = _env_int("PUSH_TEAMS_EDITORIAL_TOP_LIMIT", 10)
 PUSH_TEAMS_MIN_EDITORIAL_SCORE: float = _env_float("PUSH_TEAMS_MIN_EDITORIAL_SCORE", 70.0)
 PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE: float = _env_float(

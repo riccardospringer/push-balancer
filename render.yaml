@@ -80,13 +80,18 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_TITLE_GENERATION_ENABLED
-        value: "false"
+        value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
         value: gpt-4o-mini
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
         value: "8.0"
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
         value: "320"
+      # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.
+      - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR
+        value: "20"
+      - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY
+        value: "200"
       - key: OPENAI_BACKFILL_ENABLED
         value: "false"
       - key: OPENAI_PREDICTION_SCORING_ENABLED
