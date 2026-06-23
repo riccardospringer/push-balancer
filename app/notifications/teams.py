@@ -36,6 +36,7 @@ from app.config import (
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE,
     PUSH_TEAMS_EDITORIAL_GATE_ENABLED,
     PUSH_TEAMS_EDITORIAL_TOP_LIMIT,
+    PUSH_TEAMS_EVENT_GATE_ENABLED,
     PUSH_TEAMS_EXCLUDED_SECTIONS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS,
@@ -102,6 +103,7 @@ class TeamsAlertConfig:
     no_forecast_min_alert_score: float = PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
     editorial_gate_enabled: bool = PUSH_TEAMS_EDITORIAL_GATE_ENABLED
     editorial_top_limit: int = PUSH_TEAMS_EDITORIAL_TOP_LIMIT
+    event_gate_enabled: bool = PUSH_TEAMS_EVENT_GATE_ENABLED
     min_editorial_score: float = PUSH_TEAMS_MIN_EDITORIAL_SCORE
     min_editorial_news_value: float = PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE
     min_time_fit_score: float = PUSH_TEAMS_MIN_TIME_FIT_SCORE
@@ -1464,6 +1466,8 @@ def _editorial_cvd_review(
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
     if is_soft_service and not breaking:
         blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
+    if config.event_gate_enabled and not breaking and not _has_news_event(title):
+        blockers.append("CvD: kein konkretes Nachrichten-Ereignis erkennbar (Service/Teaser)")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
         blockers.append("CvD: ohne belastbare OR-Prognose nur bei absoluter Top-Lage")
     if not breaking and time_fit["score"] < config.min_time_fit_score:
@@ -2253,6 +2257,56 @@ _SOFT_CONTENT_RE = re.compile("|".join(_SOFT_CONTENT_PATTERNS), re.IGNORECASE)
 def _is_soft_service_or_quiz(title: str) -> bool:
     """True for Raetsel/Quiz/Service/Ratgeber-Formate - kein CvD-Push-Stoff."""
     return bool(_SOFT_CONTENT_RE.search(str(title or "")))
+
+
+# Positives Nachrichten-Ereignis-Signal: etwas ist passiert / wird gemeldet.
+# Bewusst breit gehalten, damit echte News nicht faelschlich blockiert werden.
+_NEWS_EVENT_TERMS = (
+    # Tod / Gewalt / Unglueck
+    "tot", "tote", "toter", "getötet", "getoetet", "stirbt", "gestorben", "leiche",
+    "opfer", "verletzt", "verletzte", "schwerverletzt", "attacke", "angriff",
+    "anschlag", "terror", "schuss", "schüsse", "schuesse", "messer", "explosion",
+    "explodiert", "brand", "brennt", "feuer", "unfall", "crash", "absturz",
+    "ertrunken", "vermisst", "entführt", "entfuehrt", "überfall", "ueberfall",
+    "amok", "drama", "tragödie", "tragoedie", "katastrophe",
+    # Kriminalitaet / Justiz
+    "festnahme", "festgenommen", "verhaftet", "razzia", "urteil", "verurteilt",
+    "gericht", "prozess", "anklage", "ermittl", "gesteht", "gestanden", "betrug",
+    # Politik / Entscheidungen
+    "beschließt", "beschliesst", "beschlossen", "stimmt", "abstimmung", "wahl",
+    "gewählt", "gewaehlt", "rücktritt", "ruecktritt", "zurückgetreten",
+    "zurueckgetreten", "tritt zurück", "tritt zurueck", "entlassen", "ernannt",
+    "einigt", "einigen", "einigung", "gesetz", "verbietet", "verbot", "verhängt",
+    "verhaengt", "sanktion", "kündigt an", "kuendigt an", "erklärt", "erklaert",
+    "krieg", "waffenruhe", "feuerpause", "eskaliert", "droht", "warnt", "warnung",
+    # Wirtschaft
+    "insolvenz", "pleite", "entlassungen", "streik", "rekord", "rückruf",
+    "rueckruf", "kollaps", "erhöht", "erhoeht", "senkt",
+    # Sport-Ereignisse
+    "gewinnt", "gewonnen", "verliert", "verloren", "siegt", "niederlage",
+    "wechselt", "wechsel", "verpflichtet", "gefeuert", "transfer", "ausfall",
+    "ausgeschieden", "meister", "rekord",
+    # Wetter / Natur
+    "unwetter", "sturm", "hochwasser", "überflutung", "ueberflutung", "erdbeben",
+    "hitzewarnung", "evakuiert", "evakuierung",
+    # Meldung / Ankuendigung allgemein
+    "meldet", "bestätigt", "bestaetigt", "ankündigung", "ankuendigung",
+    "gibt bekannt", "stoppt", "räumt ein", "raeumt ein", "enthüllt", "enthuellt",
+    "ist tot", "gestürzt", "gestuerzt",
+)
+_NEWS_EVENT_RE = re.compile(
+    r"(?:\b(?:" + "|".join(re.escape(t) for t in _NEWS_EVENT_TERMS) + r")\b)"
+    r"|\b\d+\s+(?:tote|tote[nr]?|verletzte|opfer|festnahmen|festgenommen)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_news_event(title: str) -> bool:
+    """True if the headline carries a concrete news-event signal (something happened)."""
+    text = str(title or "")
+    if "++" in text or re.search(r"(?i)\beil(meldung)?\b", text):
+        return True
+    return bool(_NEWS_EVENT_RE.search(text))
 
 
 def _is_speculative(title: str) -> bool:

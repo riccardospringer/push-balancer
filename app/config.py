@@ -418,6 +418,10 @@ PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE: float = _env_float(
     76.0,
 )
 PUSH_TEAMS_EDITORIAL_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_EDITORIAL_GATE_ENABLED", True)
+# Ereignis-Gate: nicht-Breaking-Pushes brauchen ein konkretes Nachrichten-Ereignis
+# (etwas ist passiert). Ohne Ereignis-Signal -> kein Push. Ersetzt die endlosen
+# Stichwortlisten durch eine positive Anforderung; Service/Ratgeber/Teaser fallen raus.
+PUSH_TEAMS_EVENT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_EVENT_GATE_ENABLED", True)
 PUSH_TEAMS_EDITORIAL_TOP_LIMIT: int = _env_int("PUSH_TEAMS_EDITORIAL_TOP_LIMIT", 10)
 PUSH_TEAMS_MIN_EDITORIAL_SCORE: float = _env_float("PUSH_TEAMS_MIN_EDITORIAL_SCORE", 70.0)
 PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE: float = _env_float(

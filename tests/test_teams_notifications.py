@@ -620,6 +620,49 @@ def test_ratgeber_and_gewinnspiel_content_is_blocked():
         assert any("Service-/Raetsel" in reason for reason in decision["blockingReasons"]), bad_title
 
 
+def test_event_gate_blocks_teaser_without_news_event():
+    # Kein Soft-Stichwort, aber auch kein Nachrichten-Ereignis -> strukturell geblockt.
+    candidate = _candidate(
+        title="Trump hebt neu ab: Präsident zeigt Luxus-Flieger",
+        category="news",
+        score=85.0,
+        predictedOR=0.07,
+        url="https://www.bild.de/news/trump-flieger",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=120))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Nachrichten-Ereignis" in reason for reason in decision["blockingReasons"])
+
+
+def test_event_gate_allows_real_news_event():
+    candidate = _candidate(
+        title="Katar: Mindestens 13 Tote nach Explosion in Hafen",
+        category="news",
+        score=85.0,
+        predictedOR=0.07,
+        url="https://www.bild.de/news/katar-hafen",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=120))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert not any("Nachrichten-Ereignis" in reason for reason in decision["blockingReasons"])
+
+
 def test_topic_duplicate_against_recent_teams_alert_is_blocked():
     candidate = _candidate(
         title="Große Gasanlage betroffen: 13 Tote bei Explosion in Katar",
