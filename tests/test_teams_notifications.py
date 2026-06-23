@@ -202,6 +202,27 @@ def test_score_only_mode_does_not_override_bad_article_forecast():
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
+def test_historical_slot_forecast_alone_does_not_allow_normal_alert():
+    candidate = _candidate(
+        score=90.0,
+        predictedOR=None,
+        category="news",
+        title="Große Gasanlage betroffen: Details nach Explosion in Katar",
+        url="https://www.bild.de/news/katar-gas-details",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Artikel-Prognose fehlt" in reason for reason in decision["blockingReasons"])
+
+
 def test_live_ticker_without_real_new_development_is_blocked():
     candidate = _candidate(
         score=88.5,
@@ -226,6 +247,27 @@ def test_live_ticker_without_real_new_development_is_blocked():
     assert any("Live-Ticker ohne neue" in reason for reason in decision["blockingReasons"])
 
 
+def test_process_schedule_without_new_development_is_blocked_even_without_live_ticker():
+    candidate = _candidate(
+        score=88.5,
+        predictedOR=0.0555,
+        category="regional",
+        title="Prozess um Fabian: Vier Polizisten heute im Zeugenstand",
+        url="https://www.bild.de/regional/fabian-prozess-polizisten",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Termin-/Prozesslage" in reason for reason in decision["blockingReasons"])
+
+
 def test_live_ticker_with_decisive_update_can_pass_cvd_gate():
     candidate = _candidate(
         score=91.0,
@@ -245,6 +287,48 @@ def test_live_ticker_with_decisive_update_can_pass_cvd_gate():
 
     assert decision["shouldNotify"] is True
     assert not any("Live-Ticker ohne neue" in reason for reason in decision["blockingReasons"])
+
+
+def test_explainer_question_without_new_development_is_blocked():
+    candidate = _candidate(
+        score=88.0,
+        predictedOR=0.0522,
+        category="news",
+        title="E-Autos brennen häufiger? Vorurteile auf dem Prüfstand",
+        url="https://www.bild.de/news/e-autos-brand-vorurteile",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Erklär-/Debattenstück" in reason for reason in decision["blockingReasons"])
+
+
+def test_nonessential_curiosity_story_is_blocked_despite_high_forecast():
+    candidate = _candidate(
+        score=78.8,
+        predictedOR=0.06,
+        category="news",
+        title="Schock auf dem Highway: Millionen Bienen entkommen nach Lkw-Unfall",
+        url="https://www.bild.de/news/highway-lkw-unfall",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Kurios-/Click-Reiz" in reason for reason in decision["blockingReasons"])
 
 
 def test_fabian_topic_variant_is_blocked_after_recent_teams_alert():
@@ -999,6 +1083,60 @@ def test_auto_push_calibration_still_blocks_soft_topic():
 
     assert decision["shouldNotify"] is False
     assert any("CvD:" in reason for reason in decision["blockingReasons"])
+
+
+def test_daily_strategy_blocks_normal_candidate_when_push_count_is_ahead():
+    candidate = _candidate(
+        score=82.0,
+        predictedOR=0.053,
+        category="news",
+        title="Regierung kündigt neue Regel für Verbraucher an",
+        url="https://www.bild.de/news/verbraucher-regel",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 8
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=40.0,
+            min_editorial_score=40.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Tagesstrategie" in reason for reason in decision["blockingReasons"])
+
+
+def test_daily_strategy_allows_breaking_candidate_when_push_count_is_ahead():
+    candidate = _candidate(
+        score=88.0,
+        predictedOR=0.052,
+        category="politik",
+        title="Eilmeldung: Israel und Iran einigen sich auf Feuerpause",
+        url="https://www.bild.de/politik/feuerpause-breaking",
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 8
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=40.0,
+            min_editorial_score=40.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert not any("Tagesstrategie" in reason for reason in decision["blockingReasons"])
 
 
 def test_cvd_time_fit_blocks_normal_push_at_night():

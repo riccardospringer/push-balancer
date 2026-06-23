@@ -324,7 +324,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, `selectionScore`, `scoreReason`, `performanceDrivers`, `risks`, and `scoreBreakdown`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, and blocks soft topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, the article needs the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, `selectionScore`, `scoreReason`, `performanceDrivers`, `risks`, and `scoreBreakdown`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, requires a reliable article forecast for normal non-breaking recommendations, and blocks soft, scheduled, abstract explainer, or curiosity topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, only breaking news or a clear public warning/usefulness case can pass the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
 
 ### CORS
 
@@ -352,19 +352,20 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
-| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `66` | Minimum weighted Teams Alert Score for a Teams recommendation; calibrated for an editorial cadence of roughly 11 push decisions per day |
+| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; calibrated for an editorial cadence of roughly 11 push decisions per day |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
 | `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Limits Teams evaluation to the top N article candidates from the same payload used by the dashboard |
 | `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE` | No | `76` | Higher Teams Alert Score required when no reliable article-specific OR forecast is available |
 | `PUSH_TEAMS_EDITORIAL_GATE_ENABLED` | No | `true` | Enables the hard CvD review layer before any Teams recommendation can be sent |
 | `PUSH_TEAMS_EDITORIAL_TOP_LIMIT` | No | `10` | Normal non-breaking recommendations must be in the top N dashboard candidates |
-| `PUSH_TEAMS_MIN_EDITORIAL_SCORE` | No | `70` | Minimum CvD score based on news value, urgency, public need, timing, clarity, and user load |
+| `PUSH_TEAMS_MIN_EDITORIAL_SCORE` | No | `74` | Minimum CvD score based on news value, urgency, public need, timing, clarity, and user load |
 | `PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE` | No | `24` | Minimum hard-news value required before Teams can recommend a push |
 | `PUSH_TEAMS_MIN_TIME_FIT_SCORE` | No | `4` | Minimum CvD time-fit score; blocks normal pushes in weak daypart/weekday windows while still allowing breaking-news overrides |
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
-| `PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES` | No | `30` | Minimum pause between any two Teams recommendations, even for different articles |
+| `PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES` | No | `45` | Minimum pause between any two Teams recommendations, even for different articles |
+| `PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST` | No | `true` | Requires article-model OR forecasts for normal non-breaking Teams recommendations; breaking and clear public warning/usefulness cases can still pass |
 | `PUSH_TEAMS_REALERT_SCORE_DELTA` | No | `8` | Required score improvement for a re-alert |
 | `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |
 | `PUSH_TEAMS_ALLOWED_SECTIONS` | No | empty | Comma-separated section allowlist, e.g. `News,Politik,Sport,Regional` |

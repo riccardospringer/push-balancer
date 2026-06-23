@@ -59,6 +59,7 @@ from app.config import (
     PUSH_TEAMS_QUIET_HOURS_START,
     PUSH_TEAMS_REALERT_OR_DELTA,
     PUSH_TEAMS_REALERT_SCORE_DELTA,
+    PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST,
     PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS,
     PUSH_TEAMS_REQUIRE_VALID_PREDICTION,
     PUSH_TEAMS_FEED_OVERTAKEN_ENABLED,
@@ -132,6 +133,7 @@ class TeamsAlertConfig:
     max_article_age_hours: int = PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS
     max_pushes_last_6h: int = PUSH_TEAMS_MAX_PUSHES_LAST_6H
     require_valid_prediction: bool = PUSH_TEAMS_REQUIRE_VALID_PREDICTION
+    require_article_forecast: bool = PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST
     known_default_forecasts: tuple[float, ...] = tuple(PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS)
     constant_forecast_min_field: int = PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD
     known_default_min_field: int = PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD
@@ -503,6 +505,9 @@ def should_notify_teams(
         blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
+    forecast_quality = _forecast_quality_review(candidate, forecast, alert_score, breaking, config)
+    positive.extend(forecast_quality["reasons"])
+    blockers.extend(forecast_quality["blockers"])
 
     freshness_hours = _freshness_hours(candidate, now_ts)
     editorial_review = _editorial_cvd_review(
@@ -519,6 +524,18 @@ def should_notify_teams(
     )
     positive.extend(editorial_review["reasons"])
     blockers.extend(editorial_review["blockers"])
+    strategy_review = _daily_strategy_review(
+        candidate,
+        alert_score=alert_score,
+        editorial_score=float(editorial_review["score"]),
+        news_value=float(editorial_review["newsValue"]),
+        predicted_or=predicted_or,
+        push_pacing=push_pacing,
+        breaking=breaking,
+        config=config,
+    )
+    positive.extend(strategy_review["reasons"])
+    blockers.extend(strategy_review["blockers"])
     selection_score = _recommendation_selection_score(
         score=score,
         alert_score=alert_score,
@@ -1438,6 +1455,71 @@ def _recommendation_selection_score(
     return round(_clamp(total, 0.0, 100.0), 1)
 
 
+def _forecast_quality_review(
+    candidate: dict[str, Any],
+    forecast: dict[str, Any],
+    alert_score: float,
+    breaking: bool,
+    config: TeamsAlertConfig,
+) -> dict[str, list[str]]:
+    if not config.require_article_forecast:
+        return {"reasons": [], "blockers": []}
+
+    source = str(forecast.get("source") or "")
+    if source == "article_model":
+        return {"reasons": ["Belastbare Artikel-Prognose vorhanden"], "blockers": []}
+    if breaking and config.breaking_override:
+        return {"reasons": ["Breaking-Override: Slot-Prognose nur Timing-Kontext"], "blockers": []}
+    if _has_hard_public_need(_title(candidate), _section(candidate)) and alert_score >= config.no_forecast_min_alert_score:
+        return {
+            "reasons": ["Öffentliche Warn-/Nutzwertlage: auch ohne Artikelmodell prüfbar"],
+            "blockers": [],
+        }
+    return {
+        "reasons": [],
+        "blockers": [
+            "Belastbare Artikel-Prognose fehlt; historische Slot-Prognose reicht für normale Teams-Empfehlung nicht"
+        ],
+    }
+
+
+def _daily_strategy_review(
+    candidate: dict[str, Any],
+    *,
+    alert_score: float,
+    editorial_score: float,
+    news_value: float,
+    predicted_or: float | None,
+    push_pacing: dict[str, Any],
+    breaking: bool,
+    config: TeamsAlertConfig,
+) -> dict[str, list[str]]:
+    if breaking:
+        return {"reasons": ["Tagesstrategie: Breaking darf Push-Bestand übersteuern"], "blockers": []}
+    if not push_pacing.get("known"):
+        return {"reasons": [], "blockers": []}
+
+    surplus = float(push_pacing.get("surplus") or 0.0)
+    deficit = float(push_pacing.get("deficit") or 0.0)
+    blockers: list[str] = []
+    reasons: list[str] = []
+    strong_enough_when_ahead = (
+        alert_score >= config.min_alert_score + 8.0
+        and editorial_score >= config.min_editorial_score + 8.0
+        and news_value >= config.min_editorial_news_value + 8.0
+        and (predicted_or is None or predicted_or >= config.min_or + 0.5)
+    )
+    if surplus >= 2.0 and not strong_enough_when_ahead:
+        blockers.append(
+            "Tagesstrategie: Push-Bestand liegt vorn; normale Lage nicht stark genug für zusätzliche Nutzerbelastung"
+        )
+    elif surplus >= 2.0:
+        reasons.append("Tagesstrategie: trotz Push-Vorsprung stark genug")
+    elif deficit >= 1.5:
+        reasons.append("Tagesstrategie: Push-Rückstand, aber Qualitäts-Gates bleiben aktiv")
+    return {"reasons": reasons, "blockers": blockers}
+
+
 def _editorial_cvd_review(
     candidate: dict[str, Any],
     *,
@@ -1508,10 +1590,19 @@ def _editorial_cvd_review(
         impact_bonus += min(10.0, 4.0 + 2.0 * (len(impact_matches) - 1))
     live_ticker = _is_live_ticker_title(title)
     live_ticker_has_update = _has_live_ticker_push_update(title)
+    scheduled_process = _is_scheduled_process_without_update(title)
+    abstract_explainer = _is_abstract_explainer_without_update(title)
+    nonessential_curiosity = _is_nonessential_curiosity(title)
     if live_ticker and live_ticker_has_update:
         impact_bonus += 2.0
     elif live_ticker:
         impact_bonus -= 6.0
+    if scheduled_process and not breaking:
+        impact_bonus -= 8.0
+    if abstract_explainer and not breaking:
+        impact_bonus -= 10.0
+    if nonessential_curiosity and not breaking:
+        impact_bonus -= 8.0
     soft_matches = [term for term in soft_terms if term in title_l]
     if soft_matches and not impact_matches and not breaking:
         impact_bonus -= 8.0
@@ -1619,6 +1710,12 @@ def _editorial_cvd_review(
         blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
     if live_ticker and not breaking and not live_ticker_has_update:
         blockers.append("CvD: Live-Ticker ohne neue pushwürdige Lage")
+    if scheduled_process and not breaking:
+        blockers.append("CvD: Termin-/Prozesslage ohne neue Entwicklung")
+    if abstract_explainer and not breaking:
+        blockers.append("CvD: Erklär-/Debattenstück ohne neue aktuelle Lage")
+    if nonessential_curiosity and not breaking:
+        blockers.append("CvD: Kurios-/Click-Reiz ohne ausreichenden öffentlichen Nachrichtenwert")
     if config.event_gate_enabled and not breaking and not _has_news_event(title):
         blockers.append("CvD: kein konkretes Nachrichten-Ereignis erkennbar (Service/Teaser)")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
@@ -2712,6 +2809,99 @@ def _has_live_ticker_push_update(title: str) -> bool:
     if _LIVE_TICKER_SCHEDULE_RE.search(text):
         return False
     return any(term in text for term in _LIVE_TICKER_UPDATE_TERMS)
+
+
+_HARD_PUBLIC_NEED_TERMS = (
+    "warnung", "gefahr", "evakuierung", "evakuiert", "sperrung", "ausfall",
+    "rückruf", "rueckruf", "streik", "hochwasser", "unwetter", "hitzewarnung",
+    "polizei", "terror", "anschlag", "angriff", "krieg", "feuerpause",
+    "waffenruhe", "tote", "tot", "verletzte", "vermisst", "festnahme",
+    "festgenommen", "urteil", "verurteilt", "rücktritt", "ruecktritt",
+    "zurückgetreten", "zurueckgetreten", "insolvenz", "pleite",
+)
+
+
+def _has_hard_public_need(title: str, section: str = "") -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if any(_contains_editorial_term(text, term) for term in _HARD_PUBLIC_NEED_TERMS):
+        return True
+    if re.search(r"\b\d+\s+(?:tote|verletzte|opfer|festnahmen)\b", text):
+        return True
+    return str(section or "").strip().lower() == "politik" and any(
+        term in text for term in ("regierung beschliesst", "regierung beschließt", "bundestag beschliesst", "bundestag beschließt")
+    )
+
+
+def _contains_editorial_term(text: str, term: str) -> bool:
+    term = str(term or "").strip().casefold()
+    if not term:
+        return False
+    if " " in term:
+        return term in text
+    return bool(re.search(rf"(?<![a-z0-9äöüß]){re.escape(term)}(?![a-z0-9äöüß])", text))
+
+
+_SCHEDULED_PROCESS_PATTERNS = (
+    r"\bsagen heute aus\b",
+    r"\bheute (?:als )?zeugen\b",
+    r"\bim zeugenstand\b",
+    r"\bvor gericht\b.*\bheute\b",
+    r"\bprozessauftakt\b",
+    r"\bheute im prozess\b",
+)
+_SCHEDULED_PROCESS_RE = re.compile("|".join(_SCHEDULED_PROCESS_PATTERNS), re.IGNORECASE)
+
+
+def _is_scheduled_process_without_update(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if not _SCHEDULED_PROCESS_RE.search(text):
+        return False
+    return not _has_live_ticker_push_update(text)
+
+
+_ABSTRACT_EXPLAINER_PATTERNS = (
+    r"\bauf dem prüfstand\b",
+    r"\bauf dem pruefstand\b",
+    r"\bvorurteil",
+    r"\bgefährlicher als\b",
+    r"\bgefaehrlicher als\b",
+    r"\bhäufiger als\b",
+    r"\bhaeufiger als\b",
+    r"\bstimmt das\b",
+    r"\bwas .* bedeutet\b",
+    r"\bdas bedeutet\b",
+)
+_ABSTRACT_EXPLAINER_RE = re.compile("|".join(_ABSTRACT_EXPLAINER_PATTERNS), re.IGNORECASE)
+
+
+def _is_abstract_explainer_without_update(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if "?" not in text and not _ABSTRACT_EXPLAINER_RE.search(text):
+        return False
+    return not _has_hard_public_need(text)
+
+
+_CURIOSITY_PATTERNS = (
+    r"\bschock auf dem highway\b",
+    r"\bkurios\b",
+    r"\bskurril\b",
+    r"\bunglaublich\b",
+    r"\bunfassbar\b",
+)
+_CURIOSITY_RE = re.compile("|".join(_CURIOSITY_PATTERNS), re.IGNORECASE)
+
+
+def _is_nonessential_curiosity(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text or not _CURIOSITY_RE.search(text):
+        return False
+    return not _has_hard_public_need(text)
 
 
 _SPECULATIVE_MARKERS = (

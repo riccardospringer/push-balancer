@@ -409,7 +409,7 @@ PUSH_TEAMS_MIN_SCORE: float = _env_float("PUSH_TEAMS_MIN_SCORE", 75.0)
 # PUSH_TEAMS_MIN_ALERT_SCORE bleibt als Alias erhalten.
 PUSH_TEAMS_MIN_ALERT_SCORE: float = _env_float(
     "PUSH_TEAMS_MIN_TEAMS_SCORE",
-    _env_float("PUSH_TEAMS_MIN_ALERT_SCORE", 66.0),
+    _env_float("PUSH_TEAMS_MIN_ALERT_SCORE", 78.0),
 )
 PUSH_TEAMS_SCORE_ONLY_MODE: bool = _env_flag("PUSH_TEAMS_SCORE_ONLY_MODE", False)
 PUSH_TEAMS_DASHBOARD_TOP_LIMIT: int = _env_int("PUSH_TEAMS_DASHBOARD_TOP_LIMIT", 20)
@@ -427,7 +427,7 @@ PUSH_TEAMS_EVENT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_EVENT_GATE_ENABLED",
 # OPENAI_TITLE_GENERATION_ENABLED + Rate-Budget); sonst sauberer Fallback.
 PUSH_TEAMS_LLM_TITLE_ENABLED: bool = _env_flag("PUSH_TEAMS_LLM_TITLE_ENABLED", True)
 PUSH_TEAMS_EDITORIAL_TOP_LIMIT: int = _env_int("PUSH_TEAMS_EDITORIAL_TOP_LIMIT", 10)
-PUSH_TEAMS_MIN_EDITORIAL_SCORE: float = _env_float("PUSH_TEAMS_MIN_EDITORIAL_SCORE", 70.0)
+PUSH_TEAMS_MIN_EDITORIAL_SCORE: float = _env_float("PUSH_TEAMS_MIN_EDITORIAL_SCORE", 74.0)
 PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE: float = _env_float(
     "PUSH_TEAMS_MIN_EDITORIAL_NEWS_VALUE",
     24.0,
@@ -469,10 +469,14 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
 )
 # Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
-PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 14)
+PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 11)
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
     False,
+)
+PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST: bool = _env_flag(
+    "PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST",
+    True,
 )
 # Erkennung konstanter Fake-/Default-Prognosen (z. B. globaler Durchschnitt 4.77 %).
 # Ein OR-Wert, der sich ueber das Kandidatenfeld wiederholt, ist ein Default und
@@ -527,7 +531,7 @@ PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
 # Maximale Absenkung/Anhebung der Teams-Reife-Schwelle durch die Push-Bestand-Logik.
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP",
-    6.0,
+    4.0,
 )
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE",
