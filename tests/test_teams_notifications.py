@@ -187,6 +187,123 @@ def test_bad_forecast_does_not_trigger_teams_decision():
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
+def test_score_only_mode_does_not_override_bad_article_forecast():
+    candidate = _candidate(score=88.0, predictedOR=0.0377)
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
+
+
+def test_live_ticker_without_real_new_development_is_blocked():
+    candidate = _candidate(
+        score=88.5,
+        predictedOR=0.0555,
+        category="regional",
+        title=(
+            "Live-Ticker zum Prozess um Fabian: Vier Polizisten sagen heute aus! "
+            "Wie verhielt sich Gina H.?"
+        ),
+        url="https://www.bild.de/regional/fabian-prozess-live",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Live-Ticker ohne neue" in reason for reason in decision["blockingReasons"])
+
+
+def test_live_ticker_with_decisive_update_can_pass_cvd_gate():
+    candidate = _candidate(
+        score=91.0,
+        predictedOR=0.061,
+        category="regional",
+        title="Live-Ticker: Gericht verurteilt Angeklagten im Fabian-Prozess",
+        url="https://www.bild.de/regional/fabian-urteil-live",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert not any("Live-Ticker ohne neue" in reason for reason in decision["blockingReasons"])
+
+
+def test_fabian_topic_variant_is_blocked_after_recent_teams_alert():
+    candidate = _candidate(
+        score=88.5,
+        predictedOR=0.0555,
+        category="regional",
+        title="Prozess um Fabian: Vier Polizisten heute im Zeugenstand",
+        url="https://www.bild.de/regional/fabian-prozess-polizisten",
+    )
+    recent = [
+        {
+            "key": "https://www.bild.de/regional/fabian-prozess-live",
+            "title": (
+                "Live-Ticker zum Prozess um Fabian: Vier Polizisten sagen heute aus! "
+                "Wie verhielt sich Gina H.?"
+            ),
+        }
+    ]
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90),
+        recent_alerts=recent,
+    )
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("Dublette" in reason for reason in decision["blockingReasons"])
+
+
+def test_non_breaking_push_title_does_not_add_false_eil_prefix():
+    from app.notifications.teams import _teams_push_title_recommendation
+
+    candidate = _candidate(
+        isBreaking=False,
+        isEilmeldung=False,
+        title="Elektroauto-Vorurteile: Brand bei E-Autos häufiger als bei Verbrenner?",
+        recommendedText="EIL: Brand bei E-Autos häufiger als bei Verbrenner",
+    )
+
+    title, source = _teams_push_title_recommendation(
+        candidate,
+        candidate["title"],
+        "news",
+        candidate["url"],
+        _config(llm_title_enabled=False),
+    )
+
+    assert source == "editorial"
+    assert not title.startswith("EIL:")
+    assert title == "Brand bei E-Autos häufiger als bei Verbrenner"
+
+
 def test_score_only_mode_blocks_candidate_without_forecast_or_push_time():
     candidate = _candidate(score=82.0, predictedOR=None)
 

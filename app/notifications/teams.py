@@ -11,6 +11,7 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -82,6 +83,9 @@ from app.database import (
 )
 
 log = logging.getLogger("push-balancer")
+
+_RECENT_SEND_LOCK = threading.Lock()
+_RECENT_SEND_MEMORY: dict[str, dict[str, Any]] = {}
 
 _TOKEN_RE = re.compile(r"[a-z0-9äöüßaeoeue]{4,}", re.IGNORECASE)
 _STOP_WORDS = {
@@ -161,6 +165,84 @@ def candidate_key(candidate: dict[str, Any]) -> str:
 def title_hash(candidate: dict[str, Any]) -> str:
     value = _title(candidate).strip().lower()
     return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
+
+
+def _effective_global_cooldown_minutes(config: TeamsAlertConfig) -> int:
+    configured = int(config.global_cooldown_minutes or 0)
+    if configured <= 0:
+        return 0
+    return max(configured, int(config.min_minutes_since_last_push or 0), 45)
+
+
+def _memory_send_blocker_or_reserve(
+    *,
+    article_key: str,
+    title: str,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Process-local last line of defence against duplicate Teams sends.
+
+    The SQLite claim is authoritative across workers. This in-memory reservation
+    additionally protects one running process from rapid repeated cycles before
+    the external Teams webhook result is fully recorded.
+    """
+    cooldown_seconds = _effective_global_cooldown_minutes(config) * 60
+    article_seconds = max(int(config.alert_cooldown_minutes or 0) * 60, cooldown_seconds)
+    topic_seconds = max(int(float(config.topic_dedup_hours or 0.0) * 3600), article_seconds)
+    keep_seconds = max(topic_seconds, 3600)
+    title_tokens = _tokens(title)
+
+    with _RECENT_SEND_LOCK:
+        stale_before = now_ts - keep_seconds
+        for key, entry in list(_RECENT_SEND_MEMORY.items()):
+            if _safe_int(entry.get("ts")) < stale_before:
+                _RECENT_SEND_MEMORY.pop(key, None)
+
+        for key, entry in _RECENT_SEND_MEMORY.items():
+            entry_ts = _safe_int(entry.get("ts"))
+            if not entry_ts:
+                continue
+            age = now_ts - entry_ts
+            if cooldown_seconds > 0 and age < cooldown_seconds:
+                return {
+                    "blocked": True,
+                    "reason": "memory_global_alert_cooldown",
+                    "ageSeconds": age,
+                    "otherKey": key,
+                }
+            if key == article_key and age < article_seconds:
+                return {
+                    "blocked": True,
+                    "reason": "memory_article_alert_cooldown",
+                    "ageSeconds": age,
+                    "otherKey": key,
+                }
+            other_tokens = set(entry.get("tokens") or set())
+            threshold = min(float(config.topic_dedup_similarity or 0.5), 0.45)
+            if title_tokens and _same_topic(title_tokens, other_tokens, threshold) and age < topic_seconds:
+                return {
+                    "blocked": True,
+                    "reason": "memory_topic_duplicate",
+                    "ageSeconds": age,
+                    "otherKey": key,
+                    "otherTitle": str(entry.get("title") or ""),
+                }
+
+        _RECENT_SEND_MEMORY[article_key] = {
+            "ts": now_ts,
+            "title": title,
+            "tokens": title_tokens,
+        }
+    return {"blocked": False}
+
+
+def _memory_record_send_result(article_key: str, *, ok: bool, now_ts: int) -> None:
+    with _RECENT_SEND_LOCK:
+        entry = _RECENT_SEND_MEMORY.get(article_key)
+        if entry is not None:
+            entry["status"] = "sent" if ok else "failed"
+            entry["ts"] = now_ts
 
 
 def build_teams_alert_context(
@@ -411,6 +493,14 @@ def should_notify_teams(
             f"{alert_score:.1f} < {config.no_forecast_min_alert_score:.1f}"
         )
     forecast_is_reliable = forecast.get("source") == "article_model" and predicted_or is not None
+    low_forecast_blocker = (
+        predicted_or is not None
+        and predicted_or < min_or
+        and (forecast_is_reliable or not config.score_only_mode)
+        and not (breaking and config.breaking_override and predicted_or >= config.breaking_min_or)
+    )
+    if low_forecast_blocker:
+        blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
 
@@ -457,8 +547,6 @@ def should_notify_teams(
             blockers.append("Prognose fehlt")
         elif predicted_or >= min_or:
             positive.append(f"Prognose {predicted_or:.2f}% OR liegt ueber Mindestwert {min_or:.2f}%")
-        else:
-            blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
 
         if minutes_since_last_push is None:
             blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
@@ -535,14 +623,15 @@ def should_notify_teams(
     elif realert_reason.get("positive"):
         positive.append(str(realert_reason["positive"]))
 
+    effective_global_cooldown = _effective_global_cooldown_minutes(config)
     if (
-        config.global_cooldown_minutes > 0
+        effective_global_cooldown > 0
         and minutes_since_last_teams_alert is not None
-        and minutes_since_last_teams_alert < config.global_cooldown_minutes
+        and minutes_since_last_teams_alert < effective_global_cooldown
     ):
         blockers.append(
             "Teams-Cooldown aktiv: letzter Hinweis vor "
-            f"{minutes_since_last_teams_alert:.0f} < {config.global_cooldown_minutes} Minuten"
+            f"{minutes_since_last_teams_alert:.0f} < {effective_global_cooldown} Minuten"
         )
         status = "observe"
 
@@ -1049,9 +1138,32 @@ def evaluate_and_send_best_candidate(
     article_key = candidate_key(selected)
     article_id = str(selected.get("id") or article_key)
     article_url = _url(selected)
+    decision_ts = int(context.get("nowTs") or time.time())
+    memory_claim = _memory_send_blocker_or_reserve(
+        article_key=article_key,
+        title=_title(selected),
+        now_ts=decision_ts,
+        config=config,
+    )
+    if memory_claim.get("blocked"):
+        log.info(
+            "[TeamsAlert] send skipped by memory guard candidateId=%s articleId=%s url=%s reason=%s",
+            article_key,
+            article_id,
+            article_url,
+            memory_claim.get("reason"),
+        )
+        return {
+            "ok": True,
+            "sent": False,
+            "reason": "send_memory_blocked",
+            "claim": memory_claim,
+            "candidateId": article_key,
+            "evaluation": evaluation,
+        }
     selected_forecast = _candidate_forecast(
         selected,
-        int(context.get("nowTs") or time.time()),
+        decision_ts,
         {float(v) for v in (context.get("suspectForecastValues") or [])},
     )
     claim = teams_alert_try_claim_send(
@@ -1065,9 +1177,9 @@ def evaluate_and_send_best_candidate(
         candidate_updated_at=_candidate_updated_ts(selected),
         is_breaking=_is_breaking(selected),
         reason=selected_decision.get("summary") or "Push empfohlen",
-        decision_ts=int(context.get("nowTs") or time.time()),
+        decision_ts=decision_ts,
         alert_cooldown_minutes=config.alert_cooldown_minutes,
-        global_cooldown_minutes=config.global_cooldown_minutes,
+        global_cooldown_minutes=_effective_global_cooldown_minutes(config),
         failed_cooldown_minutes=max(
             config.alert_cooldown_minutes,
             config.repeat_suppression_hours * 60,
@@ -1092,6 +1204,7 @@ def evaluate_and_send_best_candidate(
 
     message = build_teams_push_recommendation(selected, context, selected_decision, config)
     send_result = send_teams_notification(message, config)
+    _memory_record_send_result(article_key, ok=bool(send_result.get("ok")), now_ts=decision_ts)
     status = "sent" if send_result.get("ok") else "failed"
     reason = selected_decision.get("summary") or "Push empfohlen"
     teams_alert_record(
@@ -1393,8 +1506,12 @@ def _editorial_cvd_review(
     impact_matches = [term for term in high_impact_terms if term in title_l]
     if impact_matches:
         impact_bonus += min(10.0, 4.0 + 2.0 * (len(impact_matches) - 1))
-    if "live-ticker" in title_l or "liveticker" in title_l or "liveblog" in title_l:
-        impact_bonus += 3.0
+    live_ticker = _is_live_ticker_title(title)
+    live_ticker_has_update = _has_live_ticker_push_update(title)
+    if live_ticker and live_ticker_has_update:
+        impact_bonus += 2.0
+    elif live_ticker:
+        impact_bonus -= 6.0
     soft_matches = [term for term in soft_terms if term in title_l]
     if soft_matches and not impact_matches and not breaking:
         impact_bonus -= 8.0
@@ -1500,6 +1617,8 @@ def _editorial_cvd_review(
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
     if is_soft_service and not breaking:
         blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
+    if live_ticker and not breaking and not live_ticker_has_update:
+        blockers.append("CvD: Live-Ticker ohne neue pushwürdige Lage")
     if config.event_gate_enabled and not breaking and not _has_news_event(title):
         blockers.append("CvD: kein konkretes Nachrichten-Ereignis erkennbar (Service/Teaser)")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
@@ -2553,6 +2672,48 @@ def _is_generic_push_title(text: str) -> bool:
     return any(phrase in lowered for phrase in _GENERIC_PUSH_PHRASES)
 
 
+def _sanitize_push_title(text: str, *, breaking: bool) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not breaking:
+        value = re.sub(r"(?i)^\s*(?:eil|breaking)\s*(?::|!|\s-\s)\s*", "", value).strip()
+    return value
+
+
+_LIVE_TICKER_UPDATE_TERMS = (
+    "urteil", "verurteilt", "freigesprochen", "entscheidung", "festnahme",
+    "festgenommen", "verhaftet", "razzia", "gesteht", "geständnis", "gestaendnis",
+    "tot", "tote", "verletzte", "explosion", "brand", "anschlag", "angriff",
+    "warnung", "evakuierung", "evakuiert", "rücktritt", "ruecktritt",
+    "tritt zurück", "tritt zurueck", "zurückgetreten", "zurueckgetreten",
+    "feuerpause", "waffenruhe", "einigung", "eskaliert", "bestätigt", "bestaetigt",
+    "stoppt", "beginnt", "beendet", "abgesagt", "geschlossen", "gesperrt",
+)
+_LIVE_TICKER_SCHEDULE_PATTERNS = (
+    r"\bsagen heute aus\b",
+    r"\bheute (?:als )?zeugen\b",
+    r"\bim zeugenstand\b",
+    r"\bvor dem zeugenstand\b",
+    r"\bwie verhielt sich\b",
+    r"\bantwortet auf fragen\b",
+    r"\bheute im prozess\b",
+)
+_LIVE_TICKER_SCHEDULE_RE = re.compile("|".join(_LIVE_TICKER_SCHEDULE_PATTERNS), re.IGNORECASE)
+
+
+def _is_live_ticker_title(title: str) -> bool:
+    text = str(title or "").casefold()
+    return "live-ticker" in text or "liveticker" in text or "liveblog" in text
+
+
+def _has_live_ticker_push_update(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if _LIVE_TICKER_SCHEDULE_RE.search(text):
+        return False
+    return any(term in text for term in _LIVE_TICKER_UPDATE_TERMS)
+
+
 _SPECULATIVE_MARKERS = (
     "wohl", "offenbar", "angeblich", "vermutlich", "moeglicherweise", "möglicherweise",
     "koennte", "könnte", "duerfte", "dürfte",
@@ -2782,11 +2943,14 @@ def _teams_push_title_recommendation(
 ) -> tuple[str, str]:
     """Return (push_title, source) where source is 'llm' | 'editorial' | 'headline'."""
     config = config or TeamsAlertConfig()
+    breaking = _is_breaking(candidate)
 
     # 1) KI-generierter Titel hat Vorrang (wenn LLM verfuegbar).
     llm_title = _llm_push_title(title, section, url, config)
     if llm_title:
-        return llm_title, "llm"
+        clean = _sanitize_push_title(llm_title, breaking=breaking)
+        if clean and not _is_generic_push_title(clean):
+            return _compact_text(clean, 100), "llm"
 
     explicit_candidates: list[str] = []
     for key in (
@@ -2807,8 +2971,9 @@ def _teams_push_title_recommendation(
     # Eine nicht-generische Empfehlung, die sich von der Schlagzeile unterscheidet,
     # gewinnt. Generische Floskeln werden grundsaetzlich uebersprungen.
     for value in _dedupe(explicit_candidates):
-        if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
-            return _compact_text(value, 100), "editorial"
+        clean = _sanitize_push_title(value, breaking=breaking)
+        if clean and not _same_editorial_text(clean, title) and not _is_generic_push_title(clean):
+            return _compact_text(clean, 100), "editorial"
 
     try:
         from app.push_titles import build_push_title_suggestions
@@ -2820,16 +2985,19 @@ def _teams_push_title_recommendation(
             str((result.get("alternative") or {}).get("titel") or "").strip(),
         ]
         for value in _dedupe([item for item in generated if item]):
-            if not _same_editorial_text(value, title) and not _is_generic_push_title(value):
-                return _compact_text(value, 100), "editorial"
+            clean = _sanitize_push_title(value, breaking=breaking)
+            if clean and not _same_editorial_text(clean, title) and not _is_generic_push_title(clean):
+                return _compact_text(clean, 100), "editorial"
     except Exception as exc:
         log.warning("[TeamsAlert] could not build alternative push title: %s", exc)
 
     # Lieber die echte Schlagzeile als eine generische Floskel.
     for value in explicit_candidates:
-        if not _is_generic_push_title(value):
-            return _compact_text(value, 100), "editorial"
-    return _compact_text(title or (explicit_candidates[0] if explicit_candidates else ""), 100), "headline"
+        clean = _sanitize_push_title(value, breaking=breaking)
+        if clean and not _is_generic_push_title(clean):
+            return _compact_text(clean, 100), "editorial"
+    fallback = _sanitize_push_title(title or (explicit_candidates[0] if explicit_candidates else ""), breaking=breaking)
+    return _compact_text(fallback, 100), "headline"
 
 
 def _score_reason(candidate: dict[str, Any]) -> str:

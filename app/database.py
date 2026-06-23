@@ -980,7 +980,6 @@ def teams_alert_try_claim_send(
                     )
                     if (
                         global_ts
-                        and str(global_row["article_key"] or "") != article_key
                         and now - global_ts < global_cooldown_seconds
                     ):
                         conn.execute("ROLLBACK")

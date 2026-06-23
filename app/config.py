@@ -454,7 +454,7 @@ PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS: int = _env_int(
 )
 PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES: int = _env_int(
     "PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES",
-    30,
+    45,
 )
 _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Regional,Digital,Unterhaltung"
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
