@@ -1836,6 +1836,7 @@ def _editorial_cvd_review(
             "slotAvgOR": time_fit.get("slotAvgOR"),
             "slotStars": time_fit.get("slotStars"),
             "slotTopCategory": time_fit.get("slotTopCategory"),
+            "nextBetterSlot": time_fit.get("nextBetterSlot"),
             "pushPacing": pacing,
             "localHour": time_fit["localHour"],
             "weekday": time_fit["weekday"],
@@ -1903,7 +1904,7 @@ def _time_fit_review(
     slot_score = _slot_baseline_score(hour, weekday, slot, breaking)
     section_fit_delta = _slot_section_fit_delta(section_l, slot_top_cat)
 
-    score = manual_score * 0.55 + slot_score * 0.45 + section_fit_delta
+    score = manual_score * 0.35 + slot_score * 0.65 + section_fit_delta
     label_parts = [label]
     if slot_avg is not None:
         label_parts.append(f"historisch {slot_avg:.2f}% OR")
@@ -1930,18 +1931,35 @@ def _time_fit_review(
         score = min(score, 4.0)
         label_parts.append("historische Totzone")
 
-    next_better = _next_better_slot(now_ts, score, config)
+    next_better = _next_better_slot(
+        now_ts,
+        score,
+        config,
+        current_avg_or=slot_avg,
+        max_lookahead_hours=6 if is_avoid else 4,
+    )
     pacing = _push_pacing_review(pushes_today, now_ts, config)
+    meaningful_wait = bool(
+        next_better
+        and (
+            is_avoid
+            or (
+                score < 7.0
+                and float(next_better.get("orGain") or 0.0) >= 0.7
+            )
+            or float(next_better.get("score") or 0.0) >= score + 1.5
+        )
+    )
     wait_recommended = bool(
         not breaking
-        and is_avoid
-        and next_better
+        and meaningful_wait
         and float(pacing.get("deficit") or 0.0) < 1.5
     )
     wait_reason = ""
     if wait_recommended:
+        weak_slot_label = "eine historische Totzone" if is_avoid else "historisch schwächer"
         wait_reason = (
-            "CvD: aktuelles Push-Fenster ist eine historische Totzone; "
+            f"CvD: aktuelles Push-Fenster ist {weak_slot_label}; "
             f"besseres Fenster um {next_better['hour']:02d}:00 Uhr abwarten"
         )
 
@@ -2341,23 +2359,42 @@ def _next_better_slot(
     now_ts: int,
     current_score: float,
     config: TeamsAlertConfig,
+    *,
+    current_avg_or: float | None = None,
+    max_lookahead_hours: int = 4,
 ) -> dict[str, Any] | None:
     local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
     weekday = local_dt.weekday()
     current_hour = local_dt.hour
     best: dict[str, Any] | None = None
-    for hour in range(current_hour + 1, min(23, int(config.active_hours_end)) + 1):
+    horizon = min(23, int(config.active_hours_end), current_hour + max(1, int(max_lookahead_hours)))
+    for hour in range(current_hour + 1, horizon + 1):
         slot = _slot_baseline(hour, weekday)
         slot_score = _slot_baseline_score(hour, weekday, slot, breaking=False)
-        if slot_score < current_score + 1.25:
+        avg_or = _safe_float(slot.get("avg_or")) if slot else None
+        or_gain = (
+            round(avg_or - current_avg_or, 2)
+            if avg_or is not None and current_avg_or is not None
+            else None
+        )
+        score_gain = slot_score - current_score
+        if score_gain < 1.0 and (or_gain is None or or_gain < 0.7):
             continue
         candidate = {
             "hour": hour,
             "score": round(slot_score, 1),
-            "avgOR": round(float(slot.get("avg_or") or 0.0), 2) if slot else None,
+            "avgOR": round(avg_or, 2) if avg_or is not None else None,
+            "orGain": or_gain,
+            "scoreGain": round(score_gain, 1),
             "stars": int(slot.get("stars") or 0) if slot else 0,
         }
-        if best is None or candidate["score"] > best["score"]:
+        if best is None or (
+            float(candidate.get("orGain") or 0.0),
+            float(candidate.get("score") or 0.0),
+        ) > (
+            float(best.get("orGain") or 0.0),
+            float(best.get("score") or 0.0),
+        ):
             best = candidate
     return best
 

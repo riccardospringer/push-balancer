@@ -1604,6 +1604,37 @@ def test_dead_zone_can_pass_when_cvd_is_behind_daily_push_pace():
     assert "Rueckstand" in decision["pushPacing"]["label"]
 
 
+def test_time_fit_waits_for_nearby_better_slot_when_not_behind():
+    friday_noon = int(dt.datetime(2026, 6, 19, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=86.0,
+        predictedOR=0.061,
+        category="news",
+        title="Regierung beschliesst neue Regel fuer Verbraucher",
+        url="https://www.bild.de/news/verbraucher-regel-freitag",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=friday_noon),
+        now_ts=friday_noon,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 3
+    context["teamsAlertsToday"] = 3
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True, min_alert_score=66.0),
+    )
+
+    breakdown = decision["editorialReview"]["breakdown"]
+    assert decision["shouldNotify"] is False
+    assert breakdown["nextBetterSlot"]["hour"] == 15
+    assert breakdown["nextBetterSlot"]["orGain"] >= 1.0
+    assert any("15:00 Uhr abwarten" in reason for reason in decision["blockingReasons"])
+
+
 def test_gold_slot_uses_historical_baseline_in_time_fit():
     ts = _gold_slot_ts()
     candidate = _candidate(
