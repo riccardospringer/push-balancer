@@ -1939,6 +1939,56 @@ def test_minimum_pacing_chooses_best_candidate_even_when_field_is_close():
     assert selected["minimumPressure"]["active"] is True
 
 
+def test_minimum_pacing_allows_urgent_public_service_disruption():
+    candidate = _candidate(
+        id="bahn-service",
+        url="https://www.bild.de/leben-wissen/deutsche-bahn-blackout-totalausfall-geld-zurueck",
+        title="Nach Deutsche Bahn-Totalausfall: So bekommen Sie ihr Geld zurück!",
+        category="news",
+        score=78.6,
+        predictedOR=0.0515,
+    )
+    context = build_teams_alert_context(
+        [candidate],
+        history=_history(minutes_since_last_push=51),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["active"] is True
+    assert not any("Service-/Raetsel-/Ratgeber" in reason for reason in decision["blockingReasons"])
+    assert any("Push Score" in reason for reason in decision["reasons"])
+
+
+def test_minimum_pacing_still_blocks_soft_service_without_public_disruption():
+    candidate = _candidate(
+        id="soft-service",
+        url="https://www.bild.de/service/digital/livestream-kaufberater-prueft-prime-days",
+        title="Livestream: Der Kaufberater prüft die Prime Days",
+        category="digital",
+        score=79.0,
+        predictedOR=0.052,
+    )
+    context = build_teams_alert_context(
+        [candidate],
+        history=_history(minutes_since_last_push=51),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    decision = shouldNotifyTeams(candidate, context, _config())
+
+    assert decision["shouldNotify"] is False
+    assert any("kein konkretes Nachrichten-Ereignis" in reason for reason in decision["blockingReasons"])
+
+
 def test_clear_strong_winner_still_alerts_despite_margin_rule():
     strong = _candidate(id="w1", url="https://www.bild.de/politik/w1", score=95.0, predictedOR=0.08)
     weak = _candidate(

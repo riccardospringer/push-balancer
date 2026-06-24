@@ -1707,7 +1707,8 @@ def _editorial_cvd_review(
     if soft_matches and not impact_matches and not breaking:
         impact_bonus -= 8.0
     is_soft_service = _is_soft_service_or_quiz(title)
-    if is_soft_service and not breaking:
+    urgent_public_service = _is_urgent_public_service_title(title)
+    if is_soft_service and not breaking and not urgent_public_service:
         impact_bonus -= 18.0
 
     news_value = _clamp(section_points + impact_bonus, 0.0, 40.0)
@@ -1813,7 +1814,7 @@ def _editorial_cvd_review(
         blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {min_editorial_score:.1f})")
     if soft_matches and not breaking and news_value < config.min_editorial_news_value + 6.0:
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
-    if is_soft_service and not breaking:
+    if is_soft_service and not breaking and not urgent_public_service:
         blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
     if live_ticker and not breaking and not live_ticker_has_update:
         blockers.append("CvD: Live-Ticker ohne neue pushwürdige Lage")
@@ -1827,9 +1828,10 @@ def _editorial_cvd_review(
     if (
         missing_event_signal
         and minimum_active
-        and section in {"politik", "news", "wirtschaft", "regional"}
-        and news_value >= config.min_editorial_news_value + 10.0
-        and total >= min_editorial_score + 10.0
+        and urgent_public_service
+        and news_value >= config.min_editorial_news_value + 8.0
+        and total >= min_editorial_score + 8.0
+        and (predicted_or is None or predicted_or >= max(4.3, config.min_or - 0.7))
     ):
         reasons.append("Teams-Mindest-Pacing: starkes CvD-Signal uebersteuert enges Ereignis-Gate")
     elif missing_event_signal:
@@ -3129,6 +3131,19 @@ def _is_soft_service_or_quiz(title: str) -> bool:
     return bool(_SOFT_CONTENT_RE.search(str(title or "")))
 
 
+_URGENT_PUBLIC_SERVICE_RE = re.compile(
+    r"\b(?:bahn|deutsche bahn|streik|blackout|totalausfall|funkst[oö]rung|"
+    r"st[oö]rung|ausfall|sperrung|warnung|r[uü]ckruf|geld zur[uü]ck|"
+    r"entsch[aä]digung|reisende|verkehr|flughafen|hitze|unwetter)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_urgent_public_service_title(title: str) -> bool:
+    """Allow acute utility pieces when they explain a current disruption."""
+    return bool(_URGENT_PUBLIC_SERVICE_RE.search(str(title or "")))
+
+
 # Positives Nachrichten-Ereignis-Signal: etwas ist passiert / wird gemeldet.
 # Bewusst breit gehalten, damit echte News nicht faelschlich blockiert werden.
 _NEWS_EVENT_TERMS = (
@@ -3149,9 +3164,11 @@ _NEWS_EVENT_TERMS = (
     "einigt", "einigen", "einigung", "gesetz", "verbietet", "verbot", "verhängt",
     "verhaengt", "sanktion", "kündigt an", "kuendigt an", "erklärt", "erklaert",
     "krieg", "waffenruhe", "feuerpause", "eskaliert", "droht", "warnt", "warnung",
+    "regierungsbefragung",
     # Wirtschaft
     "insolvenz", "pleite", "entlassungen", "streik", "rekord", "rückruf",
-    "rueckruf", "kollaps", "erhöht", "erhoeht", "senkt",
+    "rueckruf", "kollaps", "erhöht", "erhoeht", "senkt", "blackout",
+    "totalausfall", "funkstörung", "funkstoerung",
     # Sport-Ereignisse
     "gewinnt", "gewonnen", "verliert", "verloren", "siegt", "niederlage",
     "wechselt", "wechsel", "verpflichtet", "gefeuert", "transfer", "ausfall",
