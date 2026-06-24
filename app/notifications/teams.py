@@ -829,6 +829,7 @@ def evaluate_teams_alert_candidates(
             candidate, decision = item
             if config.visit_optimization_enabled:
                 return (
+                    float((decision.get("visitPotential") or {}).get("qualityAdjustedVisits") or 0.0),
                     float(decision.get("expectedVisits") or 0.0),
                     float(decision.get("visitPotentialScore") or 0.0),
                     float(decision.get("selectionScore") or 0.0),
@@ -874,8 +875,16 @@ def evaluate_teams_alert_candidates(
         )
         if runner_up is not None:
             if config.visit_optimization_enabled:
-                winner_value = float(selected_decision.get("visitPotentialScore") or 0.0)
-                runner_value = float(runner_up.get("visitPotentialScore") or 0.0)
+                winner_value = float(
+                    (selected_decision.get("visitPotential") or {}).get("qualityAdjustedVisits") or 0.0
+                )
+                runner_value = float(
+                    (runner_up.get("visitPotential") or {}).get("qualityAdjustedVisits") or 0.0
+                )
+                # Keep the existing point-based margin semantics by comparing
+                # quality-adjusted visits in thousands.
+                winner_value /= 1000.0
+                runner_value /= 1000.0
             else:
                 winner_value = float(selected_decision.get("selectionScore") or 0.0)
                 runner_value = float(runner_up.get("selectionScore") or 0.0)
@@ -1626,6 +1635,52 @@ def _candidate_explicit_reach(candidate: dict[str, Any]) -> int:
     return 0
 
 
+def _audience_breadth_adjustment(candidate: dict[str, Any], *, breaking: bool) -> dict[str, Any]:
+    """Estimate how broad the reachable push audience is for this story.
+
+    OR alone rewards clicky narrow stories. This factor keeps the visit objective
+    tied to actual CvD judgment: broad public-impact stories get more reach
+    potential, curiosity/soft stories get less.
+    """
+    title = _title(candidate)
+    section = _section_key(_section(candidate))
+    factor = 1.0
+    labels: list[str] = []
+
+    if breaking:
+        factor *= 1.08
+        labels.append("Breaking-Breitenfaktor")
+    if _has_broad_public_impact(title, section):
+        factor *= 1.12
+        labels.append("breite öffentliche Relevanz")
+    if _is_low_civic_impact_story(title, section):
+        factor *= 0.62
+        labels.append("enger Kurios-/Click-Reiz")
+
+    section_factor = {
+        "politik": 1.04,
+        "news": 1.0,
+        "wirtschaft": 0.97,
+        "regional": 0.88,
+        "digital": 0.82,
+        "unterhaltung": 0.72,
+        "leben-wissen": 0.74,
+        "service": 0.68,
+    }.get(section, 0.90)
+    if section in {"politik", "news", "wirtschaft"}:
+        labels.append("breites Ressort")
+    elif section in {"unterhaltung", "digital", "leben-wissen", "service"}:
+        labels.append("engeres Ressort")
+    elif section == "regional":
+        labels.append("regional begrenzte Reichweite")
+    factor *= section_factor
+
+    return {
+        "factor": _clamp(factor, 0.45, 1.30),
+        "label": ", ".join(_dedupe(labels[:3])),
+    }
+
+
 def _estimated_reach(
     candidate: dict[str, Any],
     *,
@@ -1658,6 +1713,8 @@ def _estimated_reach(
     reach = section_reach * hour_factor
     if breaking:
         reach *= 1.08
+    audience = _audience_breadth_adjustment(candidate, breaking=breaking)
+    reach *= float(audience["factor"])
     confidence = _clamp(
         (min(section_count, 12) / 12.0) * 0.70 + (min(hour_count, 12) / 12.0) * 0.30,
         0.20,
@@ -1668,10 +1725,14 @@ def _estimated_reach(
         source = f"historische {section}-Reichweite"
     if hour_count > 0:
         source += f" + Slot {hour:02d} Uhr"
+    if audience["label"]:
+        source += f" + {audience['label']}"
     return {
         "value": round(max(1.0, reach), 1),
         "source": source,
         "confidence": round(confidence, 2),
+        "audienceFactor": round(float(audience["factor"]), 2),
+        "audienceLabel": audience["label"],
     }
 
 
@@ -1711,10 +1772,13 @@ def _visit_potential(
     visit_score = _clamp(45.0 + ratio * 35.0, 0.0, 100.0)
     reason = ""
     if or_value > 0:
+        audience_label = str(reach.get("audienceLabel") or "").strip()
+        audience_suffix = f"; {audience_label}" if audience_label else ""
         reason = (
             "Visit-Potenzial: ca. "
             f"{_format_int(expected_visits)} erwartete Push-Visits "
-            f"({_format_number(or_value, 2)} % OR x ca. {_format_int(float(reach['value']))} Reichweite)"
+            f"({_format_number(or_value, 2)} % OR x ca. {_format_int(float(reach['value']))} Reichweite"
+            f"{audience_suffix})"
         )
     return {
         "expectedVisits": int(round(expected_visits)),
@@ -1724,6 +1788,8 @@ def _visit_potential(
         "score": round(visit_score, 1),
         "reachSource": reach["source"],
         "reachConfidence": reach["confidence"],
+        "audienceFactor": reach.get("audienceFactor"),
+        "audienceLabel": reach.get("audienceLabel"),
         "reason": reason,
     }
 
@@ -1860,7 +1926,9 @@ def _minimum_pressure_review(
     hour = local_dt.hour + local_dt.minute / 60.0
     expected = float(push_pacing.get("expectedByNow") or 0.0)
     actual_pushes_today = push_pacing.get("pushesToday")
-    current = _safe_int(teams_alerts_today)
+    actual_known = actual_pushes_today is not None
+    current = _safe_int(actual_pushes_today) if actual_known else _safe_int(teams_alerts_today)
+    basis = "realer Push-Bestand" if actual_known else "Teams-Hinweise"
     deficit = max(0.0, expected - current)
     late_day_floor = 0.0
     if hour >= 18:
@@ -1871,17 +1939,21 @@ def _minimum_pressure_review(
     active = pressure >= 1.0
     threshold_drop = min(10.0, 3.0 + pressure * 2.0) if active else 0.0
     if not active:
-        label = f"Teams-Mindest-Pacing: im Plan fuer mindestens {minimum} Empfehlungen"
+        label = (
+            f"Teams-Mindest-Pacing: {basis} im Plan fuer mindestens {minimum} Push-Empfehlungen"
+        )
     else:
         label = (
-            f"Teams-Mindest-Pacing aktiv: Rueckstand {pressure:.1f} auf mindestens "
+            f"Teams-Mindest-Pacing aktiv ({basis}): Rueckstand {pressure:.1f} auf mindestens "
             f"{minimum} Empfehlungen, Schwellen werden kontrolliert gelockert"
         )
     return {
         "active": active,
         "minimum": minimum,
         "current": current,
+        "basis": "actual_pushes" if actual_known else "teams_alerts",
         "actualPushesToday": _safe_int(actual_pushes_today) if actual_pushes_today is not None else None,
+        "teamsAlertsToday": _safe_int(teams_alerts_today),
         "expectedByNow": round(expected, 2),
         "pressure": round(pressure, 2),
         "thresholdDrop": round(threshold_drop, 1),
@@ -1963,6 +2035,7 @@ def _editorial_cvd_review(
     scheduled_process = _is_scheduled_process_without_update(title)
     abstract_explainer = _is_abstract_explainer_without_update(title)
     nonessential_curiosity = _is_nonessential_curiosity(title)
+    low_civic_impact = _is_low_civic_impact_story(title, section)
     if live_ticker and live_ticker_has_update:
         impact_bonus += 2.0
     elif live_ticker:
@@ -1973,6 +2046,8 @@ def _editorial_cvd_review(
         impact_bonus -= 10.0
     if nonessential_curiosity and not breaking:
         impact_bonus -= 8.0
+    if low_civic_impact and not breaking:
+        impact_bonus -= 12.0
     soft_matches = [term for term in soft_terms if term in title_l]
     if soft_matches and not impact_matches and not breaking:
         impact_bonus -= 8.0
@@ -2006,6 +2081,8 @@ def _editorial_cvd_review(
         user_need += 2.0
     if soft_matches and not need_matches and not impact_matches:
         user_need -= 4.0
+    if low_civic_impact and not breaking:
+        user_need -= 3.0
     user_need = _clamp(user_need, 0.0, 15.0)
 
     if predicted_or is None:
@@ -2094,6 +2171,8 @@ def _editorial_cvd_review(
         blockers.append("CvD: Erklär-/Debattenstück ohne neue aktuelle Lage")
     if nonessential_curiosity and not breaking:
         blockers.append("CvD: Kurios-/Click-Reiz ohne ausreichenden öffentlichen Nachrichtenwert")
+    if low_civic_impact and not breaking:
+        blockers.append("CvD: enger Kurios-/Click-Reiz ohne ausreichend breite öffentliche Relevanz")
     missing_event_signal = config.event_gate_enabled and not breaking and not _has_news_event(title)
     if (
         missing_event_signal
@@ -3274,6 +3353,73 @@ def _has_hard_public_need(title: str, section: str = "") -> bool:
     return str(section or "").strip().lower() == "politik" and any(
         term in text for term in ("regierung beschliesst", "regierung beschließt", "bundestag beschliesst", "bundestag beschließt")
     )
+
+
+_BROAD_PUBLIC_IMPACT_TERMS = (
+    "deutschland", "bundesweit", "regierung", "bundestag", "kanzler", "krieg",
+    "iran", "israel", "ukraine", "russland", "nato", "bahn", "deutsche bahn",
+    "streik", "ausfall", "sperrung", "warnung", "rückruf", "rueckruf", "steuer",
+    "rente", "krankenkasse", "preis", "geld", "polizei", "razzia", "gasversorgung",
+    "terror", "anschlag", "angriff", "explosion", "brand", "tote", "verletzte",
+    "vermisst", "evakuierung", "unwetter", "hochwasser", "hitzewarnung",
+)
+
+
+def _has_broad_public_impact(title: str, section: str = "") -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if _has_hard_public_need(text, section):
+        return True
+    if any(_contains_editorial_term(text, term) for term in _BROAD_PUBLIC_IMPACT_TERMS):
+        return True
+    if re.search(r"\b\d+\s+(?:tote|verletzte|opfer|festnahmen|festgenommen)\b", text):
+        return True
+    return str(section or "").strip().lower() in {"politik", "wirtschaft"} and _has_news_event(text)
+
+
+_LOW_CIVIC_IMPACT_PATTERNS = (
+    r"\bbienen?\b",
+    r"\bbienenstich\b",
+    r"\bshoweinlage\b",
+    r"\bstar am seil\b",
+    r"\bplank\b",
+    r"\bfitness-test\b",
+    r"\bgta\s*6\b",
+    r"\bvorbestellungen?\b",
+    r"\bfans\b",
+    r"\bpromi\b",
+    r"\burlaub\b",
+    r"\breise\b",
+    r"\bbungee\b",
+)
+_LOW_CIVIC_IMPACT_RE = re.compile("|".join(_LOW_CIVIC_IMPACT_PATTERNS), re.IGNORECASE)
+_ACCIDENT_PUBLIC_IMPACT_RE = re.compile(
+    r"\b(?:tote|toter|tot|verletzte|schwerverletzt|opfer|vermisst|"
+    r"gesperrt|sperrung|stau|evakuierung|evakuiert|warnung|gefahr|"
+    r"brand|explosion|anschlag|terror)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_low_civic_impact_story(title: str, section: str = "") -> bool:
+    """Click-/Kurios-Lage ohne breite öffentliche Relevanz.
+
+    This is intentionally conservative: a real warning, disruption, fatality or
+    political/public-service event is not downgraded here.
+    """
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if _has_broad_public_impact(text, section):
+        return False
+    if _is_nonessential_curiosity(text) or _LOW_CIVIC_IMPACT_RE.search(text):
+        return True
+    if _is_soft_service_or_quiz(text) or _is_abstract_explainer_without_update(text):
+        return True
+    if _contains_editorial_term(text, "unfall") and not _ACCIDENT_PUBLIC_IMPACT_RE.search(text):
+        return True
+    return False
 
 
 def _contains_editorial_term(text: str, term: str) -> bool:

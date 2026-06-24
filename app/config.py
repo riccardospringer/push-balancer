@@ -468,6 +468,8 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
     "Sport",
 )
 # Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
+# Wenn echte Push-Historie verfügbar ist, wird Mindestdruck gegen den realen
+# Push-Bestand bewertet; Teams-Hinweise sind nur Fallback/Transportkanal.
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
 PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 11)
 PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 11)

@@ -260,7 +260,7 @@ def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind(
     assert any("Mindest-Pacing" in reason for reason in decision["reasons"])
 
 
-def test_minimum_pacing_uses_teams_alert_count_not_actual_push_count():
+def test_minimum_pacing_uses_actual_push_count_before_teams_alert_count():
     noon_ts = int(dt.datetime(2026, 6, 24, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=84.0,
@@ -288,11 +288,13 @@ def test_minimum_pacing_uses_teams_alert_count_not_actual_push_count():
         ),
     )
 
-    assert decision["shouldNotify"] is True
-    assert decision["minimumPressure"]["active"] is True
-    assert decision["minimumPressure"]["current"] == 1
+    assert decision["shouldNotify"] is False
+    assert decision["minimumPressure"]["active"] is False
+    assert decision["minimumPressure"]["basis"] == "actual_pushes"
+    assert decision["minimumPressure"]["current"] == 5
     assert decision["minimumPressure"]["actualPushesToday"] == 5
-    assert any("Teams-Mindest-Pacing" in reason for reason in decision["reasons"])
+    assert decision["minimumPressure"]["teamsAlertsToday"] == 1
+    assert any("Tagesstrategie: Push-Bestand liegt vorn" in reason for reason in decision["blockingReasons"])
 
 
 def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_gate():
@@ -311,7 +313,7 @@ def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_
         now_ts=afternoon_ts,
     )
     context["dashboardRank"] = 5
-    context["pushesToday"] = 9
+    context["pushesToday"] = 3
 
     decision = shouldNotifyTeams(
         candidate,
@@ -326,6 +328,7 @@ def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_
 
     assert decision["shouldNotify"] is True
     assert decision["minimumPressure"]["active"] is True
+    assert decision["minimumPressure"]["basis"] == "actual_pushes"
     assert not any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
     assert any("OR-Schwelle" in reason for reason in decision["reasons"])
     assert any("besseres Zeitfenster wird nicht abgewartet" in reason for reason in decision["reasons"])
@@ -471,6 +474,28 @@ def test_nonessential_curiosity_story_is_blocked_despite_high_forecast():
 
     assert decision["shouldNotify"] is False
     assert any("Kurios-/Click-Reiz" in reason for reason in decision["blockingReasons"])
+
+
+def test_low_civic_impact_accident_story_does_not_win_on_or_alone():
+    candidate = _candidate(
+        score=85.5,
+        predictedOR=0.0611,
+        category="news",
+        title="Unfall mit Folgen: Bienenstich-Alarm auf Autobahn",
+        url="https://www.bild.de/news/unfall-mit-folgen-bienenstich-alarm-auf-autobahn",
+    )
+    context = _context(candidate, history=_history(minutes_since_last_push=90))
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("enger Kurios-/Click-Reiz" in reason for reason in decision["blockingReasons"])
+    assert decision["visitPotential"]["audienceFactor"] < 1.0
 
 
 def test_fabian_topic_variant_is_blocked_after_recent_teams_alert():
@@ -1966,6 +1991,7 @@ def test_uncertain_field_without_clear_winner_sends_no_alert():
         teams_alerts_today=11,
         now_ts=NOW_TS,
     )
+    context["pushesToday"] = 11
 
     # Hoher Margin-Schwellenwert + hoher Clear-Buffer erzwingen die Unsicherheits-Pruefung.
     result = evaluate_teams_alert_candidates(
