@@ -525,6 +525,18 @@ PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",
     6.0,
 )
+# Visit-Optimierung: Teams soll unter den pushwuerdigen Kandidaten den Vorschlag
+# mit dem groessten erwarteten Push-Visit-Potenzial priorisieren. Das Potenzial
+# basiert auf Artikel-OR-Prognose x historischer Reichweite je Ressort/Slot.
+PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED",
+    True,
+)
+PUSH_TEAMS_VISIT_SELECTION_WEIGHT: float = _env_float(
+    "PUSH_TEAMS_VISIT_SELECTION_WEIGHT",
+    0.62,
+)
+PUSH_TEAMS_DEFAULT_REACH: int = _env_int("PUSH_TEAMS_DEFAULT_REACH", 250000)
 PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED",
     True,

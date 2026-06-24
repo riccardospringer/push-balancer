@@ -32,6 +32,7 @@ from app.config import (
     PUSH_TEAMS_CANDIDATE_LIMIT,
     PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD,
     PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
+    PUSH_TEAMS_DEFAULT_REACH,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE,
@@ -72,6 +73,8 @@ from app.config import (
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_TOPIC_DEDUP_HOURS,
     PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
+    PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED,
+    PUSH_TEAMS_VISIT_SELECTION_WEIGHT,
     PUSH_TEAMS_WEBHOOK_URL,
 )
 from app.database import (
@@ -148,6 +151,9 @@ class TeamsAlertConfig:
     active_hours_end: int = PUSH_TEAMS_ACTIVE_HOURS_END
     min_selection_margin: float = PUSH_TEAMS_MIN_SELECTION_MARGIN
     selection_clear_editorial_buffer: float = PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER
+    visit_optimization_enabled: bool = PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED
+    visit_selection_weight: float = PUSH_TEAMS_VISIT_SELECTION_WEIGHT
+    default_reach: int = PUSH_TEAMS_DEFAULT_REACH
     speculative_guard_enabled: bool = PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED
     speculative_max_age_hours: float = PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS
     feed_overtaken_enabled: bool = PUSH_TEAMS_FEED_OVERTAKEN_ENABLED
@@ -337,6 +343,7 @@ def build_teams_alert_context(
         "teamsAlertsToday": int(alerts_today or 0),
         "recentTeamsAlerts": recent_alerts,
         "suspectForecastValues": _detect_suspect_forecast_values(candidates, config),
+        "reachStats": _reach_baselines(history, now, config),
     }
 
 
@@ -567,6 +574,19 @@ def should_notify_teams(
     )
     positive.extend(strategy_review["reasons"])
     blockers.extend(strategy_review["blockers"])
+    visit_potential = _visit_potential(
+        candidate,
+        predicted_or=predicted_or,
+        editorial_score=float(editorial_review["score"]),
+        alert_score=alert_score,
+        score=score,
+        breaking=breaking,
+        now_ts=now_ts,
+        reach_stats=context.get("reachStats") if isinstance(context.get("reachStats"), dict) else {},
+        config=config,
+    )
+    if visit_potential.get("reason"):
+        positive.append(str(visit_potential["reason"]))
     selection_score = _recommendation_selection_score(
         score=score,
         alert_score=alert_score,
@@ -574,6 +594,8 @@ def should_notify_teams(
         predicted_or=predicted_or,
         dashboard_rank=dashboard_rank,
         breaking=breaking,
+        visit_score=float(visit_potential.get("score") or 0.0),
+        config=config,
     )
 
     if config.score_only_mode:
@@ -747,6 +769,10 @@ def should_notify_teams(
         "editorialReview": editorial_review,
         "editorialScore": editorial_review["score"],
         "selectionScore": selection_score,
+        "visitPotential": visit_potential,
+        "expectedVisits": int(round(float(visit_potential.get("expectedVisits") or 0.0))),
+        "estimatedReach": int(round(float(visit_potential.get("estimatedReach") or 0.0))),
+        "visitPotentialScore": round(float(visit_potential.get("score") or 0.0), 1),
         "predictedOR": predicted_or,
         "forecast": forecast,
         "forecastSuspectedDefault": forecast_suspected_default,
@@ -799,14 +825,27 @@ def evaluate_teams_alert_candidates(
     selected_candidate: dict[str, Any] | None = None
     selected_decision: dict[str, Any] | None = None
     if eligible:
+        def _selection_key(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[float, ...]:
+            candidate, decision = item
+            if config.visit_optimization_enabled:
+                return (
+                    float(decision.get("expectedVisits") or 0.0),
+                    float(decision.get("visitPotentialScore") or 0.0),
+                    float(decision.get("selectionScore") or 0.0),
+                    float(decision.get("editorialScore") or 0.0),
+                    float(decision.get("teamsAlertScore") or 0.0),
+                    *_candidate_rank(candidate),
+                )
+            return (
+                float(decision.get("selectionScore") or 0.0),
+                float(decision.get("editorialScore") or 0.0),
+                float(decision.get("teamsAlertScore") or 0.0),
+                *_candidate_rank(candidate),
+            )
+
         selected_candidate, selected_decision = max(
             eligible,
-            key=lambda item: (
-                float(item[1].get("selectionScore") or 0.0),
-                float(item[1].get("editorialScore") or 0.0),
-                float(item[1].get("teamsAlertScore") or 0.0),
-                *_candidate_rank(item[0]),
-            ),
+            key=_selection_key,
         )
         selected_key = candidate_key(selected_candidate)
 
@@ -826,13 +865,21 @@ def evaluate_teams_alert_candidates(
                 for candidate, decision in eligible
                 if candidate_key(candidate) != selected_key
             ),
-            key=lambda decision: float(decision.get("selectionScore") or 0.0),
+            key=lambda decision: (
+                float(decision.get("expectedVisits") or 0.0)
+                if config.visit_optimization_enabled
+                else float(decision.get("selectionScore") or 0.0)
+            ),
             default=None,
         )
         if runner_up is not None:
-            margin = float(selected_decision.get("selectionScore") or 0.0) - float(
-                runner_up.get("selectionScore") or 0.0
-            )
+            if config.visit_optimization_enabled:
+                winner_value = float(selected_decision.get("visitPotentialScore") or 0.0)
+                runner_value = float(runner_up.get("visitPotentialScore") or 0.0)
+            else:
+                winner_value = float(selected_decision.get("selectionScore") or 0.0)
+                runner_value = float(runner_up.get("selectionScore") or 0.0)
+            margin = winner_value - runner_value
             winner_editorial = float(selected_decision.get("editorialScore") or 0.0)
             clear_level = config.min_editorial_score + config.selection_clear_editorial_buffer
             if winner_editorial < clear_level and margin < config.min_selection_margin:
@@ -877,9 +924,14 @@ def evaluate_teams_alert_candidates(
                     ),
                 }
                 if competitors:
+                    selection_reason = (
+                        "Hoechstes erwartetes Visit-Potenzial unter den freigegebenen Kandidaten"
+                        if config.visit_optimization_enabled
+                        else "Beste CvD-Eignung aus Nachrichtenwert, Timing und Nutzerbelastung im Kandidatenfeld"
+                    )
                     decision["reasons"] = [
                         *decision.get("reasons", []),
-                        "Beste CvD-Eignung aus Nachrichtenwert, Timing und Nutzerbelastung im Kandidatenfeld",
+                        selection_reason,
                     ]
         final.append({"candidate": candidate, "decision": decision})
 
@@ -954,6 +1006,8 @@ def build_teams_push_recommendation(
     pacing = decision.get("pushPacing") if isinstance(decision.get("pushPacing"), dict) else {}
     pacing_label = str(pacing.get("label") or "").strip()
     selection_score = float(decision.get("selectionScore") or 0.0)
+    visit_potential = decision.get("visitPotential") if isinstance(decision.get("visitPotential"), dict) else {}
+    visit_reason = str(visit_potential.get("reason") or "").strip()
     push_text, push_title_source = _teams_push_title_recommendation(candidate, title, section, url, config)
     push_text_matches_title = _same_editorial_text(push_text, title)
     competition_meta = decision.get("competition") or {}
@@ -998,6 +1052,7 @@ def build_teams_push_recommendation(
     why_now = _dedupe(
         [
             editorial_reason,
+            visit_reason,
             *( [f"Push-Balancer-Score: {candidate_score_reason}"] if candidate_score_reason else [] ),
             time_fit_reason,
             forecast_reason,
@@ -1025,12 +1080,13 @@ def build_teams_push_recommendation(
     compact_reasons = _dedupe(
         [
             *candidate_drivers[:1],
+            visit_reason,
             time_fit_reason,
             pacing_label,
             forecast_reason,
             timing_reason,
         ]
-    )[:4]
+    )[:5]
     subject = f"🚨 Jetzt pushen: {_compact_text(push_text or title, 120)}"
 
     text_lines = [subject, "", "Alternativer Push-Titel:", push_text]
@@ -1043,7 +1099,9 @@ def build_teams_push_recommendation(
             "",
             (
                 f"{section_label} | Score {_format_number(score)} | "
-                f"Prognose {_format_or(predicted_or)} | letzter Push {_format_minutes(minutes)}"
+                f"Prognose {_format_or(predicted_or)} | "
+                f"Visit-Potenzial ca. {_format_int(visit_potential.get('expectedVisits') or 0)} | "
+                f"letzter Push {_format_minutes(minutes)}"
             ),
             "",
             "Warum jetzt?",
@@ -1099,6 +1157,10 @@ def build_teams_push_recommendation(
             "timeFitScore": time_fit_score,
             "timeFitLabel": time_fit_label,
             "selectionScore": selection_score,
+            "visitPotential": visit_potential,
+            "expectedVisits": int(visit_potential.get("expectedVisits") or 0),
+            "estimatedReach": int(visit_potential.get("estimatedReach") or 0),
+            "visitPotentialScore": float(visit_potential.get("score") or 0.0),
             "predictedOR": round(float(predicted_or), 4) if predicted_or is not None else 0.0,
             "predictedORAvailable": predicted_or is not None,
             "predictedORLabel": _format_or(predicted_or),
@@ -1466,6 +1528,206 @@ def normalize_predicted_or(value: Any) -> float | None:
     return percent
 
 
+def _median(values: list[float]) -> float | None:
+    clean = sorted(float(value) for value in values if value and value > 0)
+    if not clean:
+        return None
+    mid = len(clean) // 2
+    if len(clean) % 2:
+        return clean[mid]
+    return (clean[mid - 1] + clean[mid]) / 2.0
+
+
+def _section_key(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if not raw:
+        return "news"
+    aliases = {
+        "geld": "wirtschaft",
+        "business": "wirtschaft",
+        "inland": "news",
+        "ausland": "news",
+        "crime": "news",
+        "wetter": "news",
+        "ratgeber": "leben-wissen",
+        "leben": "leben-wissen",
+        "service": "leben-wissen",
+    }
+    return aliases.get(raw, raw)
+
+
+def _history_reach(item: dict[str, Any]) -> int:
+    for key in ("total_recipients", "recipientCount", "recipients", "received"):
+        value = _safe_int(item.get(key))
+        if value > 0:
+            return value
+    return 0
+
+
+def _history_hour(item: dict[str, Any]) -> int | None:
+    raw_hour = item.get("hour")
+    hour = _safe_int(raw_hour) if raw_hour not in (None, "") else -1
+    if 0 <= hour <= 23:
+        return hour
+    ts_value = _safe_int(item.get("ts_num", item.get("ts", 0)))
+    if ts_value > 0:
+        return dt.datetime.fromtimestamp(ts_value, ZoneInfo("Europe/Berlin")).hour
+    return None
+
+
+def _reach_baselines(
+    history: list[dict[str, Any]],
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Build robust reach baselines from recent real push recipients."""
+    section_values: dict[str, list[float]] = {}
+    hour_values: dict[int, list[float]] = {}
+    global_values: list[float] = []
+    cutoff = int(now_ts) - 30 * 86400
+    for item in history or []:
+        ts_value = _safe_int(item.get("ts_num", item.get("ts", 0)))
+        if ts_value and ts_value < cutoff:
+            continue
+        reach = _history_reach(item)
+        if reach <= 0:
+            continue
+        global_values.append(float(reach))
+        section = _section_key(item.get("cat") or item.get("category"))
+        section_values.setdefault(section, []).append(float(reach))
+        hour = _history_hour(item)
+        if hour is not None:
+            hour_values.setdefault(hour, []).append(float(reach))
+
+    default_reach = max(1, int(config.default_reach or 250000))
+    global_median = _median(global_values) or float(default_reach)
+    return {
+        "globalMedian": float(global_median),
+        "bySection": {
+            section: float(_median(values) or global_median)
+            for section, values in section_values.items()
+        },
+        "byHour": {
+            str(hour): float(_median(values) or global_median)
+            for hour, values in hour_values.items()
+        },
+        "sectionCounts": {section: len(values) for section, values in section_values.items()},
+        "hourCounts": {str(hour): len(values) for hour, values in hour_values.items()},
+        "sampleSize": len(global_values),
+        "defaultReach": default_reach,
+    }
+
+
+def _candidate_explicit_reach(candidate: dict[str, Any]) -> int:
+    for key in ("estimatedReach", "expectedReach", "estimatedRecipients", "recipients", "recipientCount"):
+        value = _safe_int(candidate.get(key))
+        if value > 0:
+            return value
+    return 0
+
+
+def _estimated_reach(
+    candidate: dict[str, Any],
+    *,
+    now_ts: int,
+    reach_stats: dict[str, Any],
+    breaking: bool,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    explicit = _candidate_explicit_reach(candidate)
+    if explicit > 0:
+        return {"value": float(explicit), "source": "candidate", "confidence": 1.0}
+
+    global_median = _safe_float(reach_stats.get("globalMedian")) or float(config.default_reach or 250000)
+    by_section = reach_stats.get("bySection") if isinstance(reach_stats.get("bySection"), dict) else {}
+    by_hour = reach_stats.get("byHour") if isinstance(reach_stats.get("byHour"), dict) else {}
+    section_counts = (
+        reach_stats.get("sectionCounts") if isinstance(reach_stats.get("sectionCounts"), dict) else {}
+    )
+    hour_counts = reach_stats.get("hourCounts") if isinstance(reach_stats.get("hourCounts"), dict) else {}
+
+    section = _section_key(_section(candidate))
+    section_reach = _safe_float(by_section.get(section)) or global_median
+    section_count = _safe_int(section_counts.get(section))
+    hour = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin")).hour
+    hour_reach = _safe_float(by_hour.get(str(hour)))
+    hour_count = _safe_int(hour_counts.get(str(hour)))
+    hour_factor = 1.0
+    if hour_reach and global_median > 0:
+        hour_factor = _clamp(hour_reach / global_median, 0.70, 1.35)
+    reach = section_reach * hour_factor
+    if breaking:
+        reach *= 1.08
+    confidence = _clamp(
+        (min(section_count, 12) / 12.0) * 0.70 + (min(hour_count, 12) / 12.0) * 0.30,
+        0.20,
+        0.95,
+    )
+    source = "historische Reichweite"
+    if section_count > 0:
+        source = f"historische {section}-Reichweite"
+    if hour_count > 0:
+        source += f" + Slot {hour:02d} Uhr"
+    return {
+        "value": round(max(1.0, reach), 1),
+        "source": source,
+        "confidence": round(confidence, 2),
+    }
+
+
+def _visit_potential(
+    candidate: dict[str, Any],
+    *,
+    predicted_or: float | None,
+    editorial_score: float,
+    alert_score: float,
+    score: float,
+    breaking: bool,
+    now_ts: int,
+    reach_stats: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    reach = _estimated_reach(
+        candidate,
+        now_ts=now_ts,
+        reach_stats=reach_stats,
+        breaking=breaking,
+        config=config,
+    )
+    or_value = max(0.0, float(predicted_or or 0.0))
+    expected_visits = float(reach["value"]) * or_value / 100.0
+    quality_factor = _clamp(
+        0.55
+        + max(0.0, editorial_score - 60.0) / 100.0
+        + max(0.0, alert_score - 60.0) / 180.0
+        + max(0.0, score - 70.0) / 300.0,
+        0.55,
+        1.20,
+    )
+    quality_adjusted_visits = expected_visits * quality_factor
+    global_reach = _safe_float(reach_stats.get("globalMedian")) or float(config.default_reach or 250000)
+    benchmark = max(2500.0, global_reach * max(float(config.min_or or 5.0), 4.5) / 100.0)
+    ratio = quality_adjusted_visits / benchmark if benchmark > 0 else 0.0
+    visit_score = _clamp(45.0 + ratio * 35.0, 0.0, 100.0)
+    reason = ""
+    if or_value > 0:
+        reason = (
+            "Visit-Potenzial: ca. "
+            f"{_format_int(expected_visits)} erwartete Push-Visits "
+            f"({_format_number(or_value, 2)} % OR x ca. {_format_int(float(reach['value']))} Reichweite)"
+        )
+    return {
+        "expectedVisits": int(round(expected_visits)),
+        "qualityAdjustedVisits": int(round(quality_adjusted_visits)),
+        "estimatedReach": int(round(float(reach["value"]))),
+        "predictedOR": round(or_value, 2) if or_value else None,
+        "score": round(visit_score, 1),
+        "reachSource": reach["source"],
+        "reachConfidence": reach["confidence"],
+        "reason": reason,
+    }
+
+
 def _recommendation_selection_score(
     *,
     score: float,
@@ -1474,12 +1736,15 @@ def _recommendation_selection_score(
     predicted_or: float | None,
     dashboard_rank: int,
     breaking: bool,
+    visit_score: float = 0.0,
+    config: TeamsAlertConfig | None = None,
 ) -> float:
-    """Rank eligible candidates by editorial suitability, not dashboard order."""
+    """Rank eligible candidates by expected visit value and editorial suitability."""
+    config = config or TeamsAlertConfig()
     forecast_bonus = min(float(predicted_or or 0.0), 10.0) * 0.4
     rank_bonus = max(0.0, 4.0 - max(0, dashboard_rank - 1) * 0.4) if dashboard_rank > 0 else 0.0
     breaking_bonus = 2.0 if breaking else 0.0
-    total = (
+    editorial_total = (
         editorial_score * 0.55
         + alert_score * 0.30
         + score * 0.10
@@ -1487,6 +1752,11 @@ def _recommendation_selection_score(
         + rank_bonus
         + breaking_bonus
     )
+    if config.visit_optimization_enabled:
+        weight = _clamp(float(config.visit_selection_weight or 0.0), 0.0, 0.85)
+        total = editorial_total * (1.0 - weight) + float(visit_score or 0.0) * weight
+    else:
+        total = editorial_total
     return round(_clamp(total, 0.0, 100.0), 1)
 
 
@@ -2751,16 +3021,20 @@ def _log_decision(candidate: dict[str, Any], decision: dict[str, Any]) -> None:
     reason_text = "; ".join([*blocking_reasons, *positive_reasons])
     log.info(
         "[TeamsAlert] decision candidateId=%s articleId=%s url=%s score=%.1f predicted_or=%s "
-        "teams_alert_score=%s editorial_score=%s selection_score=%s last_push=%s "
+        "expected_visits=%s estimated_reach=%s teams_alert_score=%s editorial_score=%s "
+        "selection_score=%s visit_score=%s last_push=%s "
         "decision=%s reasons=%s evaluated_at=%s",
         decision.get("candidateId"),
         decision.get("articleId"),
         decision.get("articleUrl"),
         float(decision.get("score") or 0.0),
         decision.get("predictedOR"),
+        decision.get("expectedVisits"),
+        decision.get("estimatedReach"),
         decision.get("teamsAlertScore"),
         decision.get("editorialScore"),
         decision.get("selectionScore"),
+        decision.get("visitPotentialScore"),
         decision.get("lastPushAt"),
         "notify" if decision.get("shouldNotify") else "skip",
         reason_text,
@@ -2863,6 +3137,10 @@ def _format_time(ts_value: int) -> str:
 
 def _format_number(value: float, digits: int = 1) -> str:
     return f"{float(value):.{digits}f}".replace(".", ",")
+
+
+def _format_int(value: float | int) -> str:
+    return f"{int(round(float(value or 0))):,}".replace(",", ".")
 
 
 def _format_or(value: float | None) -> str:

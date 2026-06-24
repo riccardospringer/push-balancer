@@ -1128,10 +1128,11 @@ def test_multiple_good_candidates_only_notify_best_candidate():
     result = evaluate_teams_alert_candidates([first, second], context, _config())
     decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
 
-    assert result["selectedCandidateId"] == first["url"]
-    assert decisions[first["url"]]["shouldNotify"] is True
-    assert decisions[second["url"]]["shouldNotify"] is False
-    assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions[second["url"]]["blockingReasons"])
+    assert result["selectedCandidateId"] == second["url"]
+    assert decisions[second["url"]]["shouldNotify"] is True
+    assert decisions[second["url"]]["expectedVisits"] > decisions[first["url"]]["expectedVisits"]
+    assert decisions[first["url"]]["shouldNotify"] is False
+    assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions[first["url"]]["blockingReasons"])
 
 
 def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
@@ -1164,7 +1165,7 @@ def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
     result = evaluate_teams_alert_candidates(
         candidates,
         context,
-        _config(min_alert_score=70.0, min_editorial_score=82.0),
+        _config(min_alert_score=70.0, min_editorial_score=82.0, visit_optimization_enabled=False),
     )
     decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
 
@@ -1172,6 +1173,78 @@ def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
     assert decisions[stronger_cvd["url"]]["selectionScore"] > decisions[high_raw["url"]]["selectionScore"]
     assert decisions[stronger_cvd["url"]]["shouldNotify"] is True
     assert decisions[high_raw["url"]]["shouldNotify"] is False
+
+
+def test_visit_potential_can_choose_broader_reach_candidate_over_higher_or():
+    now = NOW_TS
+    slot_hour = dt.datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin")).hour
+    history = _history(minutes_since_last_push=55, now_ts=now)
+    for idx in range(8):
+        history.append(
+            {
+                "message_id": f"politics-reach-{idx}",
+                "ts_num": now - (2 * 86400) - idx * 3600,
+                "or": 6.8,
+                "title": f"Politik-Historie {idx}",
+                "headline": f"Politik-Historie {idx}",
+                "cat": "politik",
+                "link": f"https://www.bild.de/politik/history-{idx}",
+                "hour": slot_hour,
+                "total_recipients": 80000,
+            }
+        )
+        history.append(
+            {
+                "message_id": f"news-reach-{idx}",
+                "ts_num": now - (3 * 86400) - idx * 3600,
+                "or": 5.2,
+                "title": f"News-Historie {idx}",
+                "headline": f"News-Historie {idx}",
+                "cat": "news",
+                "link": f"https://www.bild.de/news/history-{idx}",
+                "hour": slot_hour,
+                "total_recipients": 520000,
+            }
+        )
+
+    narrow_high_or = _candidate(
+        id="narrow-or",
+        url="https://www.bild.de/politik/narrow-or",
+        title="Regierung beschliesst neues Sicherheitspaket",
+        category="politik",
+        score=91.0,
+        predictedOR=0.071,
+    )
+    broader_news = _candidate(
+        id="broad-visits",
+        url="https://www.bild.de/news/bahn-ausfall-visits",
+        title="Warnung: Deutsche Bahn meldet bundesweiten Totalausfall",
+        category="news",
+        score=84.0,
+        predictedOR=0.052,
+    )
+    context = build_teams_alert_context(
+        [narrow_high_or, broader_news],
+        history=history,
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=now,
+    )
+
+    result = evaluate_teams_alert_candidates(
+        [narrow_high_or, broader_news],
+        context,
+        _config(min_alert_score=60.0, min_editorial_score=60.0, min_or=4.0),
+    )
+    decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
+
+    assert result["selectedCandidateId"] == broader_news["url"]
+    assert decisions[broader_news["url"]]["expectedVisits"] > decisions[narrow_high_or["url"]]["expectedVisits"]
+    assert decisions[broader_news["url"]]["shouldNotify"] is True
+    assert any("Visit-Potenzial" in reason for reason in decisions[broader_news["url"]]["reasons"])
+    assert decisions[narrow_high_or["url"]]["shouldNotify"] is False
+    assert any("Staerkerer Kandidat vorhanden" in reason for reason in decisions[narrow_high_or["url"]]["blockingReasons"])
 
 
 def test_auto_push_calibration_allows_public_warning_candidate():
@@ -1365,6 +1438,10 @@ def test_teams_message_contains_required_editorial_fields():
     assert "BILD-Reiz: 84.0/100" in payload["scoreBreakdownLabel"]
     assert payload["editorialScore"] >= 82.0
     assert payload["selectionScore"] > 0
+    assert payload["expectedVisits"] > 0
+    assert payload["estimatedReach"] > 0
+    assert payload["visitPotentialScore"] > 0
+    assert "Visit-Potenzial" in payload["messageText"]
     assert payload["timeFitScore"] > 0
     assert payload["timeFitLabel"]
     assert payload["recommendedPushText"] == candidate["recommendedText"]
@@ -1857,7 +1934,7 @@ def test_select_teams_push_recommendation_picks_best_and_builds_message():
 
     result = selectTeamsPushRecommendation([first, second], context, _config())
 
-    assert result["selected"]["url"] == first["url"]
+    assert result["selected"]["url"] == second["url"]
     assert result["decision"]["shouldNotify"] is True
     assert result["recommendation"]["text"].startswith("🚨 Jetzt pushen:")
 
