@@ -2280,6 +2280,33 @@ def test_daily_push_plan_excludes_sport_from_teams_plan():
     assert any("Sport" in item["reason"] for item in plan["notRecommended"])
 
 
+def test_daily_push_plan_excludes_author_profile_pages():
+    author_page = _candidate(
+        id="author-profile",
+        url="https://www.bild.de/autor/michaela-steuer",
+        title="Michaela Steuer",
+        category="news",
+        score=96.0,
+        predictedOR=0.09,
+        pubDate=_iso(NOW_TS - 10 * 60),
+    )
+    candidates = [author_page, *_daily_plan_candidates(18)]
+    context = _daily_plan_context(candidates)
+
+    plan = buildTeamsDailyPushPlan(
+        candidates,
+        context,
+        _config(),
+        target_date="2026-06-24",
+        min_items=15,
+        max_items=15,
+        now_ts=NOW_TS,
+    )
+
+    assert all(item["articleUrl"] != author_page["url"] for item in plan["items"])
+    assert any("Autor-/Meta-Seite" in item["reason"] for item in plan["notRecommended"])
+
+
 def test_daily_push_plan_excludes_already_pushed_article():
     pushed = _candidate(
         id="already-pushed-plan",

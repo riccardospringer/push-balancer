@@ -1911,6 +1911,9 @@ def _daily_plan_hard_blockers(
     section = _section(candidate).lower()
     excluded = {item.lower() for item in config.excluded_sections if item.strip()}
     hard: list[str] = []
+    non_article_reason = _daily_plan_non_article_reason(candidate)
+    if non_article_reason:
+        hard.append(non_article_reason)
     if not _title(candidate):
         hard.append("Keine Headline")
     if not _url(candidate):
@@ -1934,6 +1937,42 @@ def _daily_plan_hard_blockers(
     if allowed and section not in allowed:
         hard.append(f"Ressort {_format_section(section)} ist nicht freigegeben")
     return _dedupe(hard)
+
+
+def _daily_plan_non_article_reason(candidate: dict[str, Any]) -> str:
+    """Exclude meta/profile pages from the editorial day plan.
+
+    The recommendations feed can contain author/profile pages. Their reach can
+    look attractive to the visit model, but they are not actionable articles and
+    must never occupy one of the minimum daily push slots.
+    """
+    from urllib.parse import urlsplit
+
+    url = _url(candidate)
+    if not url:
+        return ""
+    path = urlsplit(url).path.lower().strip("/")
+    if not path:
+        return "Kein Artikel: Start-/Übersichtsseite"
+    segments = [segment for segment in path.split("/") if segment]
+    first_segment = segments[0] if segments else ""
+    meta_roots = {
+        "autor",
+        "autoren",
+        "suche",
+        "newsletter",
+        "impressum",
+        "datenschutz",
+        "agb",
+        "kontakt",
+    }
+    if first_segment in meta_roots:
+        return "Kein Artikel: Autor-/Meta-Seite"
+    if "/autor/" in f"/{path}/" or "/autoren/" in f"/{path}/":
+        return "Kein Artikel: Autor-/Meta-Seite"
+    if first_segment in {"thema", "themen", "tag", "tags"}:
+        return "Kein Artikel: Themen-/Tag-Seite"
+    return ""
 
 
 def _daily_plan_rank_score(
