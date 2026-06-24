@@ -544,6 +544,7 @@ def should_notify_teams(
         push_pacing=push_pacing,
         breaking=breaking,
         config=config,
+        minimum_pressure=minimum_pressure,
     )
     positive.extend(strategy_review["reasons"])
     blockers.extend(strategy_review["blockers"])
@@ -1520,6 +1521,7 @@ def _daily_strategy_review(
     push_pacing: dict[str, Any],
     breaking: bool,
     config: TeamsAlertConfig,
+    minimum_pressure: dict[str, Any] | None = None,
 ) -> dict[str, list[str]]:
     if breaking:
         return {"reasons": ["Tagesstrategie: Breaking darf Push-Bestand übersteuern"], "blockers": []}
@@ -1528,6 +1530,7 @@ def _daily_strategy_review(
 
     surplus = float(push_pacing.get("surplus") or 0.0)
     deficit = float(push_pacing.get("deficit") or 0.0)
+    minimum_pressure = minimum_pressure or {}
     blockers: list[str] = []
     reasons: list[str] = []
     strong_enough_when_ahead = (
@@ -1537,9 +1540,14 @@ def _daily_strategy_review(
         and (predicted_or is None or predicted_or >= config.min_or + 0.5)
     )
     if surplus >= 2.0 and not strong_enough_when_ahead:
-        blockers.append(
-            "Tagesstrategie: Push-Bestand liegt vorn; normale Lage nicht stark genug für zusätzliche Nutzerbelastung"
-        )
+        if minimum_pressure.get("active"):
+            reasons.append(
+                "Teams-Mindest-Pacing: Rueckstand im Teams-Kanal, Push-Vorsprung blockiert die Empfehlung nicht"
+            )
+        else:
+            blockers.append(
+                "Tagesstrategie: Push-Bestand liegt vorn; normale Lage nicht stark genug für zusätzliche Nutzerbelastung"
+            )
     elif surplus >= 2.0:
         reasons.append("Tagesstrategie: trotz Push-Vorsprung stark genug")
     elif deficit >= 1.5:
@@ -1559,8 +1567,8 @@ def _minimum_pressure_review(
     local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
     hour = local_dt.hour + local_dt.minute / 60.0
     expected = float(push_pacing.get("expectedByNow") or 0.0)
-    pushes_today = push_pacing.get("pushesToday")
-    current = _safe_int(pushes_today) if pushes_today is not None else _safe_int(teams_alerts_today)
+    actual_pushes_today = push_pacing.get("pushesToday")
+    current = _safe_int(teams_alerts_today)
     deficit = max(0.0, expected - current)
     late_day_floor = 0.0
     if hour >= 18:
@@ -1571,16 +1579,17 @@ def _minimum_pressure_review(
     active = pressure >= 1.0
     threshold_drop = min(10.0, 3.0 + pressure * 2.0) if active else 0.0
     if not active:
-        label = f"Mindest-Pacing: im Plan fuer mindestens {minimum} Pushes"
+        label = f"Teams-Mindest-Pacing: im Plan fuer mindestens {minimum} Empfehlungen"
     else:
         label = (
-            f"Mindest-Pacing aktiv: Rueckstand {pressure:.1f} auf mindestens "
-            f"{minimum} Pushes, Schwellen werden kontrolliert gelockert"
+            f"Teams-Mindest-Pacing aktiv: Rueckstand {pressure:.1f} auf mindestens "
+            f"{minimum} Empfehlungen, Schwellen werden kontrolliert gelockert"
         )
     return {
         "active": active,
         "minimum": minimum,
         "current": current,
+        "actualPushesToday": _safe_int(actual_pushes_today) if actual_pushes_today is not None else None,
         "expectedByNow": round(expected, 2),
         "pressure": round(pressure, 2),
         "thresholdDrop": round(threshold_drop, 1),

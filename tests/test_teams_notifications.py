@@ -260,6 +260,41 @@ def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind(
     assert any("Mindest-Pacing" in reason for reason in decision["reasons"])
 
 
+def test_minimum_pacing_uses_teams_alert_count_not_actual_push_count():
+    noon_ts = int(dt.datetime(2026, 6, 24, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=84.0,
+        predictedOR=0.061,
+        category="news",
+        title="Streik legt Bahnverkehr in mehreren Bundeslaendern lahm",
+        url="https://www.bild.de/news/bahn-streik-verkehr",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=noon_ts),
+        now_ts=noon_ts,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 5
+    context["teamsAlertsToday"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=78.0,
+            min_editorial_score=68.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["active"] is True
+    assert decision["minimumPressure"]["current"] == 1
+    assert decision["minimumPressure"]["actualPushesToday"] == 5
+    assert any("Teams-Mindest-Pacing" in reason for reason in decision["reasons"])
+
+
 def test_minimum_pacing_does_not_allow_curiosity_story():
     evening_ts = NOW_TS + 11 * 3600
     candidate = _candidate(
@@ -1167,6 +1202,7 @@ def test_daily_strategy_blocks_normal_candidate_when_push_count_is_ahead():
     context = _context(candidate, history=_history(minutes_since_last_push=90))
     context["dashboardRank"] = 1
     context["pushesToday"] = 8
+    context["teamsAlertsToday"] = 11
 
     decision = shouldNotifyTeams(
         candidate,
@@ -1606,6 +1642,7 @@ def test_dynamic_threshold_rises_when_too_many_pushes_today():
     )
     high_context = _context(candidate, now_ts=ts)
     high_context["pushesToday"] = 15
+    high_context["teamsAlertsToday"] = 11
     raised = shouldNotifyTeams(
         candidate,
         high_context,

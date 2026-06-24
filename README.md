@@ -353,7 +353,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
 | `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; calibrated for an editorial cadence of roughly 11 push decisions per day |
-| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `11` | Minimum daily pacing target; when the day falls behind, Teams thresholds are controlledly relaxed but hard safety gates remain active |
+| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `11` | Minimum daily Teams recommendation pacing target; this is measured against Teams alerts, not raw push-history count, and relaxes thresholds only when the Teams channel falls behind |
 | `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `11` | Daily cap for Teams recommendations; breaking can still use its configured override |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
 | `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Limits Teams evaluation to the top N article candidates from the same payload used by the dashboard |
