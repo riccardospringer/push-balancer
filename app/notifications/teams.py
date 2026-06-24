@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,8 @@ from app.config import (
     PUSH_TEAMS_CONSTANT_FORECAST_MIN_FIELD,
     PUSH_TEAMS_DASHBOARD_TOP_LIMIT,
     PUSH_TEAMS_DEFAULT_REACH,
+    PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS,
+    PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE,
@@ -144,6 +146,8 @@ class TeamsAlertConfig:
     target_pushes_per_day: int = PUSH_TEAMS_TARGET_PUSHES_PER_DAY
     min_alerts_per_day: int = PUSH_TEAMS_MIN_ALERTS_PER_DAY
     max_alerts_per_day: int = PUSH_TEAMS_MAX_ALERTS_PER_DAY
+    daily_plan_min_items: int = PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS
+    daily_plan_max_items: int = PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS
     dynamic_threshold_enabled: bool = PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED
     dynamic_threshold_max_drop: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
     dynamic_threshold_max_rise: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE
@@ -1488,6 +1492,832 @@ def select_teams_push_recommendation(
     }
 
 
+def build_teams_daily_push_plan(
+    candidates: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+    config: TeamsAlertConfig | None = None,
+    *,
+    target_date: str | dt.date | None = None,
+    min_items: int | None = None,
+    max_items: int | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build a Teams-ready CvD day plan from the current Push-Balancer field.
+
+    Unlike the immediate alert path, this is a planning surface: hard spam and
+    duplicate blockers still exclude candidates, while softer quality blockers
+    downgrade confidence/status instead of hiding the next-best topics.
+    """
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or (context or {}).get("nowTs") or time.time())
+    min_count = max(1, int(min_items or config.daily_plan_min_items or 15))
+    max_count = max(min_count, int(max_items or config.daily_plan_max_items or min_count))
+    plan_config = replace(
+        config,
+        enabled=True,
+        quiet_hours_start="00:00",
+        quiet_hours_end="00:00",
+        global_cooldown_minutes=0,
+        max_alerts_per_day=0,
+        target_pushes_per_day=max(int(config.target_pushes_per_day or 0), min_count),
+        min_alerts_per_day=max(int(config.min_alerts_per_day or 0), min_count),
+    )
+    target = _parse_daily_plan_date(target_date, now)
+    context = context or build_teams_alert_context(candidates, now_ts=now, config=plan_config)
+    context = dict(context)
+    context["nowTs"] = now
+
+    raw_entries = _daily_plan_candidate_entries(candidates, context, plan_config)
+    ranked_entries, not_recommended = _daily_plan_dedupe_and_rank(raw_entries, min_count)
+    plan_count = min(max_count, max(min_count, len(ranked_entries)))
+    selected_entries = ranked_entries[:plan_count]
+    slots = _daily_plan_slots(target, max(len(selected_entries), min_count), plan_config)
+    assigned = _daily_plan_assign_slots(selected_entries, slots, context, plan_config)
+    items = sorted(assigned, key=lambda item: (item["slotTs"], -float(item["planScore"])))
+    for index, item in enumerate(items, start=1):
+        item["number"] = index
+
+    top_items = sorted(items, key=lambda item: float(item["planScore"]), reverse=True)[:5]
+    traffic_slots = _daily_plan_traffic_slots(target, plan_config)
+    watch_topics = _daily_plan_watch_topics(ranked_entries[len(selected_entries):], raw_entries)
+    selected_ids = {str(item.get("candidateId") or "") for item in items}
+    not_recommended = _daily_plan_not_recommended(
+        not_recommended,
+        raw_entries,
+        selected_ids=selected_ids,
+        limit=8,
+    )
+
+    plan = {
+        "type": "teams_daily_push_plan",
+        "date": target.isoformat(),
+        "weekday": _weekday_name_de(target.weekday()),
+        "generatedAt": _format_dt(now),
+        "generatedAtIso": _iso_from_ts(now),
+        "minimumItems": min_count,
+        "maximumItems": max_count,
+        "count": len(items),
+        "meetsMinimum": len(items) >= min_count,
+        "items": items,
+        "top5": [_daily_plan_item_summary(item) for item in top_items],
+        "trafficSlots": traffic_slots,
+        "watchTopics": watch_topics,
+        "notRecommended": not_recommended,
+        "pacing": _push_pacing_review(context.get("pushesToday"), now, plan_config),
+        "assumptions": [
+            "Der Tagesplan ist eine CvD-Planung, kein automatischer Versand an Nutzer.",
+            "Fixe Vorschläge sind echte Push-Kandidaten; optionale Slots bleiben lageabhängig.",
+            "Sport, Dubletten, bereits gepushte und bereits per Teams gemeldete Artikel sind ausgeschlossen.",
+        ],
+    }
+    message = build_teams_daily_push_plan_message(plan)
+    plan["messageText"] = message["text"]
+    plan["messageHtml"] = message["html"]
+    plan["payload"] = {
+        "type": "push_daily_plan",
+        "subject": message["subject"],
+        "messageText": message["text"],
+        "messageHtml": message["html"],
+        "date": plan["date"],
+        "weekday": plan["weekday"],
+        "count": plan["count"],
+        "items": plan["items"],
+        "top5": plan["top5"],
+        "trafficSlots": traffic_slots,
+        "watchTopics": watch_topics,
+        "notRecommended": not_recommended,
+    }
+    return plan
+
+
+def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
+    """Render a compact Teams-readable message for a daily push plan."""
+    date_label = f"{plan.get('date')}, {plan.get('weekday')}"
+    count = int(plan.get("count") or 0)
+    minimum = int(plan.get("minimumItems") or 0)
+    subject = f"Tagesplan Pushes für {date_label}: {count} Vorschläge"
+    header = [
+        f"Tagesplan Pushes für {date_label}",
+        f"Ziel: mindestens {minimum} Pushes. Schwächere Vorschläge sind transparent markiert.",
+        "",
+    ]
+    lines: list[str] = [*header]
+    for item in plan.get("items") or []:
+        lines.extend(
+            [
+                f"{int(item.get('number') or 0)}. {item.get('time')} – {item.get('pushText')}",
+                f"Ressort: {item.get('sectionLabel')}",
+                f"Priorität: {item.get('priority')} | Status: {item.get('status')}",
+                (
+                    f"Visit-Potenzial: {item.get('visitPotential')}/10 "
+                    f"(ca. {_format_int(item.get('expectedVisits') or 0)} Visits)"
+                ),
+                (
+                    f"Dringlichkeit: {item.get('urgency')}/10 | "
+                    f"Timing-Fit: {item.get('timingFit')}/10 | "
+                    f"Push-Müdigkeit: {item.get('fatigueRisk')}"
+                ),
+                f"Confidence: {item.get('confidence')}",
+                f"Warum dieser Push: {item.get('why')}",
+                f"Alternative: {item.get('alternativeTime')}",
+                "",
+            ]
+        )
+
+    lines.extend(["Top 5 Pushes des Tages:"])
+    for item in plan.get("top5") or []:
+        lines.append(f"- {item.get('time')} {item.get('pushText')} ({item.get('priority')})")
+
+    lines.extend(["", "Slots mit besonders hohem Traffic-Potenzial:"])
+    for slot in plan.get("trafficSlots") or []:
+        label = slot.get("label")
+        forecast = _format_or(slot.get("avgOR")) if slot.get("avgOR") else "keine OR-Basis"
+        lines.append(f"- {label}: {forecast}, {slot.get('reason')}")
+
+    lines.extend(["", "Themen beobachten:"])
+    watch = plan.get("watchTopics") or []
+    if watch:
+        for item in watch:
+            lines.append(f"- {item.get('title')}: {item.get('reason')}")
+    else:
+        lines.append("- Aktuell keine zusätzlichen Beobachtungsthemen im Kandidatenfeld.")
+
+    lines.extend(["", "Bewusst nicht pushen:"])
+    skipped = plan.get("notRecommended") or []
+    if skipped:
+        for item in skipped:
+            lines.append(f"- {item.get('title')}: {item.get('reason')}")
+    else:
+        lines.append("- Keine harten Ausschlüsse im geprüften Kandidatenfeld.")
+
+    text = "\n".join(lines).strip()
+    html_message = _build_teams_daily_plan_html(subject, plan)
+    return {"subject": subject, "text": text, "html": html_message}
+
+
+def _daily_plan_candidate_entries(
+    candidates: list[dict[str, Any]],
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> list[dict[str, Any]]:
+    top_limit = max(1, int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
+    entries: list[dict[str, Any]] = []
+    base_context = dict(context)
+    base_context.pop("strongerCandidate", None)
+    for index, candidate in enumerate(candidates or [], start=1):
+        decision_context = dict(base_context)
+        decision_context["dashboardRank"] = index
+        decision_context["dashboardTopLimit"] = top_limit
+        decision = should_notify_teams(candidate, decision_context, config)
+        entries.append(_daily_plan_entry(candidate, decision, index, config))
+    return entries
+
+
+def _daily_plan_entry(
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    dashboard_rank: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    blockers = list(decision.get("blockingReasons") or [])
+    hard_blockers = _daily_plan_hard_blockers(candidate, decision, config)
+    editorial = decision.get("editorialReview") if isinstance(decision.get("editorialReview"), dict) else {}
+    breakdown = editorial.get("breakdown") if isinstance(editorial.get("breakdown"), dict) else {}
+    visit_score = float(decision.get("visitPotentialScore") or 0.0)
+    editorial_score = float(decision.get("editorialScore") or editorial.get("score") or 0.0)
+    alert_score = float(decision.get("teamsAlertScore") or 0.0)
+    raw_score = float(decision.get("score") or _score(candidate))
+    urgency = float(breakdown.get("urgency") or 0.0)
+    time_fit = float(breakdown.get("timeFit") or 0.0)
+    plan_score = _daily_plan_rank_score(
+        decision=decision,
+        visit_score=visit_score,
+        editorial_score=editorial_score,
+        alert_score=alert_score,
+        raw_score=raw_score,
+        urgency=urgency,
+        time_fit=time_fit,
+    )
+    priority = _daily_plan_priority(plan_score, blockers, hard_blockers, decision)
+    fatigue_risk = _daily_plan_fatigue_risk(decision, config)
+    confidence = _daily_plan_confidence(decision, priority, hard_blockers)
+    status = _daily_plan_status(priority, confidence, blockers, hard_blockers, fatigue_risk, decision)
+    title = _title(candidate)
+    push_text, push_source = _teams_push_title_recommendation(
+        candidate,
+        title,
+        _section(candidate),
+        _url(candidate),
+        config,
+    )
+    return {
+        "candidate": candidate,
+        "decision": decision,
+        "dashboardRank": dashboard_rank,
+        "candidateId": decision.get("candidateId") or candidate_key(candidate),
+        "title": title,
+        "url": _url(candidate),
+        "section": _section(candidate),
+        "score": raw_score,
+        "pushText": push_text or title,
+        "pushTitleSource": push_source,
+        "planScore": plan_score,
+        "priority": priority,
+        "confidence": confidence,
+        "status": status,
+        "fatigueRisk": fatigue_risk,
+        "visitPotential": _score_to_ten(visit_score),
+        "urgency": _score_to_ten(urgency, scale=16.0),
+        "timingFit": _score_to_ten(time_fit * 10.0),
+        "hardBlockers": hard_blockers,
+        "softBlockers": [reason for reason in blockers if reason not in hard_blockers],
+        "why": _daily_plan_reason(candidate, decision, status),
+    }
+
+
+def _daily_plan_dedupe_and_rank(
+    entries: list[dict[str, Any]],
+    min_count: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ranked = sorted(entries, key=lambda item: float(item.get("planScore") or 0.0), reverse=True)
+    selected: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for entry in ranked:
+        if entry.get("hardBlockers"):
+            skipped.append({**entry, "skipReason": str(entry["hardBlockers"][0])})
+            continue
+        duplicate_of = _daily_plan_duplicate_of(entry, selected)
+        if duplicate_of:
+            skipped.append(
+                {
+                    **entry,
+                    "skipReason": (
+                        "Dublette im Tagesplan; stärkerer Kandidat: "
+                        f"{_compact_text(str(duplicate_of.get('title') or ''), 80)}"
+                    ),
+                }
+            )
+            continue
+        selected.append(entry)
+
+    if len(selected) < min_count:
+        # Transparente Mindestmengen-Ergaenzung: nur nicht-harte Kandidaten, die
+        # wegen Plan-Dublette herausfielen, bleiben ausgeschlossen.
+        supplements = [
+            entry
+            for entry in ranked
+            if entry not in selected
+            and not entry.get("hardBlockers")
+            and not any(
+                skipped_item.get("candidateId") == entry.get("candidateId")
+                and "Dublette im Tagesplan" in str(skipped_item.get("skipReason") or "")
+                for skipped_item in skipped
+            )
+        ]
+        for entry in supplements:
+            if len(selected) >= min_count:
+                break
+            entry = dict(entry)
+            entry["priority"] = "C"
+            entry["confidence"] = "niedrig"
+            entry["status"] = "nur bei ruhiger Nachrichtenlage"
+            entry["why"] = (
+                "Nur zur Mindestplanung: kein Top-Push, aber der nächstbeste verfügbare Kandidat."
+            )
+            selected.append(entry)
+
+    return selected, skipped
+
+
+def _daily_plan_duplicate_of(
+    entry: dict[str, Any],
+    selected: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidate = entry.get("candidate") or {}
+    title_tokens = _tokens(str(entry.get("title") or ""))
+    slug_tokens = _url_slug_tokens(_url(candidate))
+    for other in selected:
+        other_candidate = other.get("candidate") or {}
+        if _same_topic(slug_tokens, _url_slug_tokens(_url(other_candidate)), 0.58):
+            return other
+        if _same_topic(title_tokens, _tokens(str(other.get("title") or "")), 0.58):
+            return other
+    return None
+
+
+def _daily_plan_assign_slots(
+    entries: list[dict[str, Any]],
+    slots: list[dict[str, Any]],
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> list[dict[str, Any]]:
+    priority_slots = sorted(
+        slots,
+        key=lambda slot: (
+            float(slot.get("weight") or 0.0),
+            float(slot.get("slotScore") or 0.0),
+            float(slot.get("avgOR") or 0.0),
+        ),
+        reverse=True,
+    )
+    assigned: list[dict[str, Any]] = []
+    for entry, slot in zip(entries, priority_slots, strict=False):
+        alternative = _daily_plan_alternative_slot(slot, slots)
+        assigned.append(_daily_plan_finalize_item(entry, slot, alternative, context, config))
+    return assigned
+
+
+def _daily_plan_finalize_item(
+    entry: dict[str, Any],
+    slot: dict[str, Any],
+    alternative: dict[str, Any] | None,
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    candidate = entry.get("candidate") or {}
+    decision = entry.get("decision") if isinstance(entry.get("decision"), dict) else {}
+    editorial = decision.get("editorialReview") if isinstance(decision.get("editorialReview"), dict) else {}
+    editorial_score = float(decision.get("editorialScore") or editorial.get("score") or 0.0)
+    alert_score = float(decision.get("teamsAlertScore") or 0.0)
+    score = float(decision.get("score") or _score(candidate))
+    forecast = _candidate_forecast(
+        candidate,
+        int(slot["ts"]),
+        {float(value) for value in (context.get("suspectForecastValues") or [])},
+    )
+    visit = _visit_potential(
+        candidate,
+        predicted_or=forecast.get("value"),
+        editorial_score=editorial_score,
+        alert_score=alert_score,
+        score=score,
+        breaking=_is_breaking(candidate),
+        now_ts=int(slot["ts"]),
+        reach_stats=context.get("reachStats") if isinstance(context.get("reachStats"), dict) else {},
+        config=config,
+    )
+    time_fit = _time_fit_review(
+        now_ts=int(slot["ts"]),
+        section=_section(candidate),
+        breaking=_is_breaking(candidate),
+        config=config,
+        pushes_today=context.get("pushesToday"),
+    )
+    item = {
+        key: value
+        for key, value in entry.items()
+        if key not in {"candidate", "decision", "hardBlockers", "softBlockers"}
+    }
+    item.update(
+        {
+            "articleTitle": _title(candidate),
+            "articleUrl": _url(candidate),
+            "sectionLabel": _format_section(_section(candidate)),
+            "time": slot["label"],
+            "slotTs": int(slot["ts"]),
+            "slotHour": int(slot["hour"]),
+            "slotWeight": round(float(slot.get("weight") or 0.0), 2),
+            "slotAvgOR": slot.get("avgOR"),
+            "slotReason": slot.get("reason"),
+            "alternativeTime": (
+                f"{alternative['label']} Uhr" if alternative else "Lageabhängig prüfen"
+            ),
+            "forecast": forecast,
+            "predictedOR": forecast.get("value"),
+            "predictedORLabel": _format_forecast(forecast),
+            "expectedVisits": int(visit.get("expectedVisits") or 0),
+            "estimatedReach": int(visit.get("estimatedReach") or 0),
+            "visitPotential": _score_to_ten(float(visit.get("score") or 0.0)),
+            "timingFit": _score_to_ten(float(time_fit.get("score") or 0.0) * 10.0),
+            "timingLabel": time_fit.get("label"),
+            "blockingReasons": list(decision.get("blockingReasons") or []),
+            "positiveReasons": list(decision.get("reasons") or []),
+        }
+    )
+    item["why"] = _daily_plan_reason(candidate, decision, str(item.get("status") or ""), slot, visit)
+    return item
+
+
+def _daily_plan_hard_blockers(
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> list[str]:
+    section = _section(candidate).lower()
+    excluded = {item.lower() for item in config.excluded_sections if item.strip()}
+    hard: list[str] = []
+    if not _title(candidate):
+        hard.append("Keine Headline")
+    if not _url(candidate):
+        hard.append("Kein Artikel-Link")
+    if section in excluded:
+        hard.append(f"Ressort {_format_section(section)} ist ausgeschlossen")
+    hard_markers = (
+        "Bereits live gepusht",
+        "Bereits per Teams gemeldet",
+        "Thema bereits per Teams gemeldet",
+        "Teams-Hinweis wird bereits versendet",
+        "Bereits als Teams-Kandidat versucht",
+        "Artikel-Link",
+        "Headline",
+    )
+    for reason in decision.get("blockingReasons") or []:
+        text = str(reason or "")
+        if any(marker in text for marker in hard_markers):
+            hard.append(text)
+    allowed = {item.lower() for item in config.allowed_sections if item.strip()}
+    if allowed and section not in allowed:
+        hard.append(f"Ressort {_format_section(section)} ist nicht freigegeben")
+    return _dedupe(hard)
+
+
+def _daily_plan_rank_score(
+    *,
+    decision: dict[str, Any],
+    visit_score: float,
+    editorial_score: float,
+    alert_score: float,
+    raw_score: float,
+    urgency: float,
+    time_fit: float,
+) -> float:
+    urgency_score = _score_to_hundred(urgency, scale=16.0)
+    time_score = _score_to_hundred(time_fit, scale=10.0)
+    total = (
+        visit_score * 0.34
+        + editorial_score * 0.25
+        + alert_score * 0.16
+        + raw_score * 0.11
+        + time_score * 0.08
+        + urgency_score * 0.06
+    )
+    blockers = [str(reason) for reason in decision.get("blockingReasons") or []]
+    soft_penalty = min(18.0, len(blockers) * 3.0)
+    if any("Kurios-/Click-Reiz" in reason for reason in blockers):
+        soft_penalty += 10.0
+    if any("Service-/Raetsel" in reason or "kein konkretes Nachrichten-Ereignis" in reason for reason in blockers):
+        soft_penalty += 8.0
+    if decision.get("shouldNotify"):
+        total += 4.0
+    if decision.get("isBreaking"):
+        total += 3.0
+    return round(_clamp(total - soft_penalty, 0.0, 100.0), 1)
+
+
+def _daily_plan_priority(
+    plan_score: float,
+    blockers: list[str],
+    hard_blockers: list[str],
+    decision: dict[str, Any],
+) -> str:
+    if hard_blockers:
+        return "nicht pushen"
+    if plan_score >= 80.0 and decision.get("shouldNotify"):
+        return "A"
+    if plan_score >= 74.0 and not any("CvD:" in reason for reason in blockers):
+        return "A"
+    if plan_score >= 62.0:
+        return "B"
+    return "C"
+
+
+def _daily_plan_status(
+    priority: str,
+    confidence: str,
+    blockers: list[str],
+    hard_blockers: list[str],
+    fatigue_risk: str,
+    decision: dict[str, Any],
+) -> str:
+    if hard_blockers:
+        return "bewusst nicht pushen"
+    if priority == "A" and confidence != "niedrig" and fatigue_risk != "hoch":
+        return "fix"
+    if priority in {"A", "B"}:
+        return "optional"
+    if decision.get("shouldNotify") and not blockers:
+        return "optional"
+    return "nur bei ruhiger Nachrichtenlage"
+
+
+def _daily_plan_confidence(
+    decision: dict[str, Any],
+    priority: str,
+    hard_blockers: list[str],
+) -> str:
+    if hard_blockers:
+        return "niedrig"
+    forecast = decision.get("forecast") if isinstance(decision.get("forecast"), dict) else {}
+    source = str(forecast.get("source") or "")
+    forecast_confidence = _safe_float(forecast.get("confidence")) or 0.0
+    editorial = decision.get("editorialReview") if isinstance(decision.get("editorialReview"), dict) else {}
+    approved = bool(editorial.get("approved", False))
+    if priority == "A" and approved and source == "article_model":
+        return "hoch"
+    if priority in {"A", "B"} and (source == "article_model" or forecast_confidence >= 0.45):
+        return "mittel"
+    return "niedrig"
+
+
+def _daily_plan_fatigue_risk(decision: dict[str, Any], config: TeamsAlertConfig) -> str:
+    minutes = decision.get("minutesSinceLastPush")
+    recent_pushes = _safe_int(decision.get("recentPushCount6h"))
+    pushes_today = _safe_int(decision.get("pushesToday"))
+    if isinstance(minutes, (int, float)) and minutes < max(20, config.min_minutes_since_last_push):
+        return "hoch"
+    if recent_pushes > config.max_pushes_last_6h or pushes_today >= max(1, config.target_pushes_per_day):
+        return "hoch"
+    if isinstance(minutes, (int, float)) and minutes < config.min_minutes_since_last_push + 25:
+        return "mittel"
+    if pushes_today >= max(1, config.target_pushes_per_day - 2):
+        return "mittel"
+    return "niedrig"
+
+
+def _daily_plan_reason(
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    status: str,
+    slot: dict[str, Any] | None = None,
+    visit: dict[str, Any] | None = None,
+) -> str:
+    drivers = _editorial_list(candidate, "performanceDrivers")
+    forecast = decision.get("forecast") if isinstance(decision.get("forecast"), dict) else {}
+    visit_data = visit or decision.get("visitPotential") or {}
+    expected_visits = _safe_int(visit_data.get("expectedVisits"))
+    predicted_or = _safe_float(visit_data.get("predictedOR"))
+    visit_reason = ""
+    if expected_visits > 0:
+        visit_reason = f"Visit-Potenzial ca. {_format_int(expected_visits)} Visits"
+        if predicted_or:
+            visit_reason += f" bei {_format_or(predicted_or)}"
+    slot_reason = str((slot or {}).get("reason") or "").strip()
+    blockers = [str(reason) for reason in decision.get("blockingReasons") or []]
+    forecast_reason = _forecast_sentence(forecast) if forecast and not visit_reason else ""
+    parts = _dedupe(
+        [
+            *(drivers[:1] if drivers else []),
+            visit_reason,
+            slot_reason,
+            forecast_reason,
+            *(blockers[:1] if status != "fix" else []),
+        ]
+    )
+    reason = "; ".join(_compact_text(part, 105) for part in parts[:4] if part)
+    return reason or "Solider Kandidat im aktuellen Push-Balancer-Feld."
+
+
+def _daily_plan_slots(
+    target_date: dt.date,
+    count: int,
+    config: TeamsAlertConfig,
+) -> list[dict[str, Any]]:
+    weekday = target_date.weekday()
+    start = int(_clamp(config.active_hours_start, 0, 23))
+    end = int(_clamp(config.active_hours_end, start, 23))
+    slots: list[dict[str, Any]] = []
+    for hour in range(start, end + 1):
+        slots.append(_daily_plan_slot(target_date, hour, 0, weekday, config))
+    if count > len(slots):
+        extra_hours = sorted(
+            range(start, end + 1),
+            key=lambda hour: _slot_weight(hour, weekday, config),
+            reverse=True,
+        )
+        for hour in extra_hours:
+            if len(slots) >= count:
+                break
+            slots.append(_daily_plan_slot(target_date, hour, 30, weekday, config))
+    return slots
+
+
+def _daily_plan_slot(
+    target_date: dt.date,
+    hour: int,
+    minute: int,
+    weekday: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    slot_dt = dt.datetime.combine(
+        target_date,
+        dt.time(hour=int(hour), minute=int(minute)),
+        tzinfo=ZoneInfo("Europe/Berlin"),
+    )
+    baseline = _slot_baseline(hour, weekday)
+    avg_or = _safe_float(baseline.get("avg_or")) if baseline else None
+    stars = int(baseline.get("stars") or 0) if baseline else 0
+    slot_score = _slot_baseline_score(hour, weekday, baseline, breaking=False)
+    reason_parts = []
+    if avg_or:
+        reason_parts.append(f"historisch {_format_number(avg_or, 2)} % OR")
+    if stars >= 2:
+        reason_parts.append("starker historischer Slot")
+    top_cat = str(baseline.get("top_cat") or "").strip()
+    if top_cat:
+        reason_parts.append(f"Top-Ressort {_format_section(top_cat)}")
+    return {
+        "ts": int(slot_dt.timestamp()),
+        "label": f"{hour:02d}:{minute:02d}",
+        "hour": hour,
+        "minute": minute,
+        "weekday": weekday,
+        "weight": _slot_weight(hour, weekday, config),
+        "slotScore": round(slot_score, 1),
+        "avgOR": round(avg_or, 2) if avg_or is not None else None,
+        "stars": stars,
+        "topCategory": top_cat or None,
+        "reason": ", ".join(reason_parts) or "brauchbares Standardfenster",
+    }
+
+
+def _daily_plan_alternative_slot(
+    slot: dict[str, Any],
+    slots: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    current_ts = int(slot.get("ts") or 0)
+    future = [candidate for candidate in slots if int(candidate.get("ts") or 0) > current_ts]
+    if future:
+        return min(future, key=lambda candidate: int(candidate.get("ts") or 0))
+    past = [candidate for candidate in slots if int(candidate.get("ts") or 0) < current_ts]
+    if past:
+        return max(past, key=lambda candidate: int(candidate.get("ts") or 0))
+    return None
+
+
+def _daily_plan_traffic_slots(
+    target_date: dt.date,
+    config: TeamsAlertConfig,
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    slots = _daily_plan_slots(target_date, int(config.active_hours_end) + 1, config)
+    top = sorted(
+        slots,
+        key=lambda slot: (
+            float(slot.get("weight") or 0.0),
+            float(slot.get("avgOR") or 0.0),
+        ),
+        reverse=True,
+    )[:limit]
+    return [
+        {
+            "label": f"{slot['label']} Uhr",
+            "hour": slot["hour"],
+            "avgOR": slot.get("avgOR"),
+            "weight": slot.get("weight"),
+            "reason": slot.get("reason"),
+        }
+        for slot in sorted(top, key=lambda item: int(item.get("ts") or 0))
+    ]
+
+
+def _daily_plan_watch_topics(
+    remaining: list[dict[str, Any]],
+    raw_entries: list[dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    pool = remaining or [
+        entry for entry in raw_entries if not entry.get("hardBlockers") and entry.get("priority") in {"B", "C"}
+    ]
+    result: list[dict[str, Any]] = []
+    for entry in pool[:limit]:
+        result.append(
+            {
+                "title": _compact_text(str(entry.get("title") or ""), 100),
+                "section": _format_section(str(entry.get("section") or "")),
+                "score": round(float(entry.get("score") or 0.0), 1),
+                "reason": _compact_text(str(entry.get("why") or "Lage beobachten."), 140),
+            }
+        )
+    return result
+
+
+def _daily_plan_not_recommended(
+    skipped: list[dict[str, Any]],
+    raw_entries: list[dict[str, Any]],
+    *,
+    selected_ids: set[str] | None = None,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    selected_ids = selected_ids or set()
+    pool = list(skipped)
+    if len(pool) < limit:
+        low_quality = [
+            entry
+            for entry in raw_entries
+            if entry not in pool
+            and str(entry.get("candidateId") or "") not in selected_ids
+            and (
+                entry.get("priority") == "C"
+                or any("Kurios-/Click-Reiz" in reason for reason in entry.get("softBlockers") or [])
+            )
+        ]
+        pool.extend(low_quality)
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in pool:
+        key = str(entry.get("candidateId") or entry.get("url") or entry.get("title") or "")
+        if key in selected_ids:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        reasons = list(entry.get("hardBlockers") or [])
+        if not reasons:
+            reasons = [str(entry.get("skipReason") or "zu schwach im Tagesvergleich")]
+        result.append(
+            {
+                "title": _compact_text(str(entry.get("title") or ""), 100),
+                "section": _format_section(str(entry.get("section") or "")),
+                "reason": _compact_text(str(reasons[0]), 160),
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _daily_plan_item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "time": item.get("time"),
+        "pushText": item.get("pushText"),
+        "articleTitle": item.get("articleTitle"),
+        "articleUrl": item.get("articleUrl"),
+        "section": item.get("sectionLabel"),
+        "priority": item.get("priority"),
+        "status": item.get("status"),
+        "visitPotential": item.get("visitPotential"),
+        "confidence": item.get("confidence"),
+        "expectedVisits": item.get("expectedVisits"),
+        "why": item.get("why"),
+    }
+
+
+def _build_teams_daily_plan_html(subject: str, plan: dict[str, Any]) -> str:
+    items_html = "".join(
+        "<li>"
+        f"<strong>{html.escape(str(item.get('time') or ''))} – "
+        f"{html.escape(str(item.get('pushText') or ''))}</strong><br>"
+        f"Ressort: {html.escape(str(item.get('sectionLabel') or ''))} | "
+        f"Priorität: {html.escape(str(item.get('priority') or ''))} | "
+        f"Status: {html.escape(str(item.get('status') or ''))}<br>"
+        f"Visit-Potenzial: {html.escape(str(item.get('visitPotential') or ''))}/10 | "
+        f"Confidence: {html.escape(str(item.get('confidence') or ''))}<br>"
+        f"{html.escape(str(item.get('why') or ''))}"
+        "</li>"
+        for item in plan.get("items") or []
+    )
+    top_html = "".join(
+        f"<li>{html.escape(str(item.get('time') or ''))} "
+        f"{html.escape(str(item.get('pushText') or ''))}</li>"
+        for item in plan.get("top5") or []
+    )
+    skipped_html = "".join(
+        f"<li>{html.escape(str(item.get('title') or ''))}: "
+        f"{html.escape(str(item.get('reason') or ''))}</li>"
+        for item in plan.get("notRecommended") or []
+    )
+    return (
+        f"<h2>{html.escape(subject)}</h2>"
+        f"<p>Ziel: mindestens {int(plan.get('minimumItems') or 0)} Pushes. "
+        "Schwächere Vorschläge sind markiert.</p>"
+        f"<ol>{items_html}</ol>"
+        "<p><strong>Top 5 Pushes des Tages</strong></p>"
+        f"<ul>{top_html}</ul>"
+        "<p><strong>Bewusst nicht pushen</strong></p>"
+        f"<ul>{skipped_html}</ul>"
+    )
+
+
+def _parse_daily_plan_date(value: str | dt.date | None, now_ts: int) -> dt.date:
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    if value:
+        try:
+            return dt.date.fromisoformat(str(value))
+        except ValueError:
+            pass
+    return dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin")).date()
+
+
+def _weekday_name_de(weekday: int) -> str:
+    names = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
+    if 0 <= int(weekday) < len(names):
+        return names[int(weekday)]
+    return "Wochentag"
+
+
+def _score_to_ten(value: float, *, scale: float = 100.0) -> float:
+    return round(_clamp((float(value or 0.0) / max(scale, 1.0)) * 10.0, 1.0, 10.0), 1)
+
+
+def _score_to_hundred(value: float, *, scale: float = 100.0) -> float:
+    return _clamp((float(value or 0.0) / max(scale, 1.0)) * 100.0, 0.0, 100.0)
+
+
 # Compatibility aliases requested in the implementation brief.
 def selectTeamsPushRecommendation(
     candidates: list[dict[str, Any]],
@@ -1512,6 +2342,27 @@ def buildTeamsPushRecommendation(
     config: TeamsAlertConfig | None = None,
 ) -> dict[str, Any]:
     return build_teams_push_recommendation(candidate, context, decision, config)
+
+
+def buildTeamsDailyPushPlan(
+    candidates: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+    config: TeamsAlertConfig | None = None,
+    *,
+    target_date: str | dt.date | None = None,
+    min_items: int | None = None,
+    max_items: int | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    return build_teams_daily_push_plan(
+        candidates,
+        context,
+        config,
+        target_date=target_date,
+        min_items=min_items,
+        max_items=max_items,
+        now_ts=now_ts,
+    )
 
 
 def sendTeamsNotification(

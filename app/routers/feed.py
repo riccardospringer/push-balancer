@@ -580,6 +580,36 @@ def get_teams_alerts(limit: int = Query(default=20, ge=1, le=100)) -> JSONRespon
     )
 
 
+@router.get("/api/teams-daily-plan")
+def get_teams_daily_plan(
+    date: str | None = Query(default=None, description="YYYY-MM-DD. Optional, default heute."),
+    limit: int = Query(default=120, ge=15, le=200),
+    min_items: int | None = Query(default=None, ge=1, le=30),
+    max_items: int | None = Query(default=None, ge=1, le=30),
+) -> JSONResponse:
+    """Return a Teams-ready CvD daily push plan from the current article field."""
+    from app.notifications.teams import TeamsAlertConfig, build_teams_daily_push_plan
+
+    config = TeamsAlertConfig()
+    requested_min = min_items or config.daily_plan_min_items
+    source_limit = max(limit, min(200, int(requested_min or 15) * 4))
+    payload = build_articles_payload(offset=0, limit=source_limit)
+    candidates = payload.get("articles") or []
+    plan = build_teams_daily_push_plan(
+        candidates,
+        config=config,
+        target_date=date,
+        min_items=min_items,
+        max_items=max_items,
+    )
+    plan["source"] = {
+        "articlesFetched": len(candidates),
+        "articleLimit": source_limit,
+        "fetchedAt": payload.get("fetchedAt"),
+    }
+    return JSONResponse(content=plan)
+
+
 @router.post("/api/teams-alerts/test", dependencies=[Depends(require_admin_key)])
 def post_teams_alert_test() -> JSONResponse:
     """Send a clearly marked test message to the configured Teams channel.

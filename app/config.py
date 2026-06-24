@@ -473,6 +473,10 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
 PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 11)
 PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 11)
+# Redaktioneller Tagesplan fuer Teams: nicht jeder Slot muss ein Sofort-Alert sein,
+# aber der CvD soll einen vollstaendigen, transparent priorisierten Tagesplan sehen.
+PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 15)
+PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS", 18)
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
     False,

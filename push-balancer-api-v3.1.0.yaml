@@ -102,6 +102,102 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
+  /api/teams-daily-plan:
+    get:
+      tags: [Planning]
+      operationId: getTeamsDailyPushPlan
+      summary: Build a Teams-ready daily push plan
+      description: Returns a CvD-oriented day plan with at least the configured minimum number of push suggestions where possible. The endpoint is advisory-only and never sends Teams or user push notifications.
+      parameters:
+        - name: date
+          in: query
+          description: Optional target day in YYYY-MM-DD format. Defaults to today in the service timezone.
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: limit
+          in: query
+          description: Maximum number of article candidates to inspect before planning.
+          required: false
+          schema:
+            type: integer
+            minimum: 15
+            maximum: 200
+            default: 120
+        - name: min_items
+          in: query
+          description: Minimum number of planned push suggestions.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 15
+        - name: max_items
+          in: query
+          description: Maximum number of planned push suggestions.
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 18
+      responses:
+        "200":
+          description: Teams-ready daily push plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [type, date, weekday, count, items, messageText]
+                properties:
+                  type:
+                    type: string
+                    const: teams_daily_push_plan
+                  date:
+                    type: string
+                    format: date
+                  weekday:
+                    type: string
+                    example: Mittwoch
+                  count:
+                    type: integer
+                    example: 15
+                  meetsMinimum:
+                    type: boolean
+                    description: Whether enough non-hard-blocked candidates were available.
+                  items:
+                    type: array
+                    items:
+                      type: object
+                  top5:
+                    type: array
+                    items:
+                      type: object
+                  trafficSlots:
+                    type: array
+                    items:
+                      type: object
+                  watchTopics:
+                    type: array
+                    items:
+                      type: object
+                  notRecommended:
+                    type: array
+                    items:
+                      type: object
+                  messageText:
+                    type: string
+                    description: Plain-text Teams message.
+                  messageHtml:
+                    type: string
+                    description: HTML Teams message for Power Automate.
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
   /api/v1/status:
     get:
       tags: [Consumer]

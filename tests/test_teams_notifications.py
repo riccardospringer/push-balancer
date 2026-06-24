@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from app.notifications.teams import (
     TeamsAlertConfig,
+    buildTeamsDailyPushPlan,
     buildTeamsPushRecommendation,
     build_teams_alert_context,
     evaluate_and_send_best_candidate,
@@ -2163,6 +2164,191 @@ def test_time_fit_label_uses_real_umlauts_for_early_window():
     assert "frühes" in label
     assert "fruehes" not in label
     assert "fuer" not in label
+
+
+def _daily_plan_candidates(count=18):
+    topics = [
+        ("politik", "Regierung beschließt neues Rentenpaket für Familien"),
+        ("news", "Polizei nimmt Tatverdächtigen nach Angriff fest"),
+        ("news", "Bahn meldet Funkstörung im Fernverkehr"),
+        ("politik", "Ukraine-Krieg: Versorgungskrise auf der Krim eskaliert"),
+        ("regional", "Gericht verurteilt Angeklagten nach Messerattacke"),
+        ("wirtschaft", "Autobauer kündigt Stellenabbau in Deutschland an"),
+        ("news", "Warnung vor Unwetter in mehreren Bundesländern"),
+        ("digital", "Regierung verbietet riskante China-App"),
+        ("wirtschaft", "Krankenkassen erhöhen Beiträge ab Juli"),
+        ("news", "Flughafenstreik legt Verkehr in Deutschland lahm"),
+        ("news", "Explosion in Chemiewerk: Verletzte gemeldet"),
+        ("politik", "EU beschließt neue Sanktionen gegen Russland"),
+        ("regional", "Polizei findet vermisstes Kind nach großer Suche"),
+        ("wirtschaft", "Rente steigt: Was sich für Millionen ändert"),
+        ("digital", "Festnahme nach Cyberangriff auf Klinik"),
+        ("news", "Urteil im Betrugsprozess gegen Unternehmer gefallen"),
+        ("regional", "Hochwasserwarnung: Städte bereiten Evakuierung vor"),
+        ("politik", "Bundesregierung stoppt umstrittenes Gesetz"),
+    ]
+    candidates = []
+    for index, (section, title) in enumerate(topics[:count], start=1):
+        candidates.append(
+            _candidate(
+                id=f"daily-{index}",
+                url=f"https://www.bild.de/{section}/daily-{index}",
+                title=title,
+                category=section,
+                score=88.0 - index * 0.45,
+                predictedOR=0.067 - index * 0.0007,
+                pubDate=_iso(NOW_TS - index * 8 * 60),
+                recommendedText=title,
+                performanceDrivers=[
+                    "Aktualität: klare neue Lage",
+                    "Nutzwert/Relevanz: breites Publikum betroffen",
+                ],
+            )
+        )
+    return candidates
+
+
+def _daily_plan_context(candidates, *, history=None):
+    return build_teams_alert_context(
+        candidates,
+        history=history if history is not None else _history(minutes_since_last_push=120),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        recent_alerts=[],
+        now_ts=NOW_TS,
+        config=_config(),
+    )
+
+
+def test_daily_push_plan_returns_minimum_15_teams_ready_items():
+    candidates = _daily_plan_candidates(18)
+    context = _daily_plan_context(candidates)
+
+    plan = buildTeamsDailyPushPlan(
+        candidates,
+        context,
+        _config(),
+        target_date="2026-06-24",
+        min_items=15,
+        max_items=15,
+        now_ts=NOW_TS,
+    )
+
+    assert plan["count"] == 15
+    assert plan["meetsMinimum"] is True
+    assert len(plan["items"]) == 15
+    assert len(plan["top5"]) == 5
+    assert "Tagesplan Pushes für 2026-06-24, Mittwoch" in plan["messageText"]
+    assert "Top 5 Pushes des Tages" in plan["messageText"]
+    assert "Bewusst nicht pushen" in plan["messageText"]
+    for item in plan["items"]:
+        assert item["pushText"]
+        assert item["articleUrl"]
+        assert item["priority"] in {"A", "B", "C"}
+        assert item["confidence"] in {"hoch", "mittel", "niedrig"}
+        assert item["status"] in {"fix", "optional", "nur bei ruhiger Nachrichtenlage"}
+        assert 1.0 <= float(item["visitPotential"]) <= 10.0
+        assert item["alternativeTime"]
+
+
+def test_daily_push_plan_excludes_sport_from_teams_plan():
+    sport = _candidate(
+        id="sport-plan",
+        url="https://www.bild.de/sport/top-transfer",
+        title="Bayern-Star wechselt überraschend nach England",
+        category="sport",
+        score=99.0,
+        predictedOR=0.09,
+    )
+    candidates = [sport, *_daily_plan_candidates(18)]
+    context = _daily_plan_context(candidates)
+
+    plan = buildTeamsDailyPushPlan(
+        candidates,
+        context,
+        _config(),
+        target_date="2026-06-24",
+        min_items=15,
+        max_items=15,
+        now_ts=NOW_TS,
+    )
+
+    assert all(item["sectionLabel"] != "Sport" for item in plan["items"])
+    assert any("Sport" in item["reason"] for item in plan["notRecommended"])
+
+
+def test_daily_push_plan_excludes_already_pushed_article():
+    pushed = _candidate(
+        id="already-pushed-plan",
+        url="https://www.bild.de/news/already-pushed-plan",
+        title="Warnung vor Unwetter in mehreren Bundesländern",
+        category="news",
+        score=96.0,
+        predictedOR=0.08,
+    )
+    candidates = [pushed, *_daily_plan_candidates(18)]
+    history = [
+        *_history(minutes_since_last_push=120),
+        {
+            "message_id": "pushed-plan",
+            "ts_num": NOW_TS - 6 * 3600,
+            "title": pushed["title"],
+            "headline": pushed["title"],
+            "cat": "news",
+            "link": pushed["url"],
+        },
+    ]
+    context = _daily_plan_context(candidates, history=history)
+
+    plan = buildTeamsDailyPushPlan(
+        candidates,
+        context,
+        _config(),
+        target_date="2026-06-24",
+        min_items=15,
+        max_items=15,
+        now_ts=NOW_TS,
+    )
+
+    assert all(item["articleUrl"] != pushed["url"] for item in plan["items"])
+    assert any("Bereits live gepusht" in item["reason"] for item in plan["notRecommended"])
+
+
+def test_daily_push_plan_keeps_only_best_duplicate_topic():
+    first = _candidate(
+        id="bahn-1",
+        url="https://www.bild.de/news/bahn-funkstoerung-fernverkehr",
+        title="Bahn meldet Funkstörung im Fernverkehr",
+        category="news",
+        score=94.0,
+        predictedOR=0.075,
+    )
+    duplicate = _candidate(
+        id="bahn-2",
+        url="https://www.bild.de/news/funkstoerung-bahn-fernverkehr",
+        title="Funkstörung bei der Bahn legt Fernverkehr lahm",
+        category="news",
+        score=91.0,
+        predictedOR=0.071,
+    )
+    candidates = [first, duplicate, *_daily_plan_candidates(17)]
+    context = _daily_plan_context(candidates)
+
+    plan = buildTeamsDailyPushPlan(
+        candidates,
+        context,
+        _config(),
+        target_date="2026-06-24",
+        min_items=15,
+        max_items=15,
+        now_ts=NOW_TS,
+    )
+
+    planned_urls = {item["articleUrl"] for item in plan["items"]}
+    assert first["url"] in planned_urls
+    assert duplicate["url"] not in planned_urls
+    assert any("Dublette im Tagesplan" in item["reason"] for item in plan["notRecommended"])
 
 
 def test_eil_substring_inside_word_is_not_eilmeldung():
