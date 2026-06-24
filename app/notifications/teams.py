@@ -1539,6 +1539,7 @@ def build_teams_daily_push_plan(
         item["number"] = index
 
     top_items = sorted(items, key=lambda item: float(item["planScore"]), reverse=True)[:5]
+    quality_summary = _daily_plan_quality_summary(items)
     traffic_slots = _daily_plan_traffic_slots(target, plan_config)
     watch_topics = _daily_plan_watch_topics(ranked_entries[len(selected_entries):], raw_entries)
     selected_ids = {str(item.get("candidateId") or "") for item in items}
@@ -1561,6 +1562,7 @@ def build_teams_daily_push_plan(
         "meetsMinimum": len(items) >= min_count,
         "items": items,
         "top5": [_daily_plan_item_summary(item) for item in top_items],
+        "qualitySummary": quality_summary,
         "trafficSlots": traffic_slots,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
@@ -1584,6 +1586,7 @@ def build_teams_daily_push_plan(
         "count": plan["count"],
         "items": plan["items"],
         "top5": plan["top5"],
+        "qualitySummary": quality_summary,
         "trafficSlots": traffic_slots,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
@@ -1600,6 +1603,7 @@ def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
     header = [
         f"Tagesplan Pushes für {date_label}",
         f"Ziel: mindestens {minimum} Pushes. Schwächere Vorschläge sind transparent markiert.",
+        _daily_plan_quality_sentence(plan.get("qualitySummary") or {}),
         "",
     ]
     lines: list[str] = [*header]
@@ -2239,6 +2243,33 @@ def _daily_plan_not_recommended(
     return result
 
 
+def _daily_plan_quality_summary(items: list[dict[str, Any]]) -> dict[str, int]:
+    fixed = sum(1 for item in items if item.get("status") == "fix")
+    optional = sum(1 for item in items if item.get("status") == "optional")
+    quiet = sum(1 for item in items if item.get("status") == "nur bei ruhiger Nachrichtenlage")
+    high_confidence = sum(1 for item in items if item.get("confidence") == "hoch")
+    medium_confidence = sum(1 for item in items if item.get("confidence") == "mittel")
+    low_confidence = sum(1 for item in items if item.get("confidence") == "niedrig")
+    return {
+        "fix": fixed,
+        "optional": optional,
+        "quietOnly": quiet,
+        "highConfidence": high_confidence,
+        "mediumConfidence": medium_confidence,
+        "lowConfidence": low_confidence,
+    }
+
+
+def _daily_plan_quality_sentence(summary: dict[str, Any]) -> str:
+    fix = _safe_int(summary.get("fix"))
+    optional = _safe_int(summary.get("optional"))
+    quiet = _safe_int(summary.get("quietOnly"))
+    sentence = f"Qualität: {fix} fix, {optional} optional, {quiet} nur bei ruhiger Nachrichtenlage."
+    if fix <= 0:
+        sentence += " Achtung: aktuell kein fixer Top-Push im Feld."
+    return sentence
+
+
 def _daily_plan_item_summary(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "time": item.get("time"),
@@ -2282,7 +2313,8 @@ def _build_teams_daily_plan_html(subject: str, plan: dict[str, Any]) -> str:
     return (
         f"<h2>{html.escape(subject)}</h2>"
         f"<p>Ziel: mindestens {int(plan.get('minimumItems') or 0)} Pushes. "
-        "Schwächere Vorschläge sind markiert.</p>"
+        "Schwächere Vorschläge sind markiert.<br>"
+        f"{html.escape(_daily_plan_quality_sentence(plan.get('qualitySummary') or {}))}</p>"
         f"<ol>{items_html}</ol>"
         "<p><strong>Top 5 Pushes des Tages</strong></p>"
         f"<ul>{top_html}</ul>"

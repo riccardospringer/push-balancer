@@ -2239,7 +2239,9 @@ def test_daily_push_plan_returns_minimum_15_teams_ready_items():
     assert plan["meetsMinimum"] is True
     assert len(plan["items"]) == 15
     assert len(plan["top5"]) == 5
+    assert "qualitySummary" in plan
     assert "Tagesplan Pushes für 2026-06-24, Mittwoch" in plan["messageText"]
+    assert "Qualität:" in plan["messageText"]
     assert "Top 5 Pushes des Tages" in plan["messageText"]
     assert "Bewusst nicht pushen" in plan["messageText"]
     for item in plan["items"]:
