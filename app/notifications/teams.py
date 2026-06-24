@@ -452,19 +452,28 @@ def should_notify_teams(
     if allowed and section.lower() not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
 
-    if score >= min_score:
-        positive.append(f"Push Score {score:.1f} liegt ueber Schwelle {min_score:.1f}")
-        if candidate_score_reason:
-            positive.append(f"Push-Score-Begruendung: {candidate_score_reason}")
-        positive.extend(candidate_drivers[:3])
-    else:
-        blockers.append(f"Score zu niedrig: {score:.1f} < {min_score:.1f}")
-
     pushes_today = context.get("pushesToday")
     pushes_today = _safe_int(pushes_today) if pushes_today is not None else None
     teams_alerts_today = _safe_int(context.get("teamsAlertsToday"))
     push_pacing = _push_pacing_review(pushes_today, now_ts, config)
     minimum_pressure = _minimum_pressure_review(push_pacing, teams_alerts_today, now_ts, config)
+    minimum_active = bool(minimum_pressure.get("active"))
+    minimum_pressure_value = float(minimum_pressure.get("pressure") or 0.0)
+    effective_min_score = min_score
+    if minimum_active and not breaking:
+        effective_min_score = max(65.0 if minimum_pressure_value >= 3.0 else 68.0, min_score - 7.0)
+        positive.append(
+            f"Teams-Mindest-Erfuellung: Score-Schwelle kontrolliert {min_score:.1f} -> "
+            f"{effective_min_score:.1f}"
+        )
+
+    if score >= effective_min_score:
+        positive.append(f"Push Score {score:.1f} liegt ueber Schwelle {effective_min_score:.1f}")
+        if candidate_score_reason:
+            positive.append(f"Push-Score-Begruendung: {candidate_score_reason}")
+        positive.extend(candidate_drivers[:3])
+    else:
+        blockers.append(f"Score zu niedrig: {score:.1f} < {effective_min_score:.1f}")
 
     alert_model = _teams_alert_score(
         candidate,
@@ -497,20 +506,30 @@ def should_notify_teams(
         blockers.append(
             f"Teams Alert Score zu niedrig: {alert_score:.1f} < {effective_min_alert_score:.1f}"
         )
-    if predicted_or is None and alert_score < config.no_forecast_min_alert_score:
+    effective_no_forecast_min_alert_score = config.no_forecast_min_alert_score
+    if minimum_active and not breaking:
+        effective_no_forecast_min_alert_score = max(68.0, config.no_forecast_min_alert_score - 8.0)
+    if predicted_or is None and alert_score < effective_no_forecast_min_alert_score:
         blockers.append(
             "Keine belastbare Prognose und Teams Alert Score nicht hoch genug: "
-            f"{alert_score:.1f} < {config.no_forecast_min_alert_score:.1f}"
+            f"{alert_score:.1f} < {effective_no_forecast_min_alert_score:.1f}"
         )
     forecast_is_reliable = forecast.get("source") == "article_model" and predicted_or is not None
+    effective_min_or = min_or
+    if minimum_active and forecast_is_reliable and not breaking:
+        effective_min_or = max(4.3, min_or - 0.7)
+        positive.append(
+            f"Teams-Mindest-Erfuellung: OR-Schwelle kontrolliert {min_or:.2f}% -> "
+            f"{effective_min_or:.2f}%"
+        )
     low_forecast_blocker = (
         predicted_or is not None
-        and predicted_or < min_or
+        and predicted_or < effective_min_or
         and (forecast_is_reliable or not config.score_only_mode)
         and not (breaking and config.breaking_override and predicted_or >= config.breaking_min_or)
     )
     if low_forecast_blocker:
-        blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {min_or:.2f}%")
+        blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {effective_min_or:.2f}%")
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
     forecast_quality = _forecast_quality_review(
@@ -574,8 +593,10 @@ def should_notify_teams(
     else:
         if predicted_or is None:
             blockers.append("Prognose fehlt")
-        elif predicted_or >= min_or:
-            positive.append(f"Prognose {predicted_or:.2f}% OR liegt ueber Mindestwert {min_or:.2f}%")
+        elif predicted_or >= effective_min_or:
+            positive.append(
+                f"Prognose {predicted_or:.2f}% OR liegt ueber Mindestwert {effective_min_or:.2f}%"
+            )
 
         if minutes_since_last_push is None:
             blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
@@ -1801,7 +1822,16 @@ def _editorial_cvd_review(
         blockers.append("CvD: Erklär-/Debattenstück ohne neue aktuelle Lage")
     if nonessential_curiosity and not breaking:
         blockers.append("CvD: Kurios-/Click-Reiz ohne ausreichenden öffentlichen Nachrichtenwert")
-    if config.event_gate_enabled and not breaking and not _has_news_event(title):
+    missing_event_signal = config.event_gate_enabled and not breaking and not _has_news_event(title)
+    if (
+        missing_event_signal
+        and minimum_active
+        and section in {"politik", "news", "wirtschaft", "regional"}
+        and news_value >= config.min_editorial_news_value + 10.0
+        and total >= min_editorial_score + 10.0
+    ):
+        reasons.append("Teams-Mindest-Pacing: starkes CvD-Signal uebersteuert enges Ereignis-Gate")
+    elif missing_event_signal:
         blockers.append("CvD: kein konkretes Nachrichten-Ereignis erkennbar (Service/Teaser)")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
         blockers.append("CvD: ohne belastbare OR-Prognose nur bei absoluter Top-Lage")
@@ -1813,8 +1843,15 @@ def _editorial_cvd_review(
         not breaking
         and time_fit.get("waitRecommended")
         and float(pacing.get("deficit") or 0.0) < 1.5
+        and not minimum_active
     ):
         blockers.append(str(time_fit["waitReason"]))
+    elif (
+        not breaking
+        and time_fit.get("waitRecommended")
+        and minimum_active
+    ):
+        reasons.append("Teams-Mindest-Pacing: besseres Zeitfenster wird nicht abgewartet")
 
     if not blockers:
         reasons.append("CvD-Freigabe: klare Push-Lage mit aktueller Relevanz")

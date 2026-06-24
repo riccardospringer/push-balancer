@@ -295,6 +295,42 @@ def test_minimum_pacing_uses_teams_alert_count_not_actual_push_count():
     assert any("Teams-Mindest-Pacing" in reason for reason in decision["reasons"])
 
 
+def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_gate():
+    afternoon_ts = int(dt.datetime(2026, 6, 24, 14, 36, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=77.1,
+        predictedOR=0.0475,
+        category="politik",
+        title="Regierungsbefragung im Bundestag: Kanzler im Kreuzfeuer",
+        url="https://www.bild.de/politik/regierungsbefragung-kanzler-kreuzfeuer",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=45, now_ts=afternoon_ts),
+        teams_alerts_today=0,
+        now_ts=afternoon_ts,
+    )
+    context["dashboardRank"] = 5
+    context["pushesToday"] = 9
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=78.0,
+            min_editorial_score=74.0,
+            min_or=5.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["active"] is True
+    assert not any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
+    assert any("OR-Schwelle" in reason for reason in decision["reasons"])
+    assert any("besseres Zeitfenster wird nicht abgewartet" in reason for reason in decision["reasons"])
+
+
 def test_minimum_pacing_does_not_allow_curiosity_story():
     evening_ts = NOW_TS + 11 * 3600
     candidate = _candidate(
@@ -1565,6 +1601,7 @@ def test_dead_zone_waits_when_day_is_not_behind_push_pace():
     )
     context["dashboardRank"] = 1
     context["pushesToday"] = 2
+    context["teamsAlertsToday"] = 11
 
     decision = shouldNotifyTeams(
         candidate,
