@@ -818,6 +818,7 @@ def evaluate_teams_alert_candidates(
         and len(eligible) >= 2
         and config.min_selection_margin > 0
         and not bool(selected_decision.get("isBreaking"))
+        and not bool((selected_decision.get("minimumPressure") or {}).get("active"))
     ):
         runner_up = max(
             (

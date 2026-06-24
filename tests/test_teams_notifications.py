@@ -1790,7 +1790,7 @@ def test_constant_field_forecast_is_treated_as_non_belastbar():
         history=_history(),
         alert_state={},
         last_teams_alert_ts=0,
-        teams_alerts_today=0,
+        teams_alerts_today=11,
         now_ts=NOW_TS,
     )
 
@@ -1886,7 +1886,7 @@ def test_uncertain_field_without_clear_winner_sends_no_alert():
         history=_history(),
         alert_state={},
         last_teams_alert_ts=0,
-        teams_alerts_today=0,
+        teams_alerts_today=11,
         now_ts=NOW_TS,
     )
 
@@ -1902,6 +1902,41 @@ def test_uncertain_field_without_clear_winner_sends_no_alert():
     decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
     assert all(not d["shouldNotify"] for d in decisions.values())
     assert any("Feld unsicher" in reason for reason in decisions[first["url"]]["blockingReasons"])
+
+
+def test_minimum_pacing_chooses_best_candidate_even_when_field_is_close():
+    first = _candidate(id="mu1", url="https://www.bild.de/politik/mu1", score=84.0, predictedOR=0.06)
+    second = _candidate(
+        id="mu2",
+        url="https://www.bild.de/politik/mu2",
+        title="Eilmeldung: Regierung beschliesst weiteres Paket heute Mittag",
+        score=83.5,
+        predictedOR=0.06,
+    )
+    context = build_teams_alert_context(
+        [first, second],
+        history=_history(),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=0,
+        now_ts=NOW_TS,
+    )
+
+    result = evaluate_teams_alert_candidates(
+        [first, second],
+        context,
+        _config(min_selection_margin=40.0, selection_clear_editorial_buffer=25.0, min_editorial_score=70.0),
+    )
+
+    assert result["selectedCandidateId"] is not None
+    assert result["fieldUncertain"] is False
+    selected = next(
+        item["decision"]
+        for item in result["decisions"]
+        if item["decision"]["candidateId"] == result["selectedCandidateId"]
+    )
+    assert selected["shouldNotify"] is True
+    assert selected["minimumPressure"]["active"] is True
 
 
 def test_clear_strong_winner_still_alerts_despite_margin_rule():
