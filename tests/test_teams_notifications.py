@@ -2351,6 +2351,26 @@ def test_daily_push_plan_keeps_only_best_duplicate_topic():
     assert any("Dublette im Tagesplan" in item["reason"] for item in plan["notRecommended"])
 
 
+def test_daily_push_plan_does_not_mass_generate_llm_titles():
+    candidates = _daily_plan_candidates(16)
+    context = _daily_plan_context(candidates)
+
+    with patch("app.notifications.teams._llm_push_title") as llm_title:
+        llm_title.side_effect = AssertionError("daily plan must not call LLM title generation")
+        plan = buildTeamsDailyPushPlan(
+            candidates,
+            context,
+            _config(llm_title_enabled=True),
+            target_date="2026-06-24",
+            min_items=15,
+            max_items=15,
+            now_ts=NOW_TS,
+        )
+
+    assert plan["count"] == 15
+    assert llm_title.call_count == 0
+
+
 def test_eil_substring_inside_word_is_not_eilmeldung():
     sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'

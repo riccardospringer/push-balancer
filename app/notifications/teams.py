@@ -1519,6 +1519,7 @@ def build_teams_daily_push_plan(
         quiet_hours_end="00:00",
         global_cooldown_minutes=0,
         max_alerts_per_day=0,
+        llm_title_enabled=False,
         target_pushes_per_day=max(int(config.target_pushes_per_day or 0), min_count),
         min_alerts_per_day=max(int(config.min_alerts_per_day or 0), min_count),
     )
@@ -4590,7 +4591,7 @@ def _teams_push_title_recommendation(
     breaking = _is_breaking(candidate)
 
     # 1) KI-generierter Titel hat Vorrang (wenn LLM verfuegbar).
-    llm_title = _llm_push_title(title, section, url, config)
+    llm_title = _llm_push_title(title, section, url, config) if config.llm_title_enabled else ""
     if llm_title:
         clean = _sanitize_push_title(llm_title, breaking=breaking)
         if clean and not _is_generic_push_title(clean):
