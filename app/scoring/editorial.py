@@ -41,7 +41,9 @@ _TOPIC_CLUSTERS: dict[str, set[str]] = {
     "crime": {
         "mord", "messer", "polizei", "festnahme", "täter", "taeter",
         "razzia", "ueberfall", "überfall", "anschlag", "terror", "leiche",
-        "prozess", "gericht", "verhaftet",
+        "prozess", "gericht", "verhaftet", "betrug", "betrüger", "betrueger",
+        "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger",
+        "sozialbetrug", "polizist", "polizisten",
     },
     "wetter": {
         "wetter", "hitze", "regen", "unwetter", "sturm", "gewitter",
@@ -73,7 +75,9 @@ _UTILITY_RE = re.compile(
 )
 _CONFLICT_RE = re.compile(
     r"(?i)\b(streit|skandal|krise|droht|attacke|angriff|kritik|prozess|"
-    r"razzia|betrug|vorwurf|wut|zoff|aus|entlassen|ruecktritt|rücktritt)\b"
+    r"razzia|großrazzia|grossrazzia|betrug|betrüger|betrueger|leistungsbetrug|"
+    r"leistungsbetrüger|leistungsbetrueger|sozialbetrug|vorwurf|wut|zoff|aus|"
+    r"entlassen|ruecktritt|rücktritt)\b"
 )
 _EMOTION_RE = re.compile(
     r"(?i)\b(drama|schock|horror|tragödie|tragoedie|angst|wahnsinn|"
@@ -132,7 +136,7 @@ def _reuters_overload_adjustment(
 _FRESH_DEVELOPMENT_RE = re.compile(
     r"(?i)\b(heute|aktuell|neu|erstmals|plötzlich|ploetzlich|wende|"
     r"entscheidung|beschlossen|beschließt|beschliesst|festnahme|festgenommen|"
-    r"angeklagt|urteil|eskaliert|tritt zurück|tritt zurueck|rücktritt|"
+    r"razzia|großrazzia|grossrazzia|angeklagt|urteil|eskaliert|tritt zurück|tritt zurueck|rücktritt|"
     r"ruecktritt|einigt|einigung|greift an|attacke|startet|stoppt|warnt)\b"
 )
 _POLITICS_RE = re.compile(
@@ -184,9 +188,22 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         "BILD-Reiz: Gefahr, Sicherheit oder akute Betroffenheit",
     ),
     "crime": (
-        re.compile(r"(?i)\b(mord|totschlag|polizei|razzia|festnahme|gericht|prozess|verbrechen|leiche|täter|taeter|opfer|messer)\b"),
+        re.compile(
+            r"(?i)\b(mord|totschlag|polizei|polizist|polizisten|razzia|großrazzia|"
+            r"grossrazzia|festnahme|gericht|prozess|verbrechen|leiche|täter|taeter|"
+            r"opfer|messer|betrug|betrüger|betrueger|leistungsbetrug|"
+            r"leistungsbetrüger|leistungsbetrueger|sozialbetrug)\b"
+        ),
         10,
         "BILD-Reiz: Crime/Polizei spricht starkes Push-Interesse an",
+    ),
+    "public_money_fraud": (
+        re.compile(
+            r"(?i)\b(leistungsbetrug|leistungsbetrüger|leistungsbetrueger|"
+            r"sozialbetrug|bürgergeld|buergergeld|sozialleistung|sozialleistungen)\b"
+        ),
+        11,
+        "BILD-Reiz: Betrug an öffentlichen Leistungen erzeugt Empörung und breites Interesse",
     ),
     "consumer": (
         re.compile(r"(?i)\b(geld|kosten|preise|rente|miete|steuer|gebühren|gebuehren|abzocke|rückruf|rueckruf|kunden|shops|strom|krankenkasse|haustiere)\b"),

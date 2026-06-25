@@ -1300,6 +1300,37 @@ def test_auto_push_calibration_allows_public_warning_candidate():
     assert decision["editorialScore"] >= 70.0
 
 
+def test_public_money_fraud_razzia_can_pass_near_or_threshold():
+    early_morning = int(dt.datetime(2026, 6, 25, 6, 31, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=75.5,
+        predictedOR=0.049,
+        category="news",
+        title="200 Polizisten im Einsatz: Großrazzia gegen Leistungsbetrüger",
+        url="https://www.bild.de/news/grossrazzia-leistungsbetrueger",
+        pubDate=_iso(early_morning - 15 * 60),
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=480, now_ts=early_morning),
+        now_ts=early_morning,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 0
+    context["teamsAlertsToday"] = 0
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["teamsAlertScore"] >= decision["teamsAlertScoreThreshold"]
+    assert decision["predictedOR"] == 4.9
+    assert any("OR knapp unter Schwelle" in reason for reason in decision["reasons"])
+
+
 def test_auto_push_calibration_still_blocks_soft_topic():
     candidate = _candidate(
         score=76.0,

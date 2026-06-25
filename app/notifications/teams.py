@@ -541,10 +541,31 @@ def should_notify_teams(
         predicted_or is not None
         and predicted_or < effective_min_or
         and (forecast_is_reliable or not config.score_only_mode)
+        and not _public_money_fraud_or_near_miss(
+            title=title,
+            predicted_or=predicted_or,
+            min_or=effective_min_or,
+            alert_score=alert_score,
+            min_alert_score=effective_min_alert_score,
+        )
         and not (breaking and config.breaking_override and predicted_or >= config.breaking_min_or)
     )
     if low_forecast_blocker:
         blockers.append(f"Prognose zu niedrig: {predicted_or:.2f}% OR < {effective_min_or:.2f}%")
+    elif (
+        predicted_or is not None
+        and predicted_or < effective_min_or
+        and _public_money_fraud_or_near_miss(
+            title=title,
+            predicted_or=predicted_or,
+            min_or=effective_min_or,
+            alert_score=alert_score,
+            min_alert_score=effective_min_alert_score,
+        )
+    ):
+        positive.append(
+            "Polizei-/Betrugs-Lage mit starkem Public-Need: OR knapp unter Schwelle wird akzeptiert"
+        )
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
     forecast_quality = _forecast_quality_review(
@@ -2925,12 +2946,18 @@ def _editorial_cvd_review(
         "putin", "trump", "merz", "kanzler", "regierung", "bundestag", "polizei",
         "tote", "tot", "vermisst", "verletzte", "gefahr", "warnung", "evakuierung",
         "ruecktritt", "rücktritt", "feuerpause", "atom", "nato", "gericht",
-        "urteil", "streik", "insolvenz", "festnahme",
+        "urteil", "streik", "insolvenz", "festnahme", "razzia", "großrazzia",
+        "grossrazzia", "betrug", "betrüger", "betrueger", "leistungsbetrug",
+        "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug", "bürgergeld",
+        "buergergeld", "polizist", "polizisten",
     )
     public_need_terms = (
         "warnung", "gefahr", "polizei", "streik", "ausfall", "sperrung", "rueckruf",
         "rückruf", "steuer", "rente", "krankenkasse", "geld", "preis", "verbraucher",
         "gericht", "urteil", "regierung", "bundestag", "nato", "krieg", "feuerpause",
+        "razzia", "großrazzia", "grossrazzia", "betrug", "betrüger", "betrueger",
+        "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug",
+        "bürgergeld", "buergergeld", "polizist", "polizisten",
     )
     soft_terms = (
         "quiz", "horoskop", "shopping", "rabatt", "sommertrend", "fans", "star",
@@ -3369,12 +3396,17 @@ def _teams_alert_score(
         "krieg", "terror", "anschlag", "iran", "israel", "ukraine", "putin",
         "trump", "merz", "regierung", "bundestag", "polizei", "tote",
         "tot", "warnung", "gefahr", "ruecktritt", "rücktritt", "feuerpause",
+        "razzia", "großrazzia", "grossrazzia", "betrug", "betrüger", "betrueger",
+        "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug",
+        "bürgergeld", "buergergeld", "polizist", "polizisten",
     )
     soft_terms = ("horoskop", "quiz", "abo", "shopping", "rabatt", "sommertrend")
     impact_bonus = 0.0
     if breaking:
         impact_bonus += 6.0
     if any(term in title_l for term in high_impact_terms):
+        impact_bonus += 4.0
+    if _is_public_money_fraud_enforcement(title):
         impact_bonus += 4.0
     if "live-ticker" in title_l or "liveticker" in title_l:
         impact_bonus += 2.0
@@ -4281,9 +4313,42 @@ _HARD_PUBLIC_NEED_TERMS = (
     "rückruf", "rueckruf", "streik", "hochwasser", "unwetter", "hitzewarnung",
     "polizei", "terror", "anschlag", "angriff", "krieg", "feuerpause",
     "waffenruhe", "tote", "tot", "verletzte", "vermisst", "festnahme",
-    "festgenommen", "urteil", "verurteilt", "rücktritt", "ruecktritt",
+    "festgenommen", "razzia", "großrazzia", "grossrazzia", "leistungsbetrug",
+    "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug", "betrug",
+    "betrüger", "betrueger", "urteil", "verurteilt", "rücktritt", "ruecktritt",
     "zurückgetreten", "zurueckgetreten", "insolvenz", "pleite",
 )
+
+
+def _is_public_money_fraud_enforcement(title: str) -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    enforcement = (
+        "razzia", "großrazzia", "grossrazzia", "polizei", "polizist",
+        "polizisten", "beamte", "ermittler", "festnahme", "festgenommen",
+    )
+    fraud = (
+        "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger",
+        "sozialbetrug", "betrug", "betrüger", "betrueger", "bürgergeld",
+        "buergergeld", "sozialleistung", "sozialleistungen",
+    )
+    return any(term in text for term in enforcement) and any(term in text for term in fraud)
+
+
+def _public_money_fraud_or_near_miss(
+    *,
+    title: str,
+    predicted_or: float,
+    min_or: float,
+    alert_score: float,
+    min_alert_score: float,
+) -> bool:
+    return (
+        _is_public_money_fraud_enforcement(title)
+        and predicted_or >= max(4.75, min_or - 0.25)
+        and alert_score >= min_alert_score - 1.5
+    )
 
 
 def _has_hard_public_need(title: str, section: str = "") -> bool:
@@ -4303,7 +4368,9 @@ _BROAD_PUBLIC_IMPACT_TERMS = (
     "deutschland", "bundesweit", "regierung", "bundestag", "kanzler", "krieg",
     "iran", "israel", "ukraine", "russland", "nato", "bahn", "deutsche bahn",
     "streik", "ausfall", "sperrung", "warnung", "rückruf", "rueckruf", "steuer",
-    "rente", "krankenkasse", "preis", "geld", "polizei", "razzia", "gasversorgung",
+    "rente", "krankenkasse", "preis", "geld", "polizei", "razzia", "großrazzia",
+    "grossrazzia", "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger",
+    "sozialbetrug", "betrug", "betrüger", "betrueger", "bürgergeld", "buergergeld", "gasversorgung",
     "terror", "anschlag", "angriff", "explosion", "brand", "tote", "verletzte",
     "vermisst", "evakuierung", "unwetter", "hochwasser", "hitzewarnung",
 )
@@ -4523,8 +4590,10 @@ _NEWS_EVENT_TERMS = (
     "ertrunken", "vermisst", "entführt", "entfuehrt", "überfall", "ueberfall",
     "amok", "drama", "tragödie", "tragoedie", "katastrophe",
     # Kriminalitaet / Justiz
-    "festnahme", "festgenommen", "verhaftet", "razzia", "urteil", "verurteilt",
-    "gericht", "prozess", "anklage", "ermittl", "gesteht", "gestanden", "betrug",
+    "festnahme", "festgenommen", "verhaftet", "razzia", "großrazzia", "grossrazzia",
+    "urteil", "verurteilt", "gericht", "prozess", "anklage", "ermittl",
+    "gesteht", "gestanden", "betrug", "betrüger", "betrueger", "leistungsbetrug",
+    "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug",
     # Politik / Entscheidungen
     "beschließt", "beschliesst", "beschlossen", "stimmt", "abstimmung", "wahl",
     "gewählt", "gewaehlt", "rücktritt", "ruecktritt", "zurückgetreten",

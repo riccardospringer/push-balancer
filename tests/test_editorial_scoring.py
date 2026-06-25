@@ -232,6 +232,22 @@ def test_consumer_outrage_gets_bild_push_reiz():
     assert any("Verbraucher" in driver or "Aufreger" in driver for driver in scored["performanceDrivers"])
 
 
+def test_public_money_fraud_razzia_gets_strong_push_score():
+    now = int(time.time())
+    scored = _score(
+        "200 Polizisten im Einsatz: Großrazzia gegen Leistungsbetrüger",
+        "news",
+        now=now,
+        hours_ago=0.25,
+        predicted_or=4.9,
+        hour=6,
+    )
+
+    assert scored["score"] >= 80
+    assert scored["scoreBreakdown"]["bildReiz"] >= 75
+    assert any("öffentlichen Leistungen" in driver for driver in scored["performanceDrivers"])
+
+
 def test_weak_video_is_penalized_but_live_video_can_rank_high():
     now = int(time.time())
     weak = _score(
