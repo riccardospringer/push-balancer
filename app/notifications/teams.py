@@ -548,6 +548,14 @@ def should_notify_teams(
             alert_score=alert_score,
             min_alert_score=effective_min_alert_score,
         )
+        and not _celebrity_conflict_or_near_miss(
+            title=title,
+            section=section,
+            predicted_or=predicted_or,
+            min_or=effective_min_or,
+            alert_score=alert_score,
+            min_alert_score=effective_min_alert_score,
+        )
         and not (breaking and config.breaking_override and predicted_or >= config.breaking_min_or)
     )
     if low_forecast_blocker:
@@ -565,6 +573,21 @@ def should_notify_teams(
     ):
         positive.append(
             "Polizei-/Betrugs-Lage mit starkem Public-Need: OR knapp unter Schwelle wird akzeptiert"
+        )
+    elif (
+        predicted_or is not None
+        and predicted_or < effective_min_or
+        and _celebrity_conflict_or_near_miss(
+            title=title,
+            section=section,
+            predicted_or=predicted_or,
+            min_or=effective_min_or,
+            alert_score=alert_score,
+            min_alert_score=effective_min_alert_score,
+        )
+    ):
+        positive.append(
+            "Promi-/Beziehungs-/Geldkonflikt im Abendfenster: OR knapp unter Schwelle wird akzeptiert"
         )
     if config.require_valid_prediction and not forecast_is_reliable:
         blockers.append("Belastbare OR-Prognose erforderlich, aktuell nur Fallback verfuegbar")
@@ -2949,7 +2972,9 @@ def _editorial_cvd_review(
         "urteil", "streik", "insolvenz", "festnahme", "razzia", "großrazzia",
         "grossrazzia", "betrug", "betrüger", "betrueger", "leistungsbetrug",
         "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug", "bürgergeld",
-        "buergergeld", "polizist", "polizisten",
+        "buergergeld", "polizist", "polizisten", "scheidung", "scheidungszoff",
+        "trennung", "ehe-aus", "unterhalt", "vermögen", "vermoegen", "wm-held",
+        "weltmeister", "schweini", "schweinsteiger",
     )
     public_need_terms = (
         "warnung", "gefahr", "polizei", "streik", "ausfall", "sperrung", "rueckruf",
@@ -2984,6 +3009,8 @@ def _editorial_cvd_review(
     impact_matches = [term for term in high_impact_terms if term in title_l]
     if impact_matches:
         impact_bonus += min(10.0, 4.0 + 2.0 * (len(impact_matches) - 1))
+    if _is_celebrity_relationship_money_conflict(title, section):
+        impact_bonus += 16.0
     live_ticker = _is_live_ticker_title(title)
     live_ticker_has_update = _has_live_ticker_push_update(title)
     scheduled_process = _is_scheduled_process_without_update(title)
@@ -3003,7 +3030,7 @@ def _editorial_cvd_review(
     if low_civic_impact and not breaking:
         impact_bonus -= 12.0
     soft_matches = [term for term in soft_terms if term in title_l]
-    if soft_matches and not impact_matches and not breaking:
+    if soft_matches and not impact_matches and not breaking and not _is_celebrity_relationship_money_conflict(title, section):
         impact_bonus -= 8.0
     is_soft_service = _is_soft_service_or_quiz(title)
     urgent_public_service = _is_urgent_public_service_title(title)
@@ -3033,7 +3060,7 @@ def _editorial_cvd_review(
         user_need += min(9.0, 4.0 + 1.5 * (len(need_matches) - 1))
     if section in {"politik", "news", "wirtschaft", "regional"}:
         user_need += 2.0
-    if soft_matches and not need_matches and not impact_matches:
+    if soft_matches and not need_matches and not impact_matches and not _is_celebrity_relationship_money_conflict(title, section):
         user_need -= 4.0
     if low_civic_impact and not breaking:
         user_need -= 3.0
@@ -3398,7 +3425,9 @@ def _teams_alert_score(
         "tot", "warnung", "gefahr", "ruecktritt", "rücktritt", "feuerpause",
         "razzia", "großrazzia", "grossrazzia", "betrug", "betrüger", "betrueger",
         "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug",
-        "bürgergeld", "buergergeld", "polizist", "polizisten",
+        "bürgergeld", "buergergeld", "polizist", "polizisten", "scheidung",
+        "scheidungszoff", "trennung", "ehe-aus", "unterhalt", "vermögen",
+        "vermoegen", "wm-held", "weltmeister", "schweini", "schweinsteiger",
     )
     soft_terms = ("horoskop", "quiz", "abo", "shopping", "rabatt", "sommertrend")
     impact_bonus = 0.0
@@ -3408,6 +3437,8 @@ def _teams_alert_score(
         impact_bonus += 4.0
     if _is_public_money_fraud_enforcement(title):
         impact_bonus += 4.0
+    if _is_celebrity_relationship_money_conflict(title, section):
+        impact_bonus += 14.0
     if "live-ticker" in title_l or "liveticker" in title_l:
         impact_bonus += 2.0
     if any(term in title_l for term in soft_terms):
@@ -4351,6 +4382,47 @@ def _public_money_fraud_or_near_miss(
     )
 
 
+def _is_celebrity_relationship_money_conflict(title: str, section: str = "") -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if str(section or "").strip().lower() == "sport":
+        return False
+    prominence = (
+        "wm-held", "weltmeister", "star", "promi", "bastian", "schweini",
+        "schweinsteiger", "becker", "bohlen", "helene", "gottschalk",
+    )
+    relationship_conflict = (
+        "scheidung", "scheidungszoff", "trennung", "ehe-aus", "liebes-aus",
+        "paar", "paare", "beziehung", "unterhalt",
+    )
+    money_conflict = (
+        "geld", "vermögen", "vermoegen", "millionen", "unterhalt", "zoff",
+        "streit", "scheidungszoff",
+    )
+    return (
+        any(term in text for term in prominence)
+        and any(term in text for term in relationship_conflict)
+        and any(term in text for term in money_conflict)
+    )
+
+
+def _celebrity_conflict_or_near_miss(
+    *,
+    title: str,
+    section: str,
+    predicted_or: float,
+    min_or: float,
+    alert_score: float,
+    min_alert_score: float,
+) -> bool:
+    return (
+        _is_celebrity_relationship_money_conflict(title, section)
+        and predicted_or >= max(4.75, min_or - 0.25)
+        and alert_score >= min_alert_score - 1.5
+    )
+
+
 def _has_hard_public_need(title: str, section: str = "") -> bool:
     text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
     if not text:
@@ -4594,6 +4666,9 @@ _NEWS_EVENT_TERMS = (
     "urteil", "verurteilt", "gericht", "prozess", "anklage", "ermittl",
     "gesteht", "gestanden", "betrug", "betrüger", "betrueger", "leistungsbetrug",
     "leistungsbetrüger", "leistungsbetrueger", "sozialbetrug",
+    # Promi / Beziehung
+    "scheidung", "scheidungszoff", "trennung", "ehe-aus", "liebes-aus",
+    "unterhalt",
     # Politik / Entscheidungen
     "beschließt", "beschliesst", "beschlossen", "stimmt", "abstimmung", "wahl",
     "gewählt", "gewaehlt", "rücktritt", "ruecktritt", "zurückgetreten",

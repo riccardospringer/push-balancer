@@ -1331,6 +1331,64 @@ def test_public_money_fraud_razzia_can_pass_near_or_threshold():
     assert any("OR knapp unter Schwelle" in reason for reason in decision["reasons"])
 
 
+def test_evening_celebrity_relationship_money_conflict_can_pass_near_or_threshold():
+    evening = int(dt.datetime(2026, 6, 24, 20, 1, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=78.0,
+        predictedOR=0.049,
+        category="unterhaltung",
+        title="Wie bei so vielen Paaren – es geht ums Geld | Scheidungszoff bei WM-Held Schweini",
+        url="https://www.bild.de/unterhaltung/schweini-scheidungszoff",
+        pubDate=_iso(evening - 30 * 60),
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=evening),
+        now_ts=evening,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 7
+    context["teamsAlertsToday"] = 7
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["teamsAlertScore"] >= decision["teamsAlertScoreThreshold"]
+    assert decision["editorialReview"]["newsValue"] >= 30
+    assert any("Promi-/Beziehungs-/Geldkonflikt" in reason for reason in decision["reasons"])
+
+
+def test_evening_celebrity_money_conflict_does_not_reopen_sport_section():
+    evening = int(dt.datetime(2026, 6, 24, 20, 1, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=78.0,
+        predictedOR=0.049,
+        category="sport",
+        title="Wie bei so vielen Paaren – es geht ums Geld | Scheidungszoff bei WM-Held Schweini",
+        url="https://www.bild.de/sport/schweini-scheidungszoff",
+        pubDate=_iso(evening - 30 * 60),
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=90, now_ts=evening),
+        now_ts=evening,
+    )
+    context["dashboardRank"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert any("sport" in reason.lower() and "ausgeschlossen" in reason.lower() for reason in decision["blockingReasons"])
+
+
 def test_auto_push_calibration_still_blocks_soft_topic():
     candidate = _candidate(
         score=76.0,

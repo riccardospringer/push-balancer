@@ -248,6 +248,22 @@ def test_public_money_fraud_razzia_gets_strong_push_score():
     assert any("öffentlichen Leistungen" in driver for driver in scored["performanceDrivers"])
 
 
+def test_evening_celebrity_relationship_money_conflict_gets_strong_push_score():
+    now = int(time.time())
+    scored = _score(
+        "Wie bei so vielen Paaren – es geht ums Geld | Scheidungszoff bei WM-Held Schweini",
+        "unterhaltung",
+        now=now,
+        hours_ago=0.5,
+        predicted_or=4.9,
+        hour=20,
+    )
+
+    assert scored["score"] >= 80
+    assert scored["scoreBreakdown"]["bildReiz"] >= 85
+    assert any("Beziehungs- und Geldkonflikt" in driver for driver in scored["performanceDrivers"])
+
+
 def test_weak_video_is_penalized_but_live_video_can_rank_high():
     now = int(time.time())
     weak = _score(

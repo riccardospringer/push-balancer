@@ -52,7 +52,9 @@ _TOPIC_CLUSTERS: dict[str, set[str]] = {
     "unterhaltung": {
         "star", "stars", "promi", "bohlen", "helene", "gottschalk",
         "dschungel", "gntm", "trennung", "hochzeit", "liebe", "royal",
-        "prinz", "koenig", "könig",
+        "prinz", "koenig", "könig", "scheidung", "scheidungszoff",
+        "ehe-aus", "unterhalt", "wm-held", "weltmeister", "schweini",
+        "schweinsteiger",
     },
     "wirtschaft": {
         "dax", "boerse", "börse", "firma", "konzern", "job", "jobs",
@@ -76,7 +78,8 @@ _UTILITY_RE = re.compile(
 _CONFLICT_RE = re.compile(
     r"(?i)\b(streit|skandal|krise|droht|attacke|angriff|kritik|prozess|"
     r"razzia|großrazzia|grossrazzia|betrug|betrüger|betrueger|leistungsbetrug|"
-    r"leistungsbetrüger|leistungsbetrueger|sozialbetrug|vorwurf|wut|zoff|aus|"
+    r"leistungsbetrüger|leistungsbetrueger|sozialbetrug|scheidung|scheidungszoff|"
+    r"trennung|ehe-aus|unterhalt|vorwurf|wut|zoff|aus|"
     r"entlassen|ruecktritt|rücktritt)\b"
 )
 _EMOTION_RE = re.compile(
@@ -211,9 +214,23 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         "BILD-Reiz: Verbraucher- oder Geld-Nutzwert für viele",
     ),
     "prominence": (
-        re.compile(r"(?i)\b(star|promi|tv|lanz|bohlen|helene|gottschalk|messi|klose|klopp|bayern|bvb|trump|putin)\b"),
+        re.compile(
+            r"(?i)\b(star|promi|tv|lanz|bohlen|helene|gottschalk|messi|klose|"
+            r"klopp|bayern|bvb|trump|putin|wm-held|weltmeister|schweini|"
+            r"schweinsteiger|bastian)\b"
+        ),
         8,
         "BILD-Reiz: prominente Namen erhöhen den Sofort-Klick",
+    ),
+    "celebrity_relationship_money_conflict": (
+        re.compile(
+            r"(?i)(scheidungszoff|scheidung|trennung|ehe-aus|liebes-aus|unterhalt).{0,80}"
+            r"(geld|verm[oö]gen|millionen|zoff|streit)|"
+            r"(geld|verm[oö]gen|millionen|zoff|streit).{0,80}"
+            r"(scheidungszoff|scheidung|trennung|ehe-aus|liebes-aus|unterhalt)"
+        ),
+        12,
+        "BILD-Reiz: Promi-Beziehungs- und Geldkonflikt mit starkem Abend-Interesse",
     ),
     "sport_emotion": (
         re.compile(r"(?i)\b(fußball|fussball|bayern|bvb|messi|klopp|wm|em|tor|rekord|trainer|wechsel|transfer|star|finale)\b"),
