@@ -316,7 +316,7 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 ### Microsoft Teams Push Recommendations
 
-`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates the same top article field shown in the Push Balancer dashboard and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
+`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates an expanded article field from the Push Balancer and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
 
 For Power Automate, use the trigger body field `messageHtml` as the Teams message content:
 
@@ -324,7 +324,7 @@ For Power Automate, use the trigger body field `messageHtml` as the Teams messag
 @{triggerBody()?['messageHtml']}
 ```
 
-The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, `selectionScore`, `scoreReason`, `performanceDrivers`, `risks`, and `scoreBreakdown`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". Candidates outside `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` are ignored for Teams. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, requires a reliable article forecast for normal non-breaking recommendations, and blocks soft, scheduled, abstract explainer, or curiosity topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the top field. If no reliable OR forecast is available, only breaking news or a clear public warning/usefulness case can pass the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
+The payload also includes structured fields such as `articleTitle`, `articleUrl`, `pushScore`, `predictedORLabel`, `whyNow`, `whyPushworthy`, `recommendedPushText`, `editorialReview`, `selectionScore`, `scoreReason`, `performanceDrivers`, `risks`, and `scoreBreakdown`. Low-confidence global-average prediction fallbacks are not shown as article-specific OR forecasts; they are rendered as "keine belastbare Prognose". `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` remains the normal top-field guardrail, while `PUSH_TEAMS_CANDIDATE_LIMIT` controls how many candidates the automatic Teams worker inspects. Candidates outside the dashboard top field can only pass through the explicit Expanded Field gate when they show a strong visit/public-need pattern such as acute safety/service disruption, enforcement/public-money fraud, or a proven celebrity money-conflict pattern. The CvD gate additionally limits normal recommendations to the editorial top field, checks hard news value, requires a reliable article forecast for normal non-breaking recommendations, and blocks soft, scheduled, abstract explainer, or curiosity topics unless they have a clear current public-interest angle. The final recommendation is not the dashboard rank 1 by default; it is the eligible candidate with the best CvD-led selection score across the inspected field. If no reliable OR forecast is available, only breaking news or a clear public warning/usefulness case can pass the stricter `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE`.
 
 ### CORS
 
@@ -356,7 +356,8 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `11` | Minimum daily Teams recommendation pacing target; this is measured against Teams alerts, not raw push-history count, and relaxes thresholds only when the Teams channel falls behind |
 | `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `11` | Daily cap for Teams recommendations; breaking can still use its configured override |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
-| `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Limits Teams evaluation to the top N article candidates from the same payload used by the dashboard |
+| `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Normal top-field guardrail for Teams decisions and dashboard transparency |
+| `PUSH_TEAMS_CANDIDATE_LIMIT` | No | `80` | Maximum number of article candidates inspected by the automatic Teams worker; candidates beyond the dashboard top field need the stricter Expanded Field gate |
 | `PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE` | No | `76` | Higher Teams Alert Score required when no reliable article-specific OR forecast is available |
 | `PUSH_TEAMS_EDITORIAL_GATE_ENABLED` | No | `true` | Enables the hard CvD review layer before any Teams recommendation can be sent |
 | `PUSH_TEAMS_EDITORIAL_TOP_LIMIT` | No | `10` | Normal non-breaking recommendations must be in the top N dashboard candidates |

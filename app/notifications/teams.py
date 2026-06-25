@@ -113,6 +113,7 @@ class TeamsAlertConfig:
     min_alert_score: float = PUSH_TEAMS_MIN_ALERT_SCORE
     score_only_mode: bool = PUSH_TEAMS_SCORE_ONLY_MODE
     dashboard_top_limit: int = PUSH_TEAMS_DASHBOARD_TOP_LIMIT
+    candidate_limit: int = PUSH_TEAMS_CANDIDATE_LIMIT
     no_forecast_min_alert_score: float = PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
     editorial_gate_enabled: bool = PUSH_TEAMS_EDITORIAL_GATE_ENABLED
     editorial_top_limit: int = PUSH_TEAMS_EDITORIAL_TOP_LIMIT
@@ -426,6 +427,7 @@ def should_notify_teams(
     alert_state = (context.get("alertState") or {}).get(key)
     dashboard_rank = _safe_int(context.get("dashboardRank"))
     dashboard_top_limit = max(1, int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
+    dashboard_rank_blocker = ""
 
     positive: list[str] = []
     blockers: list[str] = []
@@ -452,7 +454,7 @@ def should_notify_teams(
         if dashboard_rank <= dashboard_top_limit:
             positive.append(f"Top-Kandidat im Push Balancer: Rang {dashboard_rank}")
         else:
-            blockers.append(
+            dashboard_rank_blocker = (
                 f"Nicht im oberen Push-Balancer-Feld: Rang {dashboard_rank} > {dashboard_top_limit}"
             )
 
@@ -649,6 +651,21 @@ def should_notify_teams(
         visit_score=float(visit_potential.get("score") or 0.0),
         config=config,
     )
+    expanded_field = _expanded_field_candidate_review(
+        candidate,
+        score=score,
+        alert_score=alert_score,
+        min_alert_score=effective_min_alert_score,
+        predicted_or=predicted_or,
+        dashboard_rank=dashboard_rank,
+        dashboard_top_limit=dashboard_top_limit,
+        config=config,
+    )
+    if dashboard_rank_blocker:
+        if expanded_field["allowed"]:
+            positive.append(str(expanded_field["reason"]))
+        else:
+            blockers.append(dashboard_rank_blocker)
 
     if config.score_only_mode:
         positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
@@ -838,6 +855,9 @@ def should_notify_teams(
         "minutesSinceLastPush": minutes_since_last_push,
         "dashboardRank": dashboard_rank or None,
         "dashboardTopLimit": dashboard_top_limit,
+        "candidateLimit": max(1, int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT)),
+        "expandedFieldCandidate": bool(expanded_field.get("allowed")),
+        "expandedFieldReason": str(expanded_field.get("reason") or ""),
         "lastPushAt": _iso_from_ts(last_push_ts) if last_push_ts else None,
         "lastGlobalTeamsAlertAt": _iso_from_ts(last_teams_alert_ts) if last_teams_alert_ts else None,
         "minutesSinceLastGlobalTeamsAlert": minutes_since_last_teams_alert,
@@ -1293,8 +1313,8 @@ def evaluate_and_send_best_candidate(
 ) -> dict[str, Any]:
     """Evaluate a candidate batch, send the best recommendation, and persist state."""
     config = config or TeamsAlertConfig()
-    dashboard_limit = max(1, min(int(config.dashboard_top_limit or 20), PUSH_TEAMS_CANDIDATE_LIMIT))
-    limited = candidates[:dashboard_limit]
+    candidate_limit = max(1, min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT))
+    limited = candidates[:candidate_limit]
     context = build_teams_alert_context(limited, now_ts=now_ts, config=config)
     evaluation = evaluate_teams_alert_candidates(limited, context, config)
     selected = evaluation.get("selectedCandidate")
@@ -1472,8 +1492,8 @@ def run_teams_alert_cycle() -> dict[str, Any]:
         from app.routers.feed import build_articles_payload
 
         config = TeamsAlertConfig()
-        dashboard_limit = max(1, min(int(config.dashboard_top_limit or 20), PUSH_TEAMS_CANDIDATE_LIMIT))
-        payload = build_articles_payload(offset=0, limit=dashboard_limit)
+        candidate_limit = max(1, min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT))
+        payload = build_articles_payload(offset=0, limit=candidate_limit)
         candidates = payload.get("articles") or []
         return evaluate_and_send_best_candidate(candidates, config=config)
     except Exception as exc:
@@ -2932,6 +2952,103 @@ def _minimum_pressure_review(
     }
 
 
+def _expanded_field_candidate_review(
+    candidate: dict[str, Any],
+    *,
+    score: float,
+    alert_score: float,
+    min_alert_score: float,
+    predicted_or: float | None,
+    dashboard_rank: int,
+    dashboard_top_limit: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Allow exceptional visit candidates beyond the visible dashboard top field."""
+    if dashboard_rank <= 0 or dashboard_rank <= dashboard_top_limit:
+        return {"allowed": False, "reason": ""}
+
+    candidate_limit = max(dashboard_top_limit, int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
+    if dashboard_rank > candidate_limit:
+        return {
+            "allowed": False,
+            "reason": f"Rang {dashboard_rank} liegt ausserhalb des erweiterten Kandidatenfelds",
+        }
+
+    title = _title(candidate)
+    section = _section(candidate).lower()
+    if section in {item.lower() for item in config.excluded_sections if item.strip()}:
+        return {"allowed": False, "reason": ""}
+
+    if not _has_expanded_field_visit_pattern(title, section):
+        return {"allowed": False, "reason": ""}
+
+    min_score = max(float(config.min_score or 0.0), 75.0)
+    if score < min_score:
+        return {"allowed": False, "reason": ""}
+
+    if alert_score < max(74.0, min_alert_score - 2.0):
+        return {"allowed": False, "reason": ""}
+
+    if (
+        predicted_or is not None
+        and predicted_or < max(4.5, float(config.min_or or 0.0) - 0.5)
+        and not _public_money_fraud_or_near_miss(
+            title=title,
+            predicted_or=predicted_or,
+            min_or=float(config.min_or or 0.0),
+            alert_score=alert_score,
+            min_alert_score=min_alert_score,
+        )
+        and not _celebrity_conflict_or_near_miss(
+            title=title,
+            section=section,
+            predicted_or=predicted_or,
+            min_or=float(config.min_or or 0.0),
+            alert_score=alert_score,
+            min_alert_score=min_alert_score,
+        )
+    ):
+        return {"allowed": False, "reason": ""}
+
+    if (
+        _is_soft_service_or_quiz(title)
+        or _is_nonessential_curiosity(title)
+        or _is_abstract_explainer_without_update(title)
+        or _is_scheduled_process_without_update(title)
+        or _is_low_civic_impact_story(title, section)
+    ) and not _is_urgent_public_service_title(title):
+        return {"allowed": False, "reason": ""}
+
+    return {
+        "allowed": True,
+        "reason": (
+            "Expanded Field: starker Visit-/Public-Need-Kandidat ausserhalb der Top "
+            f"{dashboard_top_limit} (Rang {dashboard_rank} von {candidate_limit})"
+        ),
+    }
+
+
+def _has_expanded_field_visit_pattern(title: str, section: str = "") -> bool:
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    if not text:
+        return False
+    if _is_public_money_fraud_enforcement(text):
+        return True
+    if _is_celebrity_relationship_money_conflict(text, section):
+        return True
+    if _is_urgent_public_service_title(text):
+        return True
+    hard_visit_terms = (
+        "terror", "anschlag", "explosion", "brand", "evakuierung", "vermisst",
+        "tote", "verletzte", "festnahme", "festgenommen", "razzia",
+        "großrazzia", "grossrazzia", "leistungsbetrug", "sozialbetrug",
+        "bürgergeld", "buergergeld", "betrug", "warnung", "gefahr",
+        "streik", "ausfall", "sperrung", "funkstörung", "funkstoerung",
+        "totalausfall", "blackout", "rückruf", "rueckruf",
+    )
+    return any(_contains_editorial_term(text, term) for term in hard_visit_terms)
+
+
 def _editorial_cvd_review(
     candidate: dict[str, Any],
     *,
@@ -3131,9 +3248,22 @@ def _editorial_cvd_review(
         66.0,
         config.min_editorial_score - (6.0 if minimum_active and not breaking else 0.0),
     )
+    expanded_field = _expanded_field_candidate_review(
+        candidate,
+        score=score,
+        alert_score=alert_score,
+        min_alert_score=config.min_alert_score,
+        predicted_or=predicted_or,
+        dashboard_rank=dashboard_rank,
+        dashboard_top_limit=int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT),
+        config=config,
+    )
 
     if dashboard_rank > rank_limit and not breaking:
-        blockers.append(f"CvD: nicht in den Top {rank_limit} des Dashboard-Felds")
+        if expanded_field["allowed"]:
+            reasons.append(str(expanded_field["reason"]))
+        else:
+            blockers.append(f"CvD: nicht in den Top {rank_limit} des Dashboard-Felds")
     if news_value < config.min_editorial_news_value:
         blockers.append(
             f"CvD: Nachrichtenwert zu niedrig ({news_value:.1f} < {config.min_editorial_news_value:.1f})"

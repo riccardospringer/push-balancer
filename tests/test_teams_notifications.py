@@ -620,6 +620,52 @@ def test_candidate_outside_dashboard_top_limit_is_blocked():
     assert any("Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"])
 
 
+def test_strong_visit_pattern_outside_dashboard_top_limit_can_notify():
+    candidate = _candidate(
+        id="public-fraud-raid",
+        url="https://www.bild.de/news/grossrazzia-leistungsbetrueger",
+        title="200 Polizisten im Einsatz: Grossrazzia gegen Leistungsbetrueger",
+        category="news",
+        score=87.5,
+        predictedOR=0.094,
+    )
+    context = _context(candidate)
+    context["dashboardRank"] = 35
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dashboard_top_limit=20, editorial_top_limit=10, candidate_limit=80),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["expandedFieldCandidate"] is True
+    assert any("Expanded Field" in reason for reason in decision["reasons"])
+
+
+def test_soft_candidate_outside_dashboard_top_limit_stays_blocked():
+    candidate = _candidate(
+        id="soft-app",
+        url="https://www.bild.de/digital/sprachlern-app",
+        title="Schock fuer Fans: Beliebte Sprachlern-App vor dem Aus",
+        category="digital",
+        score=95.0,
+        predictedOR=0.09,
+    )
+    context = _context(candidate)
+    context["dashboardRank"] = 35
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dashboard_top_limit=20, editorial_top_limit=10, candidate_limit=80),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["expandedFieldCandidate"] is False
+    assert any("Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"])
+
+
 def test_cvd_gate_blocks_soft_topic_even_with_high_score_and_forecast():
     candidate = _candidate(
         score=95.0,
@@ -1704,6 +1750,56 @@ def test_send_failure_is_recorded_without_crashing_cycle(tmp_db):
     assert result["ok"] is True
     assert result["sent"] is False
     assert result["sendResult"]["ok"] is False
+
+
+def test_send_cycle_considers_expanded_candidate_beyond_dashboard_top_limit(tmp_db):
+    from app.database import push_db_upsert
+
+    push_db_upsert(_history(minutes_since_last_push=65))
+    weak = [
+        _candidate(
+            id=f"weak-{index}",
+            url=f"https://www.bild.de/news/weak-{index}",
+            title=f"Weicher Kandidat {index}: kein konkreter Push-Anlass",
+            score=61.0,
+            predictedOR=0.035,
+        )
+        for index in range(24)
+    ]
+    strong = _candidate(
+        id="rank-25-raid",
+        url="https://www.bild.de/news/grossrazzia-leistungsbetrueger-rang-25",
+        title="200 Polizisten im Einsatz: Grossrazzia gegen Leistungsbetrueger",
+        category="news",
+        score=88.0,
+        predictedOR=0.094,
+    )
+
+    with patch(
+        "app.notifications.teams.send_teams_notification",
+        return_value={"ok": True, "status": 200},
+    ):
+        result = evaluate_and_send_best_candidate(
+            [*weak, strong],
+            config=_config(
+                dashboard_top_limit=20,
+                editorial_top_limit=10,
+                candidate_limit=80,
+                global_cooldown_minutes=0,
+            ),
+            now_ts=NOW_TS,
+        )
+
+    assert result["ok"] is True
+    assert result["sent"] is True
+    assert result["candidateId"] == strong["url"]
+    selected = next(
+        item["decision"]
+        for item in result["evaluation"]["decisions"]
+        if item["decision"]["candidateId"] == strong["url"]
+    )
+    assert selected["dashboardRank"] == 25
+    assert selected["expandedFieldCandidate"] is True
 
 
 def test_sport_excluded_by_default_even_without_allow_list():

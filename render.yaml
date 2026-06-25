@@ -43,6 +43,8 @@ services:
         value: "false"
       - key: PUSH_TEAMS_DASHBOARD_TOP_LIMIT
         value: "20"
+      - key: PUSH_TEAMS_CANDIDATE_LIMIT
+        value: "80"
       - key: PUSH_TEAMS_NO_FORECAST_MIN_ALERT_SCORE
         value: "80"
       - key: PUSH_TEAMS_EDITORIAL_GATE_ENABLED
