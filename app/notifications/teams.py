@@ -472,7 +472,11 @@ def should_notify_teams(
     minimum_pressure_value = float(minimum_pressure.get("pressure") or 0.0)
     effective_min_score = min_score
     if minimum_active and not breaking:
-        effective_min_score = max(65.0 if minimum_pressure_value >= 3.0 else 68.0, min_score - 7.0)
+        catchup_floor = 65.0 if (
+            minimum_pressure_value >= 3.0
+            or (_is_lunch_prime_ts(now_ts) and minimum_pressure_value >= 2.0)
+        ) else 68.0
+        effective_min_score = max(catchup_floor, min_score - 7.0)
         positive.append(
             f"Teams-Mindest-Erfuellung: Score-Schwelle kontrolliert {min_score:.1f} -> "
             f"{effective_min_score:.1f}"
@@ -3677,6 +3681,11 @@ def _slot_weight(hour: int, weekday: int, config: TeamsAlertConfig) -> float:
 
 def _is_lunch_prime_hour(hour: int) -> bool:
     return 12 <= int(hour) < 14
+
+
+def _is_lunch_prime_ts(now_ts: int) -> bool:
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    return _is_lunch_prime_hour(local_dt.hour)
 
 
 def _next_better_slot(

@@ -1806,6 +1806,40 @@ def test_lunch_prime_slot_catches_up_when_day_is_behind_push_pace():
     assert "Mittags-Prime-Fenster" in breakdown["timeFitLabel"]
 
 
+def test_lunch_prime_catchup_can_lower_score_floor_to_65():
+    thursday_lunch = int(dt.datetime(2026, 6, 25, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=66.0,
+        predictedOR=0.054,
+        category="news",
+        title="Warnung: Deutsche Bahn meldet bundesweiten Ausfall",
+        url="https://www.bild.de/news/bahn-ausfall-lunch-floor",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=180, now_ts=thursday_lunch),
+        now_ts=thursday_lunch,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 1
+    context["teamsAlertsToday"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            dynamic_threshold_enabled=True,
+            min_score=70.0,
+            min_alert_score=66.0,
+            min_editorial_score=66.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["pushPacing"]["deficit"] >= 2.0
+    assert any("Score-Schwelle kontrolliert 70.0 -> 65.0" in reason for reason in decision["reasons"])
+
+
 def test_gold_slot_uses_historical_baseline_in_time_fit():
     ts = _gold_slot_ts()
     candidate = _candidate(
