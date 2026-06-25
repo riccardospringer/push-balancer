@@ -1744,7 +1744,7 @@ def test_dead_zone_can_pass_when_cvd_is_behind_daily_push_pace():
     assert "Rueckstand" in decision["pushPacing"]["label"]
 
 
-def test_time_fit_waits_for_nearby_better_slot_when_not_behind():
+def test_lunch_prime_slot_does_not_wait_for_afternoon_when_candidate_is_good():
     friday_noon = int(dt.datetime(2026, 6, 19, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=86.0,
@@ -1769,10 +1769,41 @@ def test_time_fit_waits_for_nearby_better_slot_when_not_behind():
     )
 
     breakdown = decision["editorialReview"]["breakdown"]
-    assert decision["shouldNotify"] is False
-    assert breakdown["nextBetterSlot"]["hour"] == 15
-    assert breakdown["nextBetterSlot"]["orGain"] >= 1.0
-    assert any("15:00 Uhr abwarten" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is True
+    assert breakdown["timeFit"] >= 7.0
+    assert "Mittags-Prime-Fenster" in breakdown["timeFitLabel"]
+    assert not any("abwarten" in reason for reason in decision["blockingReasons"])
+
+
+def test_lunch_prime_slot_catches_up_when_day_is_behind_push_pace():
+    thursday_lunch = int(dt.datetime(2026, 6, 25, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        score=80.0,
+        predictedOR=0.052,
+        category="news",
+        title="Warnung: Deutsche Bahn meldet bundesweiten Ausfall",
+        url="https://www.bild.de/news/bahn-ausfall-mittag",
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=180, now_ts=thursday_lunch),
+        now_ts=thursday_lunch,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 1
+    context["teamsAlertsToday"] = 1
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(dynamic_threshold_enabled=True, min_alert_score=74.0, min_editorial_score=72.0),
+    )
+
+    breakdown = decision["editorialReview"]["breakdown"]
+    assert decision["shouldNotify"] is True
+    assert decision["pushPacing"]["deficit"] >= 2.0
+    assert breakdown["timeFit"] >= 7.0
+    assert "Mittags-Prime-Fenster" in breakdown["timeFitLabel"]
 
 
 def test_gold_slot_uses_historical_baseline_in_time_fit():

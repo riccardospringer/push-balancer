@@ -3182,7 +3182,7 @@ def _time_fit_review(
     elif 10 <= hour < 12:
         score, label = 8.0, "gutes Vormittagsfenster"
     elif 12 <= hour < 14:
-        score, label = 8.0, "Mittagsfenster"
+        score, label = 9.0, "starkes Mittagsfenster"
     elif 14 <= hour < 17:
         score, label = 7.0, "Nachmittagsfenster"
     elif 17 <= hour < 20:
@@ -3242,6 +3242,10 @@ def _time_fit_review(
     if is_avoid and not breaking:
         score = min(score, 4.0)
         label_parts.append("historische Totzone")
+    if _is_lunch_prime_hour(hour) and not breaking:
+        lunch_floor = 7.2 if not is_weekend else 6.8
+        score = max(score, lunch_floor)
+        label_parts.append("Mittags-Prime-Fenster")
 
     next_better = _next_better_slot(
         now_ts,
@@ -3614,6 +3618,8 @@ def _slot_baseline_score(
         score = max(score, 8.5)
     if hour in avoid_hours and not breaking:
         score = min(score, 3.5)
+    if _is_lunch_prime_hour(hour) and not breaking:
+        score = max(score, 6.8 if weekday < 5 else 6.4)
     return _clamp(score, 0.0, 10.0)
 
 
@@ -3664,7 +3670,13 @@ def _slot_weight(hour: int, weekday: int, config: TeamsAlertConfig) -> float:
         weight *= 1.45
     if hour in avoid_hours:
         weight *= 0.35
+    if _is_lunch_prime_hour(hour):
+        weight *= 1.22 if weekday < 5 else 1.12
     return _clamp(weight, 0.15, 1.9)
+
+
+def _is_lunch_prime_hour(hour: int) -> bool:
+    return 12 <= int(hour) < 14
 
 
 def _next_better_slot(
