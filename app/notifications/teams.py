@@ -186,7 +186,7 @@ def _effective_global_cooldown_minutes(config: TeamsAlertConfig) -> int:
     configured = int(config.global_cooldown_minutes or 0)
     if configured <= 0:
         return 0
-    return max(configured, int(config.min_minutes_since_last_push or 0), 45)
+    return max(configured, int(config.min_minutes_since_last_push or 0), 40)
 
 
 def _memory_send_blocker_or_reserve(
@@ -2917,9 +2917,8 @@ def _minimum_pressure_review(
     hour = local_dt.hour + local_dt.minute / 60.0
     expected = float(push_pacing.get("expectedByNow") or 0.0)
     actual_pushes_today = push_pacing.get("pushesToday")
-    actual_known = actual_pushes_today is not None
-    current = _safe_int(actual_pushes_today) if actual_known else _safe_int(teams_alerts_today)
-    basis = "realer Push-Bestand" if actual_known else "Teams-Hinweise"
+    current = _safe_int(teams_alerts_today)
+    basis = "Teams-Hinweise"
     deficit = max(0.0, expected - current)
     late_day_floor = 0.0
     if hour >= 18:
@@ -2942,7 +2941,7 @@ def _minimum_pressure_review(
         "active": active,
         "minimum": minimum,
         "current": current,
-        "basis": "actual_pushes" if actual_known else "teams_alerts",
+        "basis": "teams_alerts",
         "actualPushesToday": _safe_int(actual_pushes_today) if actual_pushes_today is not None else None,
         "teamsAlertsToday": _safe_int(teams_alerts_today),
         "expectedByNow": round(expected, 2),

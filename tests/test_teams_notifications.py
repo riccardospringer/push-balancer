@@ -261,7 +261,7 @@ def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind(
     assert any("Mindest-Pacing" in reason for reason in decision["reasons"])
 
 
-def test_minimum_pacing_uses_actual_push_count_before_teams_alert_count():
+def test_minimum_pacing_uses_teams_alert_count_even_when_push_count_is_ahead():
     noon_ts = int(dt.datetime(2026, 6, 24, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=84.0,
@@ -286,16 +286,19 @@ def test_minimum_pacing_uses_actual_push_count_before_teams_alert_count():
             dynamic_threshold_enabled=True,
             min_alert_score=78.0,
             min_editorial_score=68.0,
+            target_pushes_per_day=15,
+            min_alerts_per_day=15,
+            max_alerts_per_day=18,
         ),
     )
 
-    assert decision["shouldNotify"] is False
-    assert decision["minimumPressure"]["active"] is False
-    assert decision["minimumPressure"]["basis"] == "actual_pushes"
-    assert decision["minimumPressure"]["current"] == 5
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["active"] is True
+    assert decision["minimumPressure"]["basis"] == "teams_alerts"
+    assert decision["minimumPressure"]["current"] == 1
     assert decision["minimumPressure"]["actualPushesToday"] == 5
     assert decision["minimumPressure"]["teamsAlertsToday"] == 1
-    assert any("Tagesstrategie: Push-Bestand liegt vorn" in reason for reason in decision["blockingReasons"])
+    assert any("Teams-Mindest-Pacing aktiv" in reason for reason in decision["reasons"])
 
 
 def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_gate():
@@ -324,15 +327,18 @@ def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_
             min_alert_score=78.0,
             min_editorial_score=74.0,
             min_or=5.0,
+            target_pushes_per_day=15,
+            min_alerts_per_day=15,
+            max_alerts_per_day=18,
         ),
     )
 
     assert decision["shouldNotify"] is True
     assert decision["minimumPressure"]["active"] is True
-    assert decision["minimumPressure"]["basis"] == "actual_pushes"
+    assert decision["minimumPressure"]["basis"] == "teams_alerts"
     assert not any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
     assert any("OR-Schwelle" in reason for reason in decision["reasons"])
-    assert any("besseres Zeitfenster wird nicht abgewartet" in reason for reason in decision["reasons"])
+    assert any("Teams-Mindest-Pacing aktiv" in reason for reason in decision["reasons"])
 
 
 def test_minimum_pacing_does_not_allow_curiosity_story():

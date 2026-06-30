@@ -352,9 +352,10 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
-| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; calibrated for an editorial cadence of roughly 11 push decisions per day |
-| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `11` | Minimum daily Teams recommendation pacing target; this is measured against Teams alerts, not raw push-history count, and relaxes thresholds only when the Teams channel falls behind |
-| `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `11` | Daily cap for Teams recommendations; breaking can still use its configured override |
+| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; dynamically relaxed only when the Teams channel falls behind its daily recommendation target |
+| `PUSH_TEAMS_TARGET_PUSHES_PER_DAY` | No | `15` | Editorial day curve used to pace Teams recommendations across high-value slots |
+| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `15` | Minimum daily Teams recommendation target; this is measured against Teams alerts, not raw push-history count, and relaxes thresholds when the Teams channel falls behind |
+| `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `18` | Daily cap for Teams recommendations; breaking can still use its configured override |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
 | `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Normal top-field guardrail for Teams decisions and dashboard transparency |
 | `PUSH_TEAMS_CANDIDATE_LIMIT` | No | `80` | Maximum number of article candidates inspected by the automatic Teams worker; candidates beyond the dashboard top field need the stricter Expanded Field gate |
@@ -367,7 +368,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_MIN_OR` | No | `5.0` | Minimum predicted OR percentage for a standard Teams recommendation |
 | `PUSH_TEAMS_MIN_MINUTES_SINCE_LAST_PUSH` | No | `30` | Minimum pause after the previous push |
 | `PUSH_TEAMS_ALERT_COOLDOWN_MINUTES` | No | `90` | Cooldown before the same article can be re-alerted |
-| `PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES` | No | `45` | Minimum pause between any two Teams recommendations, even for different articles |
+| `PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES` | No | `40` | Minimum pause between any two Teams recommendations, even for different articles |
 | `PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST` | No | `true` | Requires article-model OR forecasts for normal non-breaking Teams recommendations; breaking and clear public warning/usefulness cases can still pass |
 | `PUSH_TEAMS_REALERT_SCORE_DELTA` | No | `8` | Required score improvement for a re-alert |
 | `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |

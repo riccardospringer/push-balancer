@@ -454,7 +454,7 @@ PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS: int = _env_int(
 )
 PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES: int = _env_int(
     "PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES",
-    45,
+    40,
 )
 _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Regional,Digital,Unterhaltung"
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
@@ -467,12 +467,12 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_EXCLUDED_SECTIONS",
     "Sport",
 )
-# Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
-# Wenn echte Push-Historie verfügbar ist, wird Mindestdruck gegen den realen
-# Push-Bestand bewertet; Teams-Hinweise sind nur Fallback/Transportkanal.
-PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
-PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 11)
-PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 11)
+# Tagesziel an Teams-Handlungsempfehlungen und dynamische Schwellenanpassung.
+# Der Mindestdruck wird bewusst gegen Teams-Hinweise gemessen. Echte Push-Historie
+# bleibt als Nutzerlast-/Timing-Signal erhalten, ersetzt aber nicht das Teams-Minimum.
+PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 15)
+PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 15)
+PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 18)
 # Redaktioneller Tagesplan fuer Teams: nicht jeder Slot muss ein Sofort-Alert sein,
 # aber der CvD soll einen vollstaendigen, transparent priorisierten Tagesplan sehen.
 PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 15)
