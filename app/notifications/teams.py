@@ -458,11 +458,12 @@ def should_notify_teams(
                 f"Nicht im oberen Push-Balancer-Feld: Rang {dashboard_rank} > {dashboard_top_limit}"
             )
 
+    section_key = _section_key(section)
     excluded = {item.lower() for item in config.excluded_sections if item.strip()}
-    if section.lower() in excluded:
+    if section.lower() in excluded or section_key in excluded:
         blockers.append(f"Ressort {section} ist fuer Teams Alerts ausgeschlossen")
     allowed = {item.lower() for item in config.allowed_sections if item.strip()}
-    if allowed and section.lower() not in allowed:
+    if allowed and section.lower() not in allowed and section_key not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
 
     pushes_today = context.get("pushesToday")
@@ -472,12 +473,20 @@ def should_notify_teams(
     minimum_pressure = _minimum_pressure_review(push_pacing, teams_alerts_today, now_ts, config)
     minimum_active = bool(minimum_pressure.get("active"))
     minimum_pressure_value = float(minimum_pressure.get("pressure") or 0.0)
+    hard_public_need = _has_hard_public_need(title, section)
     effective_min_score = min_score
     if minimum_active and not breaking:
-        catchup_floor = 65.0 if (
-            minimum_pressure_value >= 3.0
-            or (_is_lunch_prime_ts(now_ts) and minimum_pressure_value >= 2.0)
-        ) else 68.0
+        if hard_public_need and minimum_pressure_value >= 2.0:
+            catchup_floor = 62.0
+        else:
+            catchup_floor = (
+                65.0
+                if (
+                    minimum_pressure_value >= 3.0
+                    or (_is_lunch_prime_ts(now_ts) and minimum_pressure_value >= 2.0)
+                )
+                else 68.0
+            )
         effective_min_score = max(catchup_floor, min_score - 7.0)
         positive.append(
             f"Teams-Mindest-Erfuellung: Score-Schwelle kontrolliert {min_score:.1f} -> "
@@ -506,18 +515,34 @@ def should_notify_teams(
     alert_score = float(alert_model["score"])
     positive.append(f"Teams Alert Score {alert_score:.1f}/100")
     positive.extend(list(alert_model["reasons"])[:4])
+    threshold_count_today = teams_alerts_today if minimum_active else pushes_today
     effective_min_alert_score, push_budget_reason = _dynamic_alert_threshold(
         config.min_alert_score,
-        pushes_today,
+        threshold_count_today,
         now_ts,
         breaking,
         config,
     )
+    if minimum_active and push_budget_reason:
+        push_budget_reason = (
+            push_budget_reason
+            .replace("Push-Rueckstand heute", "Teams-Rueckstand heute")
+            .replace("Push-Vorsprung heute", "Teams-Vorsprung heute")
+            .replace("Tagesbudget erreicht", "Teams-Tagesbudget erreicht")
+            .replace("Pushes", "Hinweise")
+        )
     if push_budget_reason:
         positive.append(push_budget_reason)
     if minimum_pressure["active"]:
         floor_drop = float(minimum_pressure.get("thresholdDrop") or 0.0)
-        effective_min_alert_score = max(66.0, effective_min_alert_score - floor_drop)
+        alert_floor = (
+            55.0
+            if hard_public_need and minimum_pressure_value >= 5.0
+            else 58.0
+            if hard_public_need
+            else 66.0
+        )
+        effective_min_alert_score = max(alert_floor, effective_min_alert_score - floor_drop)
         positive.append(str(minimum_pressure["label"]))
     if alert_score < effective_min_alert_score:
         blockers.append(
@@ -525,7 +550,11 @@ def should_notify_teams(
         )
     effective_no_forecast_min_alert_score = config.no_forecast_min_alert_score
     if minimum_active and not breaking:
-        effective_no_forecast_min_alert_score = max(68.0, config.no_forecast_min_alert_score - 8.0)
+        no_forecast_floor = 62.0 if hard_public_need else 68.0
+        effective_no_forecast_min_alert_score = max(
+            no_forecast_floor,
+            config.no_forecast_min_alert_score - 8.0,
+        )
     if predicted_or is None and alert_score < effective_no_forecast_min_alert_score:
         blockers.append(
             "Keine belastbare Prognose und Teams Alert Score nicht hoch genug: "
@@ -534,7 +563,10 @@ def should_notify_teams(
     forecast_is_reliable = forecast.get("source") == "article_model" and predicted_or is not None
     effective_min_or = min_or
     if minimum_active and forecast_is_reliable and not breaking:
-        effective_min_or = max(4.3, min_or - 0.7)
+        effective_min_or = max(
+            3.8 if hard_public_need else 4.3,
+            min_or - (1.2 if hard_public_need else 0.7),
+        )
         positive.append(
             f"Teams-Mindest-Erfuellung: OR-Schwelle kontrolliert {min_or:.2f}% -> "
             f"{effective_min_or:.2f}%"
@@ -1976,7 +2008,7 @@ def _daily_plan_hard_blockers(
     decision: dict[str, Any],
     config: TeamsAlertConfig,
 ) -> list[str]:
-    section = _section(candidate).lower()
+    section = _section_key(_section(candidate))
     excluded = {item.lower() for item in config.excluded_sections if item.strip()}
     hard: list[str] = []
     non_article_reason = _daily_plan_non_article_reason(candidate)
@@ -2974,7 +3006,7 @@ def _expanded_field_candidate_review(
         }
 
     title = _title(candidate)
-    section = _section(candidate).lower()
+    section = _section_key(_section(candidate))
     if section in {item.lower() for item in config.excluded_sections if item.strip()}:
         return {"allowed": False, "reason": ""}
 
@@ -3076,7 +3108,7 @@ def _editorial_cvd_review(
 
     title = _title(candidate)
     title_l = title.lower()
-    section = _section(candidate).lower()
+    section = _section_key(_section(candidate))
     breaking = _is_breaking(candidate)
     rank_limit = max(1, min(int(config.editorial_top_limit or 10), int(config.dashboard_top_limit or 20)))
 
@@ -3243,9 +3275,17 @@ def _editorial_cvd_review(
 
     minimum_pressure = minimum_pressure or {}
     minimum_active = bool(minimum_pressure.get("active"))
+    hard_public_need = _has_hard_public_need(title, section)
     min_editorial_score = max(
-        66.0,
-        config.min_editorial_score - (6.0 if minimum_active and not breaking else 0.0),
+        60.0 if hard_public_need and minimum_active and not breaking else 66.0,
+        config.min_editorial_score
+        - (
+            12.0
+            if hard_public_need and minimum_active and not breaking
+            else 6.0
+            if minimum_active and not breaking
+            else 0.0
+        ),
     )
     expanded_field = _expanded_field_candidate_review(
         candidate,
@@ -3263,9 +3303,13 @@ def _editorial_cvd_review(
             reasons.append(str(expanded_field["reason"]))
         else:
             blockers.append(f"CvD: nicht in den Top {rank_limit} des Dashboard-Felds")
-    if news_value < config.min_editorial_news_value:
+    min_news_value = max(
+        20.0 if hard_public_need and minimum_active and not breaking else config.min_editorial_news_value,
+        config.min_editorial_news_value - (4.0 if hard_public_need and minimum_active and not breaking else 0.0),
+    )
+    if news_value < min_news_value:
         blockers.append(
-            f"CvD: Nachrichtenwert zu niedrig ({news_value:.1f} < {config.min_editorial_news_value:.1f})"
+            f"CvD: Nachrichtenwert zu niedrig ({news_value:.1f} < {min_news_value:.1f})"
         )
     if total < min_editorial_score:
         blockers.append(f"CvD: redaktionelle Gesamtfreigabe zu schwach ({total:.1f} < {min_editorial_score:.1f})")
@@ -3530,7 +3574,7 @@ def _teams_alert_score(
 ) -> dict[str, Any]:
     title = _title(candidate)
     title_l = title.lower()
-    section = _section(candidate).lower()
+    section = _section_key(_section(candidate))
     breaking = _is_breaking(candidate)
 
     push_score_points = _clamp(score - 60.0, 0.0, 25.0)
@@ -3563,6 +3607,8 @@ def _teams_alert_score(
     if breaking:
         impact_bonus += 6.0
     if any(term in title_l for term in high_impact_terms):
+        impact_bonus += 4.0
+    if _has_hard_public_need(title, section):
         impact_bonus += 4.0
     if _is_public_money_fraud_enforcement(title):
         impact_bonus += 4.0

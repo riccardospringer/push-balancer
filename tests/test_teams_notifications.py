@@ -182,8 +182,10 @@ def test_missing_last_push_timestamp_observes_candidate_without_notification():
 
 def test_bad_forecast_does_not_trigger_teams_decision():
     candidate = _candidate(predictedOR=0.039)
+    context = _context(candidate, teams_alerts_today=11)
+    context["pushesToday"] = 11
 
-    decision = shouldNotifyTeams(candidate, _context(candidate), _config())
+    decision = shouldNotifyTeams(candidate, context, _config())
 
     assert decision["shouldNotify"] is False
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
@@ -339,6 +341,48 @@ def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_
     assert not any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
     assert any("OR-Schwelle" in reason for reason in decision["reasons"])
     assert any("Teams-Mindest-Pacing aktiv" in reason for reason in decision["reasons"])
+
+
+def test_minimum_pacing_allows_hard_crime_news_with_news_allowlist():
+    afternoon_ts = int(dt.datetime(2026, 6, 30, 14, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(
+        id="crime-hard-news",
+        url="https://www.bild.de/crime/stade-schuesse",
+        category="crime",
+        title="6 Tote nach Schüssen in Stade: Polizei nimmt Verdächtigen fest",
+        score=68.8,
+        predictedOR=0.039,
+        pubDate=_iso(afternoon_ts - 20 * 60),
+    )
+    context = _context(
+        candidate,
+        history=_history(minutes_since_last_push=45, now_ts=afternoon_ts),
+        teams_alerts_today=0,
+        now_ts=afternoon_ts,
+    )
+    context["dashboardRank"] = 9
+    context["pushesToday"] = 8
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(
+            allowed_sections=("news", "politik", "wirtschaft", "regional", "digital", "unterhaltung"),
+            dynamic_threshold_enabled=True,
+            target_pushes_per_day=15,
+            min_alerts_per_day=15,
+            max_alerts_per_day=18,
+            min_alert_score=78.0,
+            min_editorial_score=74.0,
+            min_editorial_news_value=24.0,
+            min_or=5.0,
+        ),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["minimumPressure"]["basis"] == "teams_alerts"
+    assert decision["teamsAlertScoreThreshold"] < 65.0
+    assert any("Teams-Rueckstand" in reason for reason in decision["reasons"])
 
 
 def test_minimum_pacing_does_not_allow_curiosity_story():
@@ -2028,7 +2072,7 @@ def test_lunch_prime_catchup_can_lower_score_floor_to_65():
 
     assert decision["shouldNotify"] is True
     assert decision["pushPacing"]["deficit"] >= 2.0
-    assert any("Score-Schwelle kontrolliert 70.0 -> 65.0" in reason for reason in decision["reasons"])
+    assert any("Score-Schwelle kontrolliert 70.0 -> 63.0" in reason for reason in decision["reasons"])
 
 
 def test_gold_slot_uses_historical_baseline_in_time_fit():
