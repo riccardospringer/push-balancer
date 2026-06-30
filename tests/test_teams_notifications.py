@@ -172,7 +172,7 @@ def test_missing_last_push_timestamp_observes_candidate_without_notification():
     decision = shouldNotifyTeams(
         candidate,
         _context(candidate, history=[]),
-        _config(),
+        _config(min_alerts_per_day=0),
     )
 
     assert decision["shouldNotify"] is False
@@ -356,7 +356,7 @@ def test_minimum_pacing_allows_hard_crime_news_with_news_allowlist():
     )
     context = _context(
         candidate,
-        history=_history(minutes_since_last_push=45, now_ts=afternoon_ts),
+        history=[],
         teams_alerts_today=0,
         now_ts=afternoon_ts,
     )
@@ -383,6 +383,7 @@ def test_minimum_pacing_allows_hard_crime_news_with_news_allowlist():
     assert decision["minimumPressure"]["basis"] == "teams_alerts"
     assert decision["teamsAlertScoreThreshold"] < 65.0
     assert any("Teams-Rueckstand" in reason for reason in decision["reasons"])
+    assert any("Teams-Cooldown uebernimmt" in reason for reason in decision["reasons"])
 
 
 def test_minimum_pacing_does_not_allow_curiosity_story():
@@ -612,7 +613,7 @@ def test_score_only_mode_blocks_candidate_without_forecast_or_push_time():
     decision = shouldNotifyTeams(
         candidate,
         _context(candidate, history=[]),
-        _config(score_only_mode=True),
+        _config(score_only_mode=True, min_alerts_per_day=0),
     )
 
     assert decision["shouldNotify"] is False

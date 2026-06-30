@@ -699,11 +699,24 @@ def should_notify_teams(
         else:
             blockers.append(dashboard_rank_blocker)
 
+    allow_unknown_last_push_for_minimum = (
+        minimum_active
+        and hard_public_need
+        and not breaking
+        and alert_score >= effective_min_alert_score
+        and float(editorial_review["score"]) >= 60.0
+    )
     if config.score_only_mode:
         positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
         if minutes_since_last_push is None:
-            blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
-            status = "observe"
+            if allow_unknown_last_push_for_minimum:
+                positive.append(
+                    "Teams-Mindest-Pacing: letzter Push-Zeitpunkt fehlt, "
+                    "Teams-Cooldown uebernimmt den Lastschutz"
+                )
+            else:
+                blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
+                status = "observe"
         elif minutes_since_last_push >= min_pause:
             positive.append(
                 f"Letzter Push vor {minutes_since_last_push:.0f} Minuten, Mindestpause erfuellt"
@@ -722,8 +735,14 @@ def should_notify_teams(
             )
 
         if minutes_since_last_push is None:
-            blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
-            status = "observe"
+            if allow_unknown_last_push_for_minimum:
+                positive.append(
+                    "Teams-Mindest-Pacing: letzter Push-Zeitpunkt fehlt, "
+                    "Teams-Cooldown uebernimmt den Lastschutz"
+                )
+            else:
+                blockers.append("Letzter Push-Zeitpunkt nicht verfuegbar")
+                status = "observe"
         elif minutes_since_last_push >= min_pause:
             positive.append(
                 f"Letzter Push vor {minutes_since_last_push:.0f} Minuten, Mindestpause erfuellt"
