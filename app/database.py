@@ -1369,11 +1369,8 @@ def teams_recommendation_list_recent(limit: int = 50) -> list[dict]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """SELECT * FROM teams_recommendations
-               ORDER BY CASE
-                   WHEN sent_at_ts > 0 THEN sent_at_ts
-                   WHEN scheduled_for_ts > 0 THEN scheduled_for_ts
-                   ELSE decided_at_ts
-               END DESC, updated_ts DESC
+               ORDER BY updated_ts DESC, decided_at_ts DESC, scheduled_for_ts ASC,
+                        dashboard_rank ASC
                LIMIT ?""",
             (safe_limit,),
         ).fetchall()
