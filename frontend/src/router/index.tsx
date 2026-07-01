@@ -6,6 +6,7 @@ import { KandidatenPage } from '@/pages/kandidaten'
 import { KonkurrenzPage } from '@/pages/konkurrenz'
 import { LivePushesPage } from '@/pages/live-pushes'
 import { TagesplanPage } from '@/pages/tagesplan'
+import { TeamsRecommendationsPage } from '@/pages/teams-recommendations'
 import { NotFoundPage } from './not-found'
 
 export const appRouter = createBrowserRouter(
@@ -21,6 +22,7 @@ export const appRouter = createBrowserRouter(
         { path: 'konkurrenz', element: <KonkurrenzPage /> },
         { path: 'forschung', element: <ForschungPage /> },
         { path: 'tagesplan', element: <TagesplanPage /> },
+        { path: 'teams', element: <TeamsRecommendationsPage /> },
         { path: '*', element: <NotFoundPage /> },
       ],
     },

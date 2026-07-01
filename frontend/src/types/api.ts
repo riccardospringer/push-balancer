@@ -96,6 +96,42 @@ export interface TeamsAlertsResponse {
   fetchedAt: string
 }
 
+export interface TeamsRecommendationRecord {
+  id: string
+  articleKey: string
+  articleId: string
+  articleUrl: string
+  articleTitle: string
+  section: string
+  type: 'teams_alert' | 'daily_plan' | string
+  status: string
+  shouldNotify: boolean
+  score: number
+  teamsAlertScore: number
+  teamsAlertThreshold: number
+  editorialScore: number
+  predictedOR: number
+  predictedORLabel: string
+  expectedVisits: number
+  dashboardRank: number
+  summary: string
+  reasons: string[]
+  blockingReasons: string[]
+  decision: Record<string, unknown>
+  sendStatus: string
+  sendError: string
+  decidedAt?: string | null
+  scheduledFor?: string | null
+  sentAt?: string | null
+}
+
+export interface TeamsRecommendationsResponse {
+  items: TeamsRecommendationRecord[]
+  total: number
+  type?: 'all' | 'teams_alert' | 'daily_plan' | string
+  fetchedAt: string
+}
+
 // ── Push Statistics ───────────────────────────────────────────────────────────
 
 export interface Push {

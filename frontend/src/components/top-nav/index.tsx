@@ -9,6 +9,7 @@ const TABS = [
   { path: '/konkurrenz', label: 'Konkurrenz' },
   { path: '/forschung', label: 'Forschung' },
   { path: '/tagesplan', label: 'Tagesplan' },
+  { path: '/teams', label: 'Teams' },
 ]
 
 export function TopNav() {

@@ -80,6 +80,32 @@ class TestTeamsAlertHistory:
         assert rows[0]["expected_visits"] == 51_000
         assert "Score stark" in rows[0]["reasons_json"]
 
+    def test_teams_recommendation_list_recent_filters_by_source_type(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_recommendation_record(
+                article_key="teams-1",
+                article_title="Echte Teams-Empfehlung",
+                recommendation_type="teams_alert",
+                status="sent",
+                decided_at_ts=1_800_000_100,
+            )
+            database.teams_recommendation_record(
+                article_key="plan-1",
+                article_title="Tagesplan-Snapshot",
+                recommendation_type="daily_plan",
+                status="fix",
+                decided_at_ts=1_800_000_200,
+            )
+
+            rows = database.teams_recommendation_list_recent(
+                limit=5,
+                recommendation_type="teams_alert",
+            )
+
+        assert len(rows) == 1
+        assert rows[0]["recommendation_type"] == "teams_alert"
+        assert rows[0]["article_title"] == "Echte Teams-Empfehlung"
+
     def test_teams_alert_claim_blocks_duplicate_in_flight_send(self, tmp_db):
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
             first = database.teams_alert_try_claim_send(

@@ -17,6 +17,7 @@ import type {
   TagesplanRetroResponse,
   TagesplanSuggestionsResponse,
   TeamsAlertsResponse,
+  TeamsRecommendationsResponse,
 } from '@/types/api'
 import { rawClient, ApiError } from './api-client-base'
 
@@ -163,7 +164,7 @@ export const api = {
     }
 
     const status =
-      payload.status === 'ok'
+      payload.status === 'ok' || payload.status === 'healthy'
         ? 'healthy'
         : payload.status === 'degraded'
           ? 'degraded'
@@ -195,6 +196,23 @@ export const api = {
 
   teamsAlerts: (signal?: AbortSignal) =>
     fetchJson<TeamsAlertsResponse>('/api/teams-alerts?limit=12', 'GET', signal),
+
+  teamsRecommendations: (
+    limit = 80,
+    recommendationType: 'teams_alert' | 'daily_plan' = 'teams_alert',
+    signal?: AbortSignal,
+  ) =>
+    fetchJson<TeamsRecommendationsResponse>(
+      `/api/teams-recommendations?limit=${limit}&type=${recommendationType}`,
+      'GET',
+      signal,
+    ),
+
+  persistTeamsDailyPlan: () =>
+    fetchJson<{ count: number; meetsMinimum: boolean }>(
+      '/api/teams-daily-plan?limit=80&min_items=15&max_items=15',
+      'GET',
+    ),
 
   pushAlarm: (signal?: AbortSignal) =>
     fetchJson<PushAlarmResponse>('/api/push-alarm', 'GET', signal),

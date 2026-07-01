@@ -77,6 +77,61 @@ class TestTeamsAlertsEndpoint:
         assert item["score"] == pytest.approx(82.0)
         assert item["predictedOR"] == pytest.approx(5.4)
 
+    def test_teams_recommendations_returns_persisted_suggestions(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_recommendation_record(
+                article_key="article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                section="politik",
+                recommendation_type="teams_alert",
+                status="sent",
+                should_notify=True,
+                score=82.0,
+                teams_alert_score=84.0,
+                teams_alert_threshold=78.0,
+                editorial_score=86.0,
+                predicted_or=5.4,
+                predicted_or_label="5,40 % OR (Artikelmodell)",
+                expected_visits=51_000,
+                dashboard_rank=2,
+                decided_at_ts=1_800_000_100,
+                sent_at_ts=1_800_000_100,
+                send_status="sent",
+                summary="Push empfohlen",
+                reasons=["Score stark", "Timing passt"],
+                decision={"status": "notify"},
+            )
+            database.teams_recommendation_record(
+                article_key="plan-1",
+                article_id="plan-1",
+                article_url="https://www.bild.de/news/plan-1",
+                article_title="Planung: Nicht als Teams-Historie anzeigen",
+                section="news",
+                recommendation_type="daily_plan",
+                status="fix",
+                should_notify=True,
+                score=77.0,
+                decided_at_ts=1_800_000_100,
+                scheduled_for_ts=1_800_010_000,
+                send_status="planned",
+                summary="Tagesplan-Snapshot",
+            )
+
+            resp = client.get("/api/teams-recommendations?limit=5&type=teams_alert")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["type"] == "teams_alert"
+        item = data["items"][0]
+        assert item["articleTitle"] == "Eilmeldung: Regierung beschliesst Paket"
+        assert item["type"] == "teams_alert"
+        assert item["status"] == "sent"
+        assert item["expectedVisits"] == 51_000
+        assert item["reasons"] == ["Score stark", "Timing passt"]
+
 
 class TestStableFrontendContracts:
     def test_ki_push_title_request_prefers_visible_overlay_fields(self):

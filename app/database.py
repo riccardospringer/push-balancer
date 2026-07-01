@@ -1361,18 +1361,29 @@ def teams_recommendation_record(
     return rec_id
 
 
-def teams_recommendation_list_recent(limit: int = 50) -> list[dict]:
+def teams_recommendation_list_recent(
+    limit: int = 50,
+    recommendation_type: str | None = None,
+) -> list[dict]:
     """Return recent persisted Teams recommendation snapshots."""
     safe_limit = max(1, min(int(limit or 50), 200))
+    type_filter = str(recommendation_type or "").strip()
+    where_clause = ""
+    params: list[str | int] = []
+    if type_filter:
+        where_clause = "WHERE recommendation_type = ?"
+        params.append(type_filter)
+    params.append(safe_limit)
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """SELECT * FROM teams_recommendations
+            f"""SELECT * FROM teams_recommendations
+               {where_clause}
                ORDER BY updated_ts DESC, decided_at_ts DESC, scheduled_for_ts ASC,
                         dashboard_rank ASC
                LIMIT ?""",
-            (safe_limit,),
+            params,
         ).fetchall()
         conn.close()
     return [dict(row) for row in rows]

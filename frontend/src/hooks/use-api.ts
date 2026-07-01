@@ -26,6 +26,29 @@ export function useTeamsAlerts() {
   })
 }
 
+export function useTeamsRecommendations(
+  limit = 80,
+  recommendationType: 'teams_alert' | 'daily_plan' = 'teams_alert',
+) {
+  return useQuery({
+    queryKey: ['teamsRecommendations', recommendationType, limit],
+    queryFn: ({ signal }) =>
+      api.teamsRecommendations(limit, recommendationType, signal),
+    refetchInterval: 60_000,
+  })
+}
+
+export function usePersistTeamsDailyPlan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.persistTeamsDailyPlan(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['teamsRecommendations'] })
+      qc.invalidateQueries({ queryKey: ['tagesplan'] })
+    },
+  })
+}
+
 export function usePushStats() {
   return useQuery({
     queryKey: ['pushStats'],

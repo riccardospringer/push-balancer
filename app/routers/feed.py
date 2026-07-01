@@ -589,12 +589,15 @@ def _parse_db_json(value: str, fallback: Any) -> Any:
 
 
 @router.get("/api/teams-recommendations")
-def get_teams_recommendations(limit: int = Query(default=50, ge=1, le=200)) -> JSONResponse:
-    """Return persisted Teams push suggestions and day-plan entries."""
+def get_teams_recommendations(
+    limit: int = Query(default=50, ge=1, le=200),
+    type: str | None = Query(default=None, pattern="^(teams_alert|daily_plan)$"),
+) -> JSONResponse:
+    """Return persisted Teams recommendation snapshots, optionally by source type."""
     try:
         from app.database import teams_recommendation_list_recent
 
-        rows = teams_recommendation_list_recent(limit)
+        rows = teams_recommendation_list_recent(limit, recommendation_type=type)
     except Exception as exc:
         log.warning("[teams-recommendations] could not load recommendation history: %s", exc)
         rows = []
@@ -639,6 +642,7 @@ def get_teams_recommendations(limit: int = Query(default=50, ge=1, le=200)) -> J
         content={
             "items": items,
             "total": len(items),
+            "type": type or "all",
             "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
     )
