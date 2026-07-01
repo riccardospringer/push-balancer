@@ -9,6 +9,7 @@ import os
 import sqlite3
 import threading
 import time
+import hashlib
 
 from app.config import PUSH_DB_PATH, IS_RENDER, PUSH_DB_MAX_DAYS, PUSH_DB_MAX_ROWS
 
@@ -329,6 +330,43 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_last_decision ON teams_alerts(last_decision_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_alerts_status ON teams_alerts(status)")
 
+    # Teams recommendation history. Stores editorial recommendation snapshots,
+    # not raw user/device telemetry.
+    conn.execute("""CREATE TABLE IF NOT EXISTS teams_recommendations (
+        id TEXT PRIMARY KEY,
+        article_key TEXT NOT NULL,
+        article_id TEXT DEFAULT '',
+        article_url TEXT DEFAULT '',
+        article_title TEXT DEFAULT '',
+        section TEXT DEFAULT '',
+        recommendation_type TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        should_notify INTEGER DEFAULT 0,
+        score REAL DEFAULT 0,
+        teams_alert_score REAL DEFAULT 0,
+        teams_alert_threshold REAL DEFAULT 0,
+        editorial_score REAL DEFAULT 0,
+        predicted_or REAL DEFAULT 0,
+        predicted_or_label TEXT DEFAULT '',
+        expected_visits INTEGER DEFAULT 0,
+        dashboard_rank INTEGER DEFAULT 0,
+        scheduled_for_ts INTEGER DEFAULT 0,
+        decided_at_ts INTEGER NOT NULL,
+        sent_at_ts INTEGER DEFAULT 0,
+        send_status TEXT DEFAULT '',
+        send_error TEXT DEFAULT '',
+        summary TEXT DEFAULT '',
+        reasons_json TEXT DEFAULT '[]',
+        blocking_reasons_json TEXT DEFAULT '[]',
+        decision_json TEXT DEFAULT '{}',
+        created_ts INTEGER NOT NULL,
+        updated_ts INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_article ON teams_recommendations(article_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_decided ON teams_recommendations(decided_at_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_scheduled ON teams_recommendations(scheduled_for_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_type_status ON teams_recommendations(recommendation_type, status)")
+
     # ML v2: LLM-Score Spalten (idempotent via ALTER TABLE)
     _llm_columns = [
         ("llm_magnitude", "REAL DEFAULT 0"),
@@ -388,6 +426,7 @@ def _db_cleanup() -> None:
     cutoff_embedding = int(time.time()) - 30 * 86400    # Embedding-Cache: 30 Tage
     cutoff_monitoring = int(time.time()) - 14 * 86400   # Monitoring-Events: 14 Tage
     cutoff_teams_alerts = int(time.time()) - 45 * 86400 # Teams-Alert-Metadaten: 45 Tage
+    cutoff_teams_recommendations = int(time.time()) - 45 * 86400 # Teams-Vorschläge: 45 Tage
     cutoff_experiments = int(time.time()) - 365 * 86400 # Experimente: 1 Jahr
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=10)
@@ -409,6 +448,10 @@ def _db_cleanup() -> None:
         ).rowcount
         deleted["teams_alerts"] = conn.execute(
             "DELETE FROM teams_alerts WHERE last_decision_ts < ?", (cutoff_teams_alerts,)
+        ).rowcount
+        deleted["teams_recommendations"] = conn.execute(
+            "DELETE FROM teams_recommendations WHERE decided_at_ts < ?",
+            (cutoff_teams_recommendations,),
         ).rowcount
         deleted["experiments"] = conn.execute(
             "DELETE FROM experiments WHERE timestamp < ? AND promoted = 0",
@@ -1160,3 +1203,179 @@ def teams_alert_record(
         )
         conn.commit()
         conn.close()
+
+
+def _db_json(value, fallback: str) -> str:
+    """Serialize DB JSON fields compactly without failing caller workflows."""
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _teams_recommendation_id(
+    *,
+    recommendation_type: str,
+    article_key: str,
+    decided_at_ts: int,
+    scheduled_for_ts: int,
+    status: str,
+) -> str:
+    raw = "|".join(
+        [
+            recommendation_type or "",
+            article_key or "",
+            str(int(scheduled_for_ts or 0)),
+            str(int(decided_at_ts or 0)),
+            status or "",
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def teams_recommendation_record(
+    *,
+    article_key: str,
+    article_id: str = "",
+    article_url: str = "",
+    article_title: str = "",
+    section: str = "",
+    recommendation_type: str = "teams_alert",
+    status: str = "",
+    should_notify: bool = False,
+    score: float = 0.0,
+    teams_alert_score: float = 0.0,
+    teams_alert_threshold: float = 0.0,
+    editorial_score: float = 0.0,
+    predicted_or: float = 0.0,
+    predicted_or_label: str = "",
+    expected_visits: int = 0,
+    dashboard_rank: int = 0,
+    scheduled_for_ts: int = 0,
+    decided_at_ts: int | None = None,
+    sent_at_ts: int = 0,
+    send_status: str = "",
+    send_error: str = "",
+    summary: str = "",
+    reasons: list | None = None,
+    blocking_reasons: list | None = None,
+    decision: dict | None = None,
+    record_id: str = "",
+) -> str:
+    """Persist one Teams recommendation snapshot and return its DB id.
+
+    This table is the auditable suggestion history. It intentionally stores
+    only article/recommendation metadata and compact decision reasons.
+    """
+    if not article_key:
+        return ""
+    now = int(time.time())
+    decided_ts = int(decided_at_ts or now)
+    scheduled_ts = int(scheduled_for_ts or 0)
+    rec_id = record_id or _teams_recommendation_id(
+        recommendation_type=recommendation_type,
+        article_key=article_key,
+        decided_at_ts=decided_ts,
+        scheduled_for_ts=scheduled_ts,
+        status=status,
+    )
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT created_ts FROM teams_recommendations WHERE id = ?",
+            (rec_id,),
+        ).fetchone()
+        created_ts = int(existing["created_ts"] or now) if existing else now
+        conn.execute(
+            """INSERT INTO teams_recommendations (
+                id, article_key, article_id, article_url, article_title, section,
+                recommendation_type, status, should_notify, score, teams_alert_score,
+                teams_alert_threshold, editorial_score, predicted_or,
+                predicted_or_label, expected_visits, dashboard_rank,
+                scheduled_for_ts, decided_at_ts, sent_at_ts, send_status,
+                send_error, summary, reasons_json, blocking_reasons_json,
+                decision_json, created_ts, updated_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                article_key = excluded.article_key,
+                article_id = excluded.article_id,
+                article_url = excluded.article_url,
+                article_title = excluded.article_title,
+                section = excluded.section,
+                recommendation_type = excluded.recommendation_type,
+                status = excluded.status,
+                should_notify = excluded.should_notify,
+                score = excluded.score,
+                teams_alert_score = excluded.teams_alert_score,
+                teams_alert_threshold = excluded.teams_alert_threshold,
+                editorial_score = excluded.editorial_score,
+                predicted_or = excluded.predicted_or,
+                predicted_or_label = excluded.predicted_or_label,
+                expected_visits = excluded.expected_visits,
+                dashboard_rank = excluded.dashboard_rank,
+                scheduled_for_ts = excluded.scheduled_for_ts,
+                decided_at_ts = excluded.decided_at_ts,
+                sent_at_ts = excluded.sent_at_ts,
+                send_status = excluded.send_status,
+                send_error = excluded.send_error,
+                summary = excluded.summary,
+                reasons_json = excluded.reasons_json,
+                blocking_reasons_json = excluded.blocking_reasons_json,
+                decision_json = excluded.decision_json,
+                updated_ts = excluded.updated_ts
+            """,
+            (
+                rec_id,
+                article_key,
+                article_id[:200],
+                article_url[:800],
+                article_title[:500],
+                section[:80],
+                recommendation_type[:80],
+                status[:80],
+                1 if should_notify else 0,
+                float(score or 0.0),
+                float(teams_alert_score or 0.0),
+                float(teams_alert_threshold or 0.0),
+                float(editorial_score or 0.0),
+                float(predicted_or or 0.0),
+                predicted_or_label[:200],
+                int(expected_visits or 0),
+                int(dashboard_rank or 0),
+                scheduled_ts,
+                decided_ts,
+                int(sent_at_ts or 0),
+                send_status[:80],
+                send_error[:500],
+                summary[:800],
+                _db_json(reasons or [], "[]"),
+                _db_json(blocking_reasons or [], "[]"),
+                _db_json(decision or {}, "{}"),
+                created_ts,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    return rec_id
+
+
+def teams_recommendation_list_recent(limit: int = 50) -> list[dict]:
+    """Return recent persisted Teams recommendation snapshots."""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT * FROM teams_recommendations
+               ORDER BY CASE
+                   WHEN sent_at_ts > 0 THEN sent_at_ts
+                   WHEN scheduled_for_ts > 0 THEN scheduled_for_ts
+                   ELSE decided_at_ts
+               END DESC, updated_ts DESC
+               LIMIT ?""",
+            (safe_limit,),
+        ).fetchall()
+        conn.close()
+    return [dict(row) for row in rows]

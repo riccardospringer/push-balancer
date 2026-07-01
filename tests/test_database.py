@@ -41,6 +41,45 @@ class TestTeamsAlertHistory:
         assert rows[0]["status"] == "sent"
         assert rows[0]["last_score"] == pytest.approx(82.0)
 
+    def test_teams_recommendation_record_persists_suggestion_snapshot(self, tmp_db):
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            rec_id = database.teams_recommendation_record(
+                article_key="https://www.bild.de/politik/article-1",
+                article_id="article-1",
+                article_url="https://www.bild.de/politik/article-1",
+                article_title="Eilmeldung: Regierung beschliesst Paket",
+                section="politik",
+                recommendation_type="teams_alert",
+                status="sent",
+                should_notify=True,
+                score=82.0,
+                teams_alert_score=84.0,
+                teams_alert_threshold=78.0,
+                editorial_score=86.0,
+                predicted_or=5.4,
+                predicted_or_label="5,40 % OR (Artikelmodell)",
+                expected_visits=51_000,
+                dashboard_rank=2,
+                decided_at_ts=1_800_000_100,
+                sent_at_ts=1_800_000_100,
+                send_status="sent",
+                summary="Push empfohlen",
+                reasons=["Score stark", "Timing passt"],
+                blocking_reasons=[],
+                decision={"status": "notify", "dashboardRank": 2},
+            )
+
+            rows = database.teams_recommendation_list_recent(limit=5)
+
+        assert rec_id
+        assert len(rows) == 1
+        assert rows[0]["article_title"] == "Eilmeldung: Regierung beschliesst Paket"
+        assert rows[0]["recommendation_type"] == "teams_alert"
+        assert rows[0]["status"] == "sent"
+        assert rows[0]["should_notify"] == 1
+        assert rows[0]["expected_visits"] == 51_000
+        assert "Score stark" in rows[0]["reasons_json"]
+
     def test_teams_alert_claim_blocks_duplicate_in_flight_send(self, tmp_db):
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
             first = database.teams_alert_try_claim_send(

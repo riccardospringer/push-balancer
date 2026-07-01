@@ -87,6 +87,7 @@ from app.database import (
     teams_alert_record,
     teams_alert_sent_count_since,
     teams_alert_try_claim_send,
+    teams_recommendation_record,
 )
 
 log = logging.getLogger("push-balancer")
@@ -1399,6 +1400,15 @@ def evaluate_and_send_best_candidate(
             article_url,
             memory_claim.get("reason"),
         )
+        _persist_teams_recommendation(
+            selected,
+            selected_decision,
+            context,
+            config,
+            status="send_memory_blocked",
+            send_status="blocked",
+            send_error=str(memory_claim.get("reason") or ""),
+        )
         return {
             "ok": True,
             "sent": False,
@@ -1439,6 +1449,15 @@ def evaluate_and_send_best_candidate(
             article_url,
             claim.get("reason"),
         )
+        _persist_teams_recommendation(
+            selected,
+            selected_decision,
+            context,
+            config,
+            status="send_claim_blocked",
+            send_status="blocked",
+            send_error=str(claim.get("reason") or ""),
+        )
         return {
             "ok": True,
             "sent": False,
@@ -1468,6 +1487,16 @@ def evaluate_and_send_best_candidate(
         error=str(send_result.get("error") or ""),
         decision_ts=int(context.get("nowTs") or time.time()),
     )
+    _persist_teams_recommendation(
+        selected,
+        selected_decision,
+        context,
+        config,
+        status=status,
+        send_status=status,
+        send_error=str(send_result.get("error") or ""),
+        sent_at_ts=decision_ts if send_result.get("ok") else 0,
+    )
 
     log.info(
         "[TeamsAlert] send_result candidateId=%s articleId=%s url=%s status=%s ok=%s",
@@ -1484,6 +1513,113 @@ def evaluate_and_send_best_candidate(
         "candidateId": article_key,
         "evaluation": evaluation,
     }
+
+
+def _persist_teams_recommendation(
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+    *,
+    recommendation_type: str = "teams_alert",
+    status: str = "",
+    send_status: str = "",
+    send_error: str = "",
+    scheduled_for_ts: int = 0,
+    sent_at_ts: int = 0,
+    record_id: str = "",
+) -> None:
+    """Best-effort durable recommendation audit log."""
+    try:
+        now_ts = int(context.get("nowTs") or time.time())
+        forecast_ts = int(scheduled_for_ts or now_ts)
+        forecast = _candidate_forecast(
+            candidate,
+            forecast_ts,
+            {float(value) for value in (context.get("suspectForecastValues") or [])},
+        )
+        visit = decision.get("visitPotential") if isinstance(decision.get("visitPotential"), dict) else {}
+        recommendation_id = record_id
+        if recommendation_id:
+            recommendation_id = hashlib.sha256(recommendation_id.encode("utf-8")).hexdigest()
+        teams_recommendation_record(
+            article_key=candidate_key(candidate),
+            article_id=str(candidate.get("id") or candidate_key(candidate)),
+            article_url=_url(candidate),
+            article_title=_title(candidate),
+            section=_section(candidate),
+            recommendation_type=recommendation_type,
+            status=status or str(decision.get("status") or ""),
+            should_notify=bool(decision.get("shouldNotify")),
+            score=float(decision.get("score") or _score(candidate)),
+            teams_alert_score=float(decision.get("teamsAlertScore") or 0.0),
+            teams_alert_threshold=float(decision.get("teamsAlertScoreThreshold") or config.min_alert_score),
+            editorial_score=float(decision.get("editorialScore") or 0.0),
+            predicted_or=float(forecast.get("value") or 0.0),
+            predicted_or_label=_format_forecast(forecast),
+            expected_visits=int(
+                decision.get("expectedVisits")
+                or visit.get("expectedVisits")
+                or 0
+            ),
+            dashboard_rank=int(decision.get("dashboardRank") or 0),
+            scheduled_for_ts=int(scheduled_for_ts or 0),
+            decided_at_ts=now_ts,
+            sent_at_ts=int(sent_at_ts or 0),
+            send_status=send_status,
+            send_error=send_error,
+            summary=str(decision.get("summary") or ""),
+            reasons=list(decision.get("reasons") or []),
+            blocking_reasons=list(decision.get("blockingReasons") or []),
+            decision=_teams_recommendation_decision_snapshot(decision),
+            record_id=recommendation_id,
+        )
+    except Exception as exc:
+        log.warning("[TeamsAlert] recommendation persistence failed: %s", exc)
+
+
+def _teams_recommendation_decision_snapshot(decision: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "candidateId",
+        "articleId",
+        "articleUrl",
+        "headline",
+        "status",
+        "recommendedAction",
+        "shouldNotify",
+        "summary",
+        "score",
+        "minScore",
+        "teamsAlertScore",
+        "teamsAlertScoreThreshold",
+        "editorialScore",
+        "selectionScore",
+        "visitPotentialScore",
+        "expectedVisits",
+        "estimatedReach",
+        "predictedOR",
+        "predictedORSource",
+        "predictedORBasis",
+        "predictedORConfidence",
+        "minOR",
+        "minutesSinceLastPush",
+        "dashboardRank",
+        "dashboardTopLimit",
+        "expandedFieldCandidate",
+        "expandedFieldReason",
+        "pushesToday",
+        "teamsAlertsToday",
+        "minAlertsPerDay",
+        "maxAlertsPerDay",
+        "pushBudgetTarget",
+        "minimumPressure",
+        "pushPacing",
+        "section",
+        "evaluatedAt",
+        "reasons",
+        "blockingReasons",
+    )
+    return {key: decision.get(key) for key in keys if key in decision}
 
 
 def send_teams_test_notification(
@@ -1620,6 +1756,7 @@ def build_teams_daily_push_plan(
     min_items: int | None = None,
     max_items: int | None = None,
     now_ts: int | None = None,
+    persist: bool = False,
 ) -> dict[str, Any]:
     """Build a Teams-ready CvD day plan from the current Push-Balancer field.
 
@@ -1710,7 +1847,71 @@ def build_teams_daily_push_plan(
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
     }
+    if persist:
+        _persist_daily_plan_recommendations(plan, decided_at_ts=now)
     return plan
+
+
+def _persist_daily_plan_recommendations(plan: dict[str, Any], *, decided_at_ts: int) -> None:
+    """Store generated day-plan suggestions for dashboard and audit history."""
+    try:
+        plan_date = str(plan.get("date") or "")
+        for item in plan.get("items") or []:
+            article_key = str(item.get("candidateId") or item.get("articleUrl") or "")
+            if not article_key:
+                continue
+            record_seed = "|".join(
+                [
+                    "daily_plan",
+                    plan_date,
+                    str(int(item.get("slotTs") or 0)),
+                    article_key,
+                ]
+            )
+            reasons = [str(item.get("why") or "")]
+            reasons.extend(str(reason) for reason in item.get("positiveReasons") or [])
+            teams_recommendation_record(
+                article_key=article_key,
+                article_id=article_key,
+                article_url=str(item.get("articleUrl") or ""),
+                article_title=str(item.get("articleTitle") or item.get("title") or ""),
+                section=str(item.get("section") or item.get("sectionLabel") or ""),
+                recommendation_type="daily_plan",
+                status=str(item.get("status") or ""),
+                should_notify=str(item.get("status") or "") == "fix",
+                score=float(item.get("score") or 0.0),
+                teams_alert_score=float(item.get("teamsAlertScore") or 0.0),
+                teams_alert_threshold=0.0,
+                editorial_score=float(item.get("editorialScore") or 0.0),
+                predicted_or=float(item.get("predictedOR") or 0.0),
+                predicted_or_label=str(item.get("predictedORLabel") or ""),
+                expected_visits=int(item.get("expectedVisits") or 0),
+                dashboard_rank=int(item.get("dashboardRank") or 0),
+                scheduled_for_ts=int(item.get("slotTs") or 0),
+                decided_at_ts=int(decided_at_ts or time.time()),
+                send_status="planned",
+                summary=str(item.get("why") or ""),
+                reasons=reasons,
+                blocking_reasons=list(item.get("blockingReasons") or []),
+                decision={
+                    "planDate": plan_date,
+                    "number": item.get("number"),
+                    "time": item.get("time"),
+                    "alternativeTime": item.get("alternativeTime"),
+                    "priority": item.get("priority"),
+                    "confidence": item.get("confidence"),
+                    "fatigueRisk": item.get("fatigueRisk"),
+                    "visitPotential": item.get("visitPotential"),
+                    "urgency": item.get("urgency"),
+                    "timingFit": item.get("timingFit"),
+                    "planScore": item.get("planScore"),
+                    "slotReason": item.get("slotReason"),
+                    "pushText": item.get("pushText"),
+                },
+                record_id=hashlib.sha256(record_seed.encode("utf-8")).hexdigest(),
+            )
+    except Exception as exc:
+        log.warning("[TeamsAlert] daily-plan persistence failed: %s", exc)
 
 
 def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
@@ -1843,6 +2044,8 @@ def _daily_plan_entry(
         "url": _url(candidate),
         "section": _section(candidate),
         "score": raw_score,
+        "teamsAlertScore": alert_score,
+        "editorialScore": editorial_score,
         "pushText": push_text or title,
         "pushTitleSource": push_source,
         "planScore": plan_score,

@@ -10,6 +10,7 @@ POST /api/competitors/xor        — Batch-XOR via Wort-Performance-Scoring
 """
 import logging
 import datetime
+import json
 import re
 import ssl
 import time
@@ -580,6 +581,69 @@ def get_teams_alerts(limit: int = Query(default=20, ge=1, le=100)) -> JSONRespon
     )
 
 
+def _parse_db_json(value: str, fallback: Any) -> Any:
+    try:
+        return json.loads(value) if value else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+@router.get("/api/teams-recommendations")
+def get_teams_recommendations(limit: int = Query(default=50, ge=1, le=200)) -> JSONResponse:
+    """Return persisted Teams push suggestions and day-plan entries."""
+    try:
+        from app.database import teams_recommendation_list_recent
+
+        rows = teams_recommendation_list_recent(limit)
+    except Exception as exc:
+        log.warning("[teams-recommendations] could not load recommendation history: %s", exc)
+        rows = []
+
+    items = []
+    for row in rows:
+        decided_ts = int(row.get("decided_at_ts") or 0)
+        scheduled_ts = int(row.get("scheduled_for_ts") or 0)
+        sent_ts = int(row.get("sent_at_ts") or 0)
+        items.append(
+            {
+                "id": row.get("id") or "",
+                "articleKey": row.get("article_key") or "",
+                "articleId": row.get("article_id") or "",
+                "articleUrl": row.get("article_url") or "",
+                "articleTitle": row.get("article_title") or "",
+                "section": row.get("section") or "",
+                "type": row.get("recommendation_type") or "",
+                "status": row.get("status") or "",
+                "shouldNotify": bool(row.get("should_notify") or 0),
+                "score": float(row.get("score") or 0.0),
+                "teamsAlertScore": float(row.get("teams_alert_score") or 0.0),
+                "teamsAlertThreshold": float(row.get("teams_alert_threshold") or 0.0),
+                "editorialScore": float(row.get("editorial_score") or 0.0),
+                "predictedOR": float(row.get("predicted_or") or 0.0),
+                "predictedORLabel": row.get("predicted_or_label") or "",
+                "expectedVisits": int(row.get("expected_visits") or 0),
+                "dashboardRank": int(row.get("dashboard_rank") or 0),
+                "summary": row.get("summary") or "",
+                "reasons": _parse_db_json(row.get("reasons_json"), []),
+                "blockingReasons": _parse_db_json(row.get("blocking_reasons_json"), []),
+                "decision": _parse_db_json(row.get("decision_json"), {}),
+                "sendStatus": row.get("send_status") or "",
+                "sendError": row.get("send_error") or "",
+                "decidedAt": _iso_from_unix_ts(decided_ts),
+                "scheduledFor": _iso_from_unix_ts(scheduled_ts),
+                "sentAt": _iso_from_unix_ts(sent_ts),
+            }
+        )
+
+    return JSONResponse(
+        content={
+            "items": items,
+            "total": len(items),
+            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+    )
+
+
 @router.get("/api/teams-daily-plan")
 def get_teams_daily_plan(
     date: str | None = Query(default=None, description="YYYY-MM-DD. Optional, default heute."),
@@ -601,6 +665,7 @@ def get_teams_daily_plan(
         target_date=date,
         min_items=min_items,
         max_items=max_items,
+        persist=True,
     )
     plan["source"] = {
         "articlesFetched": len(candidates),

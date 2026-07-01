@@ -1787,8 +1787,8 @@ def test_teams_webhook_error_is_logged_and_does_not_crash(caplog):
 
 
 def test_send_failure_is_recorded_without_crashing_cycle(tmp_db):
-    candidate = _candidate()
-    from app.database import push_db_upsert
+    candidate = _candidate(url="https://www.bild.de/politik/send-failure-recorded")
+    from app.database import push_db_upsert, teams_recommendation_list_recent
 
     push_db_upsert(_history())
 
@@ -1801,6 +1801,13 @@ def test_send_failure_is_recorded_without_crashing_cycle(tmp_db):
     assert result["ok"] is True
     assert result["sent"] is False
     assert result["sendResult"]["ok"] is False
+    rows = teams_recommendation_list_recent(limit=5)
+    assert rows
+    assert rows[0]["article_url"] == candidate["url"]
+    assert rows[0]["recommendation_type"] == "teams_alert"
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["send_status"] == "failed"
+    assert rows[0]["send_error"]
 
 
 def test_send_cycle_considers_expanded_candidate_beyond_dashboard_top_limit(tmp_db):
