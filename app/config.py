@@ -454,22 +454,23 @@ PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS: int = _env_int(
 )
 PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES: int = _env_int(
     "PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES",
-    40,
+    45,
 )
-_DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Regional,Digital,Unterhaltung"
+_DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport"
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_ALLOWED_SECTIONS",
     _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS,
 ) or _csv_env("_PUSH_TEAMS_ALLOWED_SECTIONS_DEFAULT", _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS)
 # Ressorts, die NIE als Teams-Handlungsempfehlung vorgeschlagen werden — auch
-# dann nicht, wenn die Allow-Liste leer (= alles erlaubt) ist. Standard: Sport.
+# dann nicht, wenn die Allow-Liste leer (= alles erlaubt) ist. Sport wird ueber
+# ein eigenes Ereignis- und Timing-Gate bewertet und deshalb nicht pauschal gesperrt.
 PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_EXCLUDED_SECTIONS",
-    "Sport",
+    "",
 )
-# Tagesziel an Teams-Handlungsempfehlungen und dynamische Schwellenanpassung.
-# Der Mindestdruck wird bewusst gegen Teams-Hinweise gemessen. Echte Push-Historie
-# bleibt als Nutzerlast-/Timing-Signal erhalten, ersetzt aber nicht das Teams-Minimum.
+# Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
+# Wenn echte Push-Historie verfügbar ist, wird Mindestdruck gegen den realen
+# Push-Bestand bewertet; Teams-Hinweise sind nur Fallback/Transportkanal.
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 15)
 PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 15)
 PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 18)
@@ -477,6 +478,46 @@ PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 1
 # aber der CvD soll einen vollstaendigen, transparent priorisierten Tagesplan sehen.
 PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 15)
 PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS", 18)
+# Verbindliche Live-Entscheidungslogik: In den 15 besten Tagesfenstern wird bis
+# zur Deadline gesammelt. Vorher duerfen nur Breaking- oder aussergewoehnlich
+# starke Kandidaten in roten/gelben Slots empfohlen werden.
+PUSH_TEAMS_SLOT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_SLOT_GATE_ENABLED", True)
+PUSH_TEAMS_SLOT_DEADLINE_MINUTE: int = _env_int("PUSH_TEAMS_SLOT_DEADLINE_MINUTE", 45)
+PUSH_TEAMS_PEAK_SLOT_MIN_OR: float = _env_float("PUSH_TEAMS_PEAK_SLOT_MIN_OR", 6.0)
+PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE: float = _env_float(
+    "PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE",
+    88.0,
+)
+PUSH_TEAMS_EARLY_EXCEPTIONAL_ALERT_SCORE: float = _env_float(
+    "PUSH_TEAMS_EARLY_EXCEPTIONAL_ALERT_SCORE",
+    86.0,
+)
+PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE: float = _env_float(
+    "PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE",
+    80.0,
+)
+PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE: float = _env_float(
+    "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE",
+    55.0,
+)
+PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE: float = _env_float(
+    "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE",
+    55.0,
+)
+PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE: float = _env_float(
+    "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE",
+    55.0,
+)
+# Ein kompakter Tagesfahrplan wird einmal pro Berliner Kalendertag gesendet.
+# Der persistente Claim verhindert Doppelversand bei Restart oder mehreren Workern.
+PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED",
+    False,
+)
+PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME: str = os.environ.get(
+    "PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME",
+    "05:45",
+)
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
     False,

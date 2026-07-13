@@ -16,6 +16,34 @@ from app import database
 
 
 class TestTeamsAlertHistory:
+    def test_daily_schedule_claim_is_restart_safe_and_enters_global_cooldown(self, tmp_db):
+        now_ts = 1_800_000_100
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            first = database.teams_daily_schedule_try_claim(
+                "2027-01-15",
+                now_ts=now_ts,
+            )
+            duplicate = database.teams_daily_schedule_try_claim(
+                "2027-01-15",
+                now_ts=now_ts + 10,
+            )
+            database.teams_daily_schedule_record(
+                "2027-01-15",
+                status="sent",
+                item_count=15,
+                now_ts=now_ts + 20,
+            )
+            after_restart = database.teams_daily_schedule_try_claim(
+                "2027-01-15",
+                now_ts=now_ts + 3600,
+            )
+            last_message_ts = database.teams_alert_last_sent_ts()
+
+        assert first == {"claimed": True, "reason": "claimed"}
+        assert duplicate == {"claimed": False, "reason": "retry_cooldown"}
+        assert after_restart == {"claimed": False, "reason": "already_sent"}
+        assert last_message_ts == now_ts + 20
+
     def test_teams_alert_list_recent_contains_dashboard_fields(self, tmp_db):
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
             database.teams_alert_record(

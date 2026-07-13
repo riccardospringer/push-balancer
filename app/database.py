@@ -367,6 +367,21 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_scheduled ON teams_recommendations(scheduled_for_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_recommendations_type_status ON teams_recommendations(recommendation_type, status)")
 
+    # Ein Tagesfahrplan pro Berliner Kalendertag. Es werden nur technische
+    # Versanddaten gespeichert, keine Nutzer- oder Mitarbeiterdaten.
+    conn.execute("""CREATE TABLE IF NOT EXISTS teams_daily_schedule_sends (
+        date_iso TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT '',
+        claimed_at INTEGER DEFAULT 0,
+        sent_at INTEGER DEFAULT 0,
+        item_count INTEGER DEFAULT 0,
+        last_error TEXT DEFAULT ''
+    )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_teams_daily_schedule_sent "
+        "ON teams_daily_schedule_sends(sent_at)"
+    )
+
     # ML v2: LLM-Score Spalten (idempotent via ALTER TABLE)
     _llm_columns = [
         ("llm_magnitude", "REAL DEFAULT 0"),
@@ -452,6 +467,11 @@ def _db_cleanup() -> None:
         deleted["teams_recommendations"] = conn.execute(
             "DELETE FROM teams_recommendations WHERE decided_at_ts < ?",
             (cutoff_teams_recommendations,),
+        ).rowcount
+        deleted["teams_daily_schedule_sends"] = conn.execute(
+            """DELETE FROM teams_daily_schedule_sends
+               WHERE MAX(claimed_at, sent_at) < ?""",
+            (cutoff_teams_alerts,),
         ).rowcount
         deleted["experiments"] = conn.execute(
             "DELETE FROM experiments WHERE timestamp < ? AND promoted = 0",
@@ -920,19 +940,27 @@ def teams_alert_load_for_keys(article_keys: list[str]) -> dict[str, dict]:
 
 
 def teams_alert_last_sent_ts() -> int:
-    """Return the newest successful Teams alert timestamp for global cooldown."""
+    """Return the newest Teams message timestamp for the global cooldown."""
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         row = conn.execute(
-            """SELECT MAX(
-                   CASE
+            """SELECT MAX(message_ts) FROM (
+                   SELECT CASE
                        WHEN status = 'sent' THEN last_alert_ts
                        WHEN status IN ('sending', 'failed') THEN last_decision_ts
                        ELSE 0
-                   END
-               ) AS last_alert_ts
-               FROM teams_alerts
-               WHERE status IN ('sent', 'sending', 'failed')""",
+                   END AS message_ts
+                   FROM teams_alerts
+                   WHERE status IN ('sent', 'sending', 'failed')
+                   UNION ALL
+                   SELECT CASE
+                       WHEN status = 'sent' THEN sent_at
+                       WHEN status IN ('sending', 'failed') THEN claimed_at
+                       ELSE 0
+                   END AS message_ts
+                   FROM teams_daily_schedule_sends
+                   WHERE status IN ('sent', 'sending', 'failed')
+               )""",
         ).fetchone()
         conn.close()
     return int((row[0] if row else 0) or 0)
@@ -1006,21 +1034,24 @@ def teams_alert_try_claim_send(
 
             if global_cooldown_seconds > 0:
                 global_row = conn.execute(
-                    """SELECT article_key, status, last_alert_ts, last_decision_ts
-                       FROM teams_alerts
-                       WHERE status IN ('sent', 'sending', 'failed')
-                       ORDER BY CASE
-                           WHEN status = 'sent' THEN last_alert_ts
-                           ELSE last_decision_ts
-                       END DESC
-                       LIMIT 1"""
+                    """SELECT MAX(message_ts) AS message_ts FROM (
+                           SELECT CASE
+                               WHEN status = 'sent' THEN last_alert_ts
+                               ELSE last_decision_ts
+                           END AS message_ts
+                           FROM teams_alerts
+                           WHERE status IN ('sent', 'sending', 'failed')
+                           UNION ALL
+                           SELECT CASE
+                               WHEN status = 'sent' THEN sent_at
+                               ELSE claimed_at
+                           END AS message_ts
+                           FROM teams_daily_schedule_sends
+                           WHERE status IN ('sent', 'sending', 'failed')
+                       )"""
                 ).fetchone()
                 if global_row:
-                    global_ts = (
-                        int(global_row["last_alert_ts"] or 0)
-                        if str(global_row["status"] or "") == "sent"
-                        else int(global_row["last_decision_ts"] or 0)
-                    )
+                    global_ts = int(global_row["message_ts"] or 0)
                     if (
                         global_ts
                         and now - global_ts < global_cooldown_seconds
@@ -1359,6 +1390,103 @@ def teams_recommendation_record(
         conn.commit()
         conn.close()
     return rec_id
+
+
+def teams_daily_schedule_try_claim(
+    date_iso: str,
+    *,
+    now_ts: int | None = None,
+    retry_cooldown_minutes: int = 30,
+) -> dict:
+    """Atomically reserve the one daily Teams schedule send."""
+    date_key = str(date_iso or "").strip()
+    if not date_key:
+        return {"claimed": False, "reason": "missing_date"}
+    now = int(now_ts or time.time())
+    retry_seconds = max(60, int(retry_cooldown_minutes or 30) * 60)
+
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM teams_daily_schedule_sends WHERE date_iso = ?",
+                (date_key,),
+            ).fetchone()
+            if existing:
+                status = str(existing["status"] or "")
+                claimed_at = int(existing["claimed_at"] or 0)
+                if status == "sent":
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "already_sent"}
+                if status in {"sending", "failed"} and now - claimed_at < retry_seconds:
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "retry_cooldown"}
+
+            conn.execute(
+                """INSERT INTO teams_daily_schedule_sends (
+                       date_iso, status, claimed_at, sent_at, item_count, last_error
+                   ) VALUES (?, 'sending', ?, 0, 0, '')
+                   ON CONFLICT(date_iso) DO UPDATE SET
+                       status = 'sending',
+                       claimed_at = excluded.claimed_at,
+                       last_error = ''""",
+                (date_key, now),
+            )
+            conn.execute("COMMIT")
+            return {"claimed": True, "reason": "claimed"}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def teams_daily_schedule_record(
+    date_iso: str,
+    *,
+    status: str,
+    item_count: int = 0,
+    error: str = "",
+    now_ts: int | None = None,
+) -> None:
+    """Persist the final send state for a daily schedule."""
+    date_key = str(date_iso or "").strip()
+    if not date_key:
+        return
+    now = int(now_ts or time.time())
+    sent_at = now if status == "sent" else 0
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.execute(
+            """INSERT INTO teams_daily_schedule_sends (
+                   date_iso, status, claimed_at, sent_at, item_count, last_error
+               ) VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(date_iso) DO UPDATE SET
+                   status = excluded.status,
+                   claimed_at = CASE
+                       WHEN teams_daily_schedule_sends.claimed_at > 0
+                       THEN teams_daily_schedule_sends.claimed_at
+                       ELSE excluded.claimed_at
+                   END,
+                   sent_at = excluded.sent_at,
+                   item_count = excluded.item_count,
+                   last_error = excluded.last_error""",
+            (
+                date_key,
+                str(status or "")[:32],
+                now,
+                sent_at,
+                max(0, int(item_count or 0)),
+                str(error or "")[:500],
+            ),
+        )
+        conn.commit()
+        conn.close()
 
 
 def teams_recommendation_list_recent(limit: int = 50) -> list[dict]:

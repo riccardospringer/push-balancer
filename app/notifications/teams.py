@@ -35,11 +35,19 @@ from app.config import (
     PUSH_TEAMS_DEFAULT_REACH,
     PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS,
     PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS,
+    PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED,
+    PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME,
+    PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE,
+    PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE,
+    PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP,
     PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE,
     PUSH_TEAMS_EDITORIAL_GATE_ENABLED,
     PUSH_TEAMS_EDITORIAL_TOP_LIMIT,
+    PUSH_TEAMS_EARLY_EXCEPTIONAL_ALERT_SCORE,
+    PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE,
+    PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE,
     PUSH_TEAMS_EVENT_GATE_ENABLED,
     PUSH_TEAMS_EXCLUDED_SECTIONS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
@@ -72,15 +80,20 @@ from app.config import (
     PUSH_TEAMS_SPECULATIVE_GUARD_ENABLED,
     PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS,
     PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS,
+    PUSH_TEAMS_PEAK_SLOT_MIN_OR,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_TOPIC_DEDUP_HOURS,
     PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
+    PUSH_TEAMS_SLOT_DEADLINE_MINUTE,
+    PUSH_TEAMS_SLOT_GATE_ENABLED,
     PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED,
     PUSH_TEAMS_VISIT_SELECTION_WEIGHT,
     PUSH_TEAMS_WEBHOOK_URL,
 )
 from app.database import (
     push_db_load_all,
+    teams_daily_schedule_record,
+    teams_daily_schedule_try_claim,
     teams_alert_last_sent_ts,
     teams_alert_list_recent,
     teams_alert_load_for_keys,
@@ -150,6 +163,17 @@ class TeamsAlertConfig:
     max_alerts_per_day: int = PUSH_TEAMS_MAX_ALERTS_PER_DAY
     daily_plan_min_items: int = PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS
     daily_plan_max_items: int = PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS
+    slot_gate_enabled: bool = PUSH_TEAMS_SLOT_GATE_ENABLED
+    slot_deadline_minute: int = PUSH_TEAMS_SLOT_DEADLINE_MINUTE
+    peak_slot_min_or: float = PUSH_TEAMS_PEAK_SLOT_MIN_OR
+    early_exceptional_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE
+    early_exceptional_alert_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_ALERT_SCORE
+    early_exceptional_editorial_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE
+    deadline_fallback_min_score: float = PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE
+    deadline_fallback_min_alert_score: float = PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE
+    deadline_fallback_min_editorial_score: float = PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE
+    daily_schedule_send_enabled: bool = PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED
+    daily_schedule_send_time: str = PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
     dynamic_threshold_enabled: bool = PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED
     dynamic_threshold_max_drop: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
     dynamic_threshold_max_rise: float = PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE
@@ -276,7 +300,10 @@ def build_teams_alert_context(
     now = int(now_ts or time.time())
     if history is None:
         try:
-            history = push_db_load_all(max_days=7, max_rows=500)
+            # Exakte Artikel-URLs duerfen waehrend der gesamten 90-Tage-
+            # Betriebsaufbewahrung nicht erneut vorgeschlagen werden. Die
+            # unscharfe Story-Dublette bleibt separat auf ihr kurzes Fenster begrenzt.
+            history = push_db_load_all(max_days=90, max_rows=3000)
         except Exception as exc:
             log.warning("[TeamsAlert] Could not load push history: %s", exc)
             history = []
@@ -450,6 +477,9 @@ def should_notify_teams(
         blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
     if not url:
         blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
+    non_article_reason = _daily_plan_non_article_reason(candidate)
+    if non_article_reason:
+        blockers.append(non_article_reason)
 
     if dashboard_rank > 0:
         if dashboard_rank <= dashboard_top_limit:
@@ -516,7 +546,9 @@ def should_notify_teams(
     alert_score = float(alert_model["score"])
     positive.append(f"Teams Alert Score {alert_score:.1f}/100")
     positive.extend(list(alert_model["reasons"])[:4])
-    threshold_count_today = teams_alerts_today if minimum_active else pushes_today
+    threshold_count_today = (
+        _safe_int(minimum_pressure.get("current")) if minimum_active else pushes_today
+    )
     effective_min_alert_score, push_budget_reason = _dynamic_alert_threshold(
         config.min_alert_score,
         threshold_count_today,
@@ -524,7 +556,11 @@ def should_notify_teams(
         breaking,
         config,
     )
-    if minimum_active and push_budget_reason:
+    if (
+        minimum_active
+        and minimum_pressure.get("basis") == "teams_alerts"
+        and push_budget_reason
+    ):
         push_budget_reason = (
             push_budget_reason
             .replace("Push-Rueckstand heute", "Teams-Rueckstand heute")
@@ -648,6 +684,20 @@ def should_notify_teams(
     )
     positive.extend(editorial_review["reasons"])
     blockers.extend(editorial_review["blockers"])
+    slot_gate = _daily_slot_gate_review(
+        candidate,
+        score=score,
+        alert_score=alert_score,
+        editorial_score=float(editorial_review["score"]),
+        predicted_or=predicted_or,
+        pushes_today=pushes_today,
+        teams_alerts_today=teams_alerts_today,
+        breaking=breaking,
+        now_ts=now_ts,
+        config=config,
+    )
+    positive.extend(slot_gate["reasons"])
+    blockers.extend(slot_gate["blockers"])
     strategy_review = _daily_strategy_review(
         candidate,
         alert_score=alert_score,
@@ -846,6 +896,19 @@ def should_notify_teams(
             + (f": {stronger_title}" if stronger_title else "")
         )
 
+    deadline_fallback = _deadline_fallback_review(
+        candidate,
+        slot_gate=slot_gate,
+        blockers=blockers,
+        score=score,
+        alert_score=alert_score,
+        editorial_score=float(editorial_review["score"]),
+        config=config,
+    )
+    if deadline_fallback["approved"]:
+        blockers = list(deadline_fallback["remainingBlockers"])
+        positive.extend(deadline_fallback["reasons"])
+
     if not blockers:
         status = "notify"
         positive.append("Kein staerkerer Kandidat aktuell verfuegbar")
@@ -883,6 +946,8 @@ def should_notify_teams(
         "teamsAlertsToday": teams_alerts_today,
         "pushBudgetReason": push_budget_reason,
         "pushPacing": push_pacing,
+        "slotGate": slot_gate,
+        "deadlineFallback": deadline_fallback,
         "minimumPressure": minimum_pressure,
         "minAlertsPerDay": config.min_alerts_per_day,
         "pushBudgetTarget": config.target_pushes_per_day,
@@ -1672,6 +1737,54 @@ def send_teams_test_notification(
     return result
 
 
+def send_teams_daily_schedule_if_due(
+    config: TeamsAlertConfig | None = None,
+    *,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Send one compact schedule per Berlin calendar day, restart-safe."""
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    if not config.enabled or not config.daily_schedule_send_enabled:
+        return {"ok": True, "sent": False, "reason": "disabled"}
+    local_dt = dt.datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin"))
+    send_minute = _parse_hhmm_to_minutes(config.daily_schedule_send_time)
+    if send_minute is None:
+        return {"ok": False, "sent": False, "reason": "invalid_send_time"}
+    current_minute = local_dt.hour * 60 + local_dt.minute
+    if current_minute < send_minute:
+        return {"ok": True, "sent": False, "reason": "not_due"}
+
+    date_iso = local_dt.date().isoformat()
+    try:
+        claim = teams_daily_schedule_try_claim(date_iso, now_ts=now)
+    except Exception as exc:
+        log.warning("[TeamsAlert] daily schedule claim failed: %s", exc)
+        return {"ok": False, "sent": False, "reason": "claim_failed", "error": str(exc)}
+    if not claim.get("claimed"):
+        return {"ok": True, "sent": False, "reason": claim.get("reason") or "not_claimed"}
+
+    schedule = build_teams_daily_schedule(local_dt.date(), config, now_ts=now)
+    result = send_teams_notification({"payload": schedule["payload"]}, config)
+    status = "sent" if result.get("ok") else "failed"
+    teams_daily_schedule_record(
+        date_iso,
+        status=status,
+        item_count=int(schedule.get("count") or 0),
+        error=str(result.get("error") or ""),
+        now_ts=now,
+    )
+    log.info("[TeamsAlert] daily schedule date=%s status=%s", date_iso, status)
+    return {
+        "ok": bool(result.get("ok")),
+        "sent": bool(result.get("ok")),
+        "reason": status,
+        "date": date_iso,
+        "count": int(schedule.get("count") or 0),
+        "sendResult": result,
+    }
+
+
 def run_teams_alert_cycle() -> dict[str, Any]:
     """Fetch current article candidates and run one Teams alert cycle."""
     try:
@@ -1679,10 +1792,13 @@ def run_teams_alert_cycle() -> dict[str, Any]:
         from app.routers.feed import build_articles_payload
 
         config = TeamsAlertConfig()
+        schedule_result = send_teams_daily_schedule_if_due(config)
         candidate_limit = max(1, min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT))
         payload = build_articles_payload(offset=0, limit=candidate_limit)
         candidates = payload.get("articles") or []
-        return evaluate_and_send_best_candidate(candidates, config=config)
+        result = evaluate_and_send_best_candidate(candidates, config=config)
+        result["dailySchedule"] = schedule_result
+        return result
     except Exception as exc:
         log.exception("[TeamsAlert] Cycle failed")
         return {"ok": False, "sent": False, "error": str(exc)}
@@ -1776,6 +1892,7 @@ def build_teams_daily_push_plan(
         global_cooldown_minutes=0,
         max_alerts_per_day=0,
         llm_title_enabled=False,
+        slot_gate_enabled=False,
         target_pushes_per_day=max(int(config.target_pushes_per_day or 0), min_count),
         min_alerts_per_day=max(int(config.min_alerts_per_day or 0), min_count),
     )
@@ -1797,6 +1914,7 @@ def build_teams_daily_push_plan(
     top_items = sorted(items, key=lambda item: float(item["planScore"]), reverse=True)[:5]
     quality_summary = _daily_plan_quality_summary(items)
     traffic_slots = _daily_plan_traffic_slots(target, plan_config)
+    double_opportunities = _daily_plan_double_opportunities(target, slots, plan_config)
     watch_topics = _daily_plan_watch_topics(ranked_entries[len(selected_entries):], raw_entries)
     selected_ids = {str(item.get("candidateId") or "") for item in items}
     not_recommended = _daily_plan_not_recommended(
@@ -1820,13 +1938,16 @@ def build_teams_daily_push_plan(
         "top5": [_daily_plan_item_summary(item) for item in top_items],
         "qualitySummary": quality_summary,
         "trafficSlots": traffic_slots,
+        "doubleOpportunities": double_opportunities,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
         "pacing": _push_pacing_review(context.get("pushesToday"), now, plan_config),
         "assumptions": [
             "Der Tagesplan ist eine CvD-Planung, kein automatischer Versand an Nutzer.",
-            "Fixe Vorschläge sind echte Push-Kandidaten; optionale Slots bleiben lageabhängig.",
-            "Sport, Dubletten, bereits gepushte und bereits per Teams gemeldete Artikel sind ausgeschlossen.",
+            "Die 15 besten Wochentagsfenster enden jeweils um :45; bis dahin wird der beste Kandidat gesammelt.",
+            "In roten/gelben Slots ist ein zweiter Push nur bei aussergewoehnlicher Qualitaet und eingehaltenem Cooldown vorgesehen.",
+            "Sport wird nur bei bestaetigter Ereignislage und passendem Tages-/Zeitfenster eingeplant.",
+            "Dubletten, bereits gepushte und bereits per Teams gemeldete Artikel sind ausgeschlossen.",
         ],
     }
     message = build_teams_daily_push_plan_message(plan)
@@ -1844,6 +1965,7 @@ def build_teams_daily_push_plan(
         "top5": plan["top5"],
         "qualitySummary": quality_summary,
         "trafficSlots": traffic_slots,
+        "doubleOpportunities": double_opportunities,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
     }
@@ -1959,6 +2081,18 @@ def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
         forecast = _format_or(slot.get("avgOR")) if slot.get("avgOR") else "keine OR-Basis"
         lines.append(f"- {label}: {forecast}, {slot.get('reason')}")
 
+    lines.extend(["", "Optionale Doppel-Chancen:"])
+    doubles = plan.get("doubleOpportunities") or []
+    if doubles:
+        for slot in doubles:
+            lines.append(
+                f"- {slot.get('label')}: frueher Zusatz-Push nur bei Top-Kandidat; "
+                f"bei mindestens zwei fehlenden Pushes auch als Aufholchance; "
+                f"sonst bis {slot.get('deadline')} sammeln"
+            )
+    else:
+        lines.append("- Heute keine belastbare Doppel-Chance ausserhalb von Breaking News.")
+
     lines.extend(["", "Themen beobachten:"])
     watch = plan.get("watchTopics") or []
     if watch:
@@ -1978,6 +2112,127 @@ def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
     text = "\n".join(lines).strip()
     html_message = _build_teams_daily_plan_html(subject, plan)
     return {"subject": subject, "text": text, "html": html_message}
+
+
+def build_teams_daily_schedule(
+    target_date: str | dt.date | None = None,
+    config: TeamsAlertConfig | None = None,
+    *,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build the compact daily timing/section plan sent to Teams once a day."""
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    target = _parse_daily_plan_date(target_date, now)
+    target_count = max(1, int(config.target_pushes_per_day or 15))
+    slots = _daily_plan_slots(target, target_count, config)
+    doubles = _daily_plan_double_opportunities(target, slots, config)
+    all_slots = _daily_plan_slot_candidates(target, config)
+    selected_hours = {int(slot.get("hour") or 0) for slot in slots if slot.get("required")}
+    omitted = [
+        {
+            "time": slot["label"],
+            "avgOR": slot.get("avgOR"),
+            "reason": "historisch schwaecher; nur Breaking oder aussergewoehnlicher Kandidat",
+        }
+        for slot in all_slots
+        if int(slot.get("hour") or 0) not in selected_hours
+    ]
+    weekday = _weekday_name_de(target.weekday())
+    subject = f"Push-Fahrplan {weekday}, {target.isoformat()}: mindestens {target_count}"
+    lines = [
+        subject,
+        "Regel: pro geplantem Fenster bis :45 den besten neuen Kandidaten sammeln; "
+        "wenn keiner klar gewinnt, dann den besten noch ungepushten Kandidaten nehmen.",
+        "Breaking darf sofort; rote/gelbe Slots koennen bei Top-Qualitaet oder mindestens zwei "
+        "fehlenden Pushes eine zweite Chance bekommen.",
+        "",
+        "Verbindliche Entscheidungsfenster:",
+    ]
+    for slot in slots:
+        ressort = _format_section(str(slot.get("topCategory") or "News"))
+        sport = f" | Sport: {slot['sportContext']}" if slot.get("sportContext") else ""
+        lines.append(
+            f"- {slot['label']} ({slot['tier']}): {ressort}, "
+            f"historisch {_format_or(slot.get('avgOR'))}{sport}"
+        )
+    if doubles:
+        lines.extend(["", "Optionale Doppel-Chancen:"])
+        for slot in doubles:
+            lines.append(f"- {slot['label']}: {slot['condition']}")
+    if omitted:
+        lines.extend(["", "Heute bewusst nachrangig:"])
+        for slot in omitted:
+            lines.append(f"- {slot['time']}: {slot['reason']}")
+    text = "\n".join(lines)
+
+    html_lines = [
+        f"<p><strong>{html.escape(subject)}</strong></p>",
+        (
+            "<p><strong>Regel:</strong> Bis :45 den besten neuen Kandidaten sammeln. "
+            "Ohne klaren Gewinner den besten noch ungepushten Kandidaten waehlen. "
+            "Breaking darf sofort; rote/gelbe Slots koennen bei deutlichem Rueckstand "
+            "eine fruehe Aufholchance bekommen.</p>"
+        ),
+        "<p><strong>Verbindliche Entscheidungsfenster</strong></p><ul>",
+    ]
+    for slot in slots:
+        ressort = _format_section(str(slot.get("topCategory") or "News"))
+        sport = f"; Sport: {slot['sportContext']}" if slot.get("sportContext") else ""
+        html_lines.append(
+            "<li><strong>"
+            + html.escape(str(slot["label"]))
+            + "</strong> ("
+            + html.escape(str(slot["tier"]))
+            + "): "
+            + html.escape(ressort)
+            + ", historisch "
+            + html.escape(_format_or(slot.get("avgOR")))
+            + html.escape(sport)
+            + "</li>"
+        )
+    html_lines.append("</ul>")
+    if doubles:
+        html_lines.append("<p><strong>Optionale Doppel-Chancen</strong></p><ul>")
+        for slot in doubles:
+            html_lines.append(
+                f"<li>{html.escape(str(slot['label']))}: "
+                f"{html.escape(str(slot['condition']))}</li>"
+            )
+        html_lines.append("</ul>")
+    if omitted:
+        html_lines.append("<p><strong>Heute bewusst nachrangig</strong></p><ul>")
+        for slot in omitted:
+            html_lines.append(
+                f"<li>{html.escape(str(slot['time']))}: "
+                f"{html.escape(str(slot['reason']))}</li>"
+            )
+        html_lines.append("</ul>")
+    message_html = "".join(html_lines)
+    return {
+        "type": "teams_daily_schedule",
+        "date": target.isoformat(),
+        "weekday": weekday,
+        "targetPushes": target_count,
+        "count": len(slots),
+        "slots": slots,
+        "doubleOpportunities": doubles,
+        "deprioritizedSlots": omitted,
+        "subject": subject,
+        "messageText": text,
+        "messageHtml": message_html,
+        "payload": {
+            "type": "push_daily_schedule",
+            "subject": subject,
+            "messageText": text,
+            "messageHtml": message_html,
+            "date": target.isoformat(),
+            "weekday": weekday,
+            "targetPushes": target_count,
+            "slots": slots,
+            "doubleOpportunities": doubles,
+        },
+    }
 
 
 def _daily_plan_candidate_entries(
@@ -2147,11 +2402,38 @@ def _daily_plan_assign_slots(
         ),
         reverse=True,
     )
+    remaining = list(entries)
     assigned: list[dict[str, Any]] = []
-    for entry, slot in zip(entries, priority_slots, strict=False):
+    for slot in priority_slots:
+        if not remaining:
+            break
+        entry = max(
+            remaining,
+            key=lambda candidate: _daily_plan_pair_score(candidate, slot),
+        )
+        remaining.remove(entry)
         alternative = _daily_plan_alternative_slot(slot, slots)
         assigned.append(_daily_plan_finalize_item(entry, slot, alternative, context, config))
     return assigned
+
+
+def _daily_plan_pair_score(entry: dict[str, Any], slot: dict[str, Any]) -> float:
+    """Rank an article-slot pairing, not only the article in isolation."""
+    candidate = entry.get("candidate") if isinstance(entry.get("candidate"), dict) else {}
+    section = _section(candidate).lower()
+    top_cat = str(slot.get("topCategory") or "").lower()
+    section_fit = _slot_section_fit_delta(section, top_cat) * 9.0
+    sport_fit = 0.0
+    if section == "sport":
+        sport = _sport_candidate_review(_title(candidate), int(slot.get("ts") or 0))
+        sport_fit = float(sport.get("timingDelta") or 0.0) * 6.0
+        sport_fit += 10.0 if sport.get("eventful") else -18.0
+    return (
+        float(entry.get("planScore") or 0.0)
+        + section_fit
+        + sport_fit
+        + float(slot.get("weight") or 0.0) * 2.0
+    )
 
 
 def _daily_plan_finalize_item(
@@ -2186,6 +2468,7 @@ def _daily_plan_finalize_item(
     time_fit = _time_fit_review(
         now_ts=int(slot["ts"]),
         section=_section(candidate),
+        title=_title(candidate),
         breaking=_is_breaking(candidate),
         config=config,
         pushes_today=context.get("pushesToday"),
@@ -2438,23 +2721,74 @@ def _daily_plan_slots(
     count: int,
     config: TeamsAlertConfig,
 ) -> list[dict[str, Any]]:
+    """Select the strongest weekday-specific :45 deadlines for the day.
+
+    Every red/yellow matrix cell is mandatory. The remaining places are filled
+    with the best reserve hours, so a 15-push target avoids the three weakest
+    windows instead of spreading pressure linearly across the day.
+    """
+    requested = max(1, int(count or config.target_pushes_per_day or 15))
+    candidates = _daily_plan_slot_candidates(target_date, config)
+    peak = [slot for slot in candidates if slot.get("mustUse")]
+    reserve = [slot for slot in candidates if not slot.get("mustUse")]
+    rank_key = lambda slot: (
+        float(slot.get("weight") or 0.0),
+        float(slot.get("slotScore") or 0.0),
+        float(slot.get("avgOR") or 0.0),
+        -int(slot.get("hour") or 0),
+    )
+    selected = sorted(peak, key=rank_key, reverse=True)[:requested]
+    selected_ids = {(int(slot["hour"]), int(slot["minute"])) for slot in selected}
+    for slot in sorted(reserve, key=rank_key, reverse=True):
+        if len(selected) >= requested:
+            break
+        selected.append(slot)
+        selected_ids.add((int(slot["hour"]), int(slot["minute"])))
+
+    # API callers may explicitly request more than one recommendation per hour.
+    # Extra windows are quality-only :00 opportunities in the strongest cells.
+    if len(selected) < requested:
+        for primary in sorted(candidates, key=rank_key, reverse=True):
+            if len(selected) >= requested:
+                break
+            if float(primary.get("avgOR") or 0.0) < float(config.peak_slot_min_or):
+                continue
+            key = (int(primary["hour"]), 0)
+            if key in selected_ids:
+                continue
+            extra = _daily_plan_slot(
+                target_date,
+                int(primary["hour"]),
+                0,
+                target_date.weekday(),
+                config,
+            )
+            extra["required"] = False
+            extra["qualityOnly"] = True
+            extra["reason"] = f"optionale Doppel-Chance; {extra['reason']}"
+            selected.append(extra)
+            selected_ids.add(key)
+
+    selected = sorted(selected, key=lambda slot: int(slot.get("ts") or 0))
+    for index, slot in enumerate(selected, start=1):
+        slot["planOrder"] = index
+        slot.setdefault("required", True)
+        slot.setdefault("qualityOnly", False)
+    return selected
+
+
+def _daily_plan_slot_candidates(
+    target_date: dt.date,
+    config: TeamsAlertConfig,
+) -> list[dict[str, Any]]:
     weekday = target_date.weekday()
     start = int(_clamp(config.active_hours_start, 0, 23))
     end = int(_clamp(config.active_hours_end, start, 23))
-    slots: list[dict[str, Any]] = []
-    for hour in range(start, end + 1):
-        slots.append(_daily_plan_slot(target_date, hour, 0, weekday, config))
-    if count > len(slots):
-        extra_hours = sorted(
-            range(start, end + 1),
-            key=lambda hour: _slot_weight(hour, weekday, config),
-            reverse=True,
-        )
-        for hour in extra_hours:
-            if len(slots) >= count:
-                break
-            slots.append(_daily_plan_slot(target_date, hour, 30, weekday, config))
-    return slots
+    deadline = int(_clamp(config.slot_deadline_minute, 0, 59))
+    return [
+        _daily_plan_slot(target_date, hour, deadline, weekday, config)
+        for hour in range(start, end + 1)
+    ]
 
 
 def _daily_plan_slot(
@@ -2471,16 +2805,32 @@ def _daily_plan_slot(
     )
     baseline = _slot_baseline(hour, weekday)
     avg_or = _safe_float(baseline.get("avg_or")) if baseline else None
+    has_weekday_data = int(baseline.get("count") or 0) > 0 if baseline else False
     stars = int(baseline.get("stars") or 0) if baseline else 0
     slot_score = _slot_baseline_score(hour, weekday, baseline, breaking=False)
     reason_parts = []
-    if avg_or:
+    if avg_or and has_weekday_data:
         reason_parts.append(f"historisch {_format_number(avg_or, 2)} % OR")
+    elif not has_weekday_data:
+        reason_parts.append("keine belastbare Wochentagszelle")
     if stars >= 2:
         reason_parts.append("starker historischer Slot")
     top_cat = str(baseline.get("top_cat") or "").strip()
     if top_cat:
         reason_parts.append(f"Top-Ressort {_format_section(top_cat)}")
+    peak_min = float(config.peak_slot_min_or or 6.0)
+    if has_weekday_data and avg_or is not None and avg_or >= 6.4:
+        tier = "rot"
+    elif has_weekday_data and avg_or is not None and avg_or >= peak_min:
+        tier = "gelb"
+    elif has_weekday_data and avg_or is not None and avg_or >= 5.3:
+        tier = "reserve"
+    else:
+        tier = "fallback"
+    sport_context = _sport_schedule_context(target_date, hour)
+    preferred_sections = [top_cat] if top_cat else []
+    if sport_context:
+        preferred_sections.append("sport")
     return {
         "ts": int(slot_dt.timestamp()),
         "label": f"{hour:02d}:{minute:02d}",
@@ -2489,9 +2839,16 @@ def _daily_plan_slot(
         "weekday": weekday,
         "weight": _slot_weight(hour, weekday, config),
         "slotScore": round(slot_score, 1),
-        "avgOR": round(avg_or, 2) if avg_or is not None else None,
+        "avgOR": round(avg_or, 2) if avg_or is not None and has_weekday_data else None,
+        "hasWeekdayData": has_weekday_data,
         "stars": stars,
         "topCategory": top_cat or None,
+        "preferredSections": _dedupe(preferred_sections),
+        "sportContext": sport_context or None,
+        "tier": tier,
+        "mustUse": tier in {"rot", "gelb"},
+        "required": True,
+        "qualityOnly": False,
         "reason": ", ".join(reason_parts) or "brauchbares Standardfenster",
     }
 
@@ -2516,7 +2873,7 @@ def _daily_plan_traffic_slots(
     *,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
-    slots = _daily_plan_slots(target_date, int(config.active_hours_end) + 1, config)
+    slots = _daily_plan_slot_candidates(target_date, config)
     top = sorted(
         slots,
         key=lambda slot: (
@@ -2535,6 +2892,52 @@ def _daily_plan_traffic_slots(
         }
         for slot in sorted(top, key=lambda item: int(item.get("ts") or 0))
     ]
+
+
+def _daily_plan_double_opportunities(
+    target_date: dt.date,
+    planned_slots: list[dict[str, Any]],
+    config: TeamsAlertConfig,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    peak = [
+        slot
+        for slot in planned_slots
+        if float(slot.get("avgOR") or 0.0) >= float(config.peak_slot_min_or or 6.0)
+    ]
+    if not peak:
+        return []
+    bands = ((6, 10), (12, 17), (17, 24))
+    chosen: list[dict[str, Any]] = []
+    for start, end in bands:
+        band = [slot for slot in peak if start <= int(slot.get("hour") or 0) < end]
+        if band:
+            chosen.append(max(band, key=lambda slot: float(slot.get("avgOR") or 0.0)))
+    for slot in sorted(peak, key=lambda item: float(item.get("avgOR") or 0.0), reverse=True):
+        if slot not in chosen:
+            chosen.append(slot)
+        if len(chosen) >= limit:
+            break
+    result = []
+    for slot in chosen[:limit]:
+        hour = int(slot["hour"])
+        deadline = str(slot["label"])
+        result.append(
+            {
+                "hour": hour,
+                "label": f"{hour:02d}:00-{deadline}",
+                "deadline": deadline,
+                "avgOR": slot.get("avgOR"),
+                "topCategory": slot.get("topCategory"),
+                "sportContext": slot.get("sportContext"),
+                "condition": (
+                    "Bei aussergewoehnlichem Kandidaten oder mindestens zwei fehlenden Pushes; mindestens "
+                    f"{_effective_global_cooldown_minutes(config)} Minuten Abstand"
+                ),
+            }
+        )
+    return result
 
 
 def _daily_plan_watch_topics(
@@ -3145,7 +3548,7 @@ def _daily_strategy_review(
     if surplus >= 2.0 and not strong_enough_when_ahead:
         if minimum_pressure.get("active"):
             reasons.append(
-                "Teams-Mindest-Pacing: Rueckstand im Teams-Kanal, Push-Vorsprung blockiert die Empfehlung nicht"
+                "Teams-Mindest-Pacing: Rueckstand im Tagesplan, Push-Vorsprung blockiert die Empfehlung nicht"
             )
         else:
             blockers.append(
@@ -3154,7 +3557,9 @@ def _daily_strategy_review(
     elif surplus >= 2.0:
         reasons.append("Tagesstrategie: trotz Push-Vorsprung stark genug")
     elif deficit >= 1.5:
-        reasons.append("Tagesstrategie: Push-Rückstand, aber Qualitäts-Gates bleiben aktiv")
+        reasons.append(
+            "Tagesstrategie: Push-Rueckstand; Qualitaet wird bis zur faelligen :45-Entscheidung priorisiert"
+        )
     return {"reasons": reasons, "blockers": blockers}
 
 
@@ -3171,8 +3576,9 @@ def _minimum_pressure_review(
     hour = local_dt.hour + local_dt.minute / 60.0
     expected = float(push_pacing.get("expectedByNow") or 0.0)
     actual_pushes_today = push_pacing.get("pushesToday")
-    current = _safe_int(teams_alerts_today)
-    basis = "Teams-Hinweise"
+    actual_known = actual_pushes_today is not None
+    current = _safe_int(actual_pushes_today) if actual_known else _safe_int(teams_alerts_today)
+    basis = "realer Push-Bestand" if actual_known else "Teams-Hinweise"
     deficit = max(0.0, expected - current)
     late_day_floor = 0.0
     if hour >= 18:
@@ -3184,18 +3590,18 @@ def _minimum_pressure_review(
     threshold_drop = min(10.0, 3.0 + pressure * 2.0) if active else 0.0
     if not active:
         label = (
-            f"Teams-Mindest-Pacing: {basis} im Plan fuer mindestens {minimum} Push-Empfehlungen"
+            f"Teams-Mindest-Pacing: {basis} im Plan fuer mindestens {minimum} echte Pushes"
         )
     else:
         label = (
             f"Teams-Mindest-Pacing aktiv ({basis}): Rueckstand {pressure:.1f} auf mindestens "
-            f"{minimum} Empfehlungen, Schwellen werden kontrolliert gelockert"
+            f"{minimum} echte Pushes, Schwellen werden kontrolliert gelockert"
         )
     return {
         "active": active,
         "minimum": minimum,
         "current": current,
-        "basis": "teams_alerts",
+        "basis": "actual_pushes" if actual_known else "teams_alerts",
         "actualPushesToday": _safe_int(actual_pushes_today) if actual_pushes_today is not None else None,
         "teamsAlertsToday": _safe_int(teams_alerts_today),
         "expectedByNow": round(expected, 2),
@@ -3332,6 +3738,7 @@ def _editorial_cvd_review(
     title_l = title.lower()
     section = _section_key(_section(candidate))
     breaking = _is_breaking(candidate)
+    sport_review = _sport_candidate_review(title, now_ts) if section == "sport" else {}
     rank_limit = max(1, min(int(config.editorial_top_limit or 10), int(config.dashboard_top_limit or 20)))
 
     high_impact_terms = (
@@ -3366,6 +3773,7 @@ def _editorial_cvd_review(
         "news": 28.0,
         "wirtschaft": 23.0,
         "regional": 22.0,
+        "sport": 24.0,
         "digital": 16.0,
         "unterhaltung": 10.0,
         "leben": 10.0,
@@ -3381,6 +3789,8 @@ def _editorial_cvd_review(
         impact_bonus += min(10.0, 4.0 + 2.0 * (len(impact_matches) - 1))
     if _is_celebrity_relationship_money_conflict(title, section):
         impact_bonus += 16.0
+    if sport_review:
+        impact_bonus += 8.0 if sport_review.get("eventful") else -12.0
     live_ticker = _is_live_ticker_title(title)
     live_ticker_has_update = _has_live_ticker_push_update(title)
     scheduled_process = _is_scheduled_process_without_update(title)
@@ -3397,10 +3807,16 @@ def _editorial_cvd_review(
         impact_bonus -= 10.0
     if nonessential_curiosity and not breaking:
         impact_bonus -= 8.0
-    if low_civic_impact and not breaking:
+    if low_civic_impact and not breaking and not sport_review.get("eventful"):
         impact_bonus -= 12.0
     soft_matches = [term for term in soft_terms if term in title_l]
-    if soft_matches and not impact_matches and not breaking and not _is_celebrity_relationship_money_conflict(title, section):
+    if (
+        soft_matches
+        and not impact_matches
+        and not breaking
+        and not _is_celebrity_relationship_money_conflict(title, section)
+        and not sport_review.get("eventful")
+    ):
         impact_bonus -= 8.0
     is_soft_service = _is_soft_service_or_quiz(title)
     urgent_public_service = _is_urgent_public_service_title(title)
@@ -3430,9 +3846,17 @@ def _editorial_cvd_review(
         user_need += min(9.0, 4.0 + 1.5 * (len(need_matches) - 1))
     if section in {"politik", "news", "wirtschaft", "regional"}:
         user_need += 2.0
-    if soft_matches and not need_matches and not impact_matches and not _is_celebrity_relationship_money_conflict(title, section):
+    if sport_review.get("eventful"):
+        user_need += 2.0
+    if (
+        soft_matches
+        and not need_matches
+        and not impact_matches
+        and not _is_celebrity_relationship_money_conflict(title, section)
+        and not sport_review.get("eventful")
+    ):
         user_need -= 4.0
-    if low_civic_impact and not breaking:
+    if low_civic_impact and not breaking and not sport_review.get("eventful"):
         user_need -= 3.0
     user_need = _clamp(user_need, 0.0, 15.0)
 
@@ -3450,6 +3874,7 @@ def _editorial_cvd_review(
     time_fit = _time_fit_review(
         now_ts=now_ts,
         section=section,
+        title=title,
         breaking=breaking,
         config=config,
         pushes_today=pushes_today,
@@ -3547,8 +3972,12 @@ def _editorial_cvd_review(
         blockers.append("CvD: Erklär-/Debattenstück ohne neue aktuelle Lage")
     if nonessential_curiosity and not breaking:
         blockers.append("CvD: Kurios-/Click-Reiz ohne ausreichenden öffentlichen Nachrichtenwert")
-    if low_civic_impact and not breaking:
+    if low_civic_impact and not breaking and not sport_review.get("eventful"):
         blockers.append("CvD: enger Kurios-/Click-Reiz ohne ausreichend breite öffentliche Relevanz")
+    if sport_review and not sport_review.get("eventful") and not breaking:
+        blockers.append("CvD: Sport ohne bestaetigte neue Ergebnis-, Transfer- oder Personallage")
+    elif sport_review.get("eventful"):
+        reasons.append(f"CvD-Sport-Gate: {sport_review['label']}")
     missing_event_signal = config.event_gate_enabled and not breaking and not _has_news_event(title)
     if (
         missing_event_signal
@@ -3609,7 +4038,91 @@ def _editorial_cvd_review(
             "load": round(load, 1),
             "minEditorialScore": round(min_editorial_score, 1),
             "minimumPressure": minimum_pressure,
+            "sportReview": sport_review or None,
         },
+    }
+
+
+def _sport_schedule_context(target_date: dt.date, hour: int) -> str:
+    """Return the day-specific sport window without calling an external API."""
+    weekday = target_date.weekday()
+    month = target_date.month
+    contexts: list[str] = []
+    if month in {1, 6, 7, 8} and hour in {7, 8, 12, 13, 18, 19, 20}:
+        contexts.append("bestaetigter Transfer")
+    in_club_season = month >= 8 or month <= 5
+    if in_club_season:
+        if weekday in {1, 2} and 18 <= hour <= 23:
+            contexts.append("Champions-League-Live/Ergebnis")
+        elif weekday == 3 and 18 <= hour <= 23:
+            contexts.append("Europa-/Conference-League-Live/Ergebnis")
+        elif weekday == 4 and 18 <= hour <= 22:
+            contexts.append("Bundesliga-Freitag")
+        elif weekday == 5 and 14 <= hour <= 22:
+            contexts.append("Bundesliga-Samstag")
+        elif weekday == 6 and 14 <= hour <= 22:
+            contexts.append("Bundesliga-Sonntag")
+        elif weekday == 0 and 18 <= hour <= 22:
+            contexts.append("Sport-Nachlauf mit neuer Lage")
+    return ", ".join(contexts)
+
+
+def _sport_candidate_review(title: str, now_ts: int) -> dict[str, Any]:
+    """Require a confirmed sport event and align it with the weekday window."""
+    text = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+    local_dt = dt.datetime.fromtimestamp(int(now_ts or time.time()), ZoneInfo("Europe/Berlin"))
+    context = _sport_schedule_context(local_dt.date(), local_dt.hour)
+    transfer_topic = any(
+        term in text
+        for term in ("transfer", "wechsel", "wechselt", "verpflicht", "unterschreibt")
+    )
+    transfer_confirmed = transfer_topic and any(
+        term in text
+        for term in ("wechselt", "verpflichtet", "unterschreibt", "bestaetigt", "bestätigt", "fix", "offiziell")
+    )
+    result = bool(
+        re.search(r"\b\d{1,2}:\d{1,2}\b", text)
+        or any(
+            term in text
+            for term in (
+                "gewinnt", "gewonnen", "siegt", "sieg", "verliert", "verloren",
+                "niederlage", "meister", "ausgeschieden", "finale erreicht", "abpfiff",
+            )
+        )
+    )
+    availability = any(
+        term in text
+        for term in (
+            "faellt aus", "fällt aus", "verletzt", "sperre", "gesperrt", "entlassen",
+            "gefeuert", "tritt zurueck", "tritt zurück",
+        )
+    )
+    live_update = _is_live_ticker_title(text) and _has_live_ticker_push_update(text)
+    eventful = bool(transfer_confirmed or result or availability or live_update)
+    speculative = _is_speculative(text)
+    if speculative and transfer_topic and not transfer_confirmed:
+        eventful = False
+
+    timing_delta = 0.2 if eventful else -1.8
+    if eventful and context:
+        timing_delta = 1.5
+    if transfer_confirmed and local_dt.month in {1, 6, 7, 8}:
+        timing_delta = max(timing_delta, 1.3)
+    if live_update and not context:
+        timing_delta = -0.6
+    event_type = (
+        "bestaetigter Transfer" if transfer_confirmed else
+        "Ergebnis" if result else
+        "Ausfall/Personalentscheidung" if availability else
+        "belastbares Live-Update" if live_update else
+        "keine bestaetigte neue Sportlage"
+    )
+    return {
+        "eventful": eventful,
+        "eventType": event_type,
+        "context": context,
+        "timingDelta": timing_delta,
+        "label": f"Sport: {event_type}" + (f"; {context}" if context else ""),
     }
 
 
@@ -3617,6 +4130,7 @@ def _time_fit_review(
     *,
     now_ts: int,
     section: str,
+    title: str = "",
     breaking: bool,
     config: TeamsAlertConfig,
     pushes_today: int | None,
@@ -3649,6 +4163,7 @@ def _time_fit_review(
 
     manual_score = score
     section_l = section.lower()
+    sport_review = _sport_candidate_review(title, now_ts) if section_l == "sport" else {}
     if is_weekend:
         if section_l in {"wirtschaft", "digital", "service"} and not breaking:
             manual_score -= 1.0
@@ -3661,9 +4176,15 @@ def _time_fit_review(
         if section_l == "unterhaltung" and 18 <= hour < 22:
             manual_score += 1.0
         label += " an einem Werktag"
+    if sport_review:
+        manual_score += float(sport_review.get("timingDelta") or 0.0)
+        if not sport_review.get("eventful") and not breaking:
+            manual_score = min(manual_score, 3.0)
+        label += f"; {sport_review['label']}"
 
     slot = _slot_baseline(hour, weekday)
     slot_avg = float(slot.get("avg_or") or 0.0) if slot else None
+    slot_count = int(slot.get("count") or 0) if slot else 0
     slot_stars = int(slot.get("stars") or 0) if slot else 0
     slot_top_cat = str(slot.get("top_cat") or "").strip().lower() if slot else ""
     slot_score = _slot_baseline_score(hour, weekday, slot, breaking)
@@ -3678,28 +4199,20 @@ def _time_fit_review(
     if slot_top_cat and _sections_match(section_l, slot_top_cat):
         label_parts.append(f"Ressort passt zum Slot ({_format_section(slot_top_cat)})")
 
-    try:
-        from app.push_schedule.weekly_baseline import PDF_KPI
-
-        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
-        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
-    except Exception:
-        mandatory_hours = {20, 21}
-        avoid_hours = {10, 11}
-
-    is_mandatory = hour in mandatory_hours
-    is_avoid = hour in avoid_hours
+    # Die konkrete Wochentagszelle entscheidet. So bleibt Montag 09/10 Uhr
+    # nutzbar, waehrend dieselben Stunden an schwachen Wochentagen vermieden werden.
+    is_mandatory = bool(
+        slot_count > 0
+        and slot_avg is not None
+        and slot_avg >= float(config.peak_slot_min_or or 6.0)
+    )
+    is_avoid = bool(slot_count <= 0 or (slot_avg is not None and slot_avg < 5.0))
     if is_mandatory:
         score = max(score, 8.5 if not breaking else 9.0)
         label_parts.append("Pflicht-/Goldfenster")
     if is_avoid and not breaking:
         score = min(score, 4.0)
         label_parts.append("historische Totzone")
-    if _is_lunch_prime_hour(hour) and not breaking:
-        lunch_floor = 7.2 if not is_weekend else 6.8
-        score = max(score, lunch_floor)
-        label_parts.append("Mittags-Prime-Fenster")
-
     next_better = _next_better_slot(
         now_ts,
         score,
@@ -3746,6 +4259,7 @@ def _time_fit_review(
         "waitRecommended": wait_recommended,
         "waitReason": wait_reason,
         "nextBetterSlot": next_better,
+        "sportReview": sport_review or None,
     }
 
 
@@ -3873,6 +4387,7 @@ def _teams_alert_score(
     time_fit = _time_fit_review(
         now_ts=now_ts,
         section=section,
+        title=_title(candidate),
         breaking=breaking,
         config=config,
         pushes_today=pushes_today,
@@ -4064,26 +4579,17 @@ def _slot_baseline_score(
 ) -> float:
     slot = slot or _slot_baseline(hour, weekday)
     avg_or = _safe_float(slot.get("avg_or")) if slot else None
+    count = int(slot.get("count") or 0) if slot else 0
     stars = int(slot.get("stars") or 0) if slot else 0
-    if avg_or is None:
+    if avg_or is None or count <= 0:
         score = 4.5
     else:
         score = 2.0 + ((avg_or - 4.2) / (7.3 - 4.2)) * 7.0
     score += stars * 0.25
-    try:
-        from app.push_schedule.weekly_baseline import PDF_KPI
-
-        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
-        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
-    except Exception:
-        mandatory_hours = {20, 21}
-        avoid_hours = {10, 11}
-    if hour in mandatory_hours:
+    if avg_or is not None and avg_or >= 6.0:
         score = max(score, 8.5)
-    if hour in avoid_hours and not breaking:
+    if avg_or is not None and avg_or < 5.0 and not breaking:
         score = min(score, 3.5)
-    if _is_lunch_prime_hour(hour) and not breaking:
-        score = max(score, 6.8 if weekday < 5 else 6.4)
     return _clamp(score, 0.0, 10.0)
 
 
@@ -4098,6 +4604,7 @@ def _sections_match(section: str, top_cat: str) -> bool:
         "regional": "regional",
         "unterhaltung": "unterhaltung",
         "digital": "digital",
+        "sport": "sport",
     }
     return aliases.get(section_l, section_l) == aliases.get(top_l, top_l)
 
@@ -4119,23 +4626,20 @@ def _slot_weight(hour: int, weekday: int, config: TeamsAlertConfig) -> float:
         return 0.0
     slot = _slot_baseline(hour, weekday)
     avg_or = _safe_float(slot.get("avg_or")) if slot else None
+    count = int(slot.get("count") or 0) if slot else 0
     try:
-        from app.push_schedule.weekly_baseline import PDF_KPI, PDF_OVERALL_AVG
+        from app.push_schedule.weekly_baseline import PDF_OVERALL_AVG
 
         overall = float(PDF_OVERALL_AVG)
-        mandatory_hours = set(PDF_KPI.get("mandatory_hours") or [])
-        avoid_hours = set(PDF_KPI.get("avoid_hours") or [])
     except Exception:
         overall = 5.44
-        mandatory_hours = {20, 21}
-        avoid_hours = {10, 11}
+    if count <= 0:
+        return 0.35
     weight = (avg_or or overall) / overall
-    if hour in mandatory_hours:
-        weight *= 1.45
-    if hour in avoid_hours:
-        weight *= 0.35
-    if _is_lunch_prime_hour(hour):
-        weight *= 1.22 if weekday < 5 else 1.12
+    if avg_or is not None and avg_or >= 6.0:
+        weight *= 1.25
+    if avg_or is not None and avg_or < 5.0:
+        weight *= 0.55
     return _clamp(weight, 0.15, 1.9)
 
 
@@ -4195,13 +4699,24 @@ def _next_better_slot(
 def _expected_pushes_by_now(now_ts: int, config: TeamsAlertConfig) -> float:
     """Estimate how many pushes a CvD should have sent by this time of day.
 
-    The curve is not linear: it follows the historical slot baseline, so weak
-    10/11 Uhr windows carry little target pressure while 20/21 Uhr carry more.
+    With the smart slot gate enabled this is the exact number of selected :45
+    deadlines already reached. The legacy weighted curve remains available for
+    explicit configurations that disable the gate.
     """
     target = max(0, int(config.target_pushes_per_day or 0))
     if target <= 0:
         return 0.0
     local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    if config.slot_gate_enabled:
+        slots = _daily_plan_slots(local_dt.date(), target, config)
+        return float(
+            sum(
+                1
+                for slot in slots
+                if slot.get("required") and int(slot.get("ts") or 0) <= int(now_ts)
+            )
+        )
+
     weekday = local_dt.weekday()
     hour = local_dt.hour + local_dt.minute / 60.0
     start = int(_clamp(config.active_hours_start, 0.0, 23.0))
@@ -4222,6 +4737,218 @@ def _expected_pushes_by_now(now_ts: int, config: TeamsAlertConfig) -> float:
             elapsed_weight += weight * (hour - slot_hour)
     fraction = _clamp(elapsed_weight / total_weight, 0.0, 1.0)
     return round(target * fraction, 2)
+
+
+def _daily_slot_gate_review(
+    candidate: dict[str, Any],
+    *,
+    score: float,
+    alert_score: float,
+    editorial_score: float,
+    predicted_or: float | None,
+    pushes_today: int | None,
+    teams_alerts_today: int,
+    breaking: bool,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Decide whether the live worker should act now or keep collecting to :45."""
+    if not config.slot_gate_enabled:
+        return {"enabled": False, "approved": True, "reasons": [], "blockers": []}
+
+    local_dt = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin"))
+    slots = _daily_plan_slots(local_dt.date(), int(config.target_pushes_per_day or 15), config)
+    required_slots = [slot for slot in slots if slot.get("required")]
+    current_slot = next(
+        (slot for slot in required_slots if int(slot.get("hour") or -1) == local_dt.hour),
+        None,
+    )
+    due_count = sum(1 for slot in required_slots if int(slot.get("ts") or 0) <= int(now_ts))
+    current_count = pushes_today if pushes_today is not None else int(teams_alerts_today or 0)
+    deficit = max(0, due_count - int(current_count or 0))
+    upcoming = [slot for slot in required_slots if int(slot.get("ts") or 0) > int(now_ts)]
+    next_slot = min(upcoming, key=lambda slot: int(slot.get("ts") or 0)) if upcoming else None
+
+    if breaking:
+        return {
+            "enabled": True,
+            "approved": True,
+            "mode": "breaking_override",
+            "dueCount": due_count,
+            "currentCount": current_count,
+            "deficit": deficit,
+            "slot": current_slot,
+            "nextSlot": next_slot,
+            "reasons": ["Slot-Logik: Breaking darf sofort"],
+            "blockers": [],
+        }
+
+    slot_avg = float((current_slot or {}).get("avgOR") or 0.0)
+    peak = bool(current_slot and slot_avg >= float(config.peak_slot_min_or or 6.0))
+    exceptional = bool(
+        peak
+        and score >= float(config.early_exceptional_score or 88.0)
+        and alert_score >= float(config.early_exceptional_alert_score or 86.0)
+        and editorial_score >= float(config.early_exceptional_editorial_score or 80.0)
+        and (predicted_or is None or predicted_or >= max(5.0, float(config.min_or or 0.0)))
+        and _has_news_event(_title(candidate))
+    )
+
+    result = {
+        "enabled": True,
+        "approved": False,
+        "mode": "wait",
+        "dueCount": due_count,
+        "currentCount": current_count,
+        "deficit": deficit,
+        "slot": current_slot,
+        "nextSlot": next_slot,
+        "reasons": [],
+        "blockers": [],
+        "exceptional": exceptional,
+    }
+    if current_slot is None:
+        next_label = str((next_slot or {}).get("label") or "naechsten starken Slot")
+        result["blockers"].append(
+            f"Tagesplan: aktuelles Stundenfenster bewusst nachrangig; bis {next_label} sammeln"
+        )
+        return result
+
+    deadline = int(_clamp(config.slot_deadline_minute, 0, 59))
+    if local_dt.minute < deadline:
+        catchup_double = bool(peak and deficit >= 2 and local_dt.minute <= 5)
+        result["catchupDouble"] = catchup_double
+        if catchup_double:
+            result["approved"] = True
+            result["mode"] = "peak_catchup_first"
+            result["reasons"].append(
+                f"Roter/gelber Slot {current_slot['hour']:02d} Uhr: fruehe Aufholchance bei "
+                f"{deficit} fehlenden echten Pushes; normale Qualitaetsgates bleiben aktiv"
+            )
+        elif exceptional:
+            result["approved"] = True
+            result["mode"] = "peak_early_exception"
+            result["reasons"].append(
+                f"Roter/gelber Slot {current_slot['hour']:02d} Uhr: aussergewoehnlicher Kandidat darf vor :45 raus"
+            )
+        else:
+            result["blockers"].append(
+                f"Tagesplan: bis {current_slot['label']} weitere Kandidaten sammeln; danach besten verfuegbaren waehlen"
+            )
+        return result
+
+    if deficit > 0:
+        result["approved"] = True
+        result["mode"] = "deadline_fallback"
+        result["reasons"].append(
+            f":45-Entscheidung faellig: {current_count} echte Pushes bei {due_count} geplanten Fenstern; besten Kandidaten waehlen"
+        )
+        return result
+    if exceptional:
+        result["approved"] = True
+        result["mode"] = "peak_double_opportunity"
+        result["reasons"].append(
+            "Roter/gelber Slot: zusaetzliche Qualitätschance trotz erreichtem Tagespacing"
+        )
+        return result
+
+    result["blockers"].append(
+        f"Tagesplan im Soll ({current_count}/{due_count}); bis zum naechsten geplanten Fenster sammeln"
+    )
+    return result
+
+
+def _deadline_fallback_review(
+    candidate: dict[str, Any],
+    *,
+    slot_gate: dict[str, Any],
+    blockers: list[str],
+    score: float,
+    alert_score: float,
+    editorial_score: float,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """At a due :45 slot, waive soft gates but retain operational safeguards."""
+    review = {
+        "active": bool(slot_gate.get("mode") == "deadline_fallback"),
+        "approved": False,
+        "waivedBlockers": [],
+        "remainingBlockers": list(blockers),
+        "reasons": [],
+    }
+    if not review["active"]:
+        return review
+
+    floor_failures: list[str] = []
+    if score < float(config.deadline_fallback_min_score or 0.0):
+        floor_failures.append(
+            f"Deadline-Fallback: Push Score {score:.1f} < absolute Untergrenze "
+            f"{config.deadline_fallback_min_score:.1f}"
+        )
+    if alert_score < float(config.deadline_fallback_min_alert_score or 0.0):
+        floor_failures.append(
+            f"Deadline-Fallback: Alert Score {alert_score:.1f} < absolute Untergrenze "
+            f"{config.deadline_fallback_min_alert_score:.1f}"
+        )
+    if editorial_score < float(config.deadline_fallback_min_editorial_score or 0.0):
+        floor_failures.append(
+            f"Deadline-Fallback: CvD-Score {editorial_score:.1f} < absolute Untergrenze "
+            f"{config.deadline_fallback_min_editorial_score:.1f}"
+        )
+    if floor_failures:
+        review["remainingBlockers"] = [*blockers, *floor_failures]
+        return review
+
+    hard_markers = (
+        "alerts deaktiviert",
+        "ruhezeit aktiv",
+        "ohne headline",
+        "ohne artikel-link",
+        "kein artikel:",
+        "ressort ",
+        "letzter push-zeitpunkt nicht verfuegbar",
+        "pause seit letztem push zu kurz",
+        "artikel nicht frisch genug",
+        "push-dichte in den letzten",
+        "bereits live gepusht",
+        "bereits per teams gemeldet",
+        "thema bereits per teams gemeldet",
+        "re-alert-cooldown",
+        "teams-cooldown aktiv",
+        "tageslimit fuer teams-hinweise",
+        "staerkerer kandidat vorhanden",
+        "wahrscheinlich ueberholt",
+        "bereits als teams-kandidat versucht",
+        "teams-hinweis wird bereits versendet",
+        "sport ohne bestaetigte",
+        "live-ticker ohne neue pushwuerdige lage",
+        "feld unsicher",
+    )
+    hard: list[str] = []
+    soft: list[str] = []
+    for blocker in blockers:
+        normalized = str(blocker or "").casefold()
+        if any(marker in normalized for marker in hard_markers):
+            hard.append(blocker)
+        else:
+            soft.append(blocker)
+
+    review["waivedBlockers"] = soft
+    review["remainingBlockers"] = hard
+    if hard:
+        return review
+
+    review["approved"] = True
+    review["reasons"] = [
+        "Faelliges :45-Fenster im Rueckstand: bester verfuegbarer, noch nicht gepushter Kandidat",
+    ]
+    if soft:
+        review["reasons"].append(
+            f"Deadline-Fallback lockert {len(soft)} weiche Qualitaetsgates; harte Sperren bleiben aktiv"
+        )
+    if _section(candidate).lower() == "sport":
+        review["reasons"].append("Sport-Fallback nur mit bestaetigter neuer Sportlage")
+    return review
 
 
 def _push_pacing_review(
@@ -4656,6 +5383,7 @@ def _format_section(value: str) -> str:
         "sport": "Sport",
         "unterhaltung": "Unterhaltung",
         "wirtschaft": "Wirtschaft",
+        "geld": "Geld",
         "regional": "Regional",
         "digital": "Digital",
         "news": "News",

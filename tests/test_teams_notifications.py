@@ -9,10 +9,12 @@ from app.notifications.teams import (
     buildTeamsDailyPushPlan,
     buildTeamsPushRecommendation,
     build_teams_alert_context,
+    build_teams_daily_schedule,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
     normalize_predicted_or,
     selectTeamsPushRecommendation,
+    send_teams_daily_schedule_if_due,
     sendTeamsNotification,
     shouldNotifyTeams,
 )
@@ -54,9 +56,35 @@ def _config(**overrides):
         "target_pushes_per_day": 11,
         "min_alerts_per_day": 11,
         "max_alerts_per_day": 14,
+        # Legacy decision tests exercise editorial gates in isolation. Dedicated
+        # slot-gate tests below enable the new :45 production behaviour explicitly.
+        "slot_gate_enabled": False,
     }
     values.update(overrides)
     return TeamsAlertConfig(**values)
+
+
+def _smart_config(**overrides):
+    values = {
+        "allowed_sections": (
+            "news",
+            "politik",
+            "wirtschaft",
+            "geld",
+            "regional",
+            "digital",
+            "unterhaltung",
+            "sport",
+        ),
+        "excluded_sections": (),
+        "target_pushes_per_day": 15,
+        "min_alerts_per_day": 15,
+        "max_alerts_per_day": 18,
+        "slot_gate_enabled": True,
+        "dynamic_threshold_enabled": True,
+    }
+    values.update(overrides)
+    return _config(**values)
 
 
 def _candidate(**overrides):
@@ -263,7 +291,7 @@ def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind(
     assert any("Mindest-Pacing" in reason for reason in decision["reasons"])
 
 
-def test_minimum_pacing_uses_teams_alert_count_even_when_push_count_is_ahead():
+def test_minimum_pacing_uses_actual_push_count_when_available():
     noon_ts = int(dt.datetime(2026, 6, 24, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=84.0,
@@ -288,19 +316,18 @@ def test_minimum_pacing_uses_teams_alert_count_even_when_push_count_is_ahead():
             dynamic_threshold_enabled=True,
             min_alert_score=78.0,
             min_editorial_score=68.0,
+            slot_gate_enabled=False,
             target_pushes_per_day=15,
             min_alerts_per_day=15,
             max_alerts_per_day=18,
         ),
     )
 
-    assert decision["shouldNotify"] is True
-    assert decision["minimumPressure"]["active"] is True
-    assert decision["minimumPressure"]["basis"] == "teams_alerts"
-    assert decision["minimumPressure"]["current"] == 1
+    assert decision["minimumPressure"]["active"] is False
+    assert decision["minimumPressure"]["basis"] == "actual_pushes"
+    assert decision["minimumPressure"]["current"] == 5
     assert decision["minimumPressure"]["actualPushesToday"] == 5
     assert decision["minimumPressure"]["teamsAlertsToday"] == 1
-    assert any("Teams-Mindest-Pacing aktiv" in reason for reason in decision["reasons"])
 
 
 def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_gate():
@@ -337,7 +364,7 @@ def test_minimum_pacing_fulfills_with_strong_candidate_despite_soft_or_and_wait_
 
     assert decision["shouldNotify"] is True
     assert decision["minimumPressure"]["active"] is True
-    assert decision["minimumPressure"]["basis"] == "teams_alerts"
+    assert decision["minimumPressure"]["basis"] == "actual_pushes"
     assert not any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
     assert any("OR-Schwelle" in reason for reason in decision["reasons"])
     assert any("Teams-Mindest-Pacing aktiv" in reason for reason in decision["reasons"])
@@ -361,7 +388,7 @@ def test_minimum_pacing_allows_hard_crime_news_with_news_allowlist():
         now_ts=afternoon_ts,
     )
     context["dashboardRank"] = 9
-    context["pushesToday"] = 8
+    context["pushesToday"] = 0
 
     decision = shouldNotifyTeams(
         candidate,
@@ -380,9 +407,9 @@ def test_minimum_pacing_allows_hard_crime_news_with_news_allowlist():
     )
 
     assert decision["shouldNotify"] is True
-    assert decision["minimumPressure"]["basis"] == "teams_alerts"
+    assert decision["minimumPressure"]["basis"] == "actual_pushes"
     assert decision["teamsAlertScoreThreshold"] < 65.0
-    assert any("Teams-Rueckstand" in reason for reason in decision["reasons"])
+    assert any("Push-Rueckstand" in reason for reason in decision["reasons"])
     assert any("Teams-Cooldown uebernimmt" in reason for reason in decision["reasons"])
 
 
@@ -1987,7 +2014,7 @@ def test_dead_zone_can_pass_when_cvd_is_behind_daily_push_pace():
     assert "Rueckstand" in decision["pushPacing"]["label"]
 
 
-def test_lunch_prime_slot_does_not_wait_for_afternoon_when_candidate_is_good():
+def test_friday_lunch_uses_weak_weekday_cell_and_waits_until_deadline():
     friday_noon = int(dt.datetime(2026, 6, 19, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=86.0,
@@ -2008,17 +2035,23 @@ def test_lunch_prime_slot_does_not_wait_for_afternoon_when_candidate_is_good():
     decision = shouldNotifyTeams(
         candidate,
         context,
-        _config(dynamic_threshold_enabled=True, min_alert_score=66.0),
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=66.0,
+            slot_gate_enabled=True,
+            target_pushes_per_day=15,
+            min_alerts_per_day=15,
+        ),
     )
 
     breakdown = decision["editorialReview"]["breakdown"]
-    assert decision["shouldNotify"] is True
-    assert breakdown["timeFit"] >= 7.0
-    assert "Mittags-Prime-Fenster" in breakdown["timeFitLabel"]
-    assert not any("abwarten" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is False
+    assert breakdown["timeFit"] == 4.0
+    assert "historische Totzone" in breakdown["timeFitLabel"]
+    assert any("bis 12:45" in reason for reason in decision["blockingReasons"])
 
 
-def test_lunch_prime_slot_catches_up_when_day_is_behind_push_pace():
+def test_thursday_lunch_waits_to_1245_even_when_day_is_behind():
     thursday_lunch = int(dt.datetime(2026, 6, 25, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(
         score=80.0,
@@ -2039,14 +2072,21 @@ def test_lunch_prime_slot_catches_up_when_day_is_behind_push_pace():
     decision = shouldNotifyTeams(
         candidate,
         context,
-        _config(dynamic_threshold_enabled=True, min_alert_score=74.0, min_editorial_score=72.0),
+        _config(
+            dynamic_threshold_enabled=True,
+            min_alert_score=74.0,
+            min_editorial_score=72.0,
+            slot_gate_enabled=True,
+            target_pushes_per_day=15,
+            min_alerts_per_day=15,
+        ),
     )
 
     breakdown = decision["editorialReview"]["breakdown"]
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["pushPacing"]["deficit"] >= 2.0
-    assert breakdown["timeFit"] >= 7.0
-    assert "Mittags-Prime-Fenster" in breakdown["timeFitLabel"]
+    assert breakdown["timeFit"] == 4.0
+    assert any("bis 12:45" in reason for reason in decision["blockingReasons"])
 
 
 def test_lunch_prime_catchup_can_lower_score_floor_to_65():
@@ -2284,21 +2324,29 @@ def test_select_teams_push_recommendation_returns_none_for_weak_field():
 
 
 def test_uncertain_field_without_clear_winner_sends_no_alert():
-    first = _candidate(id="u1", url="https://www.bild.de/politik/u1", score=84.0, predictedOR=0.06)
+    strong_slot_ts = int(dt.datetime(2027, 1, 15, 21, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    first = _candidate(
+        id="u1",
+        url="https://www.bild.de/politik/u1",
+        score=84.0,
+        predictedOR=0.06,
+        pubDate=_iso(strong_slot_ts - 10 * 60),
+    )
     second = _candidate(
         id="u2",
         url="https://www.bild.de/politik/u2",
         title="Eilmeldung: Regierung beschliesst weiteres Paket heute Mittag",
         score=83.5,
         predictedOR=0.06,
+        pubDate=_iso(strong_slot_ts - 10 * 60),
     )
     context = build_teams_alert_context(
         [first, second],
-        history=_history(),
+        history=_history(now_ts=strong_slot_ts),
         alert_state={},
         last_teams_alert_ts=0,
         teams_alerts_today=11,
-        now_ts=NOW_TS,
+        now_ts=strong_slot_ts,
     )
     context["pushesToday"] = 11
 
@@ -2527,6 +2575,314 @@ def _daily_plan_context(candidates, *, history=None):
         now_ts=NOW_TS,
         config=_config(),
     )
+
+
+def _smart_slot_decision(
+    *,
+    hour,
+    minute,
+    candidate=None,
+    pushes_today=1,
+    history=None,
+    config=None,
+):
+    now_ts = int(
+        dt.datetime(2026, 7, 13, hour, minute, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+    )
+    article = candidate or _candidate(
+        pubDate=_iso(now_ts - 10 * 60),
+        title="Regierung beschliesst sofort neue Entlastung fuer Millionen",
+        score=84.0,
+        predictedOR=0.065,
+    )
+    article["pubDate"] = _iso(now_ts - 10 * 60)
+    smart_config = config or _smart_config()
+    actual_history = history or _history(minutes_since_last_push=60, now_ts=now_ts)
+    context = build_teams_alert_context(
+        [article],
+        history=actual_history,
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=pushes_today,
+        recent_alerts=[],
+        now_ts=now_ts,
+        config=smart_config,
+    )
+    context["dashboardRank"] = 1
+    context["pushesToday"] = pushes_today
+    return shouldNotifyTeams(article, context, smart_config)
+
+
+def test_smart_schedule_uses_15_monday_deadlines_and_morning_peak():
+    schedule = build_teams_daily_schedule("2026-07-13", _smart_config())
+    labels = [slot["label"] for slot in schedule["slots"]]
+
+    assert schedule["weekday"] == "Montag"
+    assert schedule["count"] == 15
+    assert all(label.endswith(":45") for label in labels)
+    assert {"07:45", "08:45", "09:45"}.issubset(labels)
+    assert {"06:45", "11:45", "23:45"}.isdisjoint(labels)
+    assert all(slot["required"] is True for slot in schedule["slots"])
+    assert "08:00-08:45" in {
+        opportunity["label"] for opportunity in schedule["doubleOpportunities"]
+    }
+    assert "Heute bewusst nachrangig" in schedule["messageHtml"]
+    assert len(schedule["messageHtml"].encode("utf-8")) < 28_000
+
+
+def test_smart_schedule_is_truly_weekday_specific():
+    monday = build_teams_daily_schedule("2026-07-13", _smart_config())
+    tuesday = build_teams_daily_schedule("2026-07-14", _smart_config())
+    monday_labels = {slot["label"] for slot in monday["slots"]}
+    tuesday_labels = {slot["label"] for slot in tuesday["slots"]}
+
+    assert monday_labels != tuesday_labels
+    assert "09:45" in monday_labels
+    assert "09:45" not in tuesday_labels
+    assert "06:45" not in monday_labels
+    assert "06:45" in tuesday_labels
+
+
+def test_smart_schedule_carries_the_historically_best_ressort():
+    wednesday = build_teams_daily_schedule("2026-07-15", _smart_config())
+    morning = next(slot for slot in wednesday["slots"] if slot["label"] == "07:45")
+
+    assert morning["topCategory"] == "geld"
+    assert "geld" in morning["preferredSections"]
+
+
+def test_slot_gate_waits_before_45_and_releases_best_candidate_after_deadline():
+    before = _smart_slot_decision(hour=8, minute=30)
+    after = _smart_slot_decision(hour=8, minute=46)
+
+    assert before["shouldNotify"] is False
+    assert before["slotGate"]["mode"] == "wait"
+    assert any("bis 08:45" in reason for reason in before["blockingReasons"])
+    assert after["shouldNotify"] is True
+    assert after["slotGate"]["mode"] == "deadline_fallback"
+    assert after["slotGate"]["dueCount"] == 2
+    assert after["deadlineFallback"]["approved"] is True
+
+
+def test_deadline_fallback_selects_best_available_but_keeps_absolute_floor():
+    best_available = _candidate(
+        title="Das sind die neuen Regeln im Alltag",
+        score=60.0,
+        predictedOR=0.04,
+    )
+    too_weak = _candidate(
+        id="too-weak",
+        url="https://www.bild.de/politik/too-weak",
+        title="Das ist heute ebenfalls wichtig",
+        score=45.0,
+        predictedOR=0.03,
+    )
+
+    fallback = _smart_slot_decision(hour=8, minute=46, candidate=best_available)
+    rejected = _smart_slot_decision(hour=8, minute=46, candidate=too_weak)
+
+    assert fallback["shouldNotify"] is True
+    assert fallback["deadlineFallback"]["approved"] is True
+    assert fallback["deadlineFallback"]["waivedBlockers"]
+    assert rejected["shouldNotify"] is False
+    assert any(
+        "absolute Untergrenze" in reason
+        for reason in rejected["deadlineFallback"]["remainingBlockers"]
+    )
+
+
+def test_deadline_fallback_selects_best_visit_candidate_not_first_feed_item():
+    now_ts = int(dt.datetime(2026, 7, 13, 8, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    first = _candidate(
+        id="fallback-first",
+        url="https://www.bild.de/politik/fallback-first",
+        title="Das sind die neuen Regeln fuer Gruppe eins",
+        pubDate=_iso(now_ts - 10 * 60),
+        score=60.0,
+        predictedOR=0.04,
+    )
+    better = _candidate(
+        id="fallback-better",
+        url="https://www.bild.de/politik/fallback-better",
+        title="Das sind die neuen Regeln fuer Gruppe zwei",
+        pubDate=_iso(now_ts - 10 * 60),
+        score=67.0,
+        predictedOR=0.045,
+    )
+    config = _smart_config(min_selection_margin=0)
+    context = build_teams_alert_context(
+        [first, better],
+        history=_history(minutes_since_last_push=60, now_ts=now_ts),
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=1,
+        recent_alerts=[],
+        now_ts=now_ts,
+        config=config,
+    )
+    context["pushesToday"] = 1
+
+    result = evaluate_teams_alert_candidates([first, better], context, config)
+
+    assert result["selectedCandidateId"] == better["url"]
+    selected = next(
+        item["decision"]
+        for item in result["decisions"]
+        if item["candidate"]["id"] == better["id"]
+    )
+    assert selected["shouldNotify"] is True
+    assert selected["expectedVisits"] > 0
+    assert selected["deadlineFallback"]["approved"] is True
+
+
+def test_exceptional_candidate_can_use_peak_slot_before_45():
+    exceptional = _candidate(
+        title="Regierung beschliesst sofort neue Entlastung fuer Millionen",
+        score=96.0,
+        predictedOR=0.08,
+        performanceDrivers=[
+            "Aktualitaet: neue Entscheidung",
+            "Relevanz: Millionen unmittelbar betroffen",
+        ],
+    )
+
+    decision = _smart_slot_decision(hour=8, minute=15, candidate=exceptional)
+
+    assert decision["shouldNotify"] is True
+    assert decision["slotGate"]["mode"] == "peak_early_exception"
+
+
+def test_peak_slot_can_open_early_catchup_chance_when_two_pushes_are_missing():
+    early = _smart_slot_decision(hour=18, minute=2, pushes_today=8)
+    too_late_for_double = _smart_slot_decision(hour=18, minute=20, pushes_today=8)
+
+    assert early["shouldNotify"] is True
+    assert early["slotGate"]["mode"] == "peak_catchup_first"
+    assert early["slotGate"]["deficit"] == 2
+    assert too_late_for_double["shouldNotify"] is False
+    assert too_late_for_double["slotGate"]["mode"] == "wait"
+
+
+def test_deadline_fallback_never_recommends_an_already_pushed_article():
+    now_ts = int(dt.datetime(2026, 7, 13, 8, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
+    pushed_history = _history(
+        minutes_since_last_push=60,
+        now_ts=now_ts,
+        title=candidate["title"],
+        headline=candidate["title"],
+        link=candidate["url"],
+    )
+
+    decision = _smart_slot_decision(
+        hour=8,
+        minute=46,
+        candidate=candidate,
+        history=pushed_history,
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["deadlineFallback"]["approved"] is False
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+
+
+def test_context_reads_90_days_so_old_exact_push_urls_stay_blocked():
+    now_ts = int(dt.datetime(2026, 7, 13, 18, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
+    history = [
+        {
+            "message_id": "old-exact-push",
+            "ts_num": now_ts - 40 * 24 * 3600,
+            "title": "Fruehere Zeile fuer denselben Artikel",
+            "headline": "Fruehere Zeile fuer denselben Artikel",
+            "cat": "politik",
+            "link": candidate["url"],
+        },
+        *_history(minutes_since_last_push=60, now_ts=now_ts),
+    ]
+    config = _smart_config()
+
+    with patch("app.notifications.teams.push_db_load_all", return_value=history) as load_history:
+        context = build_teams_alert_context(
+            [candidate],
+            alert_state={},
+            last_teams_alert_ts=0,
+            teams_alerts_today=10,
+            recent_alerts=[],
+            now_ts=now_ts,
+            config=config,
+        )
+
+    context["dashboardRank"] = 1
+    context["pushesToday"] = 10
+    decision = shouldNotifyTeams(candidate, context, config)
+
+    load_history.assert_called_once_with(max_days=90, max_rows=3000)
+    assert decision["shouldNotify"] is False
+    assert any("gleiche Artikel-URL" in reason for reason in decision["blockingReasons"])
+
+
+def test_confirmed_sport_event_can_pass_but_routine_sport_cannot():
+    confirmed = _candidate(
+        id="sport-transfer",
+        url="https://www.bild.de/sport/bayern-transfer",
+        title="Bayern bestaetigt: Star wechselt ueberraschend nach England",
+        category="sport",
+        score=95.0,
+        predictedOR=0.08,
+    )
+    routine = _candidate(
+        id="sport-training",
+        url="https://www.bild.de/sport/bayern-training",
+        title="Bayern-Stars starten heute ins Training",
+        category="sport",
+        score=95.0,
+        predictedOR=0.08,
+    )
+
+    confirmed_decision = _smart_slot_decision(
+        hour=18,
+        minute=46,
+        candidate=confirmed,
+        pushes_today=10,
+    )
+    routine_decision = _smart_slot_decision(
+        hour=18,
+        minute=46,
+        candidate=routine,
+        pushes_today=10,
+    )
+
+    sport_review = confirmed_decision["editorialReview"]["breakdown"]["sportReview"]
+    assert confirmed_decision["shouldNotify"] is True
+    assert sport_review["eventful"] is True
+    assert "bestaetigter Transfer" in sport_review["context"]
+    assert routine_decision["shouldNotify"] is False
+    assert any("Sport ohne bestaetigte" in reason for reason in routine_decision["blockingReasons"])
+
+
+def test_daily_schedule_is_sent_only_once_per_berlin_day(tmp_db):
+    now_ts = int(dt.datetime(2026, 7, 13, 6, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    config = _smart_config(
+        daily_schedule_send_enabled=True,
+        daily_schedule_send_time="05:45",
+    )
+
+    with patch(
+        "app.notifications.teams.send_teams_notification",
+        return_value={"ok": True, "status": 200},
+    ) as send:
+        first = send_teams_daily_schedule_if_due(config, now_ts=now_ts)
+        second = send_teams_daily_schedule_if_due(config, now_ts=now_ts + 60)
+
+    assert first["sent"] is True
+    assert first["count"] == 15
+    assert second["sent"] is False
+    assert second["reason"] == "already_sent"
+    assert send.call_count == 1
+    payload = send.call_args.args[0]["payload"]
+    assert payload["type"] == "push_daily_schedule"
+    assert len(payload["slots"]) == 15
 
 
 def test_daily_push_plan_returns_minimum_15_teams_ready_items():

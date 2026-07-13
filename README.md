@@ -316,7 +316,15 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 ### Microsoft Teams Push Recommendations
 
-`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates an expanded article field from the Push Balancer and sends a Power Automate / Teams recommendation only when the central decision model says a redakteur should act now. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
+`PUSH_TEAMS_ALERTS_ENABLED=1` starts a background worker that evaluates an expanded article field from the Push Balancer and sends Power Automate / Teams recommendations. The webhook secret belongs in `PUSH_TEAMS_WEBHOOK_URL` and must stay in Render secrets or `.env`, never in Git.
+
+The live cadence is based on the full weekday/hour OR matrix. Each Berlin day receives exactly 15 required decision windows at `HH:45`; every red/yellow cell (at least 6.0% historical OR) is included and the remaining places use the strongest reserve cells for that weekday. Before `:45`, only breaking news or an exceptional candidate in a red/yellow cell can pass. A red/yellow cell also opens a short early catch-up chance when at least two real pushes are missing, but the normal quality gates still apply. At `:45`, when the real push count is behind the number of due windows, the best available candidate may use a controlled fallback: soft score/forecast gates can be relaxed, while cooldown, duplicate, freshness, destination, section, and confirmed-event safeguards remain hard. Strong cells expose the corresponding optional `HH:00-HH:45` double opportunity, subject to the global 45-minute cooldown.
+
+Once per day, the worker sends a compact schedule containing the 15 deadlines, historically strongest section for each cell, sport context, optional double opportunities, and intentionally deprioritized hours. Sport is no longer excluded wholesale: only a confirmed transfer, result, availability/personnel decision, or meaningful live update can pass, and weekday/season timing adjusts its fit. This sport check is local and does not introduce another external API.
+
+Before every worker cycle, the service refreshes the actual push history. Exact URLs already pushed within the retained 90-day operating history are never recommended again; near-story matching uses the shorter configured topic window. Actual push count and last-push time drive pacing and cooldown decisions, while Teams-message count is only a fallback when actual history is unavailable.
+
+Sent/attempted live recommendations and generated daily-plan entries are persisted for 45 days in `teams_recommendations`. The internal `GET /api/teams-recommendations` endpoint returns this auditable suggestion history; it contains article and decision metadata, not recipient- or employee-level activity.
 
 For Power Automate, use the trigger body field `messageHtml` as the Teams message content:
 
@@ -352,10 +360,18 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_ALERTS_ENABLED` | No | `false` | Enables editorial Teams recommendation alerts for only the strongest eligible push candidate |
 | `PUSH_TEAMS_WEBHOOK_URL` | Yes, when alerts enabled | — | Power Automate or Teams webhook URL; configure as a secret |
 | `PUSH_TEAMS_MIN_SCORE` | No | `75` | Raw push score floor before the weighted Teams Alert Score is evaluated |
-| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a Teams recommendation; dynamically relaxed only when the Teams channel falls behind its daily recommendation target |
-| `PUSH_TEAMS_TARGET_PUSHES_PER_DAY` | No | `15` | Editorial day curve used to pace Teams recommendations across high-value slots |
-| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `15` | Minimum daily Teams recommendation target; this is measured against Teams alerts, not raw push-history count, and relaxes thresholds when the Teams channel falls behind |
-| `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `18` | Daily cap for Teams recommendations; breaking can still use its configured override |
+| `PUSH_TEAMS_MIN_ALERT_SCORE` | No | `78` | Minimum weighted Teams Alert Score for a normal recommendation before deadline fallback |
+| `PUSH_TEAMS_TARGET_PUSHES_PER_DAY` | No | `15` | Number of real daily pushes used to build the weekday-specific deadline plan |
+| `PUSH_TEAMS_MIN_ALERTS_PER_DAY` | No | `15` | Minimum pacing target; actual push history is authoritative and Teams-message count is only a fallback |
+| `PUSH_TEAMS_MAX_ALERTS_PER_DAY` | No | `18` | Daily cap including optional double opportunities; breaking can still use its configured override |
+| `PUSH_TEAMS_SLOT_GATE_ENABLED` | No | `true` | Enables the weekday matrix, 15 required `:45` windows, and controlled deadline fallback |
+| `PUSH_TEAMS_SLOT_DEADLINE_MINUTE` | No | `45` | Minute at which the worker stops collecting and selects the best eligible candidate when behind |
+| `PUSH_TEAMS_PEAK_SLOT_MIN_OR` | No | `6.0` | Historical OR threshold for mandatory red/yellow cells and optional double opportunities |
+| `PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE` | No | `55` | Absolute raw-score floor that deadline fallback can never undercut |
+| `PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE` | No | `55` | Absolute Teams Alert Score floor for deadline fallback |
+| `PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE` | No | `55` | Absolute CvD floor for deadline fallback; hard safety gates remain active separately |
+| `PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED` | No | `false` | Sends one restart-safe daily Teams timing plan when enabled; production Render config enables it |
+| `PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME` | No | `05:45` | Berlin-local earliest send time for the daily timing plan |
 | `PUSH_TEAMS_SCORE_ONLY_MODE` | No | `false` | When enabled, forecast is treated as a context signal; the weighted Teams Alert Score, known last-push timing, and pause rules still decide final notification eligibility |
 | `PUSH_TEAMS_DASHBOARD_TOP_LIMIT` | No | `20` | Normal top-field guardrail for Teams decisions and dashboard transparency |
 | `PUSH_TEAMS_CANDIDATE_LIMIT` | No | `80` | Maximum number of article candidates inspected by the automatic Teams worker; candidates beyond the dashboard top field need the stricter Expanded Field gate |
@@ -372,7 +388,8 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST` | No | `true` | Requires article-model OR forecasts for normal non-breaking Teams recommendations; breaking and clear public warning/usefulness cases can still pass |
 | `PUSH_TEAMS_REALERT_SCORE_DELTA` | No | `8` | Required score improvement for a re-alert |
 | `PUSH_TEAMS_REALERT_OR_DELTA` | No | `0.75` | Required OR percentage-point improvement for a re-alert |
-| `PUSH_TEAMS_ALLOWED_SECTIONS` | No | empty | Comma-separated section allowlist, e.g. `News,Politik,Sport,Regional` |
+| `PUSH_TEAMS_ALLOWED_SECTIONS` | No | `News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport` | Comma-separated section allowlist; Sport still requires a confirmed event |
+| `PUSH_TEAMS_EXCLUDED_SECTIONS` | No | empty | Hard section exclusions applied even during deadline fallback |
 | `PUSH_TEAMS_BREAKING_OVERRIDE` | No | `true` | Allows lower configured breaking-news thresholds |
 | `PUSH_TEAMS_BREAKING_MIN_SCORE` | No | `72` | Breaking-news raw score floor outside score-only mode; weighted Teams Alert Score still decides final eligibility |
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
