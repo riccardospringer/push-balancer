@@ -484,6 +484,14 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
     assert "temperature" not in request
 
 
+def test_stale_render_title_model_is_upgraded_to_gpt56():
+    from push_title_agent import _resolve_title_model
+
+    assert _resolve_title_model("") == "gpt-5.6"
+    assert _resolve_title_model("gpt-4o-mini") == "gpt-5.6"
+    assert _resolve_title_model("gpt-5.6-terra") == "gpt-5.6-terra"
+
+
 def test_title_llm_keeps_legacy_parameters_for_non_reasoning_models(monkeypatch):
     import push_title_agent
 

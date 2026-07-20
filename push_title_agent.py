@@ -14,7 +14,17 @@ from app.cost_controls import allow_calls
 
 log = logging.getLogger("push-title-agent")
 
-MODEL = os.environ.get("OPENAI_TITLE_GENERATION_MODEL", "gpt-5.6")
+DEFAULT_TITLE_MODEL = "gpt-5.6"
+
+
+def _resolve_title_model(configured_model: str) -> str:
+    candidate = (configured_model or "").strip()
+    if not candidate or candidate.lower() == "gpt-4o-mini":
+        return DEFAULT_TITLE_MODEL
+    return candidate
+
+
+MODEL = _resolve_title_model(os.environ.get("OPENAI_TITLE_GENERATION_MODEL", ""))
 MAX_PUSH_LENGTH = 100
 AGENT_TIMEOUT = float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "30.0"))
 DEFAULT_MAX_TOKENS = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "1800"))
