@@ -464,7 +464,7 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
     monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 600)
-    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 10.0)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 8.0)
     monkeypatch.setattr(push_title_agent, "REASONING_EFFORT", "none")
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
@@ -479,7 +479,7 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
     assert request["response_format"] == {"type": "json_object"}
     assert request["extra_body"] == {"reasoning_effort": "none", "verbosity": "low"}
     assert request["store"] is False
-    assert request["timeout"] == 10.0
+    assert request["timeout"] == 8.0
     assert "max_tokens" not in request
     assert "temperature" not in request
 
@@ -487,8 +487,8 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
 def test_stale_render_title_model_is_upgraded_to_gpt56():
     from push_title_agent import _resolve_title_model
 
-    assert _resolve_title_model("") == "gpt-5.6"
-    assert _resolve_title_model("gpt-4o-mini") == "gpt-5.6"
+    assert _resolve_title_model("") == "gpt-5.6-luna"
+    assert _resolve_title_model("gpt-4o-mini") == "gpt-5.6-luna"
     assert _resolve_title_model("gpt-5.6-terra") == "gpt-5.6-terra"
 
 
@@ -509,7 +509,7 @@ def test_title_llm_does_not_retry_a_slow_failure(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
     monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 600)
-    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 10.0)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 8.0)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
 

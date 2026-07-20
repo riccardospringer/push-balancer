@@ -14,7 +14,7 @@ from app.cost_controls import allow_calls
 
 log = logging.getLogger("push-title-agent")
 
-DEFAULT_TITLE_MODEL = "gpt-5.6"
+DEFAULT_TITLE_MODEL = "gpt-5.6-luna"
 
 
 def _resolve_title_model(configured_model: str) -> str:
@@ -29,8 +29,8 @@ MAX_PUSH_LENGTH = 100
 # Interaktiver Button-Pfad: ein einzelner kurzer GPT-5.6-Call statt langer
 # Reasoning-/Retry-Ketten. Hoehere alte Render-Werte werden bewusst gedeckelt.
 AGENT_TIMEOUT = min(
-    float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "10.0")),
-    10.0,
+    float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "8.0")),
+    8.0,
 )
 DEFAULT_MAX_TOKENS = min(
     int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "600")),

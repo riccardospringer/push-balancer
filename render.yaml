@@ -122,10 +122,10 @@ services:
       - key: OPENAI_TITLE_GENERATION_ENABLED
         value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
-        value: gpt-5.6
+        value: gpt-5.6-luna
       # Harter Zeitrahmen fuer den interaktiven Button-Pfad.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "10.0"
+        value: "8.0"
       # Jeder Titel erscheint nur einmal im kompakten Modell-JSON.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
         value: "600"

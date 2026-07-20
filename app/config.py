@@ -90,10 +90,10 @@ OPENAI_TITLE_GENERATION_ENABLED: bool = _env_flag(
 )
 OPENAI_TITLE_GENERATION_MODEL: str = os.environ.get(
     "OPENAI_TITLE_GENERATION_MODEL",
-    "gpt-5.6",
+    "gpt-5.6-luna",
 )
 OPENAI_TITLE_GENERATION_TIMEOUT_S: float = float(
-    os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "10.0")
+    os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "8.0")
 )
 OPENAI_TITLE_GENERATION_MAX_TOKENS: int = int(
     os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "600")
