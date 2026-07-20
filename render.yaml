@@ -123,14 +123,14 @@ services:
         value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
         value: gpt-5.6
-      # GPT-5.6 bekommt genug Zeit, damit kein vorschneller lokaler Fallback greift.
+      # Harter Zeitrahmen fuer den interaktiven Button-Pfad.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "30.0"
-      # Umfasst bei GPT-5.6 sichtbare Ausgabe und Reasoning-Tokens.
+        value: "12.0"
+      # Reicht fuer vier kompakte JSON-Varianten ohne lange Reasoning-Ausgabe.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
-        value: "1800"
+        value: "900"
       - key: OPENAI_TITLE_GENERATION_REASONING_EFFORT
-        value: medium
+        value: none
       # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.
       - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR
         value: "60"

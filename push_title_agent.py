@@ -26,18 +26,17 @@ def _resolve_title_model(configured_model: str) -> str:
 
 MODEL = _resolve_title_model(os.environ.get("OPENAI_TITLE_GENERATION_MODEL", ""))
 MAX_PUSH_LENGTH = 100
-AGENT_TIMEOUT = float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "30.0"))
-DEFAULT_MAX_TOKENS = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "1800"))
-REASONING_EFFORT = os.environ.get(
-    "OPENAI_TITLE_GENERATION_REASONING_EFFORT",
-    "medium",
-).strip().lower()
-if REASONING_EFFORT not in {"none", "low", "medium", "high", "xhigh", "max"}:
-    log.warning(
-        "Invalid OPENAI_TITLE_GENERATION_REASONING_EFFORT=%r; using medium",
-        REASONING_EFFORT,
-    )
-    REASONING_EFFORT = "medium"
+# Interaktiver Button-Pfad: ein einzelner kurzer GPT-5.6-Call statt langer
+# Reasoning-/Retry-Ketten. Hoehere alte Render-Werte werden bewusst gedeckelt.
+AGENT_TIMEOUT = min(
+    float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "12.0")),
+    12.0,
+)
+DEFAULT_MAX_TOKENS = min(
+    int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "900")),
+    900,
+)
+REASONING_EFFORT = "none"
 _OPENAI_CLIENT = None
 _OPENAI_CLIENT_KEY = ""
 
@@ -249,48 +248,44 @@ def _llm_call(
         _OPENAI_CLIENT = OpenAI(api_key=api_key)
         _OPENAI_CLIENT_KEY = api_key
     client = _OPENAI_CLIENT
-    # Ein Retry bei transienten Fehlern/Timeouts: sonst kippt ein einzelner
-    # langsamer Call die komplette KI-Titel-Generierung auf den lokalen Fallback.
-    last_exc: Exception | None = None
-    for attempt in range(2):
-        try:
-            token_limit = min(max_tokens, DEFAULT_MAX_TOKENS)
-            request = {
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "timeout": AGENT_TIMEOUT,
-                "store": False,
+    token_limit = min(max_tokens, DEFAULT_MAX_TOKENS)
+    request = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "timeout": AGENT_TIMEOUT,
+        "store": False,
+    }
+    if MODEL.lower().startswith("gpt-5"):
+        request.update(
+            {
+                "max_completion_tokens": token_limit,
+                "response_format": {"type": "json_object"},
+                "extra_body": {
+                    "reasoning_effort": REASONING_EFFORT,
+                    "verbosity": "low",
+                },
             }
-            if MODEL.lower().startswith("gpt-5"):
-                request.update(
-                    {
-                        "max_completion_tokens": token_limit,
-                        "response_format": {"type": "json_object"},
-                        "extra_body": {"reasoning_effort": REASONING_EFFORT},
-                    }
-                )
-            else:
-                request.update(
-                    {
-                        "max_tokens": token_limit,
-                        "temperature": temperature,
-                    }
-                )
+        )
+    else:
+        request.update(
+            {
+                "max_tokens": token_limit,
+                "temperature": temperature,
+            }
+        )
 
-            resp = client.chat.completions.create(**request)
-            content = resp.choices[0].message.content
-            if not content:
-                raise RuntimeError("OpenAI lieferte keinen Push-Titel")
-            return content.strip()
-        except Exception as exc:
-            last_exc = exc
-            log.warning("[PushTitle] LLM-Call Versuch %d/2 fehlgeschlagen: %s", attempt + 1, exc)
-            if attempt == 0:
-                time.sleep(0.6)
-    raise last_exc if last_exc else RuntimeError("LLM-Call fehlgeschlagen")
+    try:
+        resp = client.chat.completions.create(**request)
+        content = resp.choices[0].message.content
+        if not content:
+            raise RuntimeError("OpenAI lieferte keinen Push-Titel")
+        return content.strip()
+    except Exception as exc:
+        log.warning("[PushTitle] Schneller LLM-Call fehlgeschlagen: %s", exc)
+        raise
 
 
 EDITORIAL_ONE_BRAIN_SYS = f"""Du bist ein erfahrener BILD-Push-Redakteur mit klarem Fokus auf hohe Opening Rate.

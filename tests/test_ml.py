@@ -463,23 +463,23 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
     monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
-    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 1800)
-    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 30.0)
-    monkeypatch.setattr(push_title_agent, "REASONING_EFFORT", "medium")
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 900)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 12.0)
+    monkeypatch.setattr(push_title_agent, "REASONING_EFFORT", "none")
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
 
-    result = push_title_agent._llm_call("System", "Synthetic article", max_tokens=1800)
+    result = push_title_agent._llm_call("System", "Synthetic article", max_tokens=900)
 
     assert result == '{"gewinner":{"titel":"Test"}}'
     assert len(calls) == 1
     request = calls[0]
     assert request["model"] == "gpt-5.6"
-    assert request["max_completion_tokens"] == 1800
+    assert request["max_completion_tokens"] == 900
     assert request["response_format"] == {"type": "json_object"}
-    assert request["extra_body"] == {"reasoning_effort": "medium"}
+    assert request["extra_body"] == {"reasoning_effort": "none", "verbosity": "low"}
     assert request["store"] is False
-    assert request["timeout"] == 30.0
+    assert request["timeout"] == 12.0
     assert "max_tokens" not in request
     assert "temperature" not in request
 
@@ -490,6 +490,33 @@ def test_stale_render_title_model_is_upgraded_to_gpt56():
     assert _resolve_title_model("") == "gpt-5.6"
     assert _resolve_title_model("gpt-4o-mini") == "gpt-5.6"
     assert _resolve_title_model("gpt-5.6-terra") == "gpt-5.6-terra"
+
+
+def test_title_llm_does_not_retry_a_slow_failure(monkeypatch):
+    import push_title_agent
+
+    calls = []
+
+    class FailingCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            raise TimeoutError("synthetic timeout")
+
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=FailingCompletions())
+    )
+    monkeypatch.setenv("AI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 900)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 12.0)
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
+
+    with pytest.raises(TimeoutError, match="synthetic timeout"):
+        push_title_agent._llm_call("System", "Synthetic article")
+
+    assert len(calls) == 1
 
 
 def test_title_llm_keeps_legacy_parameters_for_non_reasoning_models(monkeypatch):
