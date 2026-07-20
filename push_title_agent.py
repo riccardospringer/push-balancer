@@ -14,10 +14,20 @@ from app.cost_controls import allow_calls
 
 log = logging.getLogger("push-title-agent")
 
-MODEL = os.environ.get("OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+MODEL = os.environ.get("OPENAI_TITLE_GENERATION_MODEL", "gpt-5.6")
 MAX_PUSH_LENGTH = 100
-AGENT_TIMEOUT = float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "8.0"))
-DEFAULT_MAX_TOKENS = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "320"))
+AGENT_TIMEOUT = float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "30.0"))
+DEFAULT_MAX_TOKENS = int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "1800"))
+REASONING_EFFORT = os.environ.get(
+    "OPENAI_TITLE_GENERATION_REASONING_EFFORT",
+    "medium",
+).strip().lower()
+if REASONING_EFFORT not in {"none", "low", "medium", "high", "xhigh", "max"}:
+    log.warning(
+        "Invalid OPENAI_TITLE_GENERATION_REASONING_EFFORT=%r; using medium",
+        REASONING_EFFORT,
+    )
+    REASONING_EFFORT = "medium"
 _OPENAI_CLIENT = None
 _OPENAI_CLIENT_KEY = ""
 
@@ -214,7 +224,12 @@ def _local_editorial_one_brain(
     }
 
 
-def _llm_call(system: str, user: str, temperature: float = 0.7, max_tokens: int = 800) -> str:
+def _llm_call(
+    system: str,
+    user: str,
+    temperature: float = 0.7,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
     api_key = _openai_api_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY/AI_API_KEY nicht gesetzt")
@@ -229,14 +244,37 @@ def _llm_call(system: str, user: str, temperature: float = 0.7, max_tokens: int 
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
-            resp = client.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                max_tokens=min(max_tokens, DEFAULT_MAX_TOKENS),
-                temperature=temperature,
-                timeout=AGENT_TIMEOUT,
-            )
-            return resp.choices[0].message.content.strip()
+            token_limit = min(max_tokens, DEFAULT_MAX_TOKENS)
+            request = {
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "timeout": AGENT_TIMEOUT,
+                "store": False,
+            }
+            if MODEL.lower().startswith("gpt-5"):
+                request.update(
+                    {
+                        "max_completion_tokens": token_limit,
+                        "response_format": {"type": "json_object"},
+                        "extra_body": {"reasoning_effort": REASONING_EFFORT},
+                    }
+                )
+            else:
+                request.update(
+                    {
+                        "max_tokens": token_limit,
+                        "temperature": temperature,
+                    }
+                )
+
+            resp = client.chat.completions.create(**request)
+            content = resp.choices[0].message.content
+            if not content:
+                raise RuntimeError("OpenAI lieferte keinen Push-Titel")
+            return content.strip()
         except Exception as exc:
             last_exc = exc
             log.warning("[PushTitle] LLM-Call Versuch %d/2 fehlgeschlagen: %s", attempt + 1, exc)
@@ -328,7 +366,12 @@ def _editorial_one_brain(title, text, category, kicker="", headline=""):
     if text:
         parts.append(f"\nText:\n{text[:1500]}")
 
-    raw = _llm_call(EDITORIAL_ONE_BRAIN_SYS, "\n".join(parts), temperature=0.4, max_tokens=320)
+    raw = _llm_call(
+        EDITORIAL_ONE_BRAIN_SYS,
+        "\n".join(parts),
+        temperature=0.4,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    )
 
     try:
         if "{" in raw:

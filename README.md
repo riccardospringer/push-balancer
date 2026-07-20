@@ -394,9 +394,10 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `PUSH_TEAMS_BREAKING_MIN_SCORE` | No | `72` | Breaking-news raw score floor outside score-only mode; weighted Teams Alert Score still decides final eligibility |
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
-| `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-4o-mini` | Model used for manual title generation when enabled |
-| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `8.0` | Timeout for manual title generation requests |
-| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `320` | Max completion tokens for manual title generation |
+| `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-5.6` | Model used for manual title generation when enabled; `gpt-5.6` resolves to GPT-5.6 Sol |
+| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `30.0` | Timeout per manual title generation request |
+| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `1800` | Max completion tokens, including reasoning tokens, for manual title generation |
+| `OPENAI_TITLE_GENERATION_REASONING_EFFORT` | No | `medium` | GPT-5.6 reasoning effort for generating and ranking the four title variants |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR` | No | `0` | Hard hourly budget for paid title generation; `0` keeps the local fallback active |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY` | No | `0` | Hard daily budget for paid title generation; `0` keeps the local fallback active |
 | `OPENAI_BACKFILL_ENABLED` | No | `false` | Keeps the dormant LLM backfill worker disabled unless it is explicitly needed |

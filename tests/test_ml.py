@@ -439,3 +439,81 @@ def test_generate_push_title_starts_individual_llm_call_when_enabled(monkeypatch
     assert result["meta"]["modus"] == "llm-individual-headline"
     assert result["meta"]["llm_requested"] is True
     assert result["meta"]["llm_call_started"] is True
+
+
+def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
+    import push_title_agent
+
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content='{"gewinner":{"titel":"Test"}}')
+                    )
+                ]
+            )
+
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=FakeCompletions())
+    )
+    monkeypatch.setenv("AI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 1800)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 30.0)
+    monkeypatch.setattr(push_title_agent, "REASONING_EFFORT", "medium")
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
+
+    result = push_title_agent._llm_call("System", "Synthetic article", max_tokens=1800)
+
+    assert result == '{"gewinner":{"titel":"Test"}}'
+    assert len(calls) == 1
+    request = calls[0]
+    assert request["model"] == "gpt-5.6"
+    assert request["max_completion_tokens"] == 1800
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["extra_body"] == {"reasoning_effort": "medium"}
+    assert request["store"] is False
+    assert request["timeout"] == 30.0
+    assert "max_tokens" not in request
+    assert "temperature" not in request
+
+
+def test_title_llm_keeps_legacy_parameters_for_non_reasoning_models(monkeypatch):
+    import push_title_agent
+
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content='{"gewinner":{"titel":"Test"}}')
+                    )
+                ]
+            )
+
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=FakeCompletions())
+    )
+    monkeypatch.setenv("AI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(push_title_agent, "MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 600)
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
+    monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
+
+    push_title_agent._llm_call("System", "Synthetic article", temperature=0.4, max_tokens=600)
+
+    request = calls[0]
+    assert request["max_tokens"] == 600
+    assert request["temperature"] == 0.4
+    assert "max_completion_tokens" not in request
+    assert "extra_body" not in request

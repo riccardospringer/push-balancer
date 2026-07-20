@@ -315,7 +315,7 @@ def post_schwab_approval(body: SchwabApprovalRequest) -> JSONResponse:
 
 @router.post("/api/push-title/generate")
 def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
-    """Generiert Push-Titel via GPT-4o im Editorial-One-Brain-Modus."""
+    """Generiert Push-Titel mit dem konfigurierten OpenAI-Modell."""
     try:
         return JSONResponse(content=_build_push_title_response(body))
     except RuntimeError as exc:

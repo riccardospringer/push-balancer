@@ -122,13 +122,15 @@ services:
       - key: OPENAI_TITLE_GENERATION_ENABLED
         value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
-        value: gpt-4o-mini
-      # 8s war zu knapp -> haeufige Timeouts -> Fallback auf lokalen Titel.
+        value: gpt-5.6
+      # GPT-5.6 bekommt genug Zeit, damit kein vorschneller lokaler Fallback greift.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "20.0"
-      # 320 Tokens reichten fuer die strukturierte Multi-Varianten-Antwort oft nicht.
+        value: "30.0"
+      # Umfasst bei GPT-5.6 sichtbare Ausgabe und Reasoning-Tokens.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
-        value: "600"
+        value: "1800"
+      - key: OPENAI_TITLE_GENERATION_REASONING_EFFORT
+        value: medium
       # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.
       - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR
         value: "60"
