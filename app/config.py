@@ -209,6 +209,10 @@ ARTICLE_PREDICTION_ENRICHMENT_ENABLED: bool = _env_flag(
     "ARTICLE_PREDICTION_ENRICHMENT_ENABLED",
     not ECONOMY_MODE,
 )
+PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS: int = _env_int(
+    "PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS",
+    180,
+)
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
 # DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db
@@ -408,6 +412,41 @@ INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
 # configured Teams/Power Automate endpoint and requires editorial/privacy approval.
 PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
+# Kanonischer Push-Score fuer die Teams-Auswahl. Der Consumer bleibt bis zur
+# dokumentierten Privacy-/Product-Freigabe aus; bei Aktivierung gibt es keinen
+# lokalen Score-Fallback.
+PUSH_BALANCER_SCORE_API_ENABLED: bool = _env_flag(
+    "PUSH_BALANCER_SCORE_API_ENABLED",
+    False,
+)
+PUSH_BALANCER_SCORE_API_BASE_URL: str = os.environ.get(
+    "PUSH_BALANCER_SCORE_API_BASE_URL",
+    "",
+).strip()
+PUSH_BALANCER_SCORE_API_KEY: str = os.environ.get(
+    "PUSH_BALANCER_SCORE_API_KEY",
+    "",
+).strip()
+PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS: float = _env_float(
+    "PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS",
+    2.5,
+)
+PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS: float = _env_float(
+    "PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS",
+    45.0,
+)
+PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS: int = _env_int(
+    "PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS",
+    900,
+)
+PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY: int = _env_int(
+    "PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY",
+    16,
+)
+PUSH_BALANCER_SCORE_API_MAX_RETRIES: int = _env_int(
+    "PUSH_BALANCER_SCORE_API_MAX_RETRIES",
+    1,
+)
 PUSH_TEAMS_MIN_SCORE: float = _env_float("PUSH_TEAMS_MIN_SCORE", 75.0)
 # Teams-Reife-Schwelle. PUSH_TEAMS_MIN_TEAMS_SCORE ist der bevorzugte Name,
 # PUSH_TEAMS_MIN_ALERT_SCORE bleibt als Alias erhalten.
@@ -458,8 +497,11 @@ PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS: int = _env_int(
 )
 PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES: int = _env_int(
     "PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES",
-    45,
+    30,
 )
+# Nicht konfigurierbare Produktregel: Teams-Empfehlungen haben einen eigenen
+# Takt. Echte Live-Pushes bleiben nur Vergleichskontext.
+PUSH_TEAMS_INDEPENDENT_PACING_ENABLED: bool = True
 _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport"
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_ALLOWED_SECTIONS",
@@ -472,9 +514,8 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_EXCLUDED_SECTIONS",
     "",
 )
-# Tagesziel an Pushes (CvD-Richtwert) und dynamische Schwellenanpassung.
-# Wenn echte Push-Historie verfügbar ist, wird Mindestdruck gegen den realen
-# Push-Bestand bewertet; Teams-Hinweise sind nur Fallback/Transportkanal.
+# Eigenes Tagesziel fuer Teams-Empfehlungen und dynamische Schwellenanpassung.
+# Der echte Push-Bestand beeinflusst weder Pacing noch Cooldown.
 PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 15)
 PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 15)
 PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 18)
@@ -482,9 +523,10 @@ PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 1
 # aber der CvD soll einen vollstaendigen, transparent priorisierten Tagesplan sehen.
 PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 15)
 PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS", 18)
-# Verbindliche Live-Entscheidungslogik: In den 15 besten Tagesfenstern wird bis
-# zur Deadline gesammelt. Vorher duerfen nur Breaking- oder aussergewoehnlich
-# starke Kandidaten in roten/gelben Slots empfohlen werden.
+# Verbindliche Live-Entscheidungslogik: 06:15 und 06:45 sind taegliche
+# Basisfenster. Jede rote/gelbe Wochentagszelle bekommt ebenfalls zwei frische
+# Top-1-Entscheidungen um :15 und :45. Bis mindestens 15 werden die besten
+# verbleibenden :45-Fenster ergaenzt; an starken Tagen sind bis zu 18 verbindlich.
 PUSH_TEAMS_SLOT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_SLOT_GATE_ENABLED", True)
 PUSH_TEAMS_SLOT_DEADLINE_MINUTE: int = _env_int("PUSH_TEAMS_SLOT_DEADLINE_MINUTE", 45)
 PUSH_TEAMS_PEAK_SLOT_MIN_OR: float = _env_float("PUSH_TEAMS_PEAK_SLOT_MIN_OR", 6.0)
@@ -502,15 +544,15 @@ PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE: float = _env_float(
 )
 PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE: float = _env_float(
     "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE",
-    55.0,
+    75.0,
 )
 PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE: float = _env_float(
     "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE",
-    55.0,
+    73.0,
 )
 PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE: float = _env_float(
     "PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE",
-    55.0,
+    69.0,
 )
 # Ein kompakter Tagesfahrplan wird einmal pro Berliner Kalendertag gesendet.
 # Der persistente Claim verhindert Doppelversand bei Restart oder mehreren Workern.
@@ -521,6 +563,29 @@ PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED: bool = _env_flag(
 PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME: str = os.environ.get(
     "PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME",
     "05:45",
+)
+# Lokales, deterministisches Pruefkollegium vor jedem Teams-Versand. Die
+# Spezialpruefer teilen nur einen fluechtigen Artikel-Snapshot und rufen weder
+# externe Modelle noch weitere Cloud-Dienste auf.
+PUSH_TEAMS_AGENT_REVIEW_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_AGENT_REVIEW_ENABLED",
+    False,
+)
+PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS: int = _env_int(
+    "PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS",
+    3,
+)
+PUSH_TEAMS_AGENT_REVIEW_MIN_CONSENSUS_SCORE: float = _env_float(
+    "PUSH_TEAMS_AGENT_REVIEW_MIN_CONSENSUS_SCORE",
+    60.0,
+)
+PUSH_TEAMS_MIN_RECOMMENDATION_QUALITY: float = _env_float(
+    "PUSH_TEAMS_MIN_RECOMMENDATION_QUALITY",
+    72.0,
+)
+PUSH_TEAMS_AGENT_REVIEW_MAX_LATENCY_MS: int = _env_int(
+    "PUSH_TEAMS_AGENT_REVIEW_MAX_LATENCY_MS",
+    50,
 )
 PUSH_TEAMS_REQUIRE_VALID_PREDICTION: bool = _env_flag(
     "PUSH_TEAMS_REQUIRE_VALID_PREDICTION",
@@ -563,10 +628,9 @@ PUSH_TEAMS_FEED_OVERTAKEN_ENABLED: bool = _env_flag("PUSH_TEAMS_FEED_OVERTAKEN_E
 # und ueber der Token-Aehnlichkeit -> kein zweiter Alert.
 PUSH_TEAMS_TOPIC_DEDUP_HOURS: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_HOURS", 12.0)
 PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY", 0.5)
-# Abgleich gegen ECHTE Live-Pushes: wurde dieselbe Story bereits real gepusht
-# (gleiche Artikel-URL jederzeit im Verlauf, oder dieselbe Story per URL-Slug/
-# Titel-Aehnlichkeit innerhalb dieses Fensters), wird sie in Teams nicht erneut
-# vorgeschlagen.
+# Vergleich gegen ECHTE Live-Pushes: gleiche Artikel-URLs sowie aehnliche
+# URL-Slugs/Titel werden markiert, beeinflussen die unabhaengige Teams-Auswahl
+# aber nicht. Teams-Dubletten werden separat aus der Teams-Historie gesperrt.
 PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS: float = _env_float(
     "PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS",
     36.0,
@@ -576,26 +640,27 @@ PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER: float = _env_float(
     "PUSH_TEAMS_SELECTION_CLEAR_EDITORIAL_BUFFER",
     6.0,
 )
-# Visit-Optimierung: Teams soll unter den pushwuerdigen Kandidaten den Vorschlag
-# mit dem groessten erwarteten Push-Visit-Potenzial priorisieren. Das Potenzial
-# basiert auf Artikel-OR-Prognose x historischer Reichweite je Ressort/Slot.
+# Score-dominierte Response-Optimierung: Der Push-Score bleibt das klare
+# Leitsignal. OR x Reichweite differenziert nur innerhalb des engen Score-Felds
+# und ist zur Laufzeit auf 10 Prozent begrenzt.
 PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED",
     True,
 )
 PUSH_TEAMS_VISIT_SELECTION_WEIGHT: float = _env_float(
     "PUSH_TEAMS_VISIT_SELECTION_WEIGHT",
-    0.62,
+    0.10,
 )
 PUSH_TEAMS_DEFAULT_REACH: int = _env_int("PUSH_TEAMS_DEFAULT_REACH", 250000)
 PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_ENABLED",
     True,
 )
-# Maximale Absenkung/Anhebung der Teams-Reife-Schwelle durch die Push-Bestand-Logik.
+# Legacy-Kompatibilitaet: Rueckstand senkt die Schwelle nicht mehr; Vorsprung
+# darf sie weiterhin zum Schutz vor Push-Muedigkeit anheben.
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP",
-    10.0,
+    0.0,
 )
 PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE",
@@ -609,9 +674,9 @@ PUSH_TEAMS_BREAKING_MIN_SCORE: float = _env_float("PUSH_TEAMS_BREAKING_MIN_SCORE
 PUSH_TEAMS_BREAKING_MIN_OR: float = _env_float("PUSH_TEAMS_BREAKING_MIN_OR", 4.0)
 PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH: int = _env_int(
     "PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH",
-    10,
+    45,
 )
 PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS: int = _env_int("PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS", 24)
 PUSH_TEAMS_MAX_PUSHES_LAST_6H: int = _env_int("PUSH_TEAMS_MAX_PUSHES_LAST_6H", 8)
-PUSH_TEAMS_CHECK_INTERVAL_SECONDS: int = _env_int("PUSH_TEAMS_CHECK_INTERVAL_SECONDS", 120)
+PUSH_TEAMS_CHECK_INTERVAL_SECONDS: int = _env_int("PUSH_TEAMS_CHECK_INTERVAL_SECONDS", 60)
 PUSH_TEAMS_CANDIDATE_LIMIT: int = _env_int("PUSH_TEAMS_CANDIDATE_LIMIT", 80)

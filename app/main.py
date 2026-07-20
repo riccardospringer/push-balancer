@@ -827,6 +827,18 @@ def _start_background_workers() -> None:
                     result = run_teams_alert_cycle()
                     if result.get("sent"):
                         log.info("[TeamsAlert] Empfehlung an Teams gesendet: %s", result.get("candidateId"))
+                    else:
+                        diagnostics = result.get("diagnostics") or {}
+                        log.info(
+                            "[TeamsAlert] Kein Versand reason=%s teams_today=%s "
+                            "due=%s target=%s score_eligible=%s blockers=%s",
+                            result.get("reason") or "unknown",
+                            diagnostics.get("teamsAlertsToday"),
+                            diagnostics.get("dueOpportunityCount"),
+                            diagnostics.get("targetCount"),
+                            diagnostics.get("scoreEligibleCandidates"),
+                            diagnostics.get("blockerCategories"),
+                        )
                 except Exception as e:
                     log.warning("[TeamsAlert] Worker-Fehler: %s", e)
                 time.sleep(interval)

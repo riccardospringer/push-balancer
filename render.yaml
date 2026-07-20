@@ -31,6 +31,25 @@ services:
         value: "false"
       - key: ARTICLE_PREDICTION_ENRICHMENT_ENABLED
         value: "true"
+      - key: PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS
+        value: "180"
+      # Activation remains gated by Privacy/Product/DPO/Legal approval.
+      - key: PUSH_BALANCER_SCORE_API_ENABLED
+        value: "false"
+      - key: PUSH_BALANCER_SCORE_API_BASE_URL
+        value: https://push-balancer-internal.eks1.euc1.stg.bildnext.as-infra.de
+      - key: PUSH_BALANCER_SCORE_API_KEY
+        sync: false
+      - key: PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS
+        value: "2.5"
+      - key: PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS
+        value: "45"
+      - key: PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS
+        value: "900"
+      - key: PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY
+        value: "16"
+      - key: PUSH_BALANCER_SCORE_API_MAX_RETRIES
+        value: "1"
       - key: PUSH_TEAMS_ALERTS_ENABLED
         value: "true"
       - key: PUSH_TEAMS_WEBHOOK_URL
@@ -66,7 +85,11 @@ services:
       - key: PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS
         value: "12"
       - key: PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
-        value: "45"
+        value: "30"
+      - key: PUSH_TEAMS_QUIET_HOURS_START
+        value: "00:00"
+      - key: PUSH_TEAMS_QUIET_HOURS_END
+        value: "05:30"
       - key: PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST
         value: "true"
       - key: PUSH_TEAMS_REALERT_SCORE_DELTA
@@ -100,21 +123,39 @@ services:
       - key: PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE
         value: "80"
       - key: PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE
-        value: "55"
+        value: "75"
       - key: PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE
-        value: "55"
+        value: "73"
       - key: PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE
-        value: "55"
+        value: "69"
       - key: PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED
         value: "true"
       - key: PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
         value: "05:45"
+      - key: PUSH_TEAMS_AGENT_REVIEW_ENABLED
+        value: "false"
+      - key: PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS
+        value: "3"
+      - key: PUSH_TEAMS_AGENT_REVIEW_MIN_CONSENSUS_SCORE
+        value: "60"
+      - key: PUSH_TEAMS_MIN_RECOMMENDATION_QUALITY
+        value: "72"
+      - key: PUSH_TEAMS_AGENT_REVIEW_MAX_LATENCY_MS
+        value: "50"
+      - key: PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED
+        value: "true"
+      - key: PUSH_TEAMS_VISIT_SELECTION_WEIGHT
+        value: "0.10"
       - key: PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_DROP
-        value: "10"
+        value: "0"
       - key: PUSH_TEAMS_BREAKING_OVERRIDE
         value: "true"
       - key: PUSH_TEAMS_BREAKING_MIN_SCORE
         value: "72"
+      - key: PUSH_TEAMS_BREAKING_MIN_MINUTES_SINCE_LAST_PUSH
+        value: "45"
+      - key: PUSH_TEAMS_CHECK_INTERVAL_SECONDS
+        value: "60"
       - key: TAGESPLAN_ON_DEMAND_BUILD_ENABLED
         value: "true"
       - key: OPENAI_API_KEY

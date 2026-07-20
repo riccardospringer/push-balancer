@@ -10,13 +10,75 @@ from unittest.mock import patch
 
 import pytest
 from app import database
+from app.routers import score_capture
 
 
 # ── _push_db_upsert ──────────────────────────────────────────────────────────
 
 
 class TestTeamsAlertHistory:
-    def test_daily_schedule_claim_is_restart_safe_and_enters_global_cooldown(self, tmp_db):
+    def test_memory_score_snapshot_is_used_only_inside_the_fresh_window(self, monkeypatch):
+        url = "https://example.invalid/news/memory-rating"
+        now = 1_800_000_000
+        key = score_capture.hashlib.md5(score_capture._normalize_url(url).encode()).hexdigest()
+        monkeypatch.setattr(score_capture.time, "time", lambda: now)
+
+        with score_capture._lock:
+            previous_cache = dict(score_capture._score_cache)
+            score_capture._score_cache.clear()
+            score_capture._score_cache[key] = {
+                "score": 89.0,
+                "ts": now - 120,
+                "url": url,
+            }
+        try:
+            fresh = score_capture.get_score_snapshot_for_url(
+                url,
+                max_age_seconds=180,
+                allow_db_fallback=False,
+            )
+            stale = score_capture.get_score_snapshot_for_url(
+                url,
+                max_age_seconds=60,
+                allow_db_fallback=False,
+            )
+        finally:
+            with score_capture._lock:
+                score_capture._score_cache.clear()
+                score_capture._score_cache.update(previous_cache)
+
+        assert fresh is not None
+        assert fresh["score"] == pytest.approx(89.0)
+        assert fresh["ageSeconds"] == 120
+        assert stale is None
+
+    def test_article_score_snapshot_respects_the_requested_freshness(self, tmp_db):
+        url = "https://example.invalid/news/synthetic-rating"
+        now = int(time.time())
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.save_article_score_to_db(url, 88.0)
+            conn = sqlite3.connect(tmp_db)
+            conn.execute(
+                "UPDATE article_score_log SET captured_at = ?",
+                (now - 200,),
+            )
+            conn.commit()
+            conn.close()
+
+            stale = database.get_article_score_snapshot_from_db(
+                url,
+                max_age_seconds=180,
+            )
+            fresh_enough = database.get_article_score_snapshot_from_db(
+                url,
+                max_age_seconds=300,
+            )
+
+        assert stale is None
+        assert fresh_enough is not None
+        assert fresh_enough["score"] == pytest.approx(88.0)
+        assert 199 <= fresh_enough["age_seconds"] <= 202
+    def test_daily_schedule_claim_is_restart_safe_without_recommendation_cooldown(self, tmp_db):
         now_ts = 1_800_000_100
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
             first = database.teams_daily_schedule_try_claim(
@@ -37,12 +99,27 @@ class TestTeamsAlertHistory:
                 "2027-01-15",
                 now_ts=now_ts + 3600,
             )
+            recommendation_claim = database.teams_alert_try_claim_send(
+                article_key="first-morning-recommendation",
+                article_id="first-morning-recommendation",
+                article_url="https://www.bild.de/news/first-morning-recommendation",
+                title_hash="first-morning-hash",
+                article_title="Regierung beschliesst neue Soforthilfe",
+                score=90.0,
+                predicted_or=7.0,
+                candidate_updated_at=now_ts + 25,
+                is_breaking=False,
+                reason="Push empfohlen",
+                decision_ts=now_ts + 30,
+                global_cooldown_minutes=45,
+            )
             last_message_ts = database.teams_alert_last_sent_ts()
 
         assert first == {"claimed": True, "reason": "claimed"}
         assert duplicate == {"claimed": False, "reason": "retry_cooldown"}
         assert after_restart == {"claimed": False, "reason": "already_sent"}
-        assert last_message_ts == now_ts + 20
+        assert recommendation_claim == {"claimed": True, "reason": "claimed"}
+        assert last_message_ts == now_ts + 30
 
     def test_teams_alert_list_recent_contains_dashboard_fields(self, tmp_db):
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
@@ -174,6 +251,74 @@ class TestTeamsAlertHistory:
 
         assert claim["claimed"] is False
         assert claim["reason"] == "article_failure_cooldown"
+
+    def test_teams_alert_claim_never_repeats_sent_article_within_retention(self, tmp_db):
+        sent_ts = 1_800_000_100
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_alert_record(
+                article_key="article-once",
+                article_id="article-once",
+                article_url="https://www.bild.de/news/article-once",
+                title_hash="hash-once",
+                article_title="Regierung beschliesst neue Soforthilfe",
+                score=92.0,
+                predicted_or=7.2,
+                candidate_updated_at=sent_ts - 60,
+                is_breaking=False,
+                reason="Push empfohlen",
+                status="sent",
+                decision_ts=sent_ts,
+            )
+            claim = database.teams_alert_try_claim_send(
+                article_key="article-once",
+                article_id="article-once",
+                article_url="https://www.bild.de/news/article-once",
+                title_hash="hash-once-new-title",
+                article_title="Eilmeldung: Regierung weitet Soforthilfe aus",
+                score=98.0,
+                predicted_or=8.4,
+                candidate_updated_at=sent_ts + 30 * 86400,
+                is_breaking=True,
+                reason="Breaking-Update",
+                decision_ts=sent_ts + 30 * 86400,
+                global_cooldown_minutes=0,
+            )
+
+        assert claim == {"claimed": False, "reason": "article_already_sent"}
+
+    def test_breaking_can_bypass_global_teams_cooldown_for_distinct_article(self, tmp_db):
+        now_ts = 1_800_000_100
+        with patch.object(database, "PUSH_DB_PATH", tmp_db):
+            database.teams_alert_record(
+                article_key="article-before-breaking",
+                article_id="article-before-breaking",
+                article_url="https://www.bild.de/news/article-before-breaking",
+                title_hash="hash-before",
+                article_title="Vorherige Teams-Empfehlung",
+                score=90.0,
+                predicted_or=7.0,
+                candidate_updated_at=now_ts - 60,
+                is_breaking=False,
+                reason="Push empfohlen",
+                status="sent",
+                decision_ts=now_ts,
+            )
+            claim = database.teams_alert_try_claim_send(
+                article_key="distinct-breaking",
+                article_id="distinct-breaking",
+                article_url="https://www.bild.de/news/distinct-breaking",
+                title_hash="hash-breaking",
+                article_title="Eilmeldung: Evakuierung beginnt sofort",
+                score=95.0,
+                predicted_or=8.0,
+                candidate_updated_at=now_ts + 30,
+                is_breaking=True,
+                reason="Breaking-Update",
+                decision_ts=now_ts + 60,
+                global_cooldown_minutes=0,
+            )
+
+        assert claim == {"claimed": True, "reason": "claimed"}
 
 class TestPushDbUpsert:
     def test_upsert_inserts_new_records(self, tmp_db, sample_pushes):

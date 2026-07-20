@@ -13,8 +13,6 @@ from __future__ import annotations
 import hashlib
 import time
 import threading
-from typing import Any
-
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -47,19 +45,59 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-def get_score_for_url(url: str) -> float | None:
-    key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
+def get_score_snapshot_for_url(
+    url: str,
+    *,
+    max_age_seconds: int = _CACHE_TTL,
+    allow_db_fallback: bool = True,
+) -> dict[str, float | int | str] | None:
+    """Liefert einen frischen Browser-Score mit Alter und technischer Quelle."""
+    normalized_url = _normalize_url(url)
+    max_age = max(0, int(max_age_seconds))
+    if not normalized_url or max_age <= 0:
+        return None
+
+    key = hashlib.md5(normalized_url.encode()).hexdigest()
+    now = int(time.time())
     # 1. Memory-Cache (schnell)
     with _lock:
         entry = _score_cache.get(key)
-        if entry and time.time() - entry["ts"] < _CACHE_TTL:
-            return entry["score"]
+        if entry:
+            captured_at = int(entry["ts"])
+            age_seconds = max(0, now - captured_at)
+            if age_seconds < max_age:
+                return {
+                    "score": float(entry["score"]),
+                    "capturedAt": captured_at,
+                    "ageSeconds": age_seconds,
+                    "source": "memory",
+                }
+    if not allow_db_fallback:
+        return None
+
     # 2. DB-Fallback (überlebt Restarts)
     try:
-        from app.database import get_article_score_from_db
-        return get_article_score_from_db(url)
+        from app.database import get_article_score_snapshot_from_db
+
+        snapshot = get_article_score_snapshot_from_db(
+            normalized_url,
+            max_age_seconds=max_age,
+        )
+        if snapshot:
+            return {
+                "score": float(snapshot["score"]),
+                "capturedAt": int(snapshot["captured_at"]),
+                "ageSeconds": int(snapshot["age_seconds"]),
+                "source": "database",
+            }
     except Exception:
-        return None
+        pass
+    return None
+
+
+def get_score_for_url(url: str) -> float | None:
+    snapshot = get_score_snapshot_for_url(url)
+    return float(snapshot["score"]) if snapshot else None
 
 
 class ScoreCaptureItem(BaseModel):

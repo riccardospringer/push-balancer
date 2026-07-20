@@ -79,23 +79,43 @@ def calc_frozen_xor(cat: str, hour: int, ts_num: int) -> float:
         return 5.0
 
 
-def get_article_score_from_db(url: str) -> float | None:
-    """Liest gespeicherten Kandidaten-Score aus article_score_log."""
+def get_article_score_snapshot_from_db(
+    url: str,
+    *,
+    max_age_seconds: int = 8 * 3600,
+) -> dict[str, float | int] | None:
+    """Liest einen ausreichend frischen Kandidaten-Score samt Zeitstempel."""
     from app.routers.score_capture import _normalize_url
-    import hashlib
+
     key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
-    ttl = 8 * 3600
+    now = int(time.time())
+    max_age = max(0, int(max_age_seconds))
+    if not url or max_age <= 0:
+        return None
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
         row = conn.execute(
             "SELECT score, captured_at FROM article_score_log WHERE url_hash = ?", (key,)
         ).fetchone()
         conn.close()
-        if row and (time.time() - row[1]) < ttl:
-            return float(row[0])
+        if row:
+            captured_at = int(row[1])
+            age_seconds = max(0, now - captured_at)
+            if age_seconds < max_age:
+                return {
+                    "score": float(row[0]),
+                    "captured_at": captured_at,
+                    "age_seconds": age_seconds,
+                }
     except Exception:
         pass
     return None
+
+
+def get_article_score_from_db(url: str) -> float | None:
+    """Liest gespeicherten Kandidaten-Score aus article_score_log."""
+    snapshot = get_article_score_snapshot_from_db(url)
+    return float(snapshot["score"]) if snapshot else None
 
 
 def save_article_score_to_db(url: str, score: float) -> None:
@@ -940,27 +960,23 @@ def teams_alert_load_for_keys(article_keys: list[str]) -> dict[str, dict]:
 
 
 def teams_alert_last_sent_ts() -> int:
-    """Return the newest Teams message timestamp for the global cooldown."""
+    """Return the newest push-recommendation timestamp for its global cooldown.
+
+    The editorial day schedule is an operational planning message, not a push
+    recommendation, and therefore must not consume the recommendation cooldown.
+    """
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH)
         row = conn.execute(
-            """SELECT MAX(message_ts) FROM (
-                   SELECT CASE
+            """SELECT MAX(
+                   CASE
                        WHEN status = 'sent' THEN last_alert_ts
                        WHEN status IN ('sending', 'failed') THEN last_decision_ts
                        ELSE 0
-                   END AS message_ts
-                   FROM teams_alerts
-                   WHERE status IN ('sent', 'sending', 'failed')
-                   UNION ALL
-                   SELECT CASE
-                       WHEN status = 'sent' THEN sent_at
-                       WHEN status IN ('sending', 'failed') THEN claimed_at
-                       ELSE 0
-                   END AS message_ts
-                   FROM teams_daily_schedule_sends
-                   WHERE status IN ('sent', 'sending', 'failed')
-               )""",
+                   END
+               )
+               FROM teams_alerts
+               WHERE status IN ('sent', 'sending', 'failed')""",
         ).fetchone()
         conn.close()
     return int((row[0] if row else 0) or 0)
@@ -989,7 +1005,6 @@ def teams_alert_try_claim_send(
         return {"claimed": False, "reason": "missing_article_key"}
 
     now = int(decision_ts or time.time())
-    article_cooldown_seconds = max(0, int(alert_cooldown_minutes or 0)) * 60
     global_cooldown_seconds = max(0, int(global_cooldown_minutes or 0)) * 60
     in_progress_seconds = max(60, int(in_progress_cooldown_minutes or 15) * 60)
     failed_cooldown_seconds = max(0, int(failed_cooldown_minutes or 0)) * 60
@@ -1015,14 +1030,9 @@ def teams_alert_try_claim_send(
                 ):
                     conn.execute("ROLLBACK")
                     return {"claimed": False, "reason": "article_send_in_progress"}
-                if (
-                    existing_status == "sent"
-                    and existing_sent_ts
-                    and article_cooldown_seconds > 0
-                    and now - existing_sent_ts < article_cooldown_seconds
-                ):
+                if existing_status == "sent" and existing_sent_ts:
                     conn.execute("ROLLBACK")
-                    return {"claimed": False, "reason": "article_alert_cooldown"}
+                    return {"claimed": False, "reason": "article_already_sent"}
                 if (
                     existing_status == "failed"
                     and existing_decision_ts
@@ -1034,21 +1044,14 @@ def teams_alert_try_claim_send(
 
             if global_cooldown_seconds > 0:
                 global_row = conn.execute(
-                    """SELECT MAX(message_ts) AS message_ts FROM (
-                           SELECT CASE
+                    """SELECT MAX(
+                           CASE
                                WHEN status = 'sent' THEN last_alert_ts
                                ELSE last_decision_ts
-                           END AS message_ts
-                           FROM teams_alerts
-                           WHERE status IN ('sent', 'sending', 'failed')
-                           UNION ALL
-                           SELECT CASE
-                               WHEN status = 'sent' THEN sent_at
-                               ELSE claimed_at
-                           END AS message_ts
-                           FROM teams_daily_schedule_sends
-                           WHERE status IN ('sent', 'sending', 'failed')
-                       )"""
+                           END
+                       ) AS message_ts
+                       FROM teams_alerts
+                       WHERE status IN ('sent', 'sending', 'failed')"""
                 ).fetchone()
                 if global_row:
                     global_ts = int(global_row["message_ts"] or 0)

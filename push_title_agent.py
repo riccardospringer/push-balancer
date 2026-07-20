@@ -300,6 +300,22 @@ nicht dramatisieren, keine falsche Dringlichkeit und keine Clickbait-Luege.
 Laenge: ideal 35 bis 65 Zeichen, maximal {min(MAX_PUSH_LENGTH, 80)}. Keine Emojis, Fuellwoerter,
 Pipes, kuenstlichen Superlative oder Fragen, wenn eine Aussage staerker ist.
 
+INTERESSEN-LOGIK:
+- Der Leser muss sofort einen konkreten Themenanker erkennen und zugleich genau
+  EINE relevante Antwort offen sehen, fuer die sich der Klick lohnt.
+- Gute offene Antworten sind zum Beispiel: warum etwas geschieht, wen eine Folge
+  trifft, wie eine Entscheidung fiel oder was ein Konflikt konkret bedeutet.
+- Die eigentliche Nachricht darf nicht versteckt werden. Offen bleibt nur die
+  Vertiefung, die der Artikel nach dem Klick nachweislich liefert.
+- Die Neugier muss auch ohne Reizwoerter funktionieren. Wenn der Titel nur mit
+  "das", "so", "diese Wahrheit" oder einer vagen Andeutung lockt, ist er schwach.
+- Verrate nicht schon jede relevante Einzelheit, aber gib genug Substanz, damit
+  der Leser vor dem Klick weiss, welches echte Informationsversprechen er bekommt.
+
+WICHTIGSTE REGEL:
+- Jeder Titel muss faktisch vollstaendig durch Headline, Kicker oder Artikeltext gedeckt sein.
+- Nichts erfinden, nichts dramatisieren, keine falsche Dringlichkeit, keine Clickbait-Luege.
+
 Erzeuge genau je eine Variante:
 - A-klare-news-push: Nachricht sofort verstaendlich
 - B-zugespitzt: emotionaler, konfliktstaerker, aber faktentreu
@@ -308,11 +324,12 @@ Erzeuge genau je eine Variante:
 
 Bewerte 0-10 nach Opening-Rate-Potenzial, BILD-Fit, Verstaendlichkeit unter 2 Sekunden,
 Leser-Relevanz, emotionaler Kraft, Aktualitaet, Abstand zur Original-Headline,
-Clickbait-Risiko und mobiler Lesbarkeit.
+Clickbait-Risiko, Klarheit des Klickversprechens und mobiler Lesbarkeit.
 
 Harte Verbote: Original-Headline nicht kopieren; kein Wort nur davorsetzen; kein Ressort-Prefix;
 keine generischen Phrasen wie "Was jetzt wichtig ist", "Darum geht es jetzt" oder "im Fokus";
-keine falsche Eilmeldung oder kuenstliche Skandalisierung.
+keine vage Neugier ohne Themenanker; keine austauschbare Zeile; keine Behauptung, die nicht im
+Input steht; keine falsche Eilmeldung oder kuenstliche Skandalisierung.
 
 Beispiel: "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
 Schlecht: "FCN: WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"

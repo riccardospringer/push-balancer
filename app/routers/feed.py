@@ -31,6 +31,14 @@ from app.config import (
     COMPETITOR_FEEDS,
     INTERNATIONAL_FEEDS,
     LIVE_FEED_FALLBACK_ENABLED,
+    PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS,
+    PUSH_BALANCER_SCORE_API_BASE_URL,
+    PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
+    PUSH_BALANCER_SCORE_API_KEY,
+    PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS,
+    PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY,
+    PUSH_BALANCER_SCORE_API_MAX_RETRIES,
+    PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS,
     SPORT_COMPETITOR_FEEDS,
     SPORT_EUROPA_FEEDS,
     SPORT_GLOBAL_FEEDS,
@@ -79,13 +87,9 @@ _ARTICLE_BREAKING_KEYWORDS = (
     "EIL",
     "EILMELDUNG",
     "BREAKING",
-    "LIVE",
-    "EXKLUSIV",
-    "SCHOCK",
-    "WARNUNG",
 )
 _ARTICLE_BREAKING_RE = re.compile(
-    r"\b(?:eilmeldung|eil|breaking|live|exklusiv|schock|warnung)\b",
+    r"\b(?:eilmeldung|eil|breaking)\b",
     re.IGNORECASE,
 )
 _ARTICLE_EILMELDUNG_RE = re.compile(
@@ -114,6 +118,8 @@ _article_prediction_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _ARTICLE_PREDICTION_CACHE_MAX = 256
 _ARTICLE_PREDICTION_CACHE_TTL = max(CACHE_TTL, 900)
 _LOW_CONFIDENCE_PREDICTION_METHODS = {"global_avg", "error_fallback"}
+_score_api_client = None
+_score_api_client_signature: tuple[Any, ...] | None = None
 
 try:
     import certifi as _certifi
@@ -255,10 +261,10 @@ def _infer_article_category(url: str, title: str) -> str:
         for word in ("preise", "kosten", "gebühren", "gebuehren", "abzocke", "rückruf", "rueckruf", "kunden")
     ):
         return "verbraucher"
-    if "/digital/" in url_lower or "ki" in title_lower:
-        return "digital"
     if "/regional/" in url_lower:
         return "regional"
+    if "/digital/" in url_lower or re.search(r"\bki\b", title_lower):
+        return "digital"
     if any(
         word in title_lower
         for word in ("mord", "messer", "polizei", "razzia", "festnahme", "gericht", "prozess", "leiche", "täter", "taeter")
@@ -403,6 +409,155 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
     return articles
 
 
+def _apply_canonical_push_balancer_scores(
+    articles: list[dict[str, Any]],
+    *,
+    max_age_seconds: int = PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS,
+) -> list[dict[str, Any]]:
+    """Prefer the fresh rating already shown in the Push Balancer candidate view."""
+    from app.routers.score_capture import get_score_snapshot_for_url
+
+    for article in articles:
+        server_score = float(article.get("score") or 0.0)
+        article["serverEditorialScore"] = round(server_score, 1)
+        article["editorialScore"] = round(server_score, 1)
+        article["serverEditorialScoreReason"] = str(article.get("scoreReason") or "")
+        article["scoreBreakdownSource"] = "server_editorial_assessment"
+        article["pushBalancerScore"] = None
+        article["pushBalancerScoreCapturedAt"] = None
+        article["pushBalancerScoreAgeSeconds"] = None
+        article["scoreSource"] = "server_editorial_fallback"
+
+        snapshot = get_score_snapshot_for_url(
+            str(article.get("url") or ""),
+            max_age_seconds=max_age_seconds,
+            allow_db_fallback=False,
+        )
+        if not snapshot:
+            continue
+
+        captured_score = round(max(0.0, min(float(snapshot["score"]), 100.0)), 1)
+        captured_at = int(snapshot["capturedAt"])
+        article["score"] = captured_score
+        article["pushBalancerScore"] = captured_score
+        article["pushBalancerScoreCapturedAt"] = datetime.datetime.fromtimestamp(
+            captured_at,
+            tz=datetime.timezone.utc,
+        ).isoformat().replace("+00:00", "Z")
+        article["pushBalancerScoreAgeSeconds"] = int(snapshot["ageSeconds"])
+        article["scoreSource"] = "captured_push_balancer"
+        article["scoreReason"] = "Frisches Rating aus der Push-Balancer-Kandidatenansicht"
+
+    return sorted(
+        articles,
+        key=lambda article: (float(article.get("score") or 0.0), article.get("pubDate") or ""),
+        reverse=True,
+    )
+
+
+def _get_internal_score_api_client():
+    """Build one process-local client without ever exposing its credential."""
+    from app.score_api_client import ScoreApiClient
+
+    global _score_api_client, _score_api_client_signature
+    signature = (
+        PUSH_BALANCER_SCORE_API_BASE_URL,
+        bool(PUSH_BALANCER_SCORE_API_KEY),
+        PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS,
+        PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
+        PUSH_BALANCER_SCORE_API_MAX_RETRIES,
+    )
+    if _score_api_client is None or _score_api_client_signature != signature:
+        _score_api_client = ScoreApiClient(
+            PUSH_BALANCER_SCORE_API_BASE_URL,
+            PUSH_BALANCER_SCORE_API_KEY,
+            timeout_seconds=PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS,
+            cache_ttl_seconds=PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
+            max_retries=PUSH_BALANCER_SCORE_API_MAX_RETRIES,
+        )
+        _score_api_client_signature = signature
+    return _score_api_client
+
+
+def _apply_internal_score_api_scores(
+    articles: list[dict[str, Any]],
+    *,
+    client=None,
+    now: datetime.datetime | None = None,
+    max_age_seconds: int = PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS,
+    max_concurrency: int = PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY,
+) -> list[dict[str, Any]]:
+    """Make fresh internal API scores canonical and reject every fallback score."""
+    from app.score_api_client import fetch_score_lookups, resolve_cms_id
+
+    reference = now or datetime.datetime.now(datetime.timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=datetime.timezone.utc)
+
+    cms_ids: list[str] = []
+    for article in articles:
+        cms_id = resolve_cms_id(article)
+        article["scoreBeforeInternalApi"] = float(article.get("score") or 0.0)
+        article["cmsId"] = cms_id
+        article["score"] = 0.0
+        article["pushBalancerScore"] = None
+        article["pushBalancerScoreScoredAt"] = None
+        article["pushBalancerScoreAgeSeconds"] = None
+        article["scoreSource"] = "internal_score_api_missing"
+        article["scoreReason"] = "Kein gueltiger Score aus der internen Push-Balancer-API"
+        if cms_id:
+            cms_ids.append(cms_id)
+
+    lookups = fetch_score_lookups(
+        cms_ids,
+        client or _get_internal_score_api_client(),
+        max_concurrency=max_concurrency,
+    )
+    for article in articles:
+        cms_id = article.get("cmsId")
+        if not cms_id:
+            article["scoreApiStatus"] = "missing_cms_id"
+            continue
+        lookup = lookups.get(str(cms_id))
+        if lookup is None:
+            article["scoreApiStatus"] = "unavailable"
+            article["scoreSource"] = "internal_score_api_unavailable"
+            continue
+        article["scoreApiStatus"] = lookup.status
+        if lookup.status != "ok" or lookup.value is None:
+            article["scoreSource"] = f"internal_score_api_{lookup.status}"
+            continue
+
+        age_seconds = lookup.value.age_seconds(reference)
+        article["pushBalancerScoreScoredAt"] = lookup.value.scored_at.isoformat().replace(
+            "+00:00",
+            "Z",
+        )
+        article["pushBalancerScoreAgeSeconds"] = max(0, int(age_seconds))
+        if age_seconds < -300 or age_seconds > max(0, int(max_age_seconds)):
+            article["scoreApiStatus"] = "stale"
+            article["scoreSource"] = "internal_score_api_stale"
+            continue
+
+        score = round(float(lookup.value.score), 1)
+        article["score"] = score
+        article["pushBalancerScore"] = score
+        article["scoreSource"] = "internal_score_api"
+        article["scoreApiStatus"] = "ok"
+        article["scoreBreakdownSource"] = "internal_score_api_with_editorial_context"
+        article["scoreReason"] = "Kanonischer Push Score aus der internen Push-Balancer-API"
+
+    return sorted(
+        articles,
+        key=lambda article: (
+            article.get("scoreSource") == "internal_score_api",
+            float(article.get("score") or 0.0),
+            article.get("pubDate") or "",
+        ),
+        reverse=True,
+    )
+
+
 @router.get("/api/feed")
 def get_feed() -> Response:
     """Proxy zur BILD News-Sitemap (XML)."""
@@ -412,7 +567,13 @@ def get_feed() -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
-def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
+def build_articles_payload(
+    offset: int = 0,
+    limit: int = 60,
+    *,
+    include_teams_decisions: bool = True,
+    use_internal_score_api: bool = False,
+) -> dict[str, Any]:
     """Return article candidates from the BILD sitemap as a JSON-ready payload."""
     data = _fetch_url(BILD_SITEMAP)
     if data is None:
@@ -502,14 +663,19 @@ def build_articles_payload(offset: int = 0, limit: int = 60) -> dict[str, Any]:
         log.warning("[articles] editorial scoring enrichment failed: %s", exc)
         articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
 
+    articles = _apply_canonical_push_balancer_scores(articles)
+    if use_internal_score_api:
+        articles = _apply_internal_score_api_scores(articles)
+
     selected = articles[offset : offset + limit]
 
-    try:
-        from app.notifications.teams import annotate_candidates_with_teams_decisions
+    if include_teams_decisions:
+        try:
+            from app.notifications.teams import annotate_candidates_with_teams_decisions
 
-        selected = annotate_candidates_with_teams_decisions(selected)
-    except Exception as exc:
-        log.warning("[articles] Teams decision annotation failed: %s", exc)
+            selected = annotate_candidates_with_teams_decisions(selected)
+        except Exception as exc:
+            log.warning("[articles] Teams decision annotation failed: %s", exc)
 
     return {
         "articles": selected,

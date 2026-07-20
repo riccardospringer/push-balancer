@@ -3,6 +3,7 @@
 The scorer uses local aggregate history only. It does not call external
 services and does not expose historical example titles in its explanations.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -14,55 +15,208 @@ from typing import Any
 
 
 _STOP_WORDS = {
-    "aber", "alle", "auch", "auf", "aus", "bei", "das", "dass", "dem", "den",
-    "der", "des", "die", "dies", "diese", "dieser", "doch", "ein", "eine",
-    "einem", "einen", "einer", "fuer", "für", "hat", "haben", "hier", "ist",
-    "jetzt", "kann", "mit", "nach", "nicht", "noch", "oder", "sich", "sie",
-    "sind", "ueber", "über", "und", "von", "vor", "war", "was", "weil",
-    "wenn", "wie", "wird", "wurde", "zum", "zur",
+    "aber",
+    "alle",
+    "auch",
+    "auf",
+    "aus",
+    "bei",
+    "das",
+    "dass",
+    "dem",
+    "den",
+    "der",
+    "des",
+    "die",
+    "dies",
+    "diese",
+    "dieser",
+    "doch",
+    "ein",
+    "eine",
+    "einem",
+    "einen",
+    "einer",
+    "fuer",
+    "für",
+    "hat",
+    "haben",
+    "hier",
+    "ist",
+    "jetzt",
+    "kann",
+    "mit",
+    "nach",
+    "nicht",
+    "noch",
+    "oder",
+    "sich",
+    "sie",
+    "sind",
+    "ueber",
+    "über",
+    "und",
+    "von",
+    "vor",
+    "war",
+    "was",
+    "weil",
+    "wenn",
+    "wie",
+    "wird",
+    "wurde",
+    "zum",
+    "zur",
 }
 
 _TOPIC_CLUSTERS: dict[str, set[str]] = {
     "politik": {
-        "bundestag", "kanzler", "merz", "scholz", "afd", "cdu", "spd",
-        "regierung", "minister", "wahl", "gesetz", "koalition", "ukraine",
-        "putin", "trump", "israel", "krieg",
+        "bundestag",
+        "kanzler",
+        "merz",
+        "scholz",
+        "afd",
+        "cdu",
+        "spd",
+        "regierung",
+        "minister",
+        "wahl",
+        "gesetz",
+        "koalition",
+        "ukraine",
+        "putin",
+        "trump",
+        "israel",
+        "krieg",
     },
     "sport": {
-        "bayern", "bvb", "dortmund", "bundesliga", "champions", "transfer",
-        "trainer", "vertrag", "verletzung", "ausfall", "dfb", "wm", "em",
-        "finale", "sieg", "niederlage",
+        "bayern",
+        "bvb",
+        "dortmund",
+        "bundesliga",
+        "champions",
+        "transfer",
+        "trainer",
+        "vertrag",
+        "verletzung",
+        "ausfall",
+        "dfb",
+        "wm",
+        "em",
+        "finale",
+        "sieg",
+        "niederlage",
     },
     "verbraucher": {
-        "preise", "steuer", "rente", "miete", "geld", "kosten", "sparen",
-        "krankenkasse", "versicherung", "strom", "gas", "heizung", "rueckruf",
-        "rückruf", "warnung", "verbraucher", "auto", "blitzer",
+        "preise",
+        "steuer",
+        "rente",
+        "miete",
+        "geld",
+        "kosten",
+        "sparen",
+        "krankenkasse",
+        "versicherung",
+        "strom",
+        "gas",
+        "heizung",
+        "rueckruf",
+        "rückruf",
+        "warnung",
+        "verbraucher",
+        "auto",
+        "blitzer",
     },
     "crime": {
-        "mord", "messer", "polizei", "festnahme", "täter", "taeter",
-        "razzia", "ueberfall", "überfall", "anschlag", "terror", "leiche",
-        "prozess", "gericht", "verhaftet", "betrug", "betrüger", "betrueger",
-        "leistungsbetrug", "leistungsbetrüger", "leistungsbetrueger",
-        "sozialbetrug", "polizist", "polizisten",
+        "mord",
+        "messer",
+        "polizei",
+        "festnahme",
+        "täter",
+        "taeter",
+        "razzia",
+        "ueberfall",
+        "überfall",
+        "anschlag",
+        "terror",
+        "leiche",
+        "prozess",
+        "gericht",
+        "verhaftet",
+        "betrug",
+        "betrüger",
+        "betrueger",
+        "leistungsbetrug",
+        "leistungsbetrüger",
+        "leistungsbetrueger",
+        "sozialbetrug",
+        "polizist",
+        "polizisten",
     },
     "wetter": {
-        "wetter", "hitze", "regen", "unwetter", "sturm", "gewitter",
-        "schnee", "glätte", "glaette", "hochwasser", "warnung",
+        "wetter",
+        "hitze",
+        "regen",
+        "unwetter",
+        "sturm",
+        "gewitter",
+        "schnee",
+        "glätte",
+        "glaette",
+        "hochwasser",
+        "warnung",
     },
     "unterhaltung": {
-        "star", "stars", "promi", "bohlen", "helene", "gottschalk",
-        "dschungel", "gntm", "trennung", "hochzeit", "liebe", "royal",
-        "prinz", "koenig", "könig", "scheidung", "scheidungszoff",
-        "ehe-aus", "unterhalt", "wm-held", "weltmeister", "schweini",
+        "star",
+        "stars",
+        "promi",
+        "bohlen",
+        "helene",
+        "gottschalk",
+        "dschungel",
+        "gntm",
+        "trennung",
+        "hochzeit",
+        "liebe",
+        "royal",
+        "prinz",
+        "koenig",
+        "könig",
+        "scheidung",
+        "scheidungszoff",
+        "ehe-aus",
+        "unterhalt",
+        "wm-held",
+        "weltmeister",
+        "schweini",
         "schweinsteiger",
     },
     "wirtschaft": {
-        "dax", "boerse", "börse", "firma", "konzern", "job", "jobs",
-        "wirtschaft", "insolvenz", "aktie", "milliarden", "millionen",
+        "dax",
+        "boerse",
+        "börse",
+        "firma",
+        "konzern",
+        "job",
+        "jobs",
+        "wirtschaft",
+        "insolvenz",
+        "aktie",
+        "milliarden",
+        "millionen",
     },
     "digital": {
-        "ki", "apple", "google", "meta", "microsoft", "tesla", "whatsapp",
-        "tiktok", "internet", "daten", "smartphone",
+        "ki",
+        "apple",
+        "google",
+        "meta",
+        "microsoft",
+        "tesla",
+        "whatsapp",
+        "tiktok",
+        "internet",
+        "daten",
+        "smartphone",
     },
 }
 
@@ -110,6 +264,197 @@ _OVERLOAD_CURIOSITY_RE = re.compile(
     r"das m[uü]ssen sie wissen)"
 )
 
+_GERMANY_EXPLICIT_RE = re.compile(
+    r"(?i)\b(deutschland|deutsch(?:e|er|es|en)?|bundesweit|bundesregierung|"
+    r"bundestag|bundesrat|kanzleramt|schufa|buergergeld|bürgergeld|"
+    r"deutsche bahn|bundesliga|dfb|dax|nationalmannschaft)\b"
+)
+_GERMANY_UNQUALIFIED_GOVERNMENT_RE = re.compile(r"(?i)^(?:die\s+)?regierung\b")
+_GERMANY_BROAD_NEED_RE = re.compile(
+    r"(?i)\b(rente|krankenkasse|miete|steuer|verbraucher|pendler|rentner|"
+    r"patienten|kunden|strom|gas|heizung|spritpreis|lebensmittel|rueckruf|"
+    r"rückruf|streik|ausfall|warnung|unwetter|hochwasser|hitzewarnung|hitze|"
+    r"trinkwasser|preise|immobilien|wohnungspreise|hauspreise|bauzinsen|"
+    r"filialen|insolvenz|pleite)\b"
+)
+_GERMAN_SPORT_RE = re.compile(
+    r"(?i)\b(bayern|bvb|dortmund|leverkusen|leipzig|frankfurt|schalke|"
+    r"gladbach|hamburg|koeln|köln|stuttgart|werder|bundesliga|dfb|"
+    r"nationalmannschaft)\b"
+)
+_DOMESTIC_URL_RE = re.compile(r"(?i)/(?:regional|news/inland|politik/inland)/")
+_INTERNATIONAL_URL_RE = re.compile(
+    r"(?i)/(?:ausland|ausland-und-internationales|international|reise|reisen)/"
+)
+_USA_RE = re.compile(
+    r"(?i)\b(usa|u\.s\.|us-(?:mutter|vater|frau|mann|star|praesident|"
+    r"präsident|experte|experten|militaer|militär)|trump|weisses haus|"
+    r"weißes haus|washington|kalifornien|florida|texas|new york)\b"
+)
+_FOREIGN_MARKER_RE = re.compile(
+    r"(?i)\b(usa|iran|israel|ukraine|russland|china|katar|niederlande|"
+    r"belgien|bruessel|brüssel|frankreich|italien|spanien|grossbritannien|"
+    r"großbritannien|tuerkei|türkei|oesterreich|österreich|schweiz|polen|"
+    r"tschechien|griechenland|portugal|ibiza|mallorca|dubai|london|paris|"
+    r"rom|madrid|moskau|washington)\b"
+)
+_GEOPOLITICAL_EVENT_RE = re.compile(
+    r"(?i)\b(krieg|waffenruhe|feuerpause|angriffswelle|militaer|militär|"
+    r"raketen|atom|nato|sanktionen|invasion|terror|anschlag|geiseln|"
+    r"erdbeben|katastrophe|mehrere tote|massaker)\b|\b\d+\s+tote\b"
+)
+_FOREIGN_PERSONAL_STORY_RE = re.compile(
+    r"(?i)\b(mutter|vater|zwillinge|baby|kind|freundin|ehefrau|ehemann|"
+    r"influencer|promi|star|todesstrafe|erstickt|ermordet|totraser|"
+    r"scheidung|trennung|privat|party)\b"
+)
+
+# Narrow People-news exception: a named holder of a German political role and
+# a confirmed parenthood milestone. The rule deliberately ignores partner sex,
+# marital status, and every other identity trait carried by the headline.
+_GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE = re.compile(
+    r"\b(?:(?i:cdu|csu|spd|fdp|afd|gruene|grüne|linke)-"
+    r"(?i:politiker(?:in)?))\b\s+"
+    r"(?:Dr\.\s+)?[A-ZÄÖÜ][A-Za-zÄÖÜäöüß'’-]+\s+"
+    r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß'’-]+.{0,100}"
+    r"\b(?i:(?:ist|sind|wurde|wurden)\s+"
+    r"(?:zum\s+(?:ersten|zweiten|dritten|\d+\.)\s+Mal\s+)?"
+    r"(?:Mama|Mamas|Papa|Papas|Eltern|Mutter|Vater)\s+geworden|"
+    r"Baby\s+ist\s+da)\b"
+)
+
+
+def is_german_public_figure_parenthood_story(push: dict[str, Any]) -> bool:
+    """Return True for a concrete, confirmed German public-figure family event.
+
+    This is article-level editorial classification, not person profiling. It
+    only uses the public role and event wording already present in the headline.
+    """
+    title = _title(push)
+    url = str(push.get("url") or push.get("link") or "").strip()
+    category = _cat(push)
+    is_people_section = category in {"unterhaltung", "stars", "leute"} or bool(
+        re.search(r"(?i)/(?:unterhaltung|stars-und-leute|leute)/", url)
+    )
+    return bool(
+        is_people_section
+        and _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE.search(title)
+        and not _INTERNATIONAL_URL_RE.search(url)
+    )
+
+
+def assess_germany_relevance(push: dict[str, Any]) -> dict[str, Any]:
+    """Classify editorial relevance for people in Germany from existing metadata."""
+    title = _title(push)
+    url = str(push.get("url") or push.get("link") or "").strip()
+    category = _cat(push)
+    explicit_breaking = bool(
+        push.get("is_eilmeldung") or push.get("isEilmeldung") or push.get("isBreaking")
+    )
+    explicit_germany = bool(_GERMANY_EXPLICIT_RE.search(title))
+    unqualified_german_government = bool(
+        _GERMANY_UNQUALIFIED_GOVERNMENT_RE.search(title)
+        and not _INTERNATIONAL_URL_RE.search(url)
+        and not _USA_RE.search(title)
+    )
+    domestic_url = bool(_DOMESTIC_URL_RE.search(url))
+    broad_need = bool(_GERMANY_BROAD_NEED_RE.search(title))
+    german_sport = category == "sport" and bool(_GERMAN_SPORT_RE.search(title))
+    international = (
+        bool(_INTERNATIONAL_URL_RE.search(url) or _FOREIGN_MARKER_RE.search(title))
+        and not explicit_germany
+    )
+
+    consumer_need = (
+        category in {"verbraucher", "wirtschaft"}
+        and broad_need
+        and not _INTERNATIONAL_URL_RE.search(url)
+    )
+
+    if is_german_public_figure_parenthood_story(push):
+        return {
+            "level": "germany_people",
+            "adjustment": 5.0,
+            "selectionAdjustment": 4.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": (
+                "Deutschland-People: benannte deutsche oeffentliche Person und bestaetigtes "
+                "Elternschafts-Ereignis mit breitem Gespraechswert"
+            ),
+        }
+
+    if (
+        explicit_germany
+        or unqualified_german_government
+        or german_sport
+        or (domestic_url and broad_need)
+        or consumer_need
+    ):
+        return {
+            "level": "germany_broad",
+            "adjustment": 8.0,
+            "selectionAdjustment": 7.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": "Deutschland-Relevanz: breite direkte Relevanz fuer Menschen in Deutschland",
+        }
+
+    if domestic_url:
+        adjustment = 0.0 if "/regional/" in url.casefold() else 2.0
+        return {
+            "level": "germany_domestic",
+            "adjustment": adjustment,
+            "selectionAdjustment": 2.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": "Deutschland-Relevanz: inlaendische Meldung ohne pauschalen Reichweitenbonus",
+        }
+
+    if international:
+        if explicit_breaking:
+            return {
+                "level": "international_breaking",
+                "adjustment": 0.0,
+                "selectionAdjustment": 0.0,
+                "minimumScore": 72.0,
+                "hardBlock": False,
+                "reason": "Internationales Breaking: weltweite Lage rechtfertigt Sofortpruefung",
+            }
+        geopolitical = bool(_GEOPOLITICAL_EVENT_RE.search(title))
+        personal = bool(_FOREIGN_PERSONAL_STORY_RE.search(title))
+        usa_domestic = bool(_USA_RE.search(title) and personal and not geopolitical)
+        if usa_domestic:
+            return {
+                "level": "usa_domestic",
+                "adjustment": -20.0,
+                "selectionAdjustment": -20.0,
+                "minimumScore": 101.0,
+                "hardBlock": True,
+                "reason": "Deutschland-Relevanz: rein US-inlaendische Crime-/People-Story ohne direkten Deutschland-Bezug",
+            }
+        minimum_score = 85.0 if geopolitical else 90.0
+        adjustment = -8.0 if geopolitical else -12.0
+        return {
+            "level": "international",
+            "adjustment": adjustment,
+            "selectionAdjustment": -8.0 if geopolitical else -12.0,
+            "minimumScore": minimum_score,
+            "hardBlock": False,
+            "reason": (
+                "Deutschland-Relevanz: internationale Lage braucht aussergewoehnlichen Push Score"
+            ),
+        }
+
+    return {
+        "level": "neutral",
+        "adjustment": 0.0,
+        "selectionAdjustment": 0.0,
+        "minimumScore": 75.0,
+        "hardBlock": False,
+        "reason": "Deutschland-Relevanz: neutral, Entscheidung ueber Push Score",
+    }
+
 
 def _reuters_overload_adjustment(
     title: str,
@@ -136,6 +481,8 @@ def _reuters_overload_adjustment(
         penalty -= 4.0
         risks.append("Overload-Risiko: nicht-essenzieller Neugier-/Klick-Frame (Reuters DNR 2025)")
     return max(-12.0, penalty)
+
+
 _FRESH_DEVELOPMENT_RE = re.compile(
     r"(?i)\b(heute|aktuell|neu|erstmals|plötzlich|ploetzlich|wende|"
     r"entscheidung|beschlossen|beschließt|beschliesst|festnahme|festgenommen|"
@@ -176,17 +523,23 @@ _GENERIC_CASE_RE = re.compile(
 _EXCLUSIVE_RE = re.compile(r"(?i)\b(bild-exklusiv|exklusiv|nur bei bild)\b")
 _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
     "hae_moment": (
-        re.compile(r"(?i)\b(hä\?|hae\?|kurios|rätsel|raetsel|skurril|verrückt|verrueckt|warum|wie kann)\b|\?"),
+        re.compile(
+            r"(?i)\b(hä\?|hae\?|kurios|rätsel|raetsel|skurril|verrückt|verrueckt|warum|wie kann)\b|\?"
+        ),
         10,
         "BILD-Reiz: guter Hä?-Moment oder klare Neugier",
     ),
     "outrage": (
-        re.compile(r"(?i)\b(empörung|empoerung|wut|aufreger|skandal|abzocke|tricksen|gebühren|gebuehren|unfair|dreist)\b"),
+        re.compile(
+            r"(?i)\b(empörung|empoerung|wut|aufreger|skandal|abzocke|tricksen|gebühren|gebuehren|unfair|dreist)\b"
+        ),
         11,
         "BILD-Reiz: Aufreger mit Empörungs-Potenzial",
     ),
     "danger": (
-        re.compile(r"(?i)\b(messer|kita|explosion|brand|feuerwehr|unfall|gefahr|alarm|warnung|terror|angriff|attacke|brandbombe)\b"),
+        re.compile(
+            r"(?i)\b(messer|kita|explosion|brand|feuerwehr|unfall|gefahr|alarm|warnung|terror|angriff|attacke|brandbombe)\b"
+        ),
         12,
         "BILD-Reiz: Gefahr, Sicherheit oder akute Betroffenheit",
     ),
@@ -209,7 +562,9 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         "BILD-Reiz: Betrug an öffentlichen Leistungen erzeugt Empörung und breites Interesse",
     ),
     "consumer": (
-        re.compile(r"(?i)\b(geld|kosten|preise|rente|miete|steuer|gebühren|gebuehren|abzocke|rückruf|rueckruf|kunden|shops|strom|krankenkasse|haustiere)\b"),
+        re.compile(
+            r"(?i)\b(geld|kosten|preise|rente|miete|steuer|gebühren|gebuehren|abzocke|rückruf|rueckruf|kunden|shops|strom|krankenkasse|haustiere)\b"
+        ),
         10,
         "BILD-Reiz: Verbraucher- oder Geld-Nutzwert für viele",
     ),
@@ -222,6 +577,11 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         8,
         "BILD-Reiz: prominente Namen erhöhen den Sofort-Klick",
     ),
+    "public_figure_parenthood": (
+        _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE,
+        14,
+        "BILD-Reiz: bestaetigte Elternschaft einer benannten deutschen oeffentlichen Person",
+    ),
     "celebrity_relationship_money_conflict": (
         re.compile(
             r"(?i)(scheidungszoff|scheidung|trennung|ehe-aus|liebes-aus|unterhalt).{0,80}"
@@ -233,34 +593,103 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         "BILD-Reiz: Promi-Beziehungs- und Geldkonflikt mit starkem Abend-Interesse",
     ),
     "sport_emotion": (
-        re.compile(r"(?i)\b(fußball|fussball|bayern|bvb|messi|klopp|wm|em|tor|rekord|trainer|wechsel|transfer|star|finale)\b"),
+        re.compile(
+            r"(?i)\b(fußball|fussball|bayern|bvb|messi|klopp|wm|em|tor|rekord|trainer|wechsel|transfer|star|finale)\b"
+        ),
         8,
         "BILD-Reiz: Sportmoment mit breiter Fan-Zielgruppe",
     ),
     "family": (
-        re.compile(r"(?i)\b(kind|kinder|junge|mädchen|maedchen|kita|familie|mutter|vater|baby|haustier|hund|katze)\b"),
+        re.compile(
+            r"(?i)\b(kind|kinder|junge|mädchen|maedchen|kita|familie|mutter|"
+            r"vater|mama|mamas|papa|papas|eltern|nachwuchs|baby|haustier|hund|katze)\b"
+        ),
         8,
         "BILD-Reiz: Kinder/Familie/Tiere erzeugen Nähe und Betroffenheit",
     ),
     "exclusive": (_EXCLUSIVE_RE, 9, "BILD-Reiz: Exklusivität rechtfertigt Push auch ohne Breaking"),
     "broad_audience": (
-        re.compile(r"(?i)\b(millionen|alle|kunden|patienten|pendler|fahrer|mieter|eltern|rentner|deutschland)\b"),
+        re.compile(
+            r"(?i)\b(millionen|alle|kunden|patienten|pendler|fahrer|mieter|eltern|rentner|deutschland)\b"
+        ),
         8,
         "BILD-Reiz: große Zielgruppe unmittelbar betroffen",
     ),
 }
 
 _FEEDBACK_RULES: list[tuple[re.Pattern[str], int, str, str]] = [
-    (re.compile(r"(?i)\b(top|weckt neugier|triggert gefühl|triggert gefuehl|guter hä|guter hae|kurios|starke zeile)\b"), 10, "driver", "Redaktionsfeedback: starke Zeile, Neugier oder Gefühl bestätigt"),
-    (re.compile(r"(?i)\b(hohe relevanz|aktuelle entwicklung|aktuelle lage|gute keywords|jetzt-anlass)\b"), 8, "driver", "Redaktionsfeedback: Aktualität und Relevanz bestätigt"),
-    (re.compile(r"(?i)\b(große zielgruppe|grosse zielgruppe|empörend|empoerend|aufreger)\b"), 8, "driver", "Redaktionsfeedback: breite Betroffenheit und Aufreger-Potenzial"),
-    (re.compile(r"(?i)\b(bild-exklusiv|exklusiv geht immer)\b"), 7, "driver", "Redaktionsfeedback: Exklusivität als Push-Reiz"),
-    (re.compile(r"(?i)\b(video,? aber ok|video.*aktuell|klar verständlich|klar verstaendlich|live)\b"), 5, "driver", "Redaktionsfeedback: Video hat klaren aktuellen Anlass"),
-    (re.compile(r"(?i)\b(zu komplex|unkonkret|verrätselt|verraetselt|keine dringlichkeit|nichts passiert)\b"), -18, "risk", "Redaktionsfeedback: zu komplex, unkonkret oder ohne Dringlichkeit"),
-    (re.compile(r"(?i)\b(nicht die erstmeldung|ohne aktuelle entwicklung|erwartbar|nur ein politisches thema)\b"), -10, "risk", "Redaktionsfeedback: keine Erstmeldung oder kein neuer Dreh"),
-    (re.compile(r"(?i)\b(artikel aus der nacht|vom vorabend|vom vortag)\b"), -12, "risk", "Redaktionsfeedback: Artikel ist zeitlich verbraucht"),
-    (re.compile(r"(?i)\b(beliebiger fall|passiert immer wieder|kein neues verbrechen|prozessabschluss)\b"), -10, "risk", "Redaktionsfeedback: Fall wirkt generisch oder nicht neu genug"),
-    (re.compile(r"(?i)\b(video)\b"), -3, "risk", "Redaktionsfeedback: Video braucht einen klaren Push-Anlass"),
+    (
+        re.compile(
+            r"(?i)\b(top|weckt neugier|triggert gefühl|triggert gefuehl|guter hä|guter hae|kurios|starke zeile)\b"
+        ),
+        10,
+        "driver",
+        "Redaktionsfeedback: starke Zeile, Neugier oder Gefühl bestätigt",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(hohe relevanz|aktuelle entwicklung|aktuelle lage|gute keywords|jetzt-anlass)\b"
+        ),
+        8,
+        "driver",
+        "Redaktionsfeedback: Aktualität und Relevanz bestätigt",
+    ),
+    (
+        re.compile(r"(?i)\b(große zielgruppe|grosse zielgruppe|empörend|empoerend|aufreger)\b"),
+        8,
+        "driver",
+        "Redaktionsfeedback: breite Betroffenheit und Aufreger-Potenzial",
+    ),
+    (
+        re.compile(r"(?i)\b(bild-exklusiv|exklusiv geht immer)\b"),
+        7,
+        "driver",
+        "Redaktionsfeedback: Exklusivität als Push-Reiz",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(video,? aber ok|video.*aktuell|klar verständlich|klar verstaendlich|live)\b"
+        ),
+        5,
+        "driver",
+        "Redaktionsfeedback: Video hat klaren aktuellen Anlass",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(zu komplex|unkonkret|verrätselt|verraetselt|keine dringlichkeit|nichts passiert)\b"
+        ),
+        -18,
+        "risk",
+        "Redaktionsfeedback: zu komplex, unkonkret oder ohne Dringlichkeit",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(nicht die erstmeldung|ohne aktuelle entwicklung|erwartbar|nur ein politisches thema)\b"
+        ),
+        -10,
+        "risk",
+        "Redaktionsfeedback: keine Erstmeldung oder kein neuer Dreh",
+    ),
+    (
+        re.compile(r"(?i)\b(artikel aus der nacht|vom vorabend|vom vortag)\b"),
+        -12,
+        "risk",
+        "Redaktionsfeedback: Artikel ist zeitlich verbraucht",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(beliebiger fall|passiert immer wieder|kein neues verbrechen|prozessabschluss)\b"
+        ),
+        -10,
+        "risk",
+        "Redaktionsfeedback: Fall wirkt generisch oder nicht neu genug",
+    ),
+    (
+        re.compile(r"(?i)\b(video)\b"),
+        -3,
+        "risk",
+        "Redaktionsfeedback: Video braucht einen klaren Push-Anlass",
+    ),
 ]
 
 
@@ -299,7 +728,9 @@ def score_push_candidate(
     freshness_score = _score_freshness(push, title, cat, tone, features, target_dt, drivers, risks)
     bild_reiz = _score_bild_reiz(title, cat, tone, topic, features, drivers, risks)
     headline_strength = _score_headline_strength(title, tone, features, drivers, risks)
-    politics_context = _score_politics_context(title, cat, features, freshness_score, drivers, risks)
+    politics_context = _score_politics_context(
+        title, cat, features, freshness_score, drivers, risks
+    )
     video_fit = _score_video_fit(title, features, drivers, risks)
     feedback_score = _score_editorial_feedback(push, features, drivers, risks)
     opening_score = _score_opening_potential(
@@ -344,11 +775,25 @@ def score_push_candidate(
         raw_score -= 7.0
     if features["strong_non_politics"]:
         raw_score += 3.0
+    if features.get("public_figure_parenthood"):
+        # Component weights are calibrated mostly on hard-news shapes. Keep a
+        # bounded correction for this confirmed, unusually broad People event.
+        raw_score += 6.0
 
     # Reuters DNR 2025: Overload-Treiber (Sensationalismus/Clickbait/Neugier-Frame)
     # direkt abwerten, nicht nur im 0.04-gewichteten Risiko-Term.
     overload_adjustment = _reuters_overload_adjustment(title, tone, is_eil, risks)
     raw_score += overload_adjustment
+
+    germany_relevance = assess_germany_relevance(push)
+    germany_adjustment = float(germany_relevance.get("adjustment") or 0.0)
+    raw_score += germany_adjustment
+    relevance_reason = str(germany_relevance.get("reason") or "").strip()
+    if relevance_reason:
+        if germany_adjustment >= 0:
+            drivers.append(relevance_reason)
+        else:
+            risks.append(relevance_reason)
 
     score = round(_clip(raw_score, 0.0, 100.0), 1)
     priority = _priority(score)
@@ -382,7 +827,9 @@ def score_push_candidate(
             "videoFit": round(video_fit, 1),
             "editorialFeedback": round(feedback_score, 1),
             "overloadAdjustment": round(overload_adjustment, 1),
+            "germanyRelevanceAdjustment": round(germany_adjustment, 1),
         },
+        "germanyRelevance": germany_relevance,
     }
 
 
@@ -415,7 +862,11 @@ def rebalance_push_mix(
 
         cat_limit = 2 if cat == "politik" and not features.get("strong_politics") else 3
         if cat_counts[cat] >= cat_limit:
-            penalty += min(12.0, (cat_counts[cat] - cat_limit + 1) * 3.0)
+            category_penalty_cap = 5.0 if features.get("public_figure_parenthood") else 12.0
+            penalty += min(
+                category_penalty_cap,
+                (cat_counts[cat] - cat_limit + 1) * 3.0,
+            )
             mix_risks.append(f"Mix-Dopplung: Ressort {cat} ist bereits stark vertreten")
         if topic_counts[topic] >= 2:
             penalty += min(12.0, topic_counts[topic] * 4.0)
@@ -427,12 +878,20 @@ def rebalance_push_mix(
         if cat_counts[cat] == 0 and topic_counts[topic] == 0:
             bonus += 2.0
             mix_drivers.append("Bringt Vielfalt in den aktuellen Kandidaten-Mix")
-        if cat != "politik" and features.get("trigger_strength", 0) >= 18 and float(item.get("score", 0) or 0) >= 58:
+        if (
+            cat != "politik"
+            and features.get("trigger_strength", 0) >= 18
+            and float(item.get("score", 0) or 0) >= 58
+        ):
             bonus += 2.5
-            mix_drivers.append("BILD-starker Nicht-Politik-Kandidat bekommt im Mix eine echte Chance")
+            mix_drivers.append(
+                "BILD-starker Nicht-Politik-Kandidat bekommt im Mix eine echte Chance"
+            )
         if cat == "politik" and features.get("stale_politics_without_development"):
             penalty += 5.0
-            mix_risks.append("Politik-Dichte: alte Politik ohne Entwicklung wird im Mix zurückgenommen")
+            mix_risks.append(
+                "Politik-Dichte: alte Politik ohne Entwicklung wird im Mix zurückgenommen"
+            )
 
         if penalty or bonus:
             item = dict(item)
@@ -441,15 +900,21 @@ def rebalance_push_mix(
             item["mixPriority"] = _priority(new_score)
             breakdown = dict(item.get("scoreBreakdown") or {})
             if "mixBalance" in breakdown:
-                breakdown["mixBalance"] = round(_clip(float(breakdown["mixBalance"]) - penalty + bonus, 0, 100), 1)
+                breakdown["mixBalance"] = round(
+                    _clip(float(breakdown["mixBalance"]) - penalty + bonus, 0, 100), 1
+                )
             item["scoreBreakdown"] = breakdown
-            item["risks"] = _prioritize_notes(_dedupe([*(item.get("risks") or []), *mix_risks]), kind="risk")[:4]
+            item["risks"] = _prioritize_notes(
+                _dedupe([*(item.get("risks") or []), *mix_risks]), kind="risk"
+            )[:4]
             item["performanceDrivers"] = _prioritize_notes(
                 _dedupe([*(item.get("performanceDrivers") or []), *mix_drivers]),
                 kind="driver",
             )[:4]
             if mix_risks:
-                item["scoreReason"] = f"{item.get('scoreReason', '')} Mix-Abzug: {mix_risks[0]}".strip()
+                item["scoreReason"] = (
+                    f"{item.get('scoreReason', '')} Mix-Abzug: {mix_risks[0]}".strip()
+                )
 
         adjusted.append(item)
         cat_counts[cat] += 1
@@ -469,7 +934,11 @@ def _rebalance_politics_top10(candidates: list[dict[str, Any]]) -> list[dict[str
     if politics_count < 6:
         return ranked
 
-    floor = float(top[-1].get("score", 0) or 0) if len(top) >= 10 else float(top[-1].get("score", 0) or 0)
+    floor = (
+        float(top[-1].get("score", 0) or 0)
+        if len(top) >= 10
+        else float(top[-1].get("score", 0) or 0)
+    )
     surplus = max(1, politics_count - 5)
     adjusted: list[dict[str, Any]] = []
     politics_seen = 0
@@ -519,7 +988,9 @@ def _score_adjusted_item(
         _dedupe([*(updated.get("performanceDrivers") or []), *drivers]),
         kind="driver",
     )[:4]
-    updated["risks"] = _prioritize_notes(_dedupe([*(updated.get("risks") or []), *risks]), kind="risk")[:4]
+    updated["risks"] = _prioritize_notes(
+        _dedupe([*(updated.get("risks") or []), *risks]), kind="risk"
+    )[:4]
     if drivers or risks:
         updated["scoreReason"] = _reason(new_score, updated["performanceDrivers"], updated["risks"])
     return updated
@@ -531,7 +1002,12 @@ def _title(push: dict[str, Any]) -> str:
 
 def _cat(push: dict[str, Any]) -> str:
     raw = str(push.get("cat") or push.get("category") or "news").lower().strip()
-    mapping = {"geld": "wirtschaft", "leben": "verbraucher", "ratgeber": "verbraucher", "panorama": "news"}
+    mapping = {
+        "geld": "wirtschaft",
+        "leben": "verbraucher",
+        "ratgeber": "verbraucher",
+        "panorama": "news",
+    }
     return mapping.get(raw, raw or "news")
 
 
@@ -547,7 +1023,11 @@ def _target_dt(push: dict[str, Any]) -> _dt.datetime:
     pub = push.get("pubDate") or push.get("publishedAt")
     if isinstance(pub, str) and pub:
         try:
-            return _dt.datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            return (
+                _dt.datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                .astimezone()
+                .replace(tzinfo=None)
+            )
         except ValueError:
             pass
     return _dt.datetime.now()
@@ -602,6 +1082,8 @@ def _tone(title: str, is_eil: bool = False) -> str:
 
 
 def _topic(title: str, cat: str) -> str:
+    if cat == "unterhaltung" and _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE.search(title):
+        return "people_parenthood"
     lower = title.lower()
     best_topic = cat if cat in _TOPIC_CLUSTERS else "news"
     best_hits = 0
@@ -630,10 +1112,15 @@ def _extract_push_features(
             trigger_hits[name] = weight
             trigger_strength += weight
 
-    is_politics = cat == "politik" or bool(_POLITICS_RE.search(title))
-    has_development = bool(_FRESH_DEVELOPMENT_RE.search(title))
+    public_figure_parenthood = is_german_public_figure_parenthood_story(push)
+    is_politics = (
+        cat == "politik" or bool(_POLITICS_RE.search(title))
+    ) and not public_figure_parenthood
+    has_development = bool(_FRESH_DEVELOPMENT_RE.search(title)) or public_figure_parenthood
     strong_politics = is_politics and bool(_POLITICS_STRONG_RE.search(title)) and has_development
-    abstract_politics = is_politics and bool(_POLITICS_ABSTRACT_RE.search(title)) and not has_development
+    abstract_politics = (
+        is_politics and bool(_POLITICS_ABSTRACT_RE.search(title)) and not has_development
+    )
     stale = freshness_hours is not None and freshness_hours > 6
     overnight = False
     if pub_dt is not None:
@@ -641,22 +1128,35 @@ def _extract_push_features(
 
     strong_non_politics = (
         not is_politics
-        and (trigger_strength >= 18 or cat in {"sport", "unterhaltung", "verbraucher", "crime", "news"})
+        and (
+            trigger_strength >= 18
+            or cat in {"sport", "unterhaltung", "verbraucher", "news"}
+        )
         and not stale
     )
 
     feedback_text = " ".join(_collect_feedback_texts(push)).lower()
-    if "artikel aus der nacht" in feedback_text or "vom vorabend" in feedback_text or "vom vortag" in feedback_text:
+    if (
+        "artikel aus der nacht" in feedback_text
+        or "vom vorabend" in feedback_text
+        or "vom vortag" in feedback_text
+    ):
         stale = True
         overnight = True
-    if "aktuelle entwicklung" in feedback_text or "erstmeldung" in feedback_text or "aktuelle lage" in feedback_text:
+    if (
+        "aktuelle entwicklung" in feedback_text
+        or "erstmeldung" in feedback_text
+        or "aktuelle lage" in feedback_text
+    ):
         has_development = True
 
     return {
         "lower": lower,
         "is_video": is_video,
         "video_strong": is_video and bool(_VIDEO_STRONG_RE.search(title)),
-        "video_weak": is_video and not bool(_VIDEO_STRONG_RE.search(title)) and bool(_VIDEO_WEAK_RE.search(title)),
+        "video_weak": is_video
+        and not bool(_VIDEO_STRONG_RE.search(title))
+        and bool(_VIDEO_WEAK_RE.search(title)),
         "freshness_hours": freshness_hours,
         "published_dt": pub_dt,
         "is_stale": stale,
@@ -667,11 +1167,17 @@ def _extract_push_features(
         "has_development": has_development,
         "strong_politics": strong_politics,
         "abstract_politics": abstract_politics,
-        "stale_politics_without_development": is_politics and stale and not has_development and not _EXCLUSIVE_RE.search(title),
+        "stale_politics_without_development": is_politics
+        and stale
+        and not has_development
+        and not _EXCLUSIVE_RE.search(title),
         "strong_non_politics": strong_non_politics,
+        "public_figure_parenthood": public_figure_parenthood,
         "is_exclusive": bool(_EXCLUSIVE_RE.search(title)),
         "is_vague": bool(_VAGUE_RE.search(title)),
-        "is_generic_case": bool(_GENERIC_CASE_RE.search(title) or "passiert immer wieder" in feedback_text),
+        "is_generic_case": bool(
+            _GENERIC_CASE_RE.search(title) or "passiert immer wieder" in feedback_text
+        ),
         "feedback_text": feedback_text,
     }
 
@@ -720,6 +1226,9 @@ def _score_bild_fit(
     if features.get("trigger_strength", 0) >= 18:
         score += 6
         drivers.append("BILD-Fit: Thema hat mehrere typische Push-Reize")
+    if features.get("public_figure_parenthood"):
+        score += 8
+        drivers.append("BILD-Fit: konkrete positive People-News mit oeffentlicher Person")
     if features.get("is_vague"):
         score -= 9
         risks.append("Headline wirkt unkonkret oder verrätselt")
@@ -728,14 +1237,19 @@ def _score_bild_fit(
         score -= 4
         risks.append("Eilmeldungs-Flag ist nicht sauber im Text erkennbar")
 
-    if cat in {"news", "verbraucher", "wirtschaft", "crime"}:
+    if cat in {"news", "verbraucher", "wirtschaft"}:
         score += 4
     elif cat == "politik" and not features.get("strong_politics"):
         score -= 4
         risks.append("Politik braucht für Push eine klare neue Entwicklung")
     elif cat == "sport" and features.get("trigger_hits", {}).get("sport_emotion"):
         score += 4
-    elif cat == "unterhaltung" and tone == "neutral" and not features.get("trigger_hits", {}).get("prominence"):
+    elif (
+        cat == "unterhaltung"
+        and tone == "neutral"
+        and not features.get("trigger_hits", {}).get("prominence")
+        and not features.get("public_figure_parenthood")
+    ):
         score -= 5
         risks.append("Unterhaltung ohne Prominenz, Konflikt oder Überraschung")
 
@@ -813,16 +1327,26 @@ def _score_history(
         + _or_to_score(topic_avg, global_avg) * 0.07
     )
 
-    if 6 <= hour <= 9 and (tone in {"breaking", "utility"} or cat in {"news", "verbraucher", "wirtschaft"}):
+    if 6 <= hour <= 9 and (
+        tone in {"breaking", "utility"} or cat in {"news", "verbraucher", "wirtschaft"}
+    ):
         score += 4
         drivers.append("Zeitfenster: Morgen funktioniert für frische News und Nutzwert")
-    elif 10 <= hour <= 14 and (cat in {"verbraucher", "crime", "news"} or tone in {"utility", "conflict"}):
+    elif 10 <= hour <= 14 and (
+        cat in {"verbraucher", "news"} or tone in {"utility", "conflict"}
+    ):
         score += 4
-        drivers.append("Zeitfenster: Mittag begünstigt Verbraucher, Crime und Aufreger")
-    elif 15 <= hour <= 18 and (cat in {"sport", "unterhaltung", "news", "crime"} or tone in {"curiosity", "emotion"}):
+        drivers.append("Zeitfenster: Mittag begünstigt Verbraucher, Nutzwert und Aufreger")
+    elif 15 <= hour <= 18 and (
+        cat in {"sport", "unterhaltung", "news"} or tone in {"curiosity", "emotion"}
+    ):
         score += 3
-        drivers.append("Zeitfenster: Nachmittag öffnet Raum für Sport, Unterhaltung und kuriose News")
-    elif 18 <= hour <= 22 and (cat in {"sport", "unterhaltung", "news"} or tone in {"breaking", "emotion"}):
+        drivers.append(
+            "Zeitfenster: Nachmittag öffnet Raum für Sport, Unterhaltung und kuriose News"
+        )
+    elif 18 <= hour <= 22 and (
+        cat in {"sport", "unterhaltung", "news"} or tone in {"breaking", "emotion"}
+    ):
         score += 4
         drivers.append("Zeitfenster: Abend begünstigt Sport, Unterhaltung und emotionale News")
     elif hour >= 23 or hour < 6:
@@ -834,9 +1358,7 @@ def _score_history(
         risks.append("Zeitfenster: neutrale Politik braucht stärkeren aktuellen Anlass")
 
     if cat_hour_avg > global_avg + 0.6 and len(cat_hour_vals) >= 3:
-        drivers.append(
-            f"Historisches Muster: {cat} um {hour} Uhr liegt über Durchschnitt"
-        )
+        drivers.append(f"Historisches Muster: {cat} um {hour} Uhr liegt über Durchschnitt")
     elif cat_hour_avg < global_avg - 0.6 and len(cat_hour_vals) >= 3:
         risks.append(f"Historisches Muster: {cat} um {hour} Uhr performt unter Durchschnitt")
 
@@ -998,7 +1520,20 @@ def _score_bild_reiz(
 
     if tone in {"breaking", "conflict", "utility", "emotion", "curiosity"}:
         score += {"breaking": 13, "conflict": 8, "utility": 8, "emotion": 7, "curiosity": 6}[tone]
-    if topic in {"crime", "verbraucher", "wetter", "unterhaltung", "sport"} and hits:
+    if (
+        (
+            topic
+            in {
+                "verbraucher",
+                "wetter",
+                "unterhaltung",
+                "people_parenthood",
+                "sport",
+            }
+            or "public_money_fraud" in hits
+        )
+        and hits
+    ):
         score += 5
     if cat == "politik" and not (features.get("strong_politics") or hits):
         score -= 10
@@ -1129,7 +1664,9 @@ def _score_editorial_feedback(
             else:
                 risks.append(label)
     if features.get("is_video") and "video" in joined.lower() and score >= 60:
-        drivers.append("Feedback-Logik: Video wird nicht pauschal abgewertet, sondern nach Anlass bewertet")
+        drivers.append(
+            "Feedback-Logik: Video wird nicht pauschal abgewertet, sondern nach Anlass bewertet"
+        )
     return _clip(score, 0, 100)
 
 
@@ -1173,9 +1710,11 @@ def _score_opening_potential(
         content += 6
     if re.search(r"[A-ZÄÖÜ][a-zäöüß]{2,}", title):
         content += 5
-    if cat == "regional" or any(word in lower for word in ("berlin", "hamburg", "muenchen", "münchen", "nrw")):
+    if cat == "regional" or any(
+        word in lower for word in ("berlin", "hamburg", "muenchen", "münchen", "nrw")
+    ):
         content += 4
-    if topic in {"crime", "verbraucher", "wetter"}:
+    if topic in {"verbraucher", "wetter"}:
         content += 5
 
     if freshness_score >= 85:
@@ -1195,13 +1734,22 @@ def _score_opening_potential(
         content -= 8
     if features.get("strong_non_politics"):
         content += 6
+    if features.get("public_figure_parenthood"):
+        content += 16
+        drivers.append(
+            "Opening-Potenzial: positive prominente Lebensnachricht weckt konkrete Neugier"
+        )
     if features.get("is_video"):
         if features.get("video_strong"):
             content += 5
         else:
             content -= 6
 
-    if tone == "neutral" and not re.search(r"\d|:|\?|!", title):
+    if (
+        tone == "neutral"
+        and not re.search(r"\d|:|\?|!", title)
+        and not features.get("public_figure_parenthood")
+    ):
         content -= 7
         risks.append("Öffnungsanreiz ist noch zu allgemein")
 
@@ -1289,7 +1837,11 @@ def _reason(score: float, drivers: list[str], risks: list[str]) -> str:
         if contra:
             reason += f". Risiko: {contra}"
         return reason + "."
-    reason = f"{level}: nicht hochgerankt wegen {contra}" if contra else f"{level}: zu wenig klarer Push-Anlass"
+    reason = (
+        f"{level}: nicht hochgerankt wegen {contra}"
+        if contra
+        else f"{level}: zu wenig klarer Push-Anlass"
+    )
     if pro:
         reason += f". Pluspunkt: {pro}"
     return reason + "."
@@ -1342,12 +1894,16 @@ def _publication_dt(push: dict[str, Any]) -> _dt.datetime | None:
     if not isinstance(pub, str) or not pub:
         return None
     try:
-        return _dt.datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        return (
+            _dt.datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        )
     except ValueError:
         return None
 
 
-def _freshness_hours(push: dict[str, Any], reference_dt: _dt.datetime | None = None) -> float | None:
+def _freshness_hours(
+    push: dict[str, Any], reference_dt: _dt.datetime | None = None
+) -> float | None:
     published = _publication_dt(push)
     if published is None:
         return None

@@ -12,7 +12,7 @@ import datetime
 import logging
 import sqlite3
 from statistics import mean
-from typing import Any, Optional
+from typing import Optional
 
 from app.config import PUSH_DB_PATH
 from app.push_schedule.weekly_baseline import (

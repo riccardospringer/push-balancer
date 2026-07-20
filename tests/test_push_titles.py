@@ -1,6 +1,6 @@
 import pytest
 
-from app.push_titles import build_push_title_suggestions
+from app.push_titles import build_push_title_suggestions, review_push_title
 
 
 EDITORIAL_EXAMPLES = [
@@ -44,7 +44,7 @@ EDITORIAL_EXAMPLES = [
         "Breaking News",
         "Eilmeldung: Bundesregierung beschließt Milliarden-Paket für die Ukraine",
         "politik",
-        "EIL: Milliarden-Paket für die Ukraine beschlossen",
+        "Bundesregierung beschließt Ukraine-Milliarden",
     ),
     (
         "Kurios/emotional",
@@ -83,7 +83,7 @@ def test_editorial_examples_are_visible_as_original_to_push_to_score():
     [
         (
             "Studie zeigt: Diese Zimmerpflanzen verbessern das Raumklima",
-            "Diese Zimmerpflanzen verbessern das Raumklima",
+            "Welche Zimmerpflanzen das Raumklima verbessern",
         ),
         (
             "Experten erklären, warum viele Menschen schlecht schlafen",
@@ -214,3 +214,47 @@ def test_no_generic_filler_titles_for_political_headline():
         lowered = (title or "").lower()
         assert "darum geht es jetzt" not in lowered
         assert "was jetzt wichtig ist" not in lowered
+
+
+def test_grounded_interest_review_rewards_specific_curiosity_not_clickbait():
+    original = "Regierung beschließt Rentenpaket für Millionen Familien"
+
+    grounded = review_push_title(
+        "Rentenpaket: Was der Beschluss für Millionen Familien bedeutet",
+        original_title=original,
+        category="politik",
+    )
+    bait = review_push_title(
+        "Rentenpaket: Diese Wahrheit müssen Sie jetzt kennen",
+        original_title=original,
+        category="politik",
+    )
+
+    assert grounded["approved"] is True
+    assert grounded["dimensions"]["curiosity"] >= 90
+    assert grounded["clickReason"]
+    assert bait["approved"] is False
+    assert bait["dimensions"]["honesty"] < 72
+
+
+def test_grounded_interest_review_rejects_unsupported_number():
+    review = review_push_title(
+        "Rentenpaket: 500 Euro mehr für Familien",
+        original_title="Regierung beschließt Rentenpaket für Millionen Familien",
+        category="politik",
+    )
+
+    assert review["approved"] is False
+    assert review["dimensions"]["honesty"] <= 25
+    assert any("Zahl" in risk for risk in review["risks"])
+
+
+def test_vague_package_has_no_honest_title_approval():
+    result = build_push_title_suggestions(
+        "Eilmeldung: Regierung beschliesst wichtiges Paket",
+        category="politik",
+    )
+
+    assert result["titleReview"]["approved"] is False
+    assert not result["titleReview"]["clickReason"]
+    assert any("Substanz" in risk for risk in result["titleReview"]["risks"])
