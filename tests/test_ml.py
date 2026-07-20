@@ -463,23 +463,23 @@ def test_title_llm_uses_gpt56_quality_parameters(monkeypatch):
     monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
-    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 900)
-    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 12.0)
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 600)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 10.0)
     monkeypatch.setattr(push_title_agent, "REASONING_EFFORT", "none")
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
 
-    result = push_title_agent._llm_call("System", "Synthetic article", max_tokens=900)
+    result = push_title_agent._llm_call("System", "Synthetic article", max_tokens=600)
 
     assert result == '{"gewinner":{"titel":"Test"}}'
     assert len(calls) == 1
     request = calls[0]
     assert request["model"] == "gpt-5.6"
-    assert request["max_completion_tokens"] == 900
+    assert request["max_completion_tokens"] == 600
     assert request["response_format"] == {"type": "json_object"}
     assert request["extra_body"] == {"reasoning_effort": "none", "verbosity": "low"}
     assert request["store"] is False
-    assert request["timeout"] == 12.0
+    assert request["timeout"] == 10.0
     assert "max_tokens" not in request
     assert "temperature" not in request
 
@@ -508,8 +508,8 @@ def test_title_llm_does_not_retry_a_slow_failure(monkeypatch):
     monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(push_title_agent, "MODEL", "gpt-5.6")
-    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 900)
-    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 12.0)
+    monkeypatch.setattr(push_title_agent, "DEFAULT_MAX_TOKENS", 600)
+    monkeypatch.setattr(push_title_agent, "AGENT_TIMEOUT", 10.0)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT", client)
     monkeypatch.setattr(push_title_agent, "_OPENAI_CLIENT_KEY", "test-key")
 
@@ -517,6 +517,57 @@ def test_title_llm_does_not_retry_a_slow_failure(monkeypatch):
         push_title_agent._llm_call("System", "Synthetic article")
 
     assert len(calls) == 1
+
+
+def test_compact_llm_response_rebuilds_existing_api_shape():
+    from push_title_agent import _parse_compact_editorial_response
+
+    result = _parse_compact_editorial_response(
+        {
+            "analyse": {
+                "kern": "Bruecke sofort gesperrt",
+                "hook": "Umleitung fuer alle",
+                "emotion": "direkte Betroffenheit",
+            },
+            "kandidaten": [
+                {
+                    "ansatz": "A-klare-news-push",
+                    "titel": "Betonriss: Hauptbruecke sofort gesperrt",
+                    "gesamt": 8.7,
+                    "schwaeche": "Folgen fehlen",
+                },
+                {
+                    "ansatz": "B-zugespitzt",
+                    "titel": "Riss legt Teststadts Hauptbruecke lahm",
+                    "gesamt": 9.1,
+                    "schwaeche": "Umleitung fehlt",
+                },
+                {
+                    "ansatz": "C-nutzwert-betroffenheit",
+                    "titel": "Hauptbruecke dicht: Busse werden umgeleitet",
+                    "gesamt": 9.0,
+                    "schwaeche": "Ursache fehlt",
+                },
+                {
+                    "ansatz": "D-neugier",
+                    "titel": "Wie lange bleibt Teststadts Hauptbruecke dicht?",
+                    "gesamt": 7.8,
+                    "schwaeche": "Frage weniger direkt",
+                },
+            ],
+            "gewinner_ansatz": "B-zugespitzt",
+            "warum_dieser": "Staerkster konkrete Konflikt in einer Sekunde",
+            "warum_alternative": "Direkte Folge fuer Busfahrgaeste",
+            "warnhinweis": "",
+        }
+    )
+
+    assert result is not None
+    assert result["gewinner"]["titel"] == "Riss legt Teststadts Hauptbruecke lahm"
+    assert result["gewinner"]["gesamt_score"] == 9.1
+    assert result["alternative"]["titel"] == "Hauptbruecke dicht: Busse werden umgeleitet"
+    assert len(result["kandidaten"]) == 4
+    assert len(result["bewertungen"]) == 4
 
 
 def test_title_llm_keeps_legacy_parameters_for_non_reasoning_models(monkeypatch):

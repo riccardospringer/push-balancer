@@ -395,8 +395,8 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
 | `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-5.6` | Model used for manual title generation when enabled; `gpt-5.6` resolves to GPT-5.6 Sol |
-| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `12.0` | Hard timeout for the interactive title generation request |
-| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `900` | Max completion tokens for the compact four-variant JSON response |
+| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `10.0` | Hard timeout for the interactive title generation request |
+| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `600` | Max completion tokens; each of the four titles appears only once in the compact model response |
 | `OPENAI_TITLE_GENERATION_REASONING_EFFORT` | No | `none` | Low-latency GPT-5.6 mode; the editorial prompt still generates and ranks all four variants |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR` | No | `0` | Hard hourly budget for paid title generation; `0` keeps the local fallback active |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY` | No | `0` | Hard daily budget for paid title generation; `0` keeps the local fallback active |

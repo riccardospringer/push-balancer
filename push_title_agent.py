@@ -29,12 +29,12 @@ MAX_PUSH_LENGTH = 100
 # Interaktiver Button-Pfad: ein einzelner kurzer GPT-5.6-Call statt langer
 # Reasoning-/Retry-Ketten. Hoehere alte Render-Werte werden bewusst gedeckelt.
 AGENT_TIMEOUT = min(
-    float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "12.0")),
-    12.0,
+    float(os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "10.0")),
+    10.0,
 )
 DEFAULT_MAX_TOKENS = min(
-    int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "900")),
-    900,
+    int(os.environ.get("OPENAI_TITLE_GENERATION_MAX_TOKENS", "600")),
+    600,
 )
 REASONING_EFFORT = "none"
 _OPENAI_CLIENT = None
@@ -288,76 +288,116 @@ def _llm_call(
         raise
 
 
-EDITORIAL_ONE_BRAIN_SYS = f"""Du bist ein erfahrener BILD-Push-Redakteur mit klarem Fokus auf hohe Opening Rate.
-Du arbeitest in EINEM Durchlauf: analysieren, vier Push-Varianten bauen, bewerten, Gewinner waehlen.
+EDITORIAL_ONE_BRAIN_SYS = f"""Du bist erfahrener BILD-Push-Redakteur mit Fokus auf hohe Opening Rate.
+Schreibe keine SEO-Headline um, sondern eine Push-Zeile, die auf dem Sperrbildschirm sofort zuendet:
+konkret, direkt, emotional anschlussfaehig, mobil verstaendlich und BILD-typisch zugespitzt.
 
-ZENTRALE AUFGABE:
-- Schreibe NICHT die Headline als SEO-Titel um.
-- Schreibe eine echte Push-Zeile fuer den Sperrbildschirm: knapp, direkt, konkret,
-  emotional anschlussfaehig, mobil sofort verstaendlich und BILD-typisch zugespitzt.
-- Verdichte den staerksten Oeffnungsreiz: Was ist neu? Wer ist betroffen? Warum jetzt?
-  Wo liegen Konflikt, Ueberraschung, Nutzen, Emotion oder Fallhoehe?
-- Du generierst INDIVIDUELL fuer genau diese Headline. Keine Schablonen, keine Standard-
-  Ersatzsaetze, keine generischen Ressort-Prefixes.
-- Jede Variante muss konkrete Signalwoerter aus diesem Input nutzen: Namen, Orte,
-  Ereignis, Konflikt, Zahl, Folge oder ueberraschender Dreh. Wenn dieser konkrete
-  Hook nicht im Input steckt, darfst du ihn nicht erfinden.
+Finde INDIVIDUELL den staerksten gedeckten Hook: Neuigkeit, Betroffenheit, Konflikt, Ueberraschung,
+Nutzen oder Fallhoehe. Nutze konkrete Namen, Orte, Zahlen, Folgen oder Ereignisse aus dem Input.
+Jeder Titel muss vollstaendig durch Kicker, Headline oder Text gedeckt sein: nichts erfinden,
+nicht dramatisieren, keine falsche Dringlichkeit und keine Clickbait-Luege.
 
-WICHTIGSTE REGEL:
-- Jeder Titel muss faktisch vollstaendig durch Headline, Kicker oder Artikeltext gedeckt sein.
-- Nichts erfinden, nichts dramatisieren, keine falsche Dringlichkeit, keine Clickbait-Luege.
+Laenge: ideal 35 bis 65 Zeichen, maximal {min(MAX_PUSH_LENGTH, 80)}. Keine Emojis, Fuellwoerter,
+Pipes, kuenstlichen Superlative oder Fragen, wenn eine Aussage staerker ist.
 
-LAENGENREGELN:
-- Ideal: 35 bis 65 Zeichen
-- Maximal: {min(MAX_PUSH_LENGTH, 80)} Zeichen
-- Keine Fuellwoerter, keine Emojis, kein Pipe-Format ("|"), maximal 1 Komma
-- Keine kuenstlichen Superlative
-- Keine Frage, wenn eine klare Aussage staerker ist
+Erzeuge genau je eine Variante:
+- A-klare-news-push: Nachricht sofort verstaendlich
+- B-zugespitzt: emotionaler, konfliktstaerker, aber faktentreu
+- C-nutzwert-betroffenheit: konkrete Folge oder Leser-Nutzen
+- D-neugier: Oeffnungsreiz ohne Irrefuehrung
 
-ERZEUGE GENAU 4 VARIANTEN:
-A-klare-news-push: klare Nachricht, sofort verstaendlich
-B-zugespitzt: emotionaler oder staerker zugespitzter Push, aber faktentreu
-C-nutzwert-betroffenheit: Leser-Nutzen oder Betroffenheit, falls passend
-D-neugier: Neugier ohne Irrefuehrung
+Bewerte 0-10 nach Opening-Rate-Potenzial, BILD-Fit, Verstaendlichkeit unter 2 Sekunden,
+Leser-Relevanz, emotionaler Kraft, Aktualitaet, Abstand zur Original-Headline,
+Clickbait-Risiko und mobiler Lesbarkeit.
 
-BEWERTUNG:
-Bewerte jede Variante nach Opening-Rate-Potenzial, BILD-Fit, Verstaendlichkeit unter 2 Sekunden,
-konkreter Leser-Relevanz, emotionaler Kraft, Aktualitaet/Dringlichkeit, Abstand zur Original-Headline,
-Clickbait-/Irrefuehrungsrisiko und mobiler Lesbarkeit.
+Harte Verbote: Original-Headline nicht kopieren; kein Wort nur davorsetzen; kein Ressort-Prefix;
+keine generischen Phrasen wie "Was jetzt wichtig ist", "Darum geht es jetzt" oder "im Fokus";
+keine falsche Eilmeldung oder kuenstliche Skandalisierung.
 
-HARTE VERBOTE:
-- Original-Headline nicht kopieren
-- Keine Variante darf nur ein Wort vor die Headline setzen
-- Keine generischen Titel wie "Was jetzt wichtig ist" oder "Darum geht es jetzt"
-- Keine leeren Phrasen wie "im Fokus"
-- Keine austauschbaren Titel, die auf beliebige Artikel passen wuerden
-- Kein reines Ressort-Label plus umgestellte Headline
-- Keine Behauptung, die nicht im Input steht
-- Keine falsche Eilmeldung
-- Keine kuenstliche Skandalisierung
-
-FALLBEISPIEL:
-Original: "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
+Beispiel: "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
 Schlecht: "FCN: WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
 Besser: "Klose ahnte Messis WM-Rekord schon frueh"
 
-LIEFERE:
-- analyse: kern/hook/emotion
-- kandidaten: exakt 4 Titel mit ansatz A-klare-news-push|B-zugespitzt|C-nutzwert-betroffenheit|D-neugier
-- bewertungen: alle 4 Titel mit Score 0-10 und kurzer Schwaeche
-- gewinner: bester Titel inkl. Begruendung und Score 0-10
-- alternative: zweitbester Titel
-- warnhinweis: falls der Artikel nicht stark genug fuer eine Push ist, sonst leer
-
-Antworte NUR als JSON:
+Antworte NUR als kompaktes JSON. Schreibe jeden Titel exakt einmal:
 {{
-  "analyse": {{"kern":"...","hook":"...","emotion":"..."}},
-  "kandidaten":[{{"titel":"...","ansatz":"A-klare-news-push|B-zugespitzt|C-nutzwert-betroffenheit|D-neugier"}}],
-  "bewertungen":[{{"titel":"...","gesamt":0.0,"schwaeche":"..."}}],
-  "gewinner":{{"titel":"...","laenge":0,"gesamt_score":0.0,"warum_dieser":"..."}},
-  "alternative":{{"titel":"...","laenge":0,"warum":"..."}},
+  "analyse":{{"kern":"max 8 Woerter","hook":"max 8 Woerter","emotion":"max 3 Woerter"}},
+  "kandidaten":[
+    {{"ansatz":"A-klare-news-push","titel":"...","gesamt":0.0,"schwaeche":"max 6 Woerter"}}
+  ],
+  "gewinner_ansatz":"A-klare-news-push|B-zugespitzt|C-nutzwert-betroffenheit|D-neugier",
+  "warum_dieser":"max 14 Woerter",
+  "warum_alternative":"max 10 Woerter",
   "warnhinweis":""
 }}"""
+
+
+def _bounded_score(value) -> float:
+    try:
+        return round(max(0.0, min(10.0, float(value))), 1)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_compact_editorial_response(data: dict) -> dict | None:
+    raw_candidates = data.get("kandidaten", [])
+    if not isinstance(raw_candidates, list):
+        return None
+
+    parsed = []
+    for item in raw_candidates[:4]:
+        if not isinstance(item, dict):
+            continue
+        titel = _clean_title(str(item.get("titel", "")))[:80].strip(" ,-")
+        ansatz = str(item.get("ansatz", "")).strip()
+        if not titel or not ansatz:
+            continue
+        parsed.append(
+            {
+                "kandidat": {"titel": titel, "laenge": len(titel), "ansatz": ansatz},
+                "gesamt": _bounded_score(item.get("gesamt", 0)),
+                "schwaeche": str(item.get("schwaeche", "")).strip(),
+            }
+        )
+    if not parsed:
+        return None
+
+    winner_ansatz = str(data.get("gewinner_ansatz", "")).strip()
+    winner_index = next(
+        (idx for idx, item in enumerate(parsed) if item["kandidat"]["ansatz"] == winner_ansatz),
+        max(range(len(parsed)), key=lambda idx: parsed[idx]["gesamt"]),
+    )
+    winner_item = parsed[winner_index]
+    alternatives = sorted(
+        (item for idx, item in enumerate(parsed) if idx != winner_index),
+        key=lambda item: item["gesamt"],
+        reverse=True,
+    )
+    alternative_item = alternatives[0] if alternatives else winner_item
+
+    return {
+        "analyse": data.get("analyse", {}),
+        "kandidaten": [item["kandidat"] for item in parsed],
+        "bewertungen": [
+            {
+                "titel": item["kandidat"]["titel"],
+                "gesamt": item["gesamt"],
+                "schwaeche": item["schwaeche"],
+            }
+            for item in parsed
+        ],
+        "gewinner": {
+            "titel": winner_item["kandidat"]["titel"],
+            "laenge": winner_item["kandidat"]["laenge"],
+            "gesamt_score": winner_item["gesamt"],
+            "warum_dieser": str(data.get("warum_dieser", "")).strip(),
+        },
+        "alternative": {
+            "titel": alternative_item["kandidat"]["titel"],
+            "laenge": alternative_item["kandidat"]["laenge"],
+            "warum": str(data.get("warum_alternative", "")).strip(),
+        },
+        "warnhinweis": str(data.get("warnhinweis", "")).strip(),
+    }
 
 
 def _editorial_one_brain(title, text, category, kicker="", headline=""):
@@ -381,6 +421,11 @@ def _editorial_one_brain(title, text, category, kicker="", headline=""):
     try:
         if "{" in raw:
             data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            if data.get("gewinner_ansatz"):
+                compact_result = _parse_compact_editorial_response(data)
+                if compact_result:
+                    return compact_result
+
             analyse = data.get("analyse", {})
             kandidaten = data.get("kandidaten", [])
             for k in kandidaten:
