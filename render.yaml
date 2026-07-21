@@ -206,7 +206,7 @@ services:
       - key: INTERNAL_ACCESS_ALLOWED_CIDRS
         sync: false
       - key: SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS
-        value: 18.194.148.79/32,3.122.221.31/32,3.75.74.81/32
+        value: 3.79.136.119/32
       - key: INTERNAL_ACCESS_EXEMPT_PATHS
         value: /api/health,/api/v1,/api/push-title/generate,/api/push-title-generations
       - key: PUSH_SYNC_SECRET
