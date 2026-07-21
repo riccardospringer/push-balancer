@@ -74,6 +74,16 @@ def test_endpoint_uses_persistent_db_fallback(tmp_db, monkeypatch):
     assert response.json() == {"score": 55.1, "capturedAt": NOW}
 
 
+def test_endpoint_keeps_original_ui_score_after_previous_three_minute_cutoff(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _cache_score(score=55.1, ts=NOW - 181)
+
+    response = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == {"score": 55.1, "capturedAt": NOW - 181}
+
+
 def test_db_fallback_skips_newer_untrusted_url(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
     monkeypatch.setattr(database.time, "time", lambda: NOW)
@@ -91,7 +101,10 @@ def test_endpoint_rejects_stale_db_score(tmp_db, monkeypatch):
     monkeypatch.setattr(database.time, "time", lambda: NOW)
     database.save_article_score_to_db(ARTICLE_URL, 55.1)
     conn = sqlite3.connect(tmp_db)
-    conn.execute("UPDATE article_score_log SET captured_at = ?", (NOW - 181,))
+    conn.execute(
+        "UPDATE article_score_log SET captured_at = ?",
+        (NOW - score_capture._CACHE_TTL - 1,),
+    )
     conn.commit()
     conn.close()
 
