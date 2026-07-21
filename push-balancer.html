@@ -6959,15 +6959,25 @@ function _invalidateORCache() { _orCache.clear(); _orCacheVersion++; }
 
 // ── Score-Capture: echte Kandidaten-Scores ans Backend senden ─────────────────
 let _captureThrottle = 0;
+let _lastScoreCaptureFingerprint = '';
 async function _captureArticleScores(articles) {
   const now = Date.now();
-  if (now - _captureThrottle < 30000) return; // max alle 30s
-  _captureThrottle = now;
   if (!articles || articles.length === 0) return;
   const payload = articles
     .filter(a => a.link && a.score > 0)
     .map(a => ({ url: a.link, score: Math.round(a.score * 10) / 10, ts: Math.floor(now / 1000) }));
   if (payload.length === 0) return;
+
+  // Live-Pushes und Research-Daten treffen nach dem ersten Artikel-Rendern ein
+  // und können den sichtbaren Score sofort deutlich ändern. In diesem Fall
+  // darf die 30-Sekunden-Drossel den korrigierten UI-Score nicht zurückhalten.
+  const fingerprint = payload
+    .map(item => item.url + '=' + item.score.toFixed(1))
+    .sort()
+    .join('|');
+  if (now - _captureThrottle < 30000 && fingerprint === _lastScoreCaptureFingerprint) return;
+  _captureThrottle = now;
+  _lastScoreCaptureFingerprint = fingerprint;
   try {
     await fetch(API_BASE + '/api/score-capture', {
       method: 'POST',
