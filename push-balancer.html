@@ -4600,8 +4600,10 @@ function applyFilterAndSort(forceInvalidate) {
   }
 
   renderArticles();
-  // Score-Snapshot: Top-20 Artikel-Scores ins Backend schreiben (für Live-Push Score-Zuordnung)
-  _captureArticleScores(filteredArticles.slice(0, 20));
+  // Kanonischer Score-Snapshot: ausschließlich alle Kandidaten im Standardfilter erfassen.
+  if (currentFilter === 'all') {
+    _captureArticleScores(filteredArticles);
+  }
   // Server-ML-Predictions async holen
   if (filteredArticles.length > 0) _fetchServerPredictions(filteredArticles);
 }
