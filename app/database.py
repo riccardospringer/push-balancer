@@ -112,6 +112,45 @@ def get_article_score_snapshot_from_db(
     return None
 
 
+def get_article_score_snapshot_by_cms_id_from_db(
+    cms_id: str,
+    *,
+    max_age_seconds: int = 8 * 3600,
+) -> dict[str, float | int] | None:
+    """Liest den neuesten frischen Kandidaten-Score für eine eingebettete CMS-ID."""
+    from app.routers.score_capture import _CMS_ID_RE, _url_matches_cms_id
+
+    if not _CMS_ID_RE.fullmatch(cms_id):
+        return None
+    now = int(time.time())
+    max_age = max(0, int(max_age_seconds))
+    if max_age <= 0:
+        return None
+
+    conn = None
+    try:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
+        rows = conn.execute(
+            """SELECT url, score, captured_at
+               FROM article_score_log
+               WHERE captured_at > ? AND LOWER(url) LIKE ?
+               ORDER BY captured_at DESC""",
+            (now - max_age, f"%{cms_id.lower()}%"),
+        ).fetchall()
+        for url, score, captured_at in rows:
+            if _url_matches_cms_id(url, cms_id):
+                return {
+                    "score": float(score),
+                    "captured_at": int(captured_at),
+                }
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            conn.close()
+    return None
+
+
 def get_article_score_from_db(url: str) -> float | None:
     """Liest gespeicherten Kandidaten-Score aus article_score_log."""
     snapshot = get_article_score_snapshot_from_db(url)

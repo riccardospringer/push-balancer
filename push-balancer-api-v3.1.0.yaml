@@ -61,6 +61,77 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /api/score-capture/by-cms-id/{cms_id}:
+    get:
+      tags: [Consumer]
+      operationId: getCapturedScoreByCmsId
+      summary: Get a fresh captured UI score by CMS ID
+      description: Returns only the score and capture timestamp already produced by the unchanged candidate UI. The route is protected by the service's internal CIDR allowlist.
+      parameters:
+        - name: cms_id
+          in: path
+          required: true
+          description: A 24-character hexadecimal CMS document identifier.
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{24}$"
+      responses:
+        "200":
+          description: Fresh captured UI score.
+          headers:
+            Cache-Control:
+              description: Prevents storage of the score response.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [score, capturedAt]
+                properties:
+                  score:
+                    type: number
+                    exclusiveMinimum: 0
+                    maximum: 100
+                  capturedAt:
+                    type: integer
+                    format: int64
+                    minimum: 1
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+
+  /api/score-capture/health:
+    get:
+      tags: [System]
+      operationId: getScoreCaptureHealth
+      summary: Check score capture reachability
+      description: Returns a minimal readiness response behind the same internal CIDR allowlist as the CMS-ID score lookup.
+      responses:
+        "200":
+          description: Score capture route is reachable.
+          headers:
+            Cache-Control:
+              description: Prevents storage of the readiness response.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /api/memory-stats:
     get:
       tags: [System]
