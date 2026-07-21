@@ -7,7 +7,8 @@ GET  /api/score-capture/by-cms-id/{cms_id} — gibt einen gespeicherten Score zu
 Der Browser sendet alle Kandidaten-Scores aus dem unveränderten Standardfilter
 alle 30s wenn der Kandidaten-Tab offen ist.
 Wenn ein Push rausgeht, wird der zuletzt gespeicherte Score für diese URL genutzt.
-Persistenz-TTL: 8 Stunden; der CMS-ID-Endpunkt nutzt das konfigurierte Frischefenster.
+Persistenz-TTL: 8 Stunden; der CMS-ID-Endpunkt nutzt dieses Arbeitsfenster,
+damit ein bereits angezeigter Original-Score nicht nach drei Minuten verschwindet.
 """
 from __future__ import annotations
 
@@ -21,8 +22,6 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Path, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-from app.config import PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS
 
 router = APIRouter()
 
@@ -161,10 +160,10 @@ def get_score_for_url(url: str) -> float | None:
 def get_score_snapshot_for_cms_id(
     cms_id: str,
     *,
-    max_age_seconds: int = PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS,
+    max_age_seconds: int = _CACHE_TTL,
     allow_db_fallback: bool = True,
 ) -> dict[str, float | int] | None:
-    """Liefert den neuesten frischen UI-Capture für eine validierte CMS-ID."""
+    """Liefert den neuesten UI-Capture des laufenden Arbeitstags."""
     if not _CMS_ID_RE.fullmatch(cms_id):
         return None
     max_age = max(0, int(max_age_seconds))
@@ -246,7 +245,7 @@ def debug_score_capture() -> JSONResponse:
     response_model=CmsScoreCaptureResponse,
     summary="Get a captured UI score by CMS ID",
     description=(
-        "Returns only the latest fresh score and capture timestamp already produced by the "
+        "Returns only the latest workday score and capture timestamp already produced by the "
         "unchanged candidate UI. Access remains protected by the service's internal CIDR gate."
     ),
 )

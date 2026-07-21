@@ -65,8 +65,8 @@ paths:
     get:
       tags: [Consumer]
       operationId: getCapturedScoreByCmsId
-      summary: Get a fresh captured UI score by CMS ID
-      description: Returns only the score and capture timestamp already produced by the unchanged candidate UI. The route is protected by the service's internal CIDR allowlist.
+      summary: Get the latest workday UI score by CMS ID
+      description: Returns only the latest workday score and capture timestamp already produced by the unchanged candidate UI. The route is protected by the service's internal CIDR allowlist.
       parameters:
         - name: cms_id
           in: path
@@ -77,7 +77,7 @@ paths:
             pattern: "^[0-9a-fA-F]{24}$"
       responses:
         "200":
-          description: Fresh captured UI score.
+          description: Latest captured UI score from the eight-hour workday window.
           headers:
             Cache-Control:
               description: Prevents storage of the score response.
