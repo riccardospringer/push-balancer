@@ -122,7 +122,7 @@ from app.scoring.editorial import (
 
 log = logging.getLogger("push-balancer")
 
-_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v5"
+_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v6"
 _MANDATORY_QUIET_HOURS_START_MINUTE = 0
 _MANDATORY_QUIET_HOURS_END_MINUTE = 5 * 60 + 30
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
@@ -412,7 +412,7 @@ def _is_hard_teams_blocker(blocker: str) -> bool:
     return any(marker in normalized for marker in _HARD_TEAMS_BLOCKER_MARKERS)
 
 
-def _memory_send_blocker_or_reserve(
+def _memory_send_blocker_locked(
     *,
     article_key: str,
     title: str,
@@ -420,12 +420,6 @@ def _memory_send_blocker_or_reserve(
     config: TeamsAlertConfig,
     bypass_global_cooldown: bool = False,
 ) -> dict[str, Any]:
-    """Process-local last line of defence against duplicate Teams sends.
-
-    The SQLite claim is authoritative across workers. This in-memory reservation
-    additionally protects one running process from rapid repeated cycles before
-    the external Teams webhook result is fully recorded.
-    """
     cooldown_seconds = (
         0 if bypass_global_cooldown else _effective_global_cooldown_minutes(config) * 60
     )
@@ -434,60 +428,146 @@ def _memory_send_blocker_or_reserve(
     keep_seconds = max(topic_seconds, 3600)
     title_tokens = _tokens(title)
 
+    stale_before = now_ts - keep_seconds
+    for key, entry in list(_RECENT_SEND_MEMORY.items()):
+        if entry.get("status") == "failed" or _safe_int(entry.get("ts")) < stale_before:
+            _RECENT_SEND_MEMORY.pop(key, None)
+
+    for key, entry in _RECENT_SEND_MEMORY.items():
+        entry_ts = _safe_int(entry.get("ts"))
+        if not entry_ts:
+            continue
+        age = now_ts - entry_ts
+        if cooldown_seconds > 0 and age < cooldown_seconds:
+            return {
+                "blocked": True,
+                "reason": "memory_global_alert_cooldown",
+                "ageSeconds": age,
+                "otherKey": key,
+            }
+        if key == article_key and age < article_seconds:
+            return {
+                "blocked": True,
+                "reason": "memory_article_alert_cooldown",
+                "ageSeconds": age,
+                "otherKey": key,
+            }
+        other_tokens = set(entry.get("tokens") or set())
+        threshold = min(float(config.topic_dedup_similarity or 0.5), 0.45)
+        if (
+            title_tokens
+            and _same_topic(title_tokens, other_tokens, threshold)
+            and age < topic_seconds
+        ):
+            return {
+                "blocked": True,
+                "reason": "memory_topic_duplicate",
+                "ageSeconds": age,
+                "otherKey": key,
+                "otherTitle": str(entry.get("title") or ""),
+            }
+    return {"blocked": False}
+
+
+def _memory_send_blocker(
+    *,
+    article_key: str,
+    title: str,
+    now_ts: int,
+    config: TeamsAlertConfig,
+    bypass_global_cooldown: bool = False,
+) -> dict[str, Any]:
+    """Check process-local duplicate state without reserving a send."""
     with _RECENT_SEND_LOCK:
-        stale_before = now_ts - keep_seconds
-        for key, entry in list(_RECENT_SEND_MEMORY.items()):
-            if _safe_int(entry.get("ts")) < stale_before:
-                _RECENT_SEND_MEMORY.pop(key, None)
+        return _memory_send_blocker_locked(
+            article_key=article_key,
+            title=title,
+            now_ts=now_ts,
+            config=config,
+            bypass_global_cooldown=bypass_global_cooldown,
+        )
 
-        for key, entry in _RECENT_SEND_MEMORY.items():
-            entry_ts = _safe_int(entry.get("ts"))
-            if not entry_ts:
-                continue
-            age = now_ts - entry_ts
-            if cooldown_seconds > 0 and age < cooldown_seconds:
-                return {
-                    "blocked": True,
-                    "reason": "memory_global_alert_cooldown",
-                    "ageSeconds": age,
-                    "otherKey": key,
-                }
-            if key == article_key and age < article_seconds:
-                return {
-                    "blocked": True,
-                    "reason": "memory_article_alert_cooldown",
-                    "ageSeconds": age,
-                    "otherKey": key,
-                }
-            other_tokens = set(entry.get("tokens") or set())
-            threshold = min(float(config.topic_dedup_similarity or 0.5), 0.45)
-            if (
-                title_tokens
-                and _same_topic(title_tokens, other_tokens, threshold)
-                and age < topic_seconds
-            ):
-                return {
-                    "blocked": True,
-                    "reason": "memory_topic_duplicate",
-                    "ageSeconds": age,
-                    "otherKey": key,
-                    "otherTitle": str(entry.get("title") or ""),
-                }
 
+def _memory_send_blocker_or_reserve(
+    *,
+    article_key: str,
+    title: str,
+    now_ts: int,
+    config: TeamsAlertConfig,
+    bypass_global_cooldown: bool = False,
+) -> dict[str, Any]:
+    """Atomically reserve a process-local send after duplicate checks."""
+    with _RECENT_SEND_LOCK:
+        blocker = _memory_send_blocker_locked(
+            article_key=article_key,
+            title=title,
+            now_ts=now_ts,
+            config=config,
+            bypass_global_cooldown=bypass_global_cooldown,
+        )
+        if blocker.get("blocked"):
+            return blocker
         _RECENT_SEND_MEMORY[article_key] = {
             "ts": now_ts,
             "title": title,
-            "tokens": title_tokens,
+            "tokens": _tokens(title),
+            "status": "reserved",
         }
-    return {"blocked": False}
+    return {"blocked": False, "reserved": True}
 
 
 def _memory_record_send_result(article_key: str, *, ok: bool, now_ts: int) -> None:
     with _RECENT_SEND_LOCK:
         entry = _RECENT_SEND_MEMORY.get(article_key)
-        if entry is not None:
-            entry["status"] = "sent" if ok else "failed"
+        if entry is None:
+            return
+        if ok:
+            entry["status"] = "sent"
             entry["ts"] = now_ts
+        else:
+            _RECENT_SEND_MEMORY.pop(article_key, None)
+
+
+def _memory_release_reservation(article_key: str) -> None:
+    with _RECENT_SEND_LOCK:
+        entry = _RECENT_SEND_MEMORY.get(article_key)
+        if entry is not None and entry.get("status") == "reserved":
+            _RECENT_SEND_MEMORY.pop(article_key, None)
+
+
+def _memory_eligible_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Remove process-local duplicates before ranking the candidate field."""
+    eligible: list[dict[str, Any]] = []
+    reason_counts: dict[str, int] = {}
+    for candidate in candidates:
+        key = candidate_key(candidate)
+        blocker = _memory_send_blocker(
+            article_key=key,
+            title=_title(candidate),
+            now_ts=now_ts,
+            config=config,
+            bypass_global_cooldown=bool(_is_breaking(candidate) and config.breaking_override),
+        )
+        if not blocker.get("blocked"):
+            eligible.append(candidate)
+            continue
+        reason = str(blocker.get("reason") or "memory_guard")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        article_ref = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+        log.info(
+            "[TeamsAlert] candidate skipped before ranking article_ref=%s reason=%s",
+            article_ref,
+            reason,
+        )
+    return eligible, {
+        "skippedCandidates": sum(reason_counts.values()),
+        "reasons": dict(sorted(reason_counts.items())),
+    }
 
 
 def build_teams_alert_context(
@@ -2270,14 +2350,21 @@ def evaluate_and_send_best_candidate(
         1,
         min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT),
     )
-    limited = candidates[:candidate_limit]
+    decision_ts = int(now_ts or time.time())
+    memory_eligible, memory_guard = _memory_eligible_candidates(
+        candidates,
+        now_ts=decision_ts,
+        config=config,
+    )
+    limited = memory_eligible[:candidate_limit]
     context = build_teams_alert_context(
         limited,
         history_authoritative=history_authoritative,
-        now_ts=now_ts,
+        now_ts=decision_ts,
         config=config,
     )
     evaluation = evaluate_teams_alert_candidates(limited, context, config)
+    evaluation["memoryGuard"] = memory_guard
     selected = evaluation.get("selectedCandidate")
     selected_decision = None
 
@@ -2292,13 +2379,14 @@ def evaluate_and_send_best_candidate(
         diagnostics = _no_candidate_diagnostics(evaluation, context, config)
         log.info(
             "[TeamsAlert] no_candidate evaluated=%s score_eligible=%s teams_today=%s "
-            "due=%s target=%s shortfall=%s blocker_categories=%s",
+            "due=%s target=%s shortfall=%s memory_skipped=%s blocker_categories=%s",
             diagnostics["evaluatedCandidates"],
             diagnostics["scoreEligibleCandidates"],
             diagnostics["teamsAlertsToday"],
             diagnostics["dueOpportunityCount"],
             diagnostics["targetCount"],
             diagnostics["projectedShortfall"],
+            diagnostics["memorySkippedCandidates"],
             diagnostics["blockerCategories"],
         )
         return {
@@ -2333,7 +2421,7 @@ def evaluate_and_send_best_candidate(
     article_id = str(selected.get("id") or article_key)
     article_url = _url(selected)
     article_ref = hashlib.sha256(article_key.encode("utf-8")).hexdigest()[:12]
-    decision_ts = int(context.get("nowTs") or time.time())
+    decision_ts = int(context.get("nowTs") or decision_ts)
     dispatch_comparison = _dispatch_live_push_comparison(
         selected,
         now_ts=decision_ts,
@@ -2490,6 +2578,7 @@ def evaluate_and_send_best_candidate(
         ),
     )
     if not claim.get("claimed"):
+        _memory_release_reservation(article_key)
         log.info(
             "[TeamsAlert] send skipped by claim article_ref=%s reason=%s",
             article_ref,
@@ -2572,6 +2661,9 @@ def _no_candidate_diagnostics(
     teams_today = _safe_int(context.get("teamsAlertsToday"))
     target = max(1, int(config.target_pushes_per_day or 15), len(opportunities))
     decisions = list(evaluation.get("decisions") or [])
+    memory_guard = evaluation.get("memoryGuard")
+    memory_guard = memory_guard if isinstance(memory_guard, dict) else {}
+    memory_skipped = _safe_int(memory_guard.get("skippedCandidates"))
     score_eligible = 0
     category_counts: dict[str, int] = {}
     for item in decisions:
@@ -2593,10 +2685,22 @@ def _no_candidate_diagnostics(
         for category in categories or {"none"}:
             category_counts[category] = category_counts.get(category, 0) + 1
 
+    for reason, count in (memory_guard.get("reasons") or {}).items():
+        reason_text = str(reason or "")
+        if reason_text == "memory_global_alert_cooldown":
+            category = "teams_cooldown"
+        elif reason_text in {"memory_article_alert_cooldown", "memory_topic_duplicate"}:
+            category = "teams_duplicate"
+        else:
+            category = "other"
+        category_counts[category] = category_counts.get(category, 0) + _safe_int(count)
+
     projected_maximum = min(target, teams_today + len(future))
     next_slot = min(future, key=lambda slot: int(slot.get("ts") or 0)) if future else None
     return {
         "evaluatedCandidates": len(decisions),
+        "inputCandidates": len(decisions) + memory_skipped,
+        "memorySkippedCandidates": memory_skipped,
         "scoreEligibleCandidates": score_eligible,
         "teamsAlertsToday": teams_today,
         "dueOpportunityCount": len(due),

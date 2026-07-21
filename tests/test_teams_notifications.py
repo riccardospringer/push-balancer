@@ -32,6 +32,17 @@ from app.routers.feed import _extract_sitemap_articles
 NOW_TS = 1_800_000_000
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_local_teams_send_memory():
+    from app.notifications import teams as teams_module
+
+    with teams_module._RECENT_SEND_LOCK:
+        teams_module._RECENT_SEND_MEMORY.clear()
+    yield
+    with teams_module._RECENT_SEND_LOCK:
+        teams_module._RECENT_SEND_MEMORY.clear()
+
+
 def _iso(ts: int) -> str:
     return dt.datetime.fromtimestamp(ts).isoformat()
 
@@ -2228,7 +2239,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Live-Vergleich:" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
-    assert payload["recommendationPolicyVersion"] == "internal-score-adaptive-threshold-v5"
+    assert payload["recommendationPolicyVersion"] == "internal-score-adaptive-threshold-v6"
     assert payload["recommendationsIndependentFromLivePushes"] is True
     assert payload["livePushComparison"] == {
         "available": True,
@@ -2564,6 +2575,119 @@ def test_send_failure_is_recorded_without_crashing_cycle(tmp_db):
     assert rows[0]["status"] == "failed"
     assert rows[0]["send_status"] == "failed"
     assert rows[0]["send_error"]
+    from app.notifications import teams as teams_module
+
+    with teams_module._RECENT_SEND_LOCK:
+        assert candidate["url"] not in teams_module._RECENT_SEND_MEMORY
+
+
+def test_memory_blocked_top_candidate_does_not_starve_runner_up(tmp_db):
+    from app.database import push_db_upsert
+    from app.notifications import teams as teams_module
+
+    now_ts = _gold_slot_ts()
+    config = _config(
+        agent_review_enabled=False,
+        min_score=75.0,
+        global_cooldown_minutes=30,
+        alert_cooldown_minutes=60,
+    )
+    top = _candidate(
+        id="blocked-top",
+        url="https://www.bild.de/news/blocked-top",
+        title="Bundesweite Unwetterwarnung: Schwere Gewitter ziehen auf",
+        recommendedText="Schwere Gewitter: Bundesweite Unwetterwarnung gilt ab sofort",
+        score=96.0,
+        predictedOR=0.085,
+        pubDate=_iso(now_ts - 8 * 60),
+    )
+    runner_up = _candidate(
+        id="eligible-runner-up",
+        url="https://www.bild.de/geld/eligible-runner-up",
+        title="Rentenplus beschlossen: Millionen Beschaeftigte bekommen mehr Geld",
+        recommendedText="Rentenplus beschlossen: So viel Geld bekommen Beschaeftigte",
+        category="geld",
+        score=90.0,
+        predictedOR=0.075,
+        pubDate=_iso(now_ts - 10 * 60),
+    )
+    push_db_upsert(_history(minutes_since_last_push=90, now_ts=now_ts))
+
+    with teams_module._RECENT_SEND_LOCK:
+        teams_module._RECENT_SEND_MEMORY.clear()
+    teams_module._memory_send_blocker_or_reserve(
+        article_key=top["url"],
+        title=top["title"],
+        now_ts=now_ts - 45 * 60,
+        config=config,
+    )
+    teams_module._memory_record_send_result(top["url"], ok=True, now_ts=now_ts - 45 * 60)
+
+    try:
+        with patch(
+            "app.notifications.teams.send_teams_notification",
+            return_value={"ok": True, "status": 200},
+        ) as send:
+            result = evaluate_and_send_best_candidate(
+                [top, runner_up],
+                config=config,
+                now_ts=now_ts,
+                history_authoritative=True,
+            )
+
+        assert result["sent"] is True
+        assert result["candidateId"] == runner_up["url"]
+        assert result["evaluation"]["memoryGuard"] == {
+            "skippedCandidates": 1,
+            "reasons": {"memory_article_alert_cooldown": 1},
+        }
+        send.assert_called_once()
+    finally:
+        with teams_module._RECENT_SEND_LOCK:
+            teams_module._RECENT_SEND_MEMORY.clear()
+
+
+def test_database_claim_rejection_releases_process_reservation(tmp_db):
+    from app.database import push_db_upsert
+    from app.notifications import teams as teams_module
+
+    now_ts = _gold_slot_ts()
+    candidate = _candidate(
+        id="claim-race",
+        url="https://www.bild.de/news/claim-race",
+        title="Bundesrat beschliesst Rentenplus fuer Millionen Beschaeftigte",
+        recommendedText="Rentenplus beschlossen: So viel Geld bekommen Beschaeftigte",
+        score=91.0,
+        predictedOR=0.076,
+        pubDate=_iso(now_ts - 10 * 60),
+    )
+    push_db_upsert(_history(minutes_since_last_push=90, now_ts=now_ts))
+    with teams_module._RECENT_SEND_LOCK:
+        teams_module._RECENT_SEND_MEMORY.clear()
+
+    try:
+        with (
+            patch(
+                "app.notifications.teams.teams_alert_try_claim_send",
+                return_value={"claimed": False, "reason": "article_already_sent"},
+            ),
+            patch("app.notifications.teams.send_teams_notification") as send,
+        ):
+            result = evaluate_and_send_best_candidate(
+                [candidate],
+                config=_config(agent_review_enabled=False, min_score=75.0),
+                now_ts=now_ts,
+                history_authoritative=True,
+            )
+
+        assert result["sent"] is False
+        assert result["reason"] == "send_claim_blocked"
+        send.assert_not_called()
+        with teams_module._RECENT_SEND_LOCK:
+            assert candidate["url"] not in teams_module._RECENT_SEND_MEMORY
+    finally:
+        with teams_module._RECENT_SEND_LOCK:
+            teams_module._RECENT_SEND_MEMORY.clear()
 
 
 def test_send_cycle_continues_when_live_comparison_is_stale(tmp_db):
