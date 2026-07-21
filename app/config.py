@@ -406,6 +406,13 @@ INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
     "INTERNAL_ACCESS_EXEMPT_PATHS",
     "/api/health",
 )
+# Stable NAT gateway addresses for the approved BILD Next staging consumer.
+# This allowlist applies only to the two read-only score-capture GET routes;
+# it does not widen access to the legacy UI, debug endpoint, or capture POST.
+SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS: list[str] = _csv_env(
+    "SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS",
+    "18.194.148.79/32,3.122.221.31/32,3.75.74.81/32",
+)
 
 # ── Microsoft Teams Push Recommendation Alerts ─────────────────────────────
 # Disabled by default. Enabling this sends selected article metadata to the

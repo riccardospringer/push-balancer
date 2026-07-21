@@ -41,6 +41,7 @@ from app.config import (
     INTERNAL_ACCESS_ENABLED,
     INTERNAL_ACCESS_EXEMPT_PATHS,
     PORT,
+    SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS,
     PUSH_TEAMS_ALERTS_ENABLED,
     PUSH_TEAMS_CHECK_INTERVAL_SECONDS,
     SERVE_DIR,
@@ -263,7 +264,10 @@ def _extract_client_ip(request: Request) -> str | None:
     return None
 
 
-def _client_is_on_allowed_network(client_ip: str | None) -> bool:
+def _client_is_on_allowed_network(
+    client_ip: str | None,
+    allowed_cidrs: list[str] | None = None,
+) -> bool:
     if not client_ip:
         return False
 
@@ -272,7 +276,8 @@ def _client_is_on_allowed_network(client_ip: str | None) -> bool:
     except ValueError:
         return False
 
-    for cidr in INTERNAL_ACCESS_ALLOWED_CIDRS:
+    cidrs = INTERNAL_ACCESS_ALLOWED_CIDRS if allowed_cidrs is None else allowed_cidrs
+    for cidr in cidrs:
         try:
             if parsed_ip in ipaddress.ip_network(cidr, strict=False):
                 return True
@@ -280,6 +285,22 @@ def _client_is_on_allowed_network(client_ip: str | None) -> bool:
             log.warning("[Access] Ungültige INTERNAL_ACCESS_ALLOWED_CIDRS-Konfiguration: %s", cidr)
 
     return False
+
+
+def _is_approved_score_capture_consumer(
+    method: str,
+    path: str,
+    client_ip: str | None,
+) -> bool:
+    """Allow the approved Next consumer to read only the minimal score source."""
+    if method != "GET" or not _client_is_on_allowed_network(
+        client_ip,
+        SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS,
+    ):
+        return False
+    return path == "/api/score-capture/health" or bool(
+        re.fullmatch(r"/api/score-capture/by-cms-id/[0-9a-fA-F]{24}", path)
+    )
 
 
 def _frontend_index_path() -> str:
@@ -1022,6 +1043,8 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
         return response
 
     client_ip = _extract_client_ip(request)
+    if _is_approved_score_capture_consumer(request.method, normalized_path, client_ip):
+        return await call_next(request)
     if _client_is_on_allowed_network(client_ip):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:

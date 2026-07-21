@@ -233,6 +233,7 @@ def test_runtime_environment_variables_are_documented_for_handover():
         "CONSUMER_API_KEY",
         "INTERNAL_ACCESS_ENABLED",
         "INTERNAL_ACCESS_ALLOWED_CIDRS",
+        "SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS",
         "INTERNAL_ACCESS_EXEMPT_PATHS",
         "PUSH_SYNC_SECRET",
         "ADOBE_TRAFFIC_ENABLED",
