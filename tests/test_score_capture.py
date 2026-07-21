@@ -105,6 +105,7 @@ def test_endpoint_remains_behind_internal_cidr_gate(monkeypatch):
     monkeypatch.setattr(main_module, "INTERNAL_ACCESS_ENABLED", True)
     monkeypatch.setattr(main_module, "INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
     monkeypatch.setattr(main_module, "INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+    monkeypatch.setattr(main_module, "SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS", [])
     _cache_score(score=54.3, ts=NOW - 5)
 
     blocked = client.get(
@@ -128,6 +129,33 @@ def test_endpoint_remains_behind_internal_cidr_gate(monkeypatch):
     assert allowed.status_code == 200
     assert blocked_health.status_code == 404
     assert allowed_health.status_code == 200
+
+
+def test_approved_next_egress_can_read_only_minimal_score_routes(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    monkeypatch.setattr(main_module, "INTERNAL_ACCESS_ENABLED", True)
+    monkeypatch.setattr(main_module, "INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
+    monkeypatch.setattr(main_module, "INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+    monkeypatch.setattr(
+        main_module,
+        "SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS",
+        ["198.51.100.10/32"],
+    )
+    headers = {"CF-Connecting-IP": "198.51.100.10"}
+    _cache_score(score=54.3, ts=NOW - 5)
+
+    health = client.get("/api/score-capture/health", headers=headers)
+    score = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}", headers=headers)
+    debug = client.get("/api/score-capture/debug", headers=headers)
+    write = client.post("/api/score-capture", headers=headers, json={"scores": []})
+    unrelated = client.get("/api/pushes", headers=headers)
+
+    assert health.status_code == 200
+    assert score.status_code == 200
+    assert score.json() == {"score": 54.3, "capturedAt": NOW - 5}
+    assert debug.status_code == 404
+    assert write.status_code == 404
+    assert unrelated.status_code == 404
 
 
 @pytest.mark.parametrize(
