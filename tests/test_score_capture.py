@@ -162,3 +162,14 @@ def test_frontend_captures_every_candidate_only_in_standard_filter():
 
     assert "if (currentFilter === 'all') {\n    _captureArticleScores(filteredArticles);\n  }" in html
     assert "_captureArticleScores(filteredArticles.slice(0, 20))" not in html
+
+
+def test_frontend_recaptures_immediately_when_visible_scores_change():
+    html = (Path(__file__).resolve().parents[1] / "push-balancer.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "let _lastScoreCaptureFingerprint = '';" in html
+    assert "fingerprint === _lastScoreCaptureFingerprint" in html
+    assert "item.url + '=' + item.score.toFixed(1)" in html
+    assert "if (now - _captureThrottle < 30000) return;" not in html
