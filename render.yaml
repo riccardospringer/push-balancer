@@ -86,6 +86,14 @@ services:
         value: "12"
       - key: PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
         value: "30"
+      - key: PUSH_TEAMS_POST_SEND_THRESHOLD_ENABLED
+        value: "true"
+      - key: PUSH_TEAMS_POST_SEND_PEAK_SCORE
+        value: "80"
+      - key: PUSH_TEAMS_POST_SEND_DECAY_MINUTES
+        value: "90"
+      - key: PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD
+        value: "80"
       - key: PUSH_TEAMS_QUIET_HOURS_START
         value: "00:00"
       - key: PUSH_TEAMS_QUIET_HOURS_END

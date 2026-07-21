@@ -57,6 +57,7 @@ from app.config import (
     PUSH_TEAMS_EVENT_GATE_ENABLED,
     PUSH_TEAMS_EXCLUDED_SECTIONS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
+    PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD,
     PUSH_TEAMS_INDEPENDENT_PACING_ENABLED,
     PUSH_TEAMS_KNOWN_DEFAULT_FORECASTS,
     PUSH_TEAMS_KNOWN_DEFAULT_MIN_FIELD,
@@ -89,6 +90,9 @@ from app.config import (
     PUSH_TEAMS_SPECULATIVE_MAX_AGE_HOURS,
     PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS,
     PUSH_TEAMS_PEAK_SLOT_MIN_OR,
+    PUSH_TEAMS_POST_SEND_DECAY_MINUTES,
+    PUSH_TEAMS_POST_SEND_PEAK_SCORE,
+    PUSH_TEAMS_POST_SEND_THRESHOLD_ENABLED,
     PUSH_TEAMS_TARGET_PUSHES_PER_DAY,
     PUSH_TEAMS_TOPIC_DEDUP_HOURS,
     PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
@@ -118,12 +122,55 @@ from app.scoring.editorial import (
 
 log = logging.getLogger("push-balancer")
 
-_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-golden-slots-v4"
+_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v5"
 _MANDATORY_QUIET_HOURS_START_MINUTE = 0
 _MANDATORY_QUIET_HOURS_END_MINUTE = 5 * 60 + 30
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
 _HARD_BREAKING_PUSH_SCORE_FLOOR = 72.0
 _PUSH_SCORE_SELECTION_BAND = 3.0
+
+_HARD_TEAMS_BLOCKER_MARKERS = (
+    "alerts deaktiviert",
+    "kein gueltiger interner push-balancer-score",
+    "ruhezeit aktiv",
+    "ohne headline",
+    "ohne artikel-link",
+    "kein artikel:",
+    "aktualitaet:",
+    "zeitstempel",
+    "veroeffentlichungs- oder aktualisierungszeit fehlt",
+    "artikel ist zu alt",
+    "artikel nicht frisch genug",
+    "ressort ",
+    "letzter push-zeitpunkt nicht verfuegbar",
+    "pause seit letztem push zu kurz",
+    "push-dichte in den letzten",
+    "bereits per teams gemeldet",
+    "thema bereits per teams gemeldet",
+    "re-alert-cooldown",
+    "teams-cooldown aktiv",
+    "tageslimit fuer teams-hinweise",
+    "staerkerer kandidat vorhanden",
+    "wahrscheinlich ueberholt",
+    "bereits als vollzogen gemeldet",
+    "bereits als teams-kandidat versucht",
+    "teams-hinweis wird bereits versendet",
+    "sport ohne ",
+    "live-ticker ohne neue pushwuerdige lage",
+    "live-ticker ohne neue pushwürdige lage",
+    "kein konkretes nachrichten-ereignis",
+    "service-/raetsel-/ratgeber-format",
+    "kurios-/click-reiz",
+    "enger kurios-/click-reiz",
+    "termin-/prozesslage ohne neue entwicklung",
+    "erklär-/debattenstück ohne neue aktuelle lage",
+    "erklaer-/debattenstueck ohne neue aktuelle lage",
+    "morgenfit:",
+    "feld unsicher",
+    "deutschland-relevanz",
+    "tagesplan:",
+    "tagesplan im soll",
+)
 
 _RECENT_SEND_LOCK = threading.Lock()
 _RECENT_SEND_MEMORY: dict[str, dict[str, Any]] = {}
@@ -210,6 +257,10 @@ class TeamsAlertConfig:
     alert_cooldown_minutes: int = PUSH_TEAMS_ALERT_COOLDOWN_MINUTES
     repeat_suppression_hours: int = PUSH_TEAMS_REPEAT_SUPPRESSION_HOURS
     global_cooldown_minutes: int = PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES
+    post_send_threshold_enabled: bool = PUSH_TEAMS_POST_SEND_THRESHOLD_ENABLED
+    post_send_peak_score: float = PUSH_TEAMS_POST_SEND_PEAK_SCORE
+    post_send_decay_minutes: int = PUSH_TEAMS_POST_SEND_DECAY_MINUTES
+    high_score_always_threshold: float = PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD
     independent_pacing_enabled: bool = PUSH_TEAMS_INDEPENDENT_PACING_ENABLED
     allowed_sections: tuple[str, ...] = tuple(PUSH_TEAMS_ALLOWED_SECTIONS)
     excluded_sections: tuple[str, ...] = tuple(PUSH_TEAMS_EXCLUDED_SECTIONS)
@@ -285,6 +336,80 @@ def _effective_global_cooldown_minutes(config: TeamsAlertConfig) -> int:
     if config.independent_pacing_enabled:
         return max(configured, 30)
     return max(configured, int(config.min_minutes_since_last_push or 0), 30)
+
+
+def _post_send_score_threshold(
+    base_threshold: float,
+    *,
+    minutes_since_last_teams_alert: float | None,
+    breaking: bool,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Raise the raw score floor after a Teams send, then decay it predictably."""
+    always_threshold = _clamp(float(config.high_score_always_threshold or 80.0), 0.0, 100.0)
+    base = _clamp(min(float(base_threshold or 0.0), always_threshold), 0.0, 100.0)
+    configured_peak = _clamp(float(config.post_send_peak_score or 80.0), 0.0, 100.0)
+    peak = max(base, min(configured_peak, always_threshold))
+    cooldown = max(0, _effective_global_cooldown_minutes(config))
+    decay_end = max(cooldown, int(config.post_send_decay_minutes or 0))
+    review = {
+        "enabled": bool(config.post_send_threshold_enabled),
+        "active": False,
+        "baseThreshold": round(base, 2),
+        "currentThreshold": round(base, 2),
+        "peakThreshold": round(peak, 2),
+        "cooldownMinutes": cooldown,
+        "decayEndMinutes": decay_end,
+        "minutesSinceLastTeamsAlert": minutes_since_last_teams_alert,
+        "phase": "baseline",
+        "reason": "Keine vorherige Teams-Empfehlung; Basis-Schwelle gilt.",
+    }
+    if not config.post_send_threshold_enabled:
+        review["phase"] = "disabled"
+        review["reason"] = "Adaptive Schwelle ist deaktiviert; Basis-Schwelle gilt."
+        return review
+    if breaking:
+        review["phase"] = "breaking"
+        review["reason"] = "Verifiziertes Breaking nutzt seine eigene Score-Schwelle."
+        return review
+    if minutes_since_last_teams_alert is None:
+        return review
+
+    elapsed = max(0.0, float(minutes_since_last_teams_alert))
+    if elapsed <= cooldown:
+        current = peak
+        phase = "peak"
+    elif elapsed < decay_end and decay_end > cooldown:
+        progress = (elapsed - cooldown) / float(decay_end - cooldown)
+        current = peak - (peak - base) * _clamp(progress, 0.0, 1.0)
+        phase = "decay"
+    else:
+        current = base
+        phase = "baseline"
+
+    review["active"] = current > base
+    review["currentThreshold"] = round(current, 2)
+    review["phase"] = phase
+    if phase == "peak":
+        review["reason"] = (
+            f"Nach dem letzten Teams-Hinweis gilt die erhoehte Push-Score-Schwelle "
+            f"{current:.1f}."
+        )
+    elif phase == "decay":
+        review["reason"] = (
+            f"Die Schwelle faellt kontrolliert von {peak:.1f} auf {base:.1f}; "
+            f"aktuell sind {current:.1f} erforderlich."
+        )
+    else:
+        review["reason"] = (
+            f"Das Schutzfenster ist abgelaufen; die Basis-Schwelle {base:.1f} gilt wieder."
+        )
+    return review
+
+
+def _is_hard_teams_blocker(blocker: str) -> bool:
+    normalized = str(blocker or "").casefold()
+    return any(marker in normalized for marker in _HARD_TEAMS_BLOCKER_MARKERS)
 
 
 def _memory_send_blocker_or_reserve(
@@ -595,6 +720,12 @@ def should_notify_teams(
         blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
     if not url:
         blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
+    if publication_review.get("status") != "valid":
+        publication_reason = str(
+            publication_review.get("reason")
+            or "Veroeffentlichungszeit ist nicht belastbar"
+        )
+        blockers.append(f"Aktualitaet: {publication_reason}")
     non_article_reason = _daily_plan_non_article_reason(candidate)
     if non_article_reason:
         blockers.append(non_article_reason)
@@ -652,12 +783,20 @@ def should_notify_teams(
     )
     minimum_pressure = _minimum_pressure_review(push_pacing, teams_alerts_today, now_ts, config)
     minimum_active = bool(minimum_pressure.get("active"))
-    effective_min_score = min_score
+    post_send_threshold = _post_send_score_threshold(
+        min_score,
+        minutes_since_last_teams_alert=minutes_since_last_teams_alert,
+        breaking=breaking,
+        config=config,
+    )
+    effective_min_score = float(post_send_threshold["currentThreshold"])
     if minimum_active and not breaking:
         positive.append(
             "Teams-Tagesziel aktiv: zusätzliche gute Slots sind erlaubt; "
             "die Score-Schwelle bleibt unverändert"
         )
+    if post_send_threshold.get("active"):
+        positive.append(f"Adaptive Score-Schwelle: {post_send_threshold['reason']}")
 
     if score >= effective_min_score:
         positive.append(f"Push Score {score:.1f} liegt ueber Schwelle {effective_min_score:.1f}")
@@ -1044,6 +1183,17 @@ def should_notify_teams(
             "Staerkerer Kandidat vorhanden" + (f": {stronger_title}" if stronger_title else "")
         )
 
+    high_score_override = _high_score_override_review(
+        blockers,
+        score=score,
+        score_source=score_source,
+        config=config,
+    )
+    if high_score_override["active"]:
+        blockers = list(high_score_override["remainingBlockers"])
+        if high_score_override["approved"]:
+            positive.extend(high_score_override["reasons"])
+
     deadline_fallback = _deadline_fallback_review(
         candidate,
         slot_gate=slot_gate,
@@ -1084,6 +1234,7 @@ def should_notify_teams(
         ),
         slot_gate=slot_gate,
         deadline_fallback=deadline_fallback,
+        high_score_override=high_score_override,
         visit_potential=visit_potential,
         push_pacing=push_pacing,
         minimum_pressure=minimum_pressure,
@@ -1097,6 +1248,13 @@ def should_notify_teams(
         review_blocker = str(agent_review.get("blockingReason") or "Agenten-Konsens verweigert")
         if review_blocker not in blockers:
             blockers.append(review_blocker)
+        if high_score_override.get("approved"):
+            high_score_override["approved"] = False
+            high_score_override["hardBlockers"] = [
+                *list(high_score_override.get("hardBlockers") or []),
+                review_blocker,
+            ]
+            high_score_override["remainingBlockers"] = list(blockers)
 
     if not blockers:
         status = "notify"
@@ -1133,6 +1291,8 @@ def should_notify_teams(
         "teamsAlertScoreThreshold": round(effective_min_alert_score, 1),
         "teamsAlertScoreBaseThreshold": config.min_alert_score,
         "teamsAlertScoreBreakdown": alert_model["breakdown"],
+        "postSendScoreThreshold": post_send_threshold,
+        "highScoreOverride": high_score_override,
         "pushesToday": pushes_today,
         "teamsAlertsToday": teams_alerts_today,
         "pacingBasis": pacing_basis,
@@ -1166,7 +1326,8 @@ def should_notify_teams(
         "predictedORSource": forecast["source"],
         "predictedORBasis": forecast["basis"],
         "predictedORConfidence": forecast["confidence"],
-        "minScore": min_score,
+        "minScore": round(effective_min_score, 2),
+        "baseMinScore": round(float(min_score), 2),
         "minOR": min_or,
         "minMinutesSinceLastPush": min_pause,
         "minutesSinceLastPush": minutes_since_last_push,
@@ -1688,6 +1849,27 @@ def build_teams_push_recommendation(
         else "CvD-Einordnung: keine redaktionelle Freigabe."
     )
     time_fit_reason = f"Zeitfenster: {time_fit_label}." if time_fit_label else ""
+    post_send_threshold = (
+        decision.get("postSendScoreThreshold")
+        if isinstance(decision.get("postSendScoreThreshold"), dict)
+        else {}
+    )
+    high_score_override = (
+        decision.get("highScoreOverride")
+        if isinstance(decision.get("highScoreOverride"), dict)
+        else {}
+    )
+    adaptive_threshold_reason = (
+        f"Adaptive Schwelle: {post_send_threshold.get('reason')}"
+        if post_send_threshold.get("active")
+        else ""
+    )
+    high_score_reason = (
+        "High-Score-Regel: Der kanonische Push Score liegt über 80; weiche "
+        "Qualitätsgates treten zurück, alle harten Sperren sind erfüllt."
+        if high_score_override.get("approved")
+        else ""
+    )
     why_now = _dedupe(
         [
             editorial_reason,
@@ -1697,6 +1879,8 @@ def build_teams_push_recommendation(
             forecast_reason,
             threshold_reason,
             score_reason,
+            adaptive_threshold_reason,
+            high_score_reason,
             timing_reason,
             competition,
             live_comparison_label,
@@ -1729,6 +1913,8 @@ def build_teams_push_recommendation(
     compact_reasons = _dedupe(
         [
             *list(timing_brief.get("reasons") or []),
+            adaptive_threshold_reason,
+            high_score_reason,
             timing_reason,
         ]
     )[:5]
@@ -1841,6 +2027,14 @@ def build_teams_push_recommendation(
             "teamsAlertScore": alert_score,
             "teamsAlertScoreThreshold": alert_threshold,
             "teamsAlertScoreBreakdown": decision.get("teamsAlertScoreBreakdown") or {},
+            "postSendScoreThreshold": post_send_threshold,
+            "highScoreOverride": {
+                "active": bool(high_score_override.get("active")),
+                "approved": bool(high_score_override.get("approved")),
+                "threshold": high_score_override.get("threshold"),
+                "waivedGateCount": len(high_score_override.get("waivedBlockers") or []),
+                "hardBlockerCount": len(high_score_override.get("hardBlockers") or []),
+            },
             "editorialReview": editorial_review,
             "editorialScore": editorial_score,
             "editorialReasons": editorial_reasons,
@@ -1971,8 +2165,21 @@ def send_teams_notification(
         push_score = _safe_float(payload.get("pushScore"))
         payload_floor = _safe_float(payload.get("minimumPushScore"))
         is_breaking = bool(payload.get("isBreaking"))
+        high_score_override = payload.get("highScoreOverride")
+        high_score_override = (
+            high_score_override if isinstance(high_score_override, dict) else {}
+        )
+        high_score_override_active = bool(
+            high_score_override.get("approved")
+            and push_score is not None
+            and push_score > float(config.high_score_always_threshold or 80.0)
+        )
         configured_floor = (
-            float(config.breaking_min_score) if is_breaking else float(config.min_score)
+            float(config.high_score_always_threshold or 80.0)
+            if high_score_override_active
+            else float(config.breaking_min_score)
+            if is_breaking
+            else float(config.min_score)
         )
         policy_floor = (
             _HARD_BREAKING_PUSH_SCORE_FLOOR if is_breaking else _HARD_NORMAL_PUSH_SCORE_FLOOR
@@ -2567,6 +2774,9 @@ def _teams_recommendation_decision_snapshot(decision: dict[str, Any]) -> dict[st
         "summary",
         "score",
         "minScore",
+        "baseMinScore",
+        "postSendScoreThreshold",
+        "highScoreOverride",
         "teamsAlertScore",
         "teamsAlertScoreThreshold",
         "editorialScore",
@@ -6523,6 +6733,56 @@ def _daily_slot_gate_review(
     return result
 
 
+def _high_score_override_review(
+    blockers: list[str],
+    *,
+    score: float,
+    score_source: str,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Let canonical scores above 80 waive soft gates, never safety invariants."""
+    threshold = _clamp(float(config.high_score_always_threshold or 80.0), 0.0, 100.0)
+    canonical = bool(
+        score_source == "internal_score_api" or not config.require_internal_score_api
+    )
+    active = bool(canonical and float(score) > threshold)
+    review = {
+        "active": active,
+        "approved": False,
+        "canonicalScore": canonical,
+        "threshold": round(threshold, 1),
+        "score": round(float(score), 1),
+        "waivedBlockers": [],
+        "hardBlockers": [],
+        "remainingBlockers": list(blockers),
+        "reasons": [],
+    }
+    if not active:
+        return review
+
+    hard = [blocker for blocker in blockers if _is_hard_teams_blocker(blocker)]
+    soft = [blocker for blocker in blockers if not _is_hard_teams_blocker(blocker)]
+    review["waivedBlockers"] = soft
+    review["hardBlockers"] = hard
+    review["remainingBlockers"] = hard
+    if hard:
+        return review
+
+    review["approved"] = True
+    review["reasons"] = [
+        f"Push Score {score:.1f} liegt strikt ueber {threshold:.1f}: "
+        "weiche Qualitaets- und Ermuedungsgates werden ueberstimmt",
+        "Ruhezeit, Zeitpunkt, Cooldown, Fakten, Aktualitaet, Ressort und "
+        "Teams-Dubletten wurden weiterhin hart geprueft",
+    ]
+    if soft:
+        review["reasons"].append(
+            f"High-Score-Regel lockert {len(soft)} weiche Gate(s); "
+            "der kanonische Push Score entscheidet"
+        )
+    return review
+
+
 def _deadline_fallback_review(
     candidate: dict[str, Any],
     *,
@@ -6584,43 +6844,10 @@ def _deadline_fallback_review(
         review["remainingBlockers"] = [*blockers, *floor_failures]
         return review
 
-    hard_markers = (
-        "alerts deaktiviert",
-        "kein gueltiger interner push-balancer-score",
-        "ruhezeit aktiv",
-        "ohne headline",
-        "ohne artikel-link",
-        "kein artikel:",
-        "ressort ",
-        "letzter push-zeitpunkt nicht verfuegbar",
-        "pause seit letztem push zu kurz",
-        "artikel nicht frisch genug",
-        "push-dichte in den letzten",
-        "bereits per teams gemeldet",
-        "thema bereits per teams gemeldet",
-        "re-alert-cooldown",
-        "teams-cooldown aktiv",
-        "tageslimit fuer teams-hinweise",
-        "staerkerer kandidat vorhanden",
-        "wahrscheinlich ueberholt",
-        "bereits als vollzogen gemeldet",
-        "bereits als teams-kandidat versucht",
-        "teams-hinweis wird bereits versendet",
-        "sport ohne ",
-        "live-ticker ohne neue pushwuerdige lage",
-        "kein konkretes nachrichten-ereignis",
-        "termin-/prozesslage ohne neue entwicklung",
-        "erklär-/debattenstück ohne neue aktuelle lage",
-        "erklaer-/debattenstueck ohne neue aktuelle lage",
-        "morgenfit:",
-        "feld unsicher",
-        "deutschland-relevanz",
-    )
     hard: list[str] = []
     soft: list[str] = []
     for blocker in blockers:
-        normalized = str(blocker or "").casefold()
-        if any(marker in normalized for marker in hard_markers):
+        if _is_hard_teams_blocker(blocker):
             hard.append(blocker)
         else:
             soft.append(blocker)
@@ -6710,6 +6937,7 @@ def _final_agent_review(
     forecast_near_miss_accepted: bool,
     slot_gate: dict[str, Any],
     deadline_fallback: dict[str, Any],
+    high_score_override: dict[str, Any],
     visit_potential: dict[str, Any],
     push_pacing: dict[str, Any],
     minimum_pressure: dict[str, Any],
@@ -6804,6 +7032,7 @@ def _final_agent_review(
         "hardPublicNeed": _has_hard_public_need(title, section),
         "verifiedPeopleMilestone": is_german_public_figure_parenthood_story(candidate),
         "deadlineApproved": bool(deadline_fallback.get("approved")),
+        "highScoreOverrideApproved": bool(high_score_override.get("approved")),
         "expectedOpens": int(visit_potential.get("expectedOpens") or 0),
         "qualityAdjustedOpens": int(visit_potential.get("qualityAdjustedOpens") or 0),
         "reachConfidence": float(visit_potential.get("reachConfidence") or 0.0),
@@ -6826,15 +7055,33 @@ def _final_agent_review(
         "teamsAlertsToday": int(teams_alerts_today or 0),
         "maxAlertsPerDay": int(config.max_alerts_per_day or 0),
         "remainingBlockers": _agent_hard_blockers(remaining_blockers),
-        "waivedBlockers": list(deadline_fallback.get("waivedBlockers") or []),
+        "waivedBlockers": [
+            *list(deadline_fallback.get("waivedBlockers") or []),
+            *list(high_score_override.get("waivedBlockers") or []),
+        ],
     }
-    return run_agent_review_network(
+    review = run_agent_review_network(
         snapshot,
         enabled=config.agent_review_enabled,
         min_evidence_approvals=config.agent_review_min_evidence_approvals,
         min_consensus_score=config.agent_review_min_consensus_score,
         max_latency_ms=config.agent_review_max_latency_ms,
     )
+    if (
+        high_score_override.get("approved")
+        and review.get("enabled")
+        and not review.get("approved")
+        and int(review.get("hardVetoCount") or 0) == 0
+    ):
+        review = dict(review)
+        review["approved"] = True
+        review["highScoreOverrideApplied"] = True
+        review["blockingReason"] = ""
+        review["summary"] = (
+            f"{review.get('summary')}; kanonischer Push Score ueber 80 "
+            "ueberstimmt nur den weichen Evidenz-Konsens"
+        )
+    return review
 
 
 def _push_pacing_review(
@@ -8566,6 +8813,11 @@ def _recommendation_quality_review(
         slot_gate.get("minimumCommitment")
         and (decision.get("deadlineFallback") or {}).get("approved")
     )
+    high_score_override = decision.get("highScoreOverride")
+    high_score_override = (
+        high_score_override if isinstance(high_score_override, dict) else {}
+    )
+    high_score_override_approved = bool(high_score_override.get("approved"))
 
     push_score = _clamp(
         float(decision.get("score") or _score(candidate)),
@@ -8683,9 +8935,11 @@ def _recommendation_quality_review(
         blockers.append("Das aktuelle Versandfenster ist nicht freigegeben.")
     if dimensions["timing"] < 55.0 and not breaking:
         blockers.append("Der Zeitpunkt ist für eine maximale OR zu schwach.")
-    if dimensions["orForecast"] < 45.0 and not (breaking or hard_public_need or minimum_commitment):
+    if dimensions["orForecast"] < 45.0 and not (
+        breaking or hard_public_need or minimum_commitment or high_score_override_approved
+    ):
         blockers.append("Die OR-Erwartung ist für eine klare Empfehlung nicht belastbar genug.")
-    if quality_score < threshold:
+    if quality_score < threshold and not high_score_override_approved:
         blockers.append(
             f"Gesamtqualität {quality_score:.1f} liegt unter der Freigabeschwelle {threshold:.1f}."
         )
@@ -8706,7 +8960,7 @@ def _recommendation_quality_review(
 
     if quality_score >= 84.0 and field_confidence != "niedrig":
         confidence = "hoch"
-    elif quality_score >= threshold:
+    elif quality_score >= threshold or high_score_override_approved:
         confidence = "mittel"
     else:
         confidence = "niedrig"
@@ -8717,6 +8971,7 @@ def _recommendation_quality_review(
         "score": quality_score,
         "threshold": round(threshold, 1),
         "minimumCommitment": minimum_commitment,
+        "highScoreOverrideApplied": high_score_override_approved,
         "confidence": confidence,
         "dimensions": dimensions,
         "blockers": _dedupe(blockers),

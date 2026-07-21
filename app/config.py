@@ -499,6 +499,28 @@ PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES: int = _env_int(
     "PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES",
     30,
 )
+# Nach einem gesendeten Teams-Hinweis steigt die rohe Push-Score-Schwelle
+# zunaechst bis zum Peak und faellt anschliessend bis zum Ende des Fensters
+# linear auf PUSH_TEAMS_MIN_SCORE zurueck. Der harte Cooldown bleibt separat.
+PUSH_TEAMS_POST_SEND_THRESHOLD_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_POST_SEND_THRESHOLD_ENABLED",
+    True,
+)
+PUSH_TEAMS_POST_SEND_PEAK_SCORE: float = _env_float(
+    "PUSH_TEAMS_POST_SEND_PEAK_SCORE",
+    80.0,
+)
+PUSH_TEAMS_POST_SEND_DECAY_MINUTES: int = _env_int(
+    "PUSH_TEAMS_POST_SEND_DECAY_MINUTES",
+    90,
+)
+# Strikt groesser als dieser kanonische Push Score darf weiche Qualitaets- und
+# Ermuedungsgates ueberstimmen. Ruhezeit, Timing, Fakten, Aktualitaet,
+# Cooldown, Ressort, Tageslimit und Teams-Dubletten bleiben hart.
+PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD: float = _env_float(
+    "PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD",
+    80.0,
+)
 # Nicht konfigurierbare Produktregel: Teams-Empfehlungen haben einen eigenen
 # Takt. Echte Live-Pushes bleiben nur Vergleichskontext.
 PUSH_TEAMS_INDEPENDENT_PACING_ENABLED: bool = True

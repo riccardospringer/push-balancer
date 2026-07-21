@@ -441,6 +441,14 @@ def _forecast_agent(snapshot: Snapshot) -> Verdict:
                     "OR liegt knapp unter der Norm, wird aber durch ein starkes Public-Need-Signal gestuetzt",
                     confidence=0.92,
                 )
+            if snapshot.get("highScoreOverrideApproved"):
+                return _verdict(
+                    "Prognose",
+                    "caution",
+                    "Artikelprognose liegt unter der OR-Norm; der kanonische "
+                    "Push Score ueber 80 ist hier das staerkere Artikelsignal",
+                    confidence=0.9,
+                )
             return _verdict(
                 "Prognose",
                 "caution" if snapshot["deadlineApproved"] else "veto",
@@ -461,6 +469,14 @@ def _forecast_agent(snapshot: Snapshot) -> Verdict:
         or snapshot.get("verifiedPeopleMilestone")
     )
     if snapshot["requireArticleForecast"] and not allowed_exception:
+        if snapshot.get("highScoreOverrideApproved"):
+            return _verdict(
+                "Prognose",
+                "caution",
+                "Kanonischer Push Score ueber 80 ersetzt keine OR-Prognose, "
+                "ist hier aber das staerkere Artikelsignal",
+                confidence=0.9,
+            )
         return _verdict(
             "Prognose",
             "veto",
@@ -668,7 +684,7 @@ def _skeptic_agent(snapshot: Snapshot) -> Verdict:
         return _verdict(
             "Adversarialer Gegenpruefer",
             "caution",
-            f"Starkstes Gegenargument: :45-Fallback lockerte {len(snapshot['waivedBlockers'])} weiche Gate(s)",
+            f"Starkstes Gegenargument: Die Sonderregel lockerte {len(snapshot['waivedBlockers'])} weiche Gate(s)",
             confidence=0.95,
         )
     if snapshot["isSpeculative"]:

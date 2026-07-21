@@ -231,7 +231,7 @@ def test_bad_forecast_does_not_trigger_teams_decision():
     assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
 
 
-def test_score_only_mode_does_not_override_bad_article_forecast():
+def test_push_score_over_80_overrides_bad_article_forecast():
     candidate = _candidate(score=88.0, predictedOR=0.0377)
     context = _context(candidate, history=_history(minutes_since_last_push=90))
     context["dashboardRank"] = 1
@@ -242,11 +242,15 @@ def test_score_only_mode_does_not_override_bad_article_forecast():
         _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
     )
 
-    assert decision["shouldNotify"] is False
-    assert any("Prognose zu niedrig" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
+    assert any(
+        "Prognose zu niedrig" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
+    )
 
 
-def test_historical_slot_forecast_alone_does_not_allow_normal_alert():
+def test_push_score_over_80_can_use_historical_slot_forecast():
     candidate = _candidate(
         score=90.0,
         predictedOR=None,
@@ -265,8 +269,12 @@ def test_historical_slot_forecast_alone_does_not_allow_normal_alert():
         _config(score_only_mode=True, min_alert_score=40.0, min_editorial_score=40.0),
     )
 
-    assert decision["shouldNotify"] is False
-    assert any("Artikel-Prognose fehlt" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
+    assert any(
+        "Artikel-Prognose fehlt" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
+    )
 
 
 def test_minimum_pacing_allows_real_event_with_slot_forecast_when_day_is_behind():
@@ -717,7 +725,7 @@ def test_sport_section_is_blocked_even_in_score_only_mode():
     assert any("Ressort sport" in reason for reason in decision["blockingReasons"])
 
 
-def test_candidate_outside_dashboard_top_limit_is_blocked():
+def test_push_score_over_80_overrides_dashboard_rank_gate():
     candidate = _candidate(score=92.0, predictedOR=0.07)
     context = _context(candidate)
     context["dashboardRank"] = 25
@@ -728,9 +736,11 @@ def test_candidate_outside_dashboard_top_limit_is_blocked():
         _config(dashboard_top_limit=20),
     )
 
-    assert decision["shouldNotify"] is False
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
     assert any(
-        "Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"]
+        "Nicht im oberen Push-Balancer-Feld" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
     )
 
 
@@ -777,9 +787,8 @@ def test_soft_candidate_outside_dashboard_top_limit_stays_blocked():
 
     assert decision["shouldNotify"] is False
     assert decision["expandedFieldCandidate"] is False
-    assert any(
-        "Nicht im oberen Push-Balancer-Feld" in reason for reason in decision["blockingReasons"]
-    )
+    assert decision["highScoreOverride"]["approved"] is False
+    assert any("Nachrichten-Ereignis" in reason for reason in decision["blockingReasons"])
 
 
 def test_cvd_gate_blocks_soft_topic_even_with_high_score_and_forecast():
@@ -806,7 +815,7 @@ def test_cvd_gate_blocks_soft_topic_even_with_high_score_and_forecast():
     assert any("CvD:" in reason for reason in decision["blockingReasons"])
 
 
-def test_cvd_gate_blocks_non_breaking_candidate_outside_editorial_top_ten():
+def test_push_score_over_80_overrides_editorial_rank_gate():
     candidate = _candidate(score=96.0, predictedOR=0.08)
     context = _context(candidate)
     context["dashboardRank"] = 11
@@ -817,8 +826,11 @@ def test_cvd_gate_blocks_non_breaking_candidate_outside_editorial_top_ten():
         _config(dashboard_top_limit=20, editorial_top_limit=10),
     )
 
-    assert decision["shouldNotify"] is False
-    assert any("Top 10" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
+    assert any(
+        "Top 10" in reason for reason in decision["highScoreOverride"]["waivedBlockers"]
+    )
 
 
 def test_cvd_gate_allows_breaking_candidate_beyond_editorial_top_ten():
@@ -843,7 +855,7 @@ def test_cvd_gate_allows_breaking_candidate_beyond_editorial_top_ten():
     assert any("CvD-Freigabe" in reason for reason in decision["reasons"])
 
 
-def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
+def test_push_score_over_80_does_not_override_missing_news_event():
     candidate = _candidate(
         score=84.0,
         category="unterhaltung",
@@ -860,7 +872,12 @@ def test_score_only_mode_blocks_soft_high_score_when_alert_score_is_too_low():
     )
 
     assert decision["shouldNotify"] is False
-    assert any("Teams Alert Score zu niedrig" in reason for reason in decision["blockingReasons"])
+    assert decision["highScoreOverride"]["approved"] is False
+    assert any("Nachrichten-Ereignis" in reason for reason in decision["blockingReasons"])
+    assert any(
+        "Teams Alert Score zu niedrig" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
+    )
 
 
 def test_weighted_model_allows_breaking_without_live_push_timing():
@@ -917,6 +934,148 @@ def test_global_teams_cooldown_blocks_candidate_chain_spam():
     assert decision["shouldNotify"] is False
     assert decision["status"] == "observe"
     assert any("Teams-Cooldown aktiv" in reason for reason in decision["blockingReasons"])
+
+
+def test_post_send_score_threshold_peaks_then_decays_to_baseline():
+    candidate = _candidate(score=79.0)
+    config = _config(agent_review_enabled=False, min_score=75.0)
+    cases = (
+        (30, 80.0, "peak", False),
+        (45, 78.75, "decay", True),
+        (60, 77.5, "decay", True),
+        (75, 76.25, "decay", True),
+        (90, 75.0, "baseline", True),
+    )
+
+    for minutes, threshold, phase, should_notify in cases:
+        context = _context(candidate)
+        context["lastTeamsAlertTs"] = NOW_TS - minutes * 60
+
+        decision = shouldNotifyTeams(candidate, context, config)
+
+        assert decision["minScore"] == threshold
+        assert decision["postSendScoreThreshold"]["phase"] == phase
+        assert decision["shouldNotify"] is should_notify
+
+
+def test_post_send_threshold_uses_teams_send_not_live_push_time():
+    candidate = _candidate(score=76.0)
+    context = _context(candidate, history=_history(minutes_since_last_push=2))
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(agent_review_enabled=False, min_score=75.0),
+    )
+
+    assert decision["shouldNotify"] is True
+    assert decision["minScore"] == 75.0
+    assert decision["postSendScoreThreshold"]["phase"] == "baseline"
+
+
+def test_score_exactly_80_does_not_activate_high_score_override():
+    candidate = _candidate(
+        score=80.0,
+        scoreSource="internal_score_api",
+        predictedOR=0.035,
+        title="Bundesregierung beschliesst neue Entlastung fuer Millionen Haushalte",
+    )
+    config = _config(
+        require_internal_score_api=True,
+        agent_review_enabled=False,
+        min_score=75.0,
+        min_alert_score=99.0,
+        min_editorial_score=99.0,
+        require_article_forecast=False,
+    )
+
+    decision = shouldNotifyTeams(candidate, _context(candidate), config)
+
+    assert decision["shouldNotify"] is False
+    assert decision["highScoreOverride"]["active"] is False
+    assert any("Teams Alert Score zu niedrig" in item for item in decision["blockingReasons"])
+
+
+def test_canonical_score_over_80_waives_only_soft_quality_gates():
+    candidate = _candidate(
+        score=80.1,
+        scoreSource="internal_score_api",
+        predictedOR=0.035,
+        title="Bundesregierung beschliesst neue Entlastung fuer Millionen Haushalte",
+    )
+    config = _config(
+        require_internal_score_api=True,
+        agent_review_enabled=False,
+        min_score=75.0,
+        min_alert_score=99.0,
+        min_editorial_score=99.0,
+        require_article_forecast=False,
+    )
+    context = _context(candidate)
+    context["lastTeamsAlertTs"] = NOW_TS - 30 * 60
+
+    decision = shouldNotifyTeams(candidate, context, config)
+
+    assert decision["shouldNotify"] is True
+    assert decision["minScore"] == 80.0
+    assert decision["highScoreOverride"]["approved"] is True
+    assert not decision["highScoreOverride"]["hardBlockers"]
+    assert any(
+        "Teams Alert Score zu niedrig" in item
+        for item in decision["highScoreOverride"]["waivedBlockers"]
+    )
+    assert any(
+        "Prognose zu niedrig" in item
+        for item in decision["highScoreOverride"]["waivedBlockers"]
+    )
+
+
+def test_score_over_80_still_respects_teams_cooldown():
+    candidate = _candidate(score=91.0, scoreSource="internal_score_api")
+    context = _context(candidate)
+    context["lastTeamsAlertTs"] = NOW_TS - 29 * 60
+
+    decision = shouldNotifyTeams(
+        candidate,
+        context,
+        _config(require_internal_score_api=True, agent_review_enabled=False),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["highScoreOverride"]["active"] is True
+    assert decision["highScoreOverride"]["approved"] is False
+    assert any("Teams-Cooldown aktiv" in item for item in decision["blockingReasons"])
+
+
+def test_score_over_80_still_respects_quiet_hours():
+    quiet_ts = int(
+        dt.datetime(2026, 7, 20, 4, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+    )
+    candidate = _candidate(score=91.0, scoreSource="internal_score_api")
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, now_ts=quiet_ts),
+        _config(require_internal_score_api=True, agent_review_enabled=False),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["highScoreOverride"]["approved"] is False
+    assert any("Ruhezeit aktiv" in item for item in decision["blockingReasons"])
+
+
+def test_score_over_80_requires_canonical_api_score_when_configured():
+    candidate = _candidate(score=91.0, scoreSource="server_editorial_fallback")
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate),
+        _config(require_internal_score_api=True, agent_review_enabled=False),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["highScoreOverride"]["active"] is False
+    assert any("Kein gueltiger interner" in item for item in decision["blockingReasons"])
 
 
 def test_missing_article_link_does_not_trigger_action_recommendation():
@@ -1851,7 +2010,7 @@ def test_auto_push_calibration_still_blocks_soft_topic():
     assert any("CvD:" in reason for reason in decision["blockingReasons"])
 
 
-def test_daily_strategy_blocks_normal_candidate_when_push_count_is_ahead():
+def test_push_score_over_80_overrides_daily_fatigue_gate():
     candidate = _candidate(
         score=82.0,
         predictedOR=0.053,
@@ -1874,8 +2033,12 @@ def test_daily_strategy_blocks_normal_candidate_when_push_count_is_ahead():
         ),
     )
 
-    assert decision["shouldNotify"] is False
-    assert any("Tagesstrategie" in reason for reason in decision["blockingReasons"])
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
+    assert any(
+        "Tagesstrategie" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
+    )
 
 
 def test_daily_strategy_allows_breaking_candidate_when_push_count_is_ahead():
@@ -1929,7 +2092,7 @@ def test_cvd_time_fit_blocks_normal_push_at_night():
     )
 
     assert decision["shouldNotify"] is False
-    assert any("unguens" in reason for reason in decision["blockingReasons"])
+    assert any("Ruhezeit aktiv" in reason for reason in decision["blockingReasons"])
     assert decision["editorialReview"]["breakdown"]["localHour"] == 2
 
 
@@ -2065,7 +2228,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Live-Vergleich:" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
-    assert payload["recommendationPolicyVersion"] == "internal-score-golden-slots-v4"
+    assert payload["recommendationPolicyVersion"] == "internal-score-adaptive-threshold-v5"
     assert payload["recommendationsIndependentFromLivePushes"] is True
     assert payload["livePushComparison"] == {
         "available": True,
@@ -2110,6 +2273,39 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Titelqualität:" in payload["messageHtml"]
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
+
+
+def test_score_over_80_reaches_final_payload_despite_soft_quality_threshold():
+    candidate = _candidate(
+        score=80.1,
+        scoreSource="internal_score_api",
+        predictedOR=0.035,
+        title="Bundesregierung beschliesst neue Entlastung fuer Millionen Haushalte",
+    )
+    context = _context(candidate, now_ts=_gold_slot_ts())
+    config = _config(
+        require_internal_score_api=True,
+        agent_review_enabled=False,
+        min_score=75.0,
+        min_alert_score=99.0,
+        min_editorial_score=99.0,
+        min_recommendation_quality=99.0,
+        require_article_forecast=False,
+    )
+    decision = shouldNotifyTeams(candidate, context, config)
+
+    message = buildTeamsPushRecommendation(candidate, context, decision, config)
+
+    assert message["payload"]["dispatchApproved"] is True
+    assert message["payload"]["highScoreOverride"] == {
+        "active": True,
+        "approved": True,
+        "threshold": 80.0,
+        "waivedGateCount": 3,
+        "hardBlockerCount": 0,
+    }
+    assert message["_recommendationReview"]["highScoreOverrideApplied"] is True
+    assert "High-Score-Regel" in message["text"]
 
 
 def test_agent_disabled_message_still_exposes_local_quality_and_decision_basis():
@@ -2801,7 +2997,7 @@ def test_dead_zone_waits_when_day_is_not_behind_push_pace():
     assert decision["shouldNotify"] is False
     assert decision["editorialReview"]["breakdown"]["timeFit"] == 4.0
     assert "historische Totzone" in decision["editorialReview"]["breakdown"]["timeFitLabel"]
-    assert any("Totzone" in reason for reason in decision["blockingReasons"])
+    assert any("Tagesplan:" in reason for reason in decision["blockingReasons"])
 
 
 def test_dead_zone_allows_score_floor_recovery_when_daily_minimum_is_impossible():
@@ -3112,7 +3308,7 @@ def test_verified_breaking_wins_candidate_selection_over_higher_scoring_normal_s
     assert result["selectedCandidateId"] == breaking["url"]
 
 
-def test_require_valid_prediction_blocks_fallback_forecast():
+def test_push_score_over_80_overrides_required_prediction_soft_gate():
     candidate = _candidate(
         score=90.0,
         predictedOR=None,
@@ -3129,9 +3325,11 @@ def test_require_valid_prediction_blocks_fallback_forecast():
         _config(score_only_mode=True, require_valid_prediction=True, min_alert_score=50.0),
     )
 
-    assert decision["shouldNotify"] is False
+    assert decision["shouldNotify"] is True
+    assert decision["highScoreOverride"]["approved"] is True
     assert any(
-        "Belastbare OR-Prognose erforderlich" in reason for reason in decision["blockingReasons"]
+        "Belastbare OR-Prognose erforderlich" in reason
+        for reason in decision["highScoreOverride"]["waivedBlockers"]
     )
 
 

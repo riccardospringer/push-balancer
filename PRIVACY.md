@@ -30,6 +30,8 @@ The offline synthetic reader-mode panel is a non-personal editorial stress test.
 
 The score-driven Teams mode queries the internal Push Balancer score projection with one CMS document ID per current article. Its defined purpose is to make the already calculated article score the canonical ranking signal at each binding editorial slot. In this mode a fresh API score is mandatory: HTTP 404, stale data, timeout, malformed data, missing configuration, or rejected credentials can never fall back to a locally invented score. Secondary article models only break an exact API-score tie after the existing factual, freshness, section, Germany-relevance, title, cooldown, and Teams-dedup gates. It adds no reader, device, session, employee, or Adobe data and does not infer reader sentiment. The integration remains disabled until the approvals below are documented.
 
+The adaptive post-send threshold uses the timestamp of the last successfully sent Teams recommendation to raise the next article's raw-score floor to at most 80 and decay it back to the configured baseline. A canonical article score strictly above 80 may waive only local soft quality and pacing gates. Quiet hours, slot timing, publication/factual integrity, section and event rules, Teams cooldown, daily cap, article/topic deduplication, title approval, and transport checks remain hard. The calculation does not use actual live-push timing, recipient behavior, identifiers, or employee activity and introduces no external call.
+
 ## Data categories
 
 - Push metadata such as title, category, send time, channel, opened count, and recipient count
@@ -45,6 +47,7 @@ The score-driven Teams mode queries the internal Push Balancer score projection 
 - Daily Teams schedule delivery metadata: calendar date, claim/send timestamp, item count, status, and truncated error text
 - Existing candidate-view score capture: normalized public article URL, article-level score, and capture timestamp
 - Internal score lookup metadata: CMS document ID sent to the internal service; returned article-level score and calculation timestamp
+- Adaptive-threshold metadata: current/base/peak article-score threshold, decay phase, elapsed time since the last Teams recommendation, and aggregate count of waived soft gates
 - Optional Adobe Analytics traffic aggregates
 - Optional OpenAI input for title optimisation when explicitly configured
 
@@ -97,6 +100,7 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - The pre-dispatch comparison re-reads real push history so the final Teams message can show whether the independent recommendation also became a real push. Live-push identity, timing, and volume do not affect eligibility, cadence, or cooldown.
 - Exact article uniqueness is enforced from the retained Teams send state both during evaluation and by an atomic database claim. A changed title, score, forecast, or later breaking flag cannot make the same article eligible again. Teams topic similarity suppresses different articles about the same event inside the configured topic window.
 - The weekday runtime plan creates 15-18 executable decisions. `06:15` and `06:45` are always binding; every red/yellow matrix hour is evaluated at both `:15` and `:45`, with a fresh API re-ranking for the second decision. Strong non-peak `:45` slots fill the day to at least 15, avoiding the 10/11 o'clock dead zone where possible. The independent Teams cooldown is 30 minutes. The separate 05:45 planning message does not enter that cooldown. Empty-cycle diagnostics contain aggregate counts and blocker categories, never article titles, URLs, CMS IDs, or raw histories.
+- After that cooldown, the local article-score floor is 80 and decays linearly to 75 by minute 90 after the last successful Teams recommendation. It is capped at the strict `>80` soft-gate override boundary, uses no live-push timestamp, creates no new external request, and retains all hard safety, timing, title, duplicate, and transport gates.
 - Verified breaking requires a structured breaking flag plus an EIL/BREAKING marker or trusted editorial provenance. It may bypass slot wait, the global Teams cooldown, and the daily cap only after factual, publication-time, section, quality, score, and Teams-dedup checks pass; hard quiet hours remain absolute.
 - Quiet hours are enforced twice: candidate evaluation and the generic Teams sender both block every payload from 00:00 through 05:29 Berlin time.
 - The transport additionally rejects recommendation payloads without the current non-personal policy-version marker, independent Teams pacing, or the applicable raw Push Score floor; these checks run before the webhook request.
@@ -124,6 +128,7 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - Daily plan suggestion snapshots are persisted for retrospective analysis and should be reviewed when retention needs change.
 - Candidate-view scores are logically ignored after the existing eight-hour cache TTL and after 180 seconds for Teams selection. Physical deletion ownership for the pre-existing `article_score_log` table is not yet documented; no cleanup was added during the incident hold, and this must be resolved by the Product/System Owner and Privacy/DPO before activation.
 - Internal API results are held only in process memory for at most 45 seconds by this consumer and are not added to a new persistence table. The selected score and timestamp follow the existing 45-day Teams recommendation retention and the destination tenant's retention policy.
+- The adaptive-threshold phase and minimized high-score override verdict are stored only inside the existing Teams recommendation decision snapshot and follow its 45-day cleanup; no new table or identifier is introduced.
 - Any new persisted data category should document retention and deletion behavior in the corresponding handover or PR note.
 
 ## Required approvals before activation
@@ -146,6 +151,18 @@ No approval is inferred from successful technical tests.
 - Retention/deletion: score-client cache at most 45 seconds in memory; no new score table; selected recommendation metadata follows the existing 45-day cleanup and destination-tenant policy.
 - Safeguards: feature flag off, runtime-only keys, validated TLS, redirects rejected, bounded timeout/retry/concurrency/response size, no key or CMS ID logging, score freshness ceiling, strict response contract, no fallback, quiet hours, 30-minute Teams cooldown, article/topic dedup, atomic send claim.
 - Required approvals: Privacy Manager, Product/System Owner, DPO, Legal/Group Legal, plus closure of the documented incident hold before activation or deployment.
+
+## PRIVACY NOTE: adaptive post-send score threshold
+
+- Purpose: reduce recommendation fatigue by temporarily raising the article-score floor after a Teams send while ensuring canonical scores above 80 are not rejected by secondary soft models.
+- Data categories: existing public article metadata and article-level score; last Teams-send timestamp; derived threshold phase/value and aggregate waived-gate count.
+- Data subjects: persons incidentally named in public article metadata; no employee or recipient-level scoring.
+- Legal basis: unchanged and **TBD - Legal/DPO review required before activation**.
+- Roles: unchanged; responsible Axel Springer controller and system ownership remain to be documented.
+- Recipients/transfers: no new recipient or call. Microsoft Teams receives the minimized current threshold and override verdict inside the existing recommendation payload.
+- Retention/deletion: no new table; fields follow the existing 45-day Teams recommendation cleanup and destination-tenant policy.
+- Safeguards: Teams-only timestamp, no live-push dependency, threshold capped at 80, strict `>80`, fresh canonical API source when required, hard quiet-hour/cooldown/factual/freshness/section/event/timing/title/dedup/transport gates, atomic send claim.
+- Required approvals: the same Privacy Manager, Product/System Owner, DPO, and Legal/Group Legal activation gate; no deploy or feature activation is authorized by this implementation.
 
 ## Engineering rules
 
