@@ -256,6 +256,8 @@ def _infer_article_category(url: str, title: str) -> str:
         return "unterhaltung"
     if "/geld/" in url_lower or "/wirtschaft/" in url_lower:
         return "wirtschaft"
+    if "/leben-wissen/" in url_lower or "/auto/" in url_lower:
+        return "leben-wissen"
     if "/ratgeber/" in url_lower or any(
         word in title_lower
         for word in ("preise", "kosten", "gebühren", "gebuehren", "abzocke", "rückruf", "rueckruf", "kunden")
