@@ -3,6 +3,7 @@
 Alle Tests laufen ohne laufenden Server über FastAPI `TestClient`.
 """
 from pathlib import Path
+import datetime as dt
 import sqlite3
 import time
 from unittest.mock import patch
@@ -155,6 +156,73 @@ class TestStableFrontendContracts:
         assert "total" in data
         assert data["count"] >= 1
         assert data["articles"][0]["title"] == "Breaking Test Artikel"
+
+    def test_articles_prefer_fresh_visible_push_balancer_ratings(self, monkeypatch):
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://example.invalid/news/polizei-serie</loc>
+    <news:news>
+      <news:title>Polizei ermittelt nach neuer Einbruchserie</news:title>
+      <news:publication_date>{published}</news:publication_date>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://example.invalid/news/strombonus</loc>
+    <news:news>
+      <news:title>Bund beschliesst Strombonus fuer Millionen Haushalte</news:title>
+      <news:publication_date>{published}</news:publication_date>
+    </news:news>
+  </url>
+</urlset>""".encode()
+
+        def fake_editorial_score(push, **_kwargs):
+            server_score = 96.0 if "Polizei" in push["title"] else 76.0
+            return {
+                "score": server_score,
+                "scoreReason": "synthetischer Server-Gegencheck",
+                "performanceDrivers": ["synthetischer Treiber"],
+                "risks": ["synthetisches Risiko"],
+                "recommendedText": push["title"],
+                "mixPriority": "hoch",
+                "scoreBreakdown": {"bildReiz": server_score},
+            }
+
+        def fake_captured_score(url, *, max_age_seconds, allow_db_fallback):
+            assert max_age_seconds == 180
+            assert allow_db_fallback is False
+            score = 78.0 if "polizei-serie" in url else 91.0
+            return {
+                "score": score,
+                "capturedAt": 1_800_000_000,
+                "ageSeconds": 20,
+                "source": "memory",
+            }
+
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr("app.routers.feed.ARTICLE_PREDICTION_ENRICHMENT_ENABLED", False)
+        monkeypatch.setattr("app.scoring.editorial.score_push_candidate", fake_editorial_score)
+        monkeypatch.setattr(
+            "app.scoring.editorial.rebalance_push_mix",
+            lambda candidates, **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "app.routers.score_capture.get_score_snapshot_for_url",
+            fake_captured_score,
+        )
+
+        from app.routers.feed import build_articles_payload
+
+        payload = build_articles_payload(include_teams_decisions=False)
+
+        assert payload["articles"][0]["title"].startswith("Bund beschliesst")
+        assert payload["articles"][0]["score"] == pytest.approx(91.0)
+        assert payload["articles"][0]["scoreSource"] == "captured_push_balancer"
+        assert payload["articles"][0]["serverEditorialScore"] == pytest.approx(76.0)
+        assert payload["articles"][1]["score"] == pytest.approx(78.0)
+        assert payload["articles"][1]["serverEditorialScore"] == pytest.approx(96.0)
 
     def test_articles_contract_marks_video_items(self, monkeypatch):
         sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>

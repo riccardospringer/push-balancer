@@ -393,21 +393,32 @@ def _build_refresh_response() -> dict:
             "channels": len(channels),
             "db_written": n_written,
             "source": "live",
+            "history_authoritative": True,
+            "snapshot_age_seconds": 0,
         }
     except Exception as exc:
         log.warning("[pushes] live refresh failed: %s", exc)
         # Fallback: aus dem Sync-Cache parsen + in DB schreiben (lokales Relay hat ihn ggf. befüllt)
         with _push_sync_lock:
             cache_msgs = list(_push_sync_cache.get("messages") or [])
+            cache_ts = float(_push_sync_cache.get("ts") or 0.0)
         if cache_msgs:
             try:
                 n_written = push_db_upsert(_parse_bild_messages(cache_msgs))
+                cache_age = max(0.0, time.time() - cache_ts) if cache_ts > 0 else None
+                history_authoritative = bool(
+                    cache_age is not None and cache_age <= 300.0
+                )
                 return {
                     "ok": True,
                     "synced": len(cache_msgs),
                     "channels": 0,
                     "db_written": n_written,
                     "source": "cache->db",
+                    "history_authoritative": history_authoritative,
+                    "snapshot_age_seconds": (
+                        round(cache_age, 1) if cache_age is not None else None
+                    ),
                 }
             except Exception as cache_exc:
                 log.warning("[pushes] cache→db Fallback fehlgeschlagen: %s", cache_exc)
@@ -416,7 +427,14 @@ def _build_refresh_response() -> dict:
         except Exception as db_exc:
             log.warning("[pushes] refresh fallback without DB: %s", db_exc)
             rows = []
-        return {"ok": True, "synced": len(rows), "channels": 0, "source": "db-fallback"}
+        return {
+            "ok": True,
+            "synced": len(rows),
+            "channels": 0,
+            "source": "db-fallback",
+            "history_authoritative": False,
+            "snapshot_age_seconds": None,
+        }
 
 
 def auto_seed_db_if_empty() -> int:

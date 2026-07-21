@@ -1,8 +1,13 @@
 """Tests for the editorial BILD push scoring layer."""
+
 import datetime as dt
 import time
 
-from app.scoring.editorial import rebalance_push_mix, score_push_candidate
+from app.scoring.editorial import (
+    assess_germany_relevance,
+    rebalance_push_mix,
+    score_push_candidate,
+)
 
 
 def _history(now: int) -> list[dict]:
@@ -108,12 +113,22 @@ def test_recent_topic_repetition_lowers_mix_balance():
     ]
 
     clean = score_push_candidate(
-        {"title": "Bayern-Star verletzt - Ausfall droht", "cat": "sport", "hour": 20, "ts_num": now},
+        {
+            "title": "Bayern-Star verletzt - Ausfall droht",
+            "cat": "sport",
+            "hour": 20,
+            "ts_num": now,
+        },
         history=history,
         predicted_or=6.5,
     )
     repeated = score_push_candidate(
-        {"title": "Bayern-Star verletzt - Ausfall droht", "cat": "sport", "hour": 20, "ts_num": now},
+        {
+            "title": "Bayern-Star verletzt - Ausfall droht",
+            "cat": "sport",
+            "hour": 20,
+            "ts_num": now,
+        },
         history=repeated_history,
         predicted_or=6.5,
     )
@@ -154,7 +169,10 @@ def test_rebalance_push_mix_penalizes_duplicate_topics():
     balanced = rebalance_push_mix(candidates, history=history, target_ts=now)
     after = {item["title"]: item["score"] for item in balanced}
 
-    assert after["Trump-Regierung verschärft Zoll-Kurs"] < before["Trump-Regierung verschärft Zoll-Kurs"]
+    assert (
+        after["Trump-Regierung verschärft Zoll-Kurs"]
+        < before["Trump-Regierung verschärft Zoll-Kurs"]
+    )
     assert any("Mix-Dopplung" in risk for item in balanced for risk in item["risks"])
 
 
@@ -217,6 +235,71 @@ def test_curiosity_news_beats_mediocre_policy_debate():
     assert scored_breakdown_value(weird, "bildReiz") > scored_breakdown_value(politics, "bildReiz")
 
 
+def test_named_german_public_figure_parenthood_is_strong_people_news_not_politics():
+    now = int(time.time())
+    title = "CDU-Politiker Max Beispiel und sein Partner sind Papas geworden"
+    scored = _score(
+        title,
+        "unterhaltung",
+        now=now,
+        predicted_or=4.75,
+        url="https://example.invalid/unterhaltung/stars-und-leute/beispiel",
+    )
+
+    assert scored["score"] >= 85.0
+    assert scored["germanyRelevance"]["level"] == "germany_people"
+    assert scored["scoreBreakdown"]["politicsContext"] == 66.0
+    assert scored["scoreBreakdown"]["germanyRelevanceAdjustment"] == 5.0
+    assert any("Elternschaft" in item for item in scored["performanceDrivers"])
+    assert not any("Politik:" in item for item in scored["risks"])
+
+
+def test_people_parenthood_bonus_requires_named_public_role_and_survives_mix_pressure():
+    now = int(time.time())
+    title = "CDU-Politiker Max Beispiel und sein Partner sind Papas geworden"
+    scored = _score(
+        title,
+        "unterhaltung",
+        now=now,
+        predicted_or=4.75,
+        url="https://example.invalid/unterhaltung/stars-und-leute/beispiel",
+    )
+    anonymous = _score(
+        "Kommunalpolitiker aus Musterstadt ist Papa geworden",
+        "unterhaltung",
+        now=now,
+        predicted_or=4.75,
+        url="https://example.invalid/unterhaltung/stars-und-leute/lokal",
+    )
+    crowded_field = [
+        {
+            "title": f"TV-Star Beispielname spricht ueber neue Show {index}",
+            "cat": "unterhaltung",
+            "url": f"https://example.invalid/unterhaltung/show-{index}",
+            "score": 96.0 - index,
+            "scoreBreakdown": {"mixBalance": 70.0},
+            "performanceDrivers": [],
+            "risks": [],
+        }
+        for index in range(8)
+    ]
+    candidate = {
+        "title": title,
+        "cat": "unterhaltung",
+        "url": "https://example.invalid/unterhaltung/stars-und-leute/beispiel",
+        "ts_num": now,
+        **scored,
+    }
+
+    rebalanced = rebalance_push_mix([*crowded_field, candidate], target_ts=now)
+    result = next(item for item in rebalanced if item["url"] == candidate["url"])
+
+    assert anonymous["germanyRelevance"]["level"] == "neutral"
+    assert scored["score"] >= anonymous["score"] + 10.0
+    assert result["score"] >= 80.0
+    assert not any("Thema politik" in item for item in result["risks"])
+
+
 def test_consumer_outrage_gets_bild_push_reiz():
     now = int(time.time())
     scored = _score(
@@ -229,7 +312,77 @@ def test_consumer_outrage_gets_bild_push_reiz():
 
     assert scored["score"] >= 75
     assert scored["scoreBreakdown"]["bildReiz"] >= 70
-    assert any("Verbraucher" in driver or "Aufreger" in driver for driver in scored["performanceDrivers"])
+    assert any(
+        "Verbraucher" in driver or "Aufreger" in driver for driver in scored["performanceDrivers"]
+    )
+
+
+def test_germany_relevance_blocks_pure_us_domestic_people_story():
+    relevance = assess_germany_relevance(
+        {
+            "title": "Todesstrafe droht: US-Mutter soll ihre Zwillinge erstickt haben",
+            "url": "https://www.bild.de/news/ausland/us-mutter-zwillinge",
+            "cat": "news",
+        }
+    )
+
+    assert relevance["level"] == "usa_domestic"
+    assert relevance["hardBlock"] is True
+    assert relevance["minimumScore"] > 100
+
+
+def test_unqualified_government_story_is_treated_as_german_when_url_is_not_international():
+    relevance = assess_germany_relevance(
+        {
+            "title": "Regierung verbietet riskante China-App",
+            "url": "https://www.bild.de/digital/china-app-verbot",
+            "cat": "digital",
+        }
+    )
+
+    assert relevance["level"] == "germany_broad"
+    assert relevance["adjustment"] > 0
+
+
+def test_non_breaking_international_geopolitics_needs_exceptional_score():
+    relevance = assess_germany_relevance(
+        {
+            "title": "Trump warnt vor weiterer Eskalation im Iran-Krieg",
+            "url": "https://www.bild.de/politik/ausland-und-internationales/iran-krieg",
+            "cat": "politik",
+        }
+    )
+
+    assert relevance["level"] == "international"
+    assert relevance["hardBlock"] is False
+    assert relevance["minimumScore"] == 85.0
+    assert relevance["adjustment"] < 0
+
+
+def test_foreign_travel_story_does_not_get_a_domestic_url_bonus():
+    relevance = assess_germany_relevance(
+        {
+            "title": "Vorsicht an Straenden: Ibiza verhaengt Bussgelder gegen Urlauber",
+            "url": "https://www.bild.de/leben-wissen/reisen/ibiza-bussgelder",
+            "cat": "news",
+        }
+    )
+
+    assert relevance["level"] == "international"
+    assert relevance["adjustment"] < 0
+
+
+def test_public_inland_need_gets_broad_germany_relevance():
+    relevance = assess_germany_relevance(
+        {
+            "title": "Hitze laesst unser Trinkwasser verkeimen",
+            "url": "https://www.bild.de/news/inland/trinkwasser-verkeimt",
+            "cat": "wetter",
+        }
+    )
+
+    assert relevance["level"] == "germany_broad"
+    assert relevance["adjustment"] > 0
 
 
 def test_public_money_fraud_razzia_gets_strong_push_score():
@@ -302,7 +455,9 @@ def test_previous_day_article_gets_freshness_penalty():
 
     assert scored["scoreBreakdown"]["freshness"] < 35
     assert scored["score"] < 55
-    assert any("Nacht" in risk or "zeitlich" in risk or "Aktualität" in risk for risk in scored["risks"])
+    assert any(
+        "Nacht" in risk or "zeitlich" in risk or "Aktualität" in risk for risk in scored["risks"]
+    )
 
 
 def test_bild_exclusive_evergreen_keeps_a_chance_despite_age():
@@ -326,7 +481,10 @@ def test_bild_exclusive_evergreen_keeps_a_chance_despite_age():
 
     assert exclusive["score"] > generic_old["score"]
     assert exclusive["score"] >= 60
-    assert any("Exklusiv" in driver or "Exklusivität" in driver for driver in exclusive["performanceDrivers"])
+    assert any(
+        "Exklusiv" in driver or "Exklusivität" in driver
+        for driver in exclusive["performanceDrivers"]
+    )
 
 
 def test_manual_feedback_penalizes_generic_case_and_vague_headline():
@@ -351,7 +509,9 @@ def test_manual_feedback_penalizes_generic_case_and_vague_headline():
     assert generic["score"] < 65
     assert vague["score"] < 65
     assert any("generisch" in risk or "Redaktionsfeedback" in risk for risk in generic["risks"])
-    assert any("Headline" in risk or "unkonkret" in risk or "verrätselt" in risk for risk in vague["risks"])
+    assert any(
+        "Headline" in risk or "unkonkret" in risk or "verrätselt" in risk for risk in vague["risks"]
+    )
 
 
 def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exist():
@@ -390,7 +550,15 @@ def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exi
                 "cat": cat,
                 "ts_num": now,
                 "pubDate": _pubdate(now, 0.5),
-                **_score(title, cat, now=now, hours_ago=0.5, predicted_or=6.2, history=history, video="gucken" in title.lower()),
+                **_score(
+                    title,
+                    cat,
+                    now=now,
+                    hours_ago=0.5,
+                    predicted_or=6.2,
+                    history=history,
+                    video="gucken" in title.lower(),
+                ),
             }
         )
 
@@ -399,7 +567,10 @@ def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exi
 
     assert sum(1 for item in top10 if item["cat"] == "politik") <= 6
     assert any(item["cat"] != "politik" and item["score"] >= 70 for item in top10)
-    assert any("Top-10-Balance" in " ".join(item.get("performanceDrivers", []) + item.get("risks", [])) for item in balanced)
+    assert any(
+        "Top-10-Balance" in " ".join(item.get("performanceDrivers", []) + item.get("risks", []))
+        for item in balanced
+    )
 
 
 def test_scoring_explanation_names_concrete_pro_and_contra_reasons():
@@ -415,7 +586,10 @@ def test_scoring_explanation_names_concrete_pro_and_contra_reasons():
     )
 
     assert "hoch wegen" in scored["scoreReason"]
-    assert any(word in scored["scoreReason"] for word in ("Video", "Aktualität", "Redaktionsfeedback", "Sportmoment"))
+    assert any(
+        word in scored["scoreReason"]
+        for word in ("Video", "Aktualität", "Redaktionsfeedback", "Sportmoment")
+    )
     assert scored["performanceDrivers"]
     assert scored["risks"]
 
@@ -435,6 +609,16 @@ def test_recommend_text_keeps_headline_without_generic_filler():
 
     # Die konkrete Schlagzeile bleibt erhalten statt mit Floskeln verwaessert.
     assert "Trump hebt neu ab" in politik["recommendedText"]
+
+
+def test_generic_crime_category_has_no_automatic_score_advantage():
+    now = int(time.time())
+    title = "Polizei ermittelt nach Einbruch in ein Wohnhaus"
+
+    crime = _score(title, "crime", now=now, hour=12)
+    general_news = _score(title, "news", now=now, hour=12)
+
+    assert crime["score"] <= general_news["score"]
 
 
 def test_reuters_overload_penalises_sensationalism_but_not_breaking():
