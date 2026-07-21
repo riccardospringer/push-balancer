@@ -115,6 +115,7 @@ from app.database import (
     teams_recommendation_record,
 )
 from app.notifications.teams_review import add_agent_review_veto, run_agent_review_network
+from app.score_api_client import resolve_cms_id
 from app.scoring.editorial import (
     assess_germany_relevance,
     is_german_public_figure_parenthood_story,
@@ -122,7 +123,7 @@ from app.scoring.editorial import (
 
 log = logging.getLogger("push-balancer")
 
-_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v6"
+_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v7"
 _MANDATORY_QUIET_HOURS_START_MINUTE = 0
 _MANDATORY_QUIET_HOURS_END_MINUTE = 5 * 60 + 30
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
@@ -147,6 +148,8 @@ _HARD_TEAMS_BLOCKER_MARKERS = (
     "push-dichte in den letzten",
     "bereits per teams gemeldet",
     "thema bereits per teams gemeldet",
+    "bereits live gepusht",
+    "live-push-dublettenpruefung",
     "re-alert-cooldown",
     "teams-cooldown aktiv",
     "tageslimit fuer teams-hinweise",
@@ -594,8 +597,8 @@ def build_teams_alert_context(
     }
     if history is None:
         try:
-            # Die echte Push-Historie ist reiner Vergleichskontext. Ob ein Artikel
-            # bereits per Teams empfohlen wurde, entscheidet nur die Teams-Historie.
+            # Die Live-Historie sperrt identische Artikel; Teams-Historie und
+            # Teams-Takt bleiben davon getrennte Entscheidungsdimensionen.
             history = push_db_load_all(max_days=90, max_rows=3000)
             context_available["history"] = True
         except Exception as exc:
@@ -1187,22 +1190,31 @@ def should_notify_teams(
         (context.get("contextAvailable") or {}).get("history")
         and context.get("historyAuthoritative")
     )
+    live_push_match_type = (
+        _live_push_match_type(live_push_match_reason) if live_comparison_available else ""
+    )
     live_push_comparison = {
         "available": live_comparison_available,
         "matched": bool(live_push_match_reason) if live_comparison_available else False,
-        "matchType": (
-            _live_push_match_type(live_push_match_reason) if live_comparison_available else ""
-        ),
+        "matchType": live_push_match_type,
         "reason": live_push_match_reason if live_comparison_available else "",
     }
-    if live_comparison_available and live_push_match_reason:
+    if not live_comparison_available:
+        blockers.append(
+            "Live-Push-Dublettenpruefung nicht belastbar verfuegbar; "
+            "Empfehlung wird sicherheitshalber gestoppt"
+        )
+    elif live_push_match_type == "exact_article":
+        blockers.append(
+            "Bereits live gepusht (gleiche Artikel-URL oder CMS-ID); "
+            "der Artikel darf nicht erneut per Teams vorgeschlagen werden"
+        )
+    elif live_push_match_reason:
         positive.append(
-            "Live-Vergleich: diese unabhängige Teams-Empfehlung entspricht einem echten Push"
+            "Live-Vergleich: verwandte Meldung erkannt, aber keine identische Artikel-URL"
         )
     elif live_comparison_available:
         positive.append("Live-Vergleich: zum Prüfzeitpunkt noch kein entsprechender echter Push")
-    else:
-        positive.append("Live-Vergleich: echte Push-Historie aktuell nicht belastbar verfügbar")
 
     topic_dup_reason = _topic_already_alerted_reason(
         candidate, key, context.get("recentTeamsAlerts") or [], config
@@ -1829,10 +1841,20 @@ def build_teams_push_recommendation(
     recommendation_score = float(recommendation_review.get("score") or 0.0)
     recommendation_confidence = str(recommendation_review.get("confidence") or "niedrig")
     decision_basis = _recommendation_decision_basis(timing_brief)
+    live_push_comparison = (
+        decision.get("livePushComparison")
+        if isinstance(decision.get("livePushComparison"), dict)
+        else {}
+    )
     agent_approved = bool(not config.agent_review_enabled or agent_review.get("approved"))
     context_available = context.get("contextAvailable") or {}
     teams_dedup_approved = bool(
         context_available.get("alertState") and context_available.get("recentTeamsAlerts")
+    )
+    live_push_dedup_approved = bool(
+        context_available.get("history")
+        and context.get("historyAuthoritative")
+        and live_push_comparison.get("matchType") != "exact_article"
     )
     dispatch_approved = bool(
         decision.get("shouldNotify")
@@ -1840,6 +1862,7 @@ def build_teams_push_recommendation(
         and recommendation_review.get("approved")
         and agent_approved
         and teams_dedup_approved
+        and live_push_dedup_approved
     )
     dispatch_blockers = _dedupe(
         [
@@ -1848,6 +1871,11 @@ def build_teams_push_recommendation(
             *(
                 ["Die eigene Teams-Dublettenhistorie ist nicht vollständig verfügbar."]
                 if not teams_dedup_approved
+                else []
+            ),
+            *(
+                ["Die Live-Push-Dublettenpruefung ist nicht freigegeben."]
+                if not live_push_dedup_approved
                 else []
             ),
             *(
@@ -1896,21 +1924,20 @@ def build_teams_push_recommendation(
         f"dem Mindestwert von {_format_number(score_threshold, 0)}."
     )
     forecast_reason = _forecast_sentence(forecast)
-    live_push_comparison = (
-        decision.get("livePushComparison")
-        if isinstance(decision.get("livePushComparison"), dict)
-        else {}
-    )
     if not live_push_comparison.get("available"):
-        live_comparison_label = "Live-Vergleich: aktuell nicht belastbar verfügbar"
+        live_comparison_label = "Live-Dublettenschutz: nicht belastbar verfügbar"
+    elif live_push_comparison.get("matchType") == "exact_article":
+        live_comparison_label = (
+            "Live-Dublettenschutz: identische Artikel-URL oder CMS-ID bereits gepusht"
+        )
     elif live_push_comparison.get("matched"):
-        live_comparison_label = "Live-Vergleich: entspricht einem echten Live-Push"
+        live_comparison_label = "Live-Vergleich: verwandte Meldung unter anderer Artikel-URL"
     else:
         live_comparison_label = "Live-Vergleich: zum Prüfzeitpunkt kein entsprechender Live-Push"
     if independent_pacing:
         timing_reason = (
             "Der Teams-Kanal arbeitet unabhängig von echten Live-Pushes mit eigenem "
-            "Tagespacing und Cooldown; die Live-Historie ist nur ein Vergleichssignal."
+            "Tagespacing und Cooldown; identische bereits gepushte Artikel bleiben gesperrt."
         )
     elif isinstance(minutes, (int, float)):
         if score_only_mode:
@@ -2158,6 +2185,7 @@ def build_teams_push_recommendation(
                 "matched": bool(live_push_comparison.get("matched")),
                 "matchType": str(live_push_comparison.get("matchType") or ""),
             },
+            "livePushDedupApproved": live_push_dedup_approved,
             "minutesSinceLastTeamsAlert": (
                 round(float(teams_minutes), 1) if teams_minutes_known else 0.0
             ),
@@ -2177,6 +2205,7 @@ def build_teams_push_recommendation(
         "_recommendationReview": recommendation_review,
         "_dispatchApproved": dispatch_approved,
         "_teamsDedupApproved": teams_dedup_approved,
+        "_livePushDedupApproved": live_push_dedup_approved,
         "summary": subject,
     }
 
@@ -2231,6 +2260,16 @@ def send_teams_notification(
                 "ok": False,
                 "blocked": True,
                 "error": "Independent Teams pacing approval missing",
+            }
+        if (
+            not message.get("_livePushDedupApproved")
+            or payload.get("livePushDedupApproved") is not True
+        ):
+            log.warning("[TeamsAlert] push dispatch blocked: live-push dedup approval missing")
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "Exact live-push duplicate protection approval missing",
             }
         if (
             config.require_internal_score_api
@@ -2432,6 +2471,46 @@ def evaluate_and_send_best_candidate(
     selected_decision["livePushComparison"] = dict(
         dispatch_comparison.get("livePushComparison") or {}
     )
+    if dispatch_comparison.get("blocked"):
+        dispatch_code = str(dispatch_comparison.get("code") or "live_push_dedup_blocked")
+        dispatch_reason = str(
+            dispatch_comparison.get("blockingReason")
+            or "Live-Push-Dublettenpruefung hat den Versand gestoppt"
+        )
+        selected_decision["shouldNotify"] = False
+        selected_decision["status"] = "observe"
+        selected_decision["recommendedAction"] = ""
+        selected_decision["blockingReasons"] = [
+            *list(selected_decision.get("blockingReasons") or []),
+            dispatch_reason,
+        ]
+        status = (
+            "live_push_duplicate_blocked"
+            if dispatch_code == "live_push_exact_article_duplicate"
+            else "live_push_dedup_unavailable"
+        )
+        log.info(
+            "[TeamsAlert] dispatch stopped by live-push dedup article_ref=%s code=%s",
+            article_ref,
+            dispatch_code,
+        )
+        _persist_teams_recommendation(
+            selected,
+            selected_decision,
+            context,
+            config,
+            status=status,
+            send_status="blocked",
+            send_error=dispatch_code,
+        )
+        return {
+            "ok": True,
+            "sent": False,
+            "reason": status,
+            "livePushDedup": dispatch_comparison,
+            "candidateId": article_key,
+            "evaluation": evaluation,
+        }
     message = build_teams_push_recommendation(selected, context, selected_decision, config)
     selected_title_review = message.get("_pushTitleReview")
     if not isinstance(selected_title_review, dict) or not selected_title_review.get("approved"):
@@ -2722,6 +2801,7 @@ def _blocking_reason_category(reason: str) -> str:
         ("score", ("score zu niedrig", "push score", "push-score")),
         ("slot_wait", ("tagesplan:", "slot-logik", "fenster")),
         ("teams_cooldown", ("teams-cooldown", "tageslimit")),
+        ("live_push_duplicate", ("bereits live gepusht", "live-push-dubletten")),
         ("teams_duplicate", ("bereits per teams", "thema bereits per teams")),
         ("freshness", ("artikel nicht frisch", "zeitstempel", "aktualitaet")),
         ("forecast", ("prognose", "forecast", "or-erwartung")),
@@ -2744,11 +2824,12 @@ def _dispatch_live_push_comparison(
     config: TeamsAlertConfig,
     comparison_authoritative: bool = True,
 ) -> dict[str, Any]:
-    """Refresh the non-blocking real-push comparison immediately before delivery."""
+    """Refresh exact live-push deduplication immediately before delivery."""
     if not comparison_authoritative:
         return {
-            "blocked": False,
-            "code": "comparison_not_authoritative",
+            "blocked": True,
+            "code": "live_push_dedup_not_authoritative",
+            "blockingReason": "Live-Push-Dublettenpruefung ist nicht aktuell belastbar",
             "livePushComparison": {
                 "available": False,
                 "matched": False,
@@ -2759,8 +2840,9 @@ def _dispatch_live_push_comparison(
         history = push_db_load_all(max_days=90, max_rows=3000)
     except Exception as exc:
         return {
-            "blocked": False,
-            "code": "comparison_unavailable",
+            "blocked": True,
+            "code": "live_push_dedup_unavailable",
+            "blockingReason": "Live-Push-Dublettenpruefung konnte nicht geladen werden",
             "livePushComparison": {
                 "available": False,
                 "matched": False,
@@ -2770,8 +2852,9 @@ def _dispatch_live_push_comparison(
         }
     if not history:
         return {
-            "blocked": False,
-            "code": "comparison_empty",
+            "blocked": True,
+            "code": "live_push_dedup_empty",
+            "blockingReason": "Live-Push-Dublettenpruefung liefert keine belastbare Historie",
             "livePushComparison": {
                 "available": False,
                 "matched": False,
@@ -2787,15 +2870,30 @@ def _dispatch_live_push_comparison(
         config,
         history_index=history_index,
     )
+    match_type = _live_push_match_type(live_push_match_reason)
+    exact_article_duplicate = match_type == "exact_article"
+    if exact_article_duplicate:
+        comparison_code = "live_push_exact_article_duplicate"
+    elif live_push_match_reason:
+        comparison_code = "live_push_related_match"
+    else:
+        comparison_code = "no_live_push_match"
+
     return {
-        "blocked": False,
-        "code": "live_push_match" if live_push_match_reason else "no_live_push_match",
+        "blocked": exact_article_duplicate,
+        "code": comparison_code,
+        "blockingReason": (
+            "Bereits live gepusht (gleiche Artikel-URL oder CMS-ID); "
+            "Teams-Vorschlag gestoppt"
+            if exact_article_duplicate
+            else ""
+        ),
         "historyRows": len(history),
         "livePushCadenceIgnored": True,
         "livePushComparison": {
             "available": True,
             "matched": bool(live_push_match_reason),
-            "matchType": _live_push_match_type(live_push_match_reason),
+            "matchType": match_type,
             "reason": live_push_match_reason,
         },
     }
@@ -3036,7 +3134,7 @@ def send_teams_daily_schedule_if_due(
 def run_teams_alert_cycle() -> dict[str, Any]:
     """Fetch current article candidates and run one Teams alert cycle."""
     try:
-        refresh_result = _refresh_push_history_for_timing()
+        refresh_result = _refresh_push_history_for_dedup()
         from app.routers.feed import build_articles_payload
 
         config = TeamsAlertConfig()
@@ -3067,8 +3165,8 @@ def run_teams_alert_cycle() -> dict[str, Any]:
         return {"ok": False, "sent": False, "error": str(exc)}
 
 
-def _refresh_push_history_for_timing() -> dict[str, Any]:
-    """Best-effort refresh for live comparison and aggregate reach baselines."""
+def _refresh_push_history_for_dedup() -> dict[str, Any]:
+    """Refresh live-push dedup context; failures make the send path fail closed."""
     try:
         from app.routers.push import _build_refresh_response
 
@@ -3244,7 +3342,7 @@ def build_teams_daily_push_plan(
             "Reguläre Fenster entscheiden um :45; notwendige Doppelchancen zusätzlich um :00.",
             "Im fälligen Mindestfenster dominiert der harte Push-Score 75; Fakten-, Aktualitäts-, Titel-, Ruhezeit- und Dublettengates bleiben unverändert.",
             "Sport wird nur bei bestaetigter Ereignislage und passendem Tages-/Zeitfenster eingeplant.",
-            "Bereits per Teams gemeldete Artikel und Teams-Themendubletten sind ausgeschlossen; Live-Pushes dienen nur dem Vergleich.",
+            "Bereits live gepushte oder per Teams gemeldete Artikel sowie Teams-Themendubletten sind ausgeschlossen.",
         ],
     }
     message = build_teams_daily_push_plan_message(plan)
@@ -3903,6 +4001,8 @@ def _daily_plan_hard_blockers(
     if section in excluded:
         hard.append(f"Ressort {_format_section(section)} ist ausgeschlossen")
     hard_markers = (
+        "Bereits live gepusht",
+        "Live-Push-Dublettenpruefung",
         "Bereits per Teams gemeldet",
         "Thema bereits per Teams gemeldet",
         "Teams-Hinweis wird bereits versendet",
@@ -7088,10 +7188,12 @@ def _final_agent_review(
         "historyAuthoritative": bool(context.get("historyAuthoritative", False)),
         "title": title,
         "url": _url(candidate),
+        "cmsId": _article_identity_cms_id(candidate),
         "section": section,
         "nonArticleReason": non_article_reason,
         "allowedSections": allowed_sections,
         "excludedSections": excluded_sections,
+        "historyExactCmsIds": history_index.get("exactCmsIds") or frozenset(),
         "historyExactUrls": history_index.get("exactUrls") or frozenset(),
         "historyExactTitles": history_index.get("exactTitles") or frozenset(),
         "livePushMatchReason": live_push_match_reason,
@@ -7336,21 +7438,24 @@ def _live_push_comparison_reason(
     *,
     history_index: dict[str, Any] | None = None,
 ) -> str:
-    """Describe whether the independent Teams choice matches a real live push.
+    """Describe whether the Teams choice matches a real live push.
 
-    The result is comparison metadata only. Exact URLs are compared across the
-    retained history; fuzzy story matching uses the configured recent window.
+    Exact CMS IDs or URLs are hard article-duplicate signals. Fuzzy story
+    matching remains comparison metadata and uses only the configured recent window.
     """
     config = config or TeamsAlertConfig()
     now = int(now_ts or time.time())
     window_start = now - int(max(0.0, config.pushed_topic_window_hours) * 3600)
 
     url = _article_identity_url(_url(candidate))
+    cms_id = _article_identity_cms_id(candidate)
     title = _title(candidate)
     title_tokens = _tokens(title)
     slug_tokens = _url_slug_tokens(_url(candidate))
 
     if history_index is not None:
+        if cms_id and cms_id in (history_index.get("exactCmsIds") or ()):
+            return "Bereits live gepusht (gleiche CMS-ID)"
         if url and url in (history_index.get("exactUrls") or ()):
             return "Bereits live gepusht (gleiche Artikel-URL)"
         normalized_title = _normalize_title(title)
@@ -7364,6 +7469,9 @@ def _live_push_comparison_reason(
         return ""
 
     for item in history:
+        item_cms_id = _article_identity_cms_id(item)
+        if cms_id and item_cms_id and cms_id == item_cms_id:
+            return "Bereits live gepusht (gleiche CMS-ID)"
         item_url = _article_identity_url(_url(item))
         if url and item_url and url == item_url:
             return "Bereits live gepusht (gleiche Artikel-URL)"
@@ -7384,7 +7492,7 @@ def _live_push_comparison_reason(
 
 def _live_push_match_type(reason: str) -> str:
     normalized = str(reason or "").casefold()
-    if "artikel-url" in normalized:
+    if "cms-id" in normalized or "artikel-url" in normalized:
         return "exact_article"
     if "identischer titel" in normalized:
         return "exact_title"
@@ -7402,13 +7510,17 @@ def _push_history_review_index(
 ) -> dict[str, Any]:
     """Build immutable exact and recent-topic indices once per candidate batch."""
     window_start = int(now_ts) - int(max(0.0, config.pushed_topic_window_hours) * 3600)
+    exact_cms_ids: set[str] = set()
     exact_urls: set[str] = set()
     exact_titles: set[str] = set()
     recent_topics: list[tuple[frozenset[str], frozenset[str]]] = []
     for item in history:
+        item_cms_id = _article_identity_cms_id(item)
         item_url = _article_identity_url(_url(item))
         item_title = _title(item)
         normalized_title = _normalize_title(item_title)
+        if item_cms_id:
+            exact_cms_ids.add(item_cms_id)
         if item_url:
             exact_urls.add(item_url)
         if normalized_title:
@@ -7423,6 +7535,7 @@ def _push_history_review_index(
             )
         )
     return {
+        "exactCmsIds": frozenset(exact_cms_ids),
         "exactUrls": frozenset(exact_urls),
         "exactTitles": frozenset(exact_titles),
         "recentTopics": tuple(recent_topics),
@@ -9403,9 +9516,13 @@ def _build_power_automate_message_html(
     strongest_risk = str(quality.get("strongestRisk") or "").strip()
     live_comparison = live_push_comparison or {}
     if not live_comparison.get("available"):
-        live_comparison_label = "aktuell nicht belastbar verfügbar"
+        live_comparison_label = "nicht belastbar verfügbar; Versand muss stoppen"
+    elif live_comparison.get("matchType") == "exact_article":
+        live_comparison_label = (
+            "identische Artikel-URL oder CMS-ID bereits live gepusht; gesperrt"
+        )
     elif live_comparison.get("matched"):
-        live_comparison_label = "entspricht einem echten Live-Push"
+        live_comparison_label = "verwandte Live-Meldung, aber andere Artikel-URL"
     else:
         live_comparison_label = "zum Prüfzeitpunkt kein entsprechender Live-Push"
     recommendation_html = (
@@ -9419,7 +9536,7 @@ def _build_power_automate_message_html(
     cadence_html = (
         "<strong>Letzter Teams-Hinweis:</strong> "
         f"{html.escape(_format_teams_alert_minutes(minutes_since_last_teams_alert))}<br>"
-        "<strong>Takt:</strong> unabhängig von echten Live-Pushes"
+        "<strong>Takt:</strong> unabhängig; exakte Live-Push-Dubletten gesperrt"
         if independent_pacing
         else (
             "<strong>Letzter Push:</strong> "
@@ -9475,6 +9592,11 @@ def _article_identity_url(url: str) -> str:
     path = re.sub(r"/+", "/", parsed.path or "").rstrip("/").casefold()
     path = re.sub(r"/(?:amp|amphtml)$", "", path).rstrip("/")
     return f"{host}{path}" if host else path
+
+
+def _article_identity_cms_id(article: dict[str, Any]) -> str:
+    """Return the canonical CMS document ID when article data exposes one."""
+    return str(resolve_cms_id(article) or "").casefold()
 
 
 def _normalize_title(title: str) -> str:

@@ -1098,16 +1098,17 @@ def test_missing_article_link_does_not_trigger_action_recommendation():
     assert any("Artikel-Link" in reason for reason in decision["blockingReasons"])
 
 
-def test_live_pushed_article_remains_an_independent_teams_recommendation():
-    candidate = _candidate()
+def test_live_pushed_article_is_blocked_from_teams_recommendation():
+    candidate = _candidate(score=95.0)
     pushed_history = _history(link=candidate["url"], title="Anderer Titel")
 
     decision = shouldNotifyTeams(candidate, _context(candidate, history=pushed_history), _config())
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["matched"] is True
     assert decision["livePushComparison"]["matchType"] == "exact_article"
-    assert not any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+    assert decision["highScoreOverride"]["approved"] is False
 
 
 def test_same_live_story_under_different_url_is_comparison_only():
@@ -1152,9 +1153,58 @@ def test_live_push_comparison_canonicalizes_bild_host_scheme_query_and_amp():
 
     decision = shouldNotifyTeams(candidate, _context(candidate, history=history), _config())
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["matched"] is True
     assert decision["livePushComparison"]["matchType"] == "exact_article"
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+
+
+def test_live_push_dedup_matches_cms_id_when_history_contains_only_url_id():
+    cms_id = "6a57392b664e99bc41e93660"
+    candidate = _candidate(
+        cmsId=cms_id,
+        url=(
+            "https://www.bild.de/unterhaltung/stars-und-leute/"
+            f"beispiel-artikel-{cms_id}"
+        ),
+        score=96.0,
+    )
+    history = _history(
+        link=cms_id,
+        title="Abweichende Live-Push-Headline",
+    )
+
+    decision = shouldNotifyTeams(candidate, _context(candidate, history=history), _config())
+
+    assert decision["shouldNotify"] is False
+    assert decision["livePushComparison"] == {
+        "available": True,
+        "matched": True,
+        "matchType": "exact_article",
+        "reason": "Bereits live gepusht (gleiche CMS-ID)",
+    }
+    assert decision["highScoreOverride"]["approved"] is False
+
+
+def test_breaking_cannot_recommend_an_article_already_pushed_live():
+    candidate = _candidate(
+        title="Eilmeldung: Regierung beschliesst sofort neue Hilfen",
+        score=99.0,
+        predictedOR=0.09,
+        isBreaking=True,
+        isEilmeldung=True,
+    )
+    pushed_history = _history(link=candidate["url"], title="Fruehere Live-Push-Zeile")
+
+    decision = shouldNotifyTeams(
+        candidate,
+        _context(candidate, history=pushed_history),
+        _config(agent_review_enabled=False),
+    )
+
+    assert decision["shouldNotify"] is False
+    assert decision["livePushComparison"]["matchType"] == "exact_article"
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
 
 
 def test_different_story_sharing_one_token_is_not_blocked_as_pushed():
@@ -2210,6 +2260,27 @@ def test_transport_rejects_live_push_dependent_recommendation_payload():
     urlopen.assert_not_called()
 
 
+def test_transport_rejects_missing_exact_live_push_dedup_approval():
+    now_ts = _gold_slot_ts()
+    candidate = _candidate(score=82.0)
+    config = _config()
+    context = _context(candidate, now_ts=now_ts)
+    decision = shouldNotifyTeams(candidate, context, config)
+    message = buildTeamsPushRecommendation(candidate, context, decision, config)
+    message["_livePushDedupApproved"] = False
+    message["payload"]["livePushDedupApproved"] = False
+
+    with (
+        patch("app.notifications.teams.time.time", return_value=now_ts),
+        patch("app.notifications.teams.urllib.request.urlopen") as urlopen,
+    ):
+        result = sendTeamsNotification(message, config)
+
+    assert result["blocked"] is True
+    assert result["error"] == "Exact live-push duplicate protection approval missing"
+    urlopen.assert_not_called()
+
+
 def test_teams_message_contains_required_editorial_fields():
     candidate = _candidate()
     context = _context(candidate, now_ts=_gold_slot_ts())
@@ -2239,8 +2310,9 @@ def test_teams_message_contains_required_editorial_fields():
     assert "Live-Vergleich:" in text
     payload = message["payload"]
     assert payload["recommendedAction"] == "Jetzt pushen"
-    assert payload["recommendationPolicyVersion"] == "internal-score-adaptive-threshold-v6"
+    assert payload["recommendationPolicyVersion"] == "internal-score-adaptive-threshold-v7"
     assert payload["recommendationsIndependentFromLivePushes"] is True
+    assert payload["livePushDedupApproved"] is True
     assert payload["livePushComparison"] == {
         "available": True,
         "matched": False,
@@ -2377,7 +2449,7 @@ def test_unapproved_preview_cannot_reach_webhook_without_agent_network():
     urlopen.assert_not_called()
 
 
-def test_stale_live_history_does_not_block_independent_recommendation():
+def test_stale_live_history_blocks_when_exact_dedup_cannot_be_verified():
     candidate = _candidate()
     context = _context(candidate, now_ts=_gold_slot_ts())
     context["historyAuthoritative"] = False
@@ -2386,14 +2458,15 @@ def test_stale_live_history_does_not_block_independent_recommendation():
 
     message = buildTeamsPushRecommendation(candidate, context, decision, config)
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["available"] is False
-    assert message["payload"]["type"] == "push_recommendation"
-    assert message["payload"]["dispatchApproved"] is True
+    assert any("Live-Push-Dublettenpruefung" in item for item in decision["blockingReasons"])
+    assert message["payload"]["type"] == "push_recommendation_preview"
+    assert message["payload"]["dispatchApproved"] is False
     with patch("app.notifications.teams.urllib.request.urlopen") as urlopen:
         result = sendTeamsNotification(message, config)
-    assert result["ok"] is True
-    urlopen.assert_called_once()
+    assert result["ok"] is False
+    urlopen.assert_not_called()
 
 
 def test_teams_message_uses_llm_generated_title_when_available():
@@ -2690,7 +2763,7 @@ def test_database_claim_rejection_releases_process_reservation(tmp_db):
             teams_module._RECENT_SEND_MEMORY.clear()
 
 
-def test_send_cycle_continues_when_live_comparison_is_stale(tmp_db):
+def test_send_cycle_stops_when_live_push_dedup_is_stale(tmp_db):
     now_ts = _gold_slot_ts()
     candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
     from app.database import push_db_upsert
@@ -2715,9 +2788,10 @@ def test_send_cycle_continues_when_live_comparison_is_stale(tmp_db):
         )
 
     assert result["ok"] is True
-    assert result["sent"] is True
-    send.assert_called_once()
-    assert send.call_args.args[0]["payload"]["livePushComparison"]["available"] is False
+    assert result["sent"] is False
+    assert result["reason"] == "no_candidate"
+    assert result["diagnostics"]["blockerCategories"]["live_push_duplicate"] == 1
+    send.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -4436,7 +4510,7 @@ def test_shortfall_recovery_does_not_wait_for_an_exact_double_slot_minute():
     assert on_plan["slotGate"]["mode"] == "wait"
 
 
-def test_deadline_fallback_keeps_live_pushed_article_as_independent_comparison():
+def test_deadline_fallback_cannot_recommend_live_pushed_article():
     now_ts = int(dt.datetime(2026, 7, 13, 8, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
     pushed_history = _history(
@@ -4454,14 +4528,14 @@ def test_deadline_fallback_keeps_live_pushed_article_as_independent_comparison()
         history=pushed_history,
     )
 
-    assert decision["shouldNotify"] is True
-    assert decision["deadlineFallback"]["approved"] is True
+    assert decision["shouldNotify"] is False
+    assert decision["deadlineFallback"]["approved"] is False
     assert decision["livePushComparison"]["matched"] is True
     assert decision["livePushComparison"]["matchType"] == "exact_article"
-    assert not any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
 
 
-def test_context_reads_90_days_for_non_blocking_live_push_comparison():
+def test_context_reads_90_days_for_exact_live_push_deduplication():
     now_ts = int(dt.datetime(2026, 7, 13, 18, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
     history = [
@@ -4494,13 +4568,14 @@ def test_context_reads_90_days_for_non_blocking_live_push_comparison():
     decision = shouldNotifyTeams(candidate, context, config)
 
     load_history.assert_called_once_with(max_days=90, max_rows=3000)
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"] == {
         "available": True,
         "matched": True,
         "matchType": "exact_article",
         "reason": "Bereits live gepusht (gleiche Artikel-URL)",
     }
+    assert any("Bereits live gepusht" in reason for reason in decision["blockingReasons"])
 
 
 def test_confirmed_sport_event_can_pass_but_routine_sport_cannot():
@@ -4678,7 +4753,7 @@ def test_daily_push_plan_excludes_author_profile_pages():
     assert any("Autor-/Meta-Seite" in item["reason"] for item in plan["notRecommended"])
 
 
-def test_daily_push_plan_keeps_live_pushed_article_and_marks_comparison():
+def test_daily_push_plan_excludes_article_already_pushed_live():
     pushed = _candidate(
         id="already-pushed-plan",
         url="https://www.bild.de/news/already-pushed-plan",
@@ -4711,9 +4786,11 @@ def test_daily_push_plan_keeps_live_pushed_article_and_marks_comparison():
         now_ts=NOW_TS,
     )
 
-    item = next(item for item in plan["items"] if item["articleUrl"] == pushed["url"])
-    assert item["livePushComparison"]["matched"] is True
-    assert item["livePushComparison"]["matchType"] == "exact_article"
+    assert all(item["articleUrl"] != pushed["url"] for item in plan["items"])
+    assert any(
+        item["title"] == pushed["title"] and "Bereits live gepusht" in item["reason"]
+        for item in plan["notRecommended"]
+    )
 
 
 def test_daily_push_plan_keeps_only_best_duplicate_topic():
@@ -4819,7 +4896,7 @@ def test_local_agent_network_uses_all_specialists_for_strong_candidate():
     assert review["agentCount"] == 17
     assert review["approved"] is True
     assert review["hardVetoCount"] == 0
-    assert review["reviewerSetVersion"] == "teams-review-v2"
+    assert review["reviewerSetVersion"] == "teams-review-v3"
     assert review["evidenceApprovalCount"] >= review["requiredEvidenceApprovals"]
     assert review["latencyBreached"] is False
     assert review["latencyMs"] < review["latencyBudgetMs"]
@@ -4844,7 +4921,7 @@ def test_agent_network_keeps_deadline_fallback_but_reports_every_caution():
     assert review["mainCounterargument"]
 
 
-def test_agent_network_marks_real_push_match_without_veto_at_deadline():
+def test_agent_network_hard_vetoes_exact_live_push_duplicate_at_deadline():
     now_ts = int(dt.datetime(2026, 7, 13, 8, 46, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
     history = _history(
@@ -4863,14 +4940,14 @@ def test_agent_network_marks_real_push_match_without_veto_at_deadline():
     )
     review = decision["agentReview"]
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["matched"] is True
-    assert review["approved"] is True
-    assert review["hardVetoCount"] == 0
+    assert review["approved"] is False
+    assert review["hardVetoCount"] >= 1
     assert any(
         item["agent"] == "Live-Push-Vergleich"
-        and item["verdict"] == "approve"
-        and not item["hardVeto"]
+        and item["verdict"] == "veto"
+        and item["hardVeto"]
         for item in review["verdicts"]
     )
 
@@ -4899,7 +4976,7 @@ def test_agent_network_hard_vetoes_routine_sport_without_event():
     )
 
 
-def test_agent_network_continues_when_live_push_comparison_cannot_load():
+def test_agent_network_fails_closed_when_live_push_dedup_cannot_load():
     candidate = _candidate(score=92.0, predictedOR=0.075)
     config = _config()
     with patch(
@@ -4919,13 +4996,13 @@ def test_agent_network_continues_when_live_push_comparison_cannot_load():
 
     decision = shouldNotifyTeams(candidate, context, config)
 
-    assert decision["shouldNotify"] is True
+    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["available"] is False
-    assert decision["agentReview"]["approved"] is True
+    assert decision["agentReview"]["approved"] is False
     assert any(
         item["agent"] == "Kontext-Integritaet"
-        and item["verdict"] == "caution"
-        and not item["hardVeto"]
+        and item["verdict"] == "veto"
+        and item["hardVeto"]
         for item in decision["agentReview"]["verdicts"]
     )
 
@@ -4949,7 +5026,7 @@ def test_push_dispatch_rejects_missing_agent_approval_before_webhook():
 
 
 @pytest.mark.parametrize("agent_review_enabled", [True, False])
-def test_dispatch_rechecks_real_push_history_as_non_blocking_comparison(
+def test_dispatch_blocks_article_that_was_live_pushed_after_selection(
     tmp_db,
     agent_review_enabled,
 ):
@@ -4998,14 +5075,49 @@ def test_dispatch_rechecks_real_push_history_as_non_blocking_comparison(
             history_authoritative=True,
         )
 
-    assert result["sent"] is True
-    send.assert_called_once()
-    sent_message = send.call_args.args[0]
-    assert sent_message["payload"]["livePushComparison"] == {
+    assert result["sent"] is False
+    assert result["reason"] == "live_push_duplicate_blocked"
+    send.assert_not_called()
+    assert result["livePushDedup"]["livePushComparison"] == {
         "available": True,
         "matched": True,
         "matchType": "exact_article",
+        "reason": "Bereits live gepusht (gleiche Artikel-URL)",
     }
+
+
+def test_dispatch_fails_closed_when_fresh_live_push_history_cannot_be_reloaded(tmp_db):
+    now_ts = _gold_slot_ts()
+    candidate = _candidate(
+        id="dispatch-history-outage",
+        url="https://www.bild.de/news/dispatch-history-outage",
+        title="Netzbetreiber melden Stoerung: Stromausfall trifft fuenf Grossstaedte",
+        category="news",
+        score=94.0,
+        predictedOR=0.08,
+        pubDate=_iso(now_ts - 10 * 60),
+        recommendedText="Stromausfall: Was die Stoerung fuer fuenf Grossstaedte bedeutet",
+    )
+    initial_history = _history(minutes_since_last_push=60, now_ts=now_ts)
+
+    with (
+        patch(
+            "app.notifications.teams.push_db_load_all",
+            side_effect=[initial_history, RuntimeError("synthetic live-history outage")],
+        ),
+        patch("app.notifications.teams.send_teams_notification") as send,
+    ):
+        result = evaluate_and_send_best_candidate(
+            [candidate],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result["sent"] is False
+    assert result["reason"] == "live_push_dedup_unavailable"
+    assert result["livePushDedup"]["code"] == "live_push_dedup_unavailable"
+    send.assert_not_called()
 
 
 def test_dispatch_ignores_recent_unrelated_live_push_for_recommendation_timing(tmp_db):

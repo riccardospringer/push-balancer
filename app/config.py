@@ -516,13 +516,13 @@ PUSH_TEAMS_POST_SEND_DECAY_MINUTES: int = _env_int(
 )
 # Strikt groesser als dieser kanonische Push Score darf weiche Qualitaets- und
 # Ermuedungsgates ueberstimmen. Ruhezeit, Timing, Fakten, Aktualitaet,
-# Cooldown, Ressort, Tageslimit und Teams-Dubletten bleiben hart.
+# Cooldown, Ressort, Tageslimit sowie Live-Push- und Teams-Dubletten bleiben hart.
 PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD: float = _env_float(
     "PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD",
     80.0,
 )
 # Nicht konfigurierbare Produktregel: Teams-Empfehlungen haben einen eigenen
-# Takt. Echte Live-Pushes bleiben nur Vergleichskontext.
+# Takt. Eine identische bereits live gepushte Artikel-URL oder CMS-ID bleibt gesperrt.
 PUSH_TEAMS_INDEPENDENT_PACING_ENABLED: bool = True
 _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport"
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
@@ -650,9 +650,9 @@ PUSH_TEAMS_FEED_OVERTAKEN_ENABLED: bool = _env_flag("PUSH_TEAMS_FEED_OVERTAKEN_E
 # und ueber der Token-Aehnlichkeit -> kein zweiter Alert.
 PUSH_TEAMS_TOPIC_DEDUP_HOURS: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_HOURS", 12.0)
 PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY: float = _env_float("PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY", 0.5)
-# Vergleich gegen ECHTE Live-Pushes: gleiche Artikel-URLs sowie aehnliche
-# URL-Slugs/Titel werden markiert, beeinflussen die unabhaengige Teams-Auswahl
-# aber nicht. Teams-Dubletten werden separat aus der Teams-Historie gesperrt.
+# Abgleich gegen ECHTE Live-Pushes: gleiche Artikel-URLs oder CMS-IDs sind ein hartes
+# Dubletten-Gate. Aehnliche URL-Slugs/Titel bleiben Vergleichssignale, damit eine
+# neue Entwicklung unter einer anderen Artikel-URL nicht pauschal gesperrt wird.
 PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS: float = _env_float(
     "PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS",
     36.0,
