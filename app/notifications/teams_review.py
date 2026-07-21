@@ -142,23 +142,26 @@ def _integrity_agent(snapshot: Snapshot) -> Verdict:
 def _context_integrity_agent(snapshot: Snapshot) -> Verdict:
     availability = snapshot["contextAvailable"]
     critical_missing = [
-        name for name in ("alertState", "recentTeamsAlerts") if not availability.get(name, False)
+        name
+        for name in ("history", "alertState", "recentTeamsAlerts")
+        if not availability.get(name, False)
     ]
+    if not snapshot.get("historyAuthoritative", False):
+        critical_missing.append("livePushDedup")
     if critical_missing:
         return _verdict(
             "Kontext-Integritaet",
             "veto",
-            "Pflichtdaten nicht verfuegbar: " + ", ".join(sorted(critical_missing)),
+            "Pflichtdaten fuer die Dublettenpruefung nicht verfuegbar: "
+            + ", ".join(sorted(set(critical_missing))),
             confidence=1.0,
             hard_veto=True,
         )
     optional_missing = [
         name
-        for name in ("history", "globalCooldown", "dailyAlertCount")
+        for name in ("globalCooldown", "dailyAlertCount")
         if not availability.get(name, False)
     ]
-    if not snapshot.get("historyAuthoritative", False):
-        optional_missing.append("livePushComparison")
     if optional_missing:
         return _verdict(
             "Kontext-Integritaet",
@@ -170,32 +173,42 @@ def _context_integrity_agent(snapshot: Snapshot) -> Verdict:
     return _verdict(
         "Kontext-Integritaet",
         "approve",
-        "Teams-Dubletten, Re-Alerts, Cooldown und Tageszaehler sind verfuegbar",
+        "Live-/Teams-Dubletten, Re-Alerts, Cooldown und Tageszaehler sind verfuegbar",
         confidence=0.99,
     )
 
 
 def _exact_history_agent(snapshot: Snapshot) -> Verdict:
+    candidate_cms_id = str(snapshot.get("cmsId") or "").casefold()
     candidate_url = _normalize_url(snapshot["url"])
     candidate_title = _normalize_title(snapshot["title"])
+    if candidate_cms_id and candidate_cms_id in (snapshot.get("historyExactCmsIds") or ()):
+        return _verdict(
+            "Live-Push-Vergleich",
+            "veto",
+            "Bereits live gepusht: identische CMS-ID",
+            confidence=0.99,
+            hard_veto=True,
+        )
     if candidate_url and candidate_url in snapshot["historyExactUrls"]:
         return _verdict(
             "Live-Push-Vergleich",
-            "approve",
-            "Unabhängige Teams-Auswahl entspricht einer wirklich gepushten Artikel-URL",
+            "veto",
+            "Bereits live gepusht: identische Artikel-URL",
             confidence=0.99,
+            hard_veto=True,
         )
     if candidate_title and candidate_title in snapshot["historyExactTitles"]:
         return _verdict(
             "Live-Push-Vergleich",
-            "approve",
-            "Unabhängige Teams-Auswahl entspricht einer wirklich gepushten Headline",
-            confidence=0.99,
+            "caution",
+            "Identische Live-Push-Headline erkannt, aber keine identische Artikel-URL",
+            confidence=0.95,
         )
     return _verdict(
         "Live-Push-Vergleich",
         "approve",
-        "Kein exakter Live-Push-Treffer; Vergleich beeinflusst die Empfehlung nicht",
+        "Keine identische bereits live gepushte Artikel-URL gefunden",
         confidence=0.99,
     )
 
@@ -737,7 +750,7 @@ def run_agent_review_network(
             "enabled": False,
             "approved": True,
             "mode": "disabled",
-            "reviewerSetVersion": "teams-review-v2",
+            "reviewerSetVersion": "teams-review-v3",
             "agentCount": 0,
             "approvalCount": 0,
             "evidenceApprovalCount": 0,
@@ -852,7 +865,7 @@ def run_agent_review_network(
         "enabled": True,
         "approved": approved,
         "mode": "local_deterministic_evidence_gates",
-        "reviewerSetVersion": "teams-review-v2",
+        "reviewerSetVersion": "teams-review-v3",
         "agentCount": count,
         "approvalCount": len(approvals),
         "evidenceApprovalCount": len(evidence_approvals),
