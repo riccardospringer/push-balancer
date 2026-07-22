@@ -804,6 +804,25 @@ def score_push_candidate(
         raw_score -= 7.0
     if features["strong_non_politics"]:
         raw_score += 3.0
+    if (
+        features.get("is_stale")
+        and tone == "breaking"
+        and not is_eil
+        and not features.get("is_exclusive")
+    ):
+        raw_score -= 12.0
+        risks.append("Verbrauchte Breaking-Meldung: kein frischer Push-Anlass mehr")
+    _fh = features.get("freshness_hours")
+    if (
+        cat in {"unterhaltung"}
+        and tone == "breaking"
+        and not is_eil
+        and not features.get("is_exclusive")
+        and _fh is not None
+        and _fh > 3.0
+    ):
+        raw_score -= 10.0
+        risks.append("Unterhaltungs-Breaking: Meldungswert verfällt nach 3 Stunden")
     if features.get("public_figure_parenthood"):
         # Component weights are calibrated mostly on hard-news shapes. Keep a
         # bounded correction for this confirmed, unusually broad People event.
@@ -1272,6 +1291,15 @@ def _score_bild_fit(
     elif tone == "emotion":
         score += 4
 
+    if (
+        features.get("is_stale")
+        and tone == "breaking"
+        and not is_eil
+        and not features.get("is_exclusive")
+    ):
+        score -= 16
+        risks.append("Breaking-Wertung verfällt: Meldung ist zeitlich verbraucht")
+
     if features.get("trigger_strength", 0) >= 18:
         score += 6
         drivers.append("BILD-Fit: Thema hat mehrere typische Push-Reize")
@@ -1573,6 +1601,15 @@ def _score_bild_reiz(
 
     if tone in {"breaking", "conflict", "utility", "emotion", "curiosity"}:
         score += {"breaking": 13, "conflict": 8, "utility": 8, "emotion": 7, "curiosity": 6}[tone]
+
+    if (
+        features.get("is_stale")
+        and tone == "breaking"
+        and not features.get("is_exclusive")
+    ):
+        score -= 10
+        risks.append("Aktualitätsverlust: Breaking-Anlass bei verbrauchter Meldung nicht anrechenbar")
+
     if (
         (
             topic
