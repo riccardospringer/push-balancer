@@ -438,6 +438,12 @@ def _apply_canonical_push_balancer_scores(
         if not snapshot:
             continue
 
+        # Never let a stale cached score rescue a PR/announcement article that
+        # the editorial assessment already marked down.
+        if bool(article.get("isCorporateAnnouncement")):
+            article["scoreSource"] = "server_editorial_corp_announcement"
+            continue
+
         captured_score = round(max(0.0, min(float(snapshot["score"]), 100.0)), 1)
         captured_at = int(snapshot["capturedAt"])
         article["score"] = captured_score

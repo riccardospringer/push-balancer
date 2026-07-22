@@ -309,6 +309,35 @@ _FOREIGN_PERSONAL_STORY_RE = re.compile(
     r"scheidung|trennung|privat|party)\b"
 )
 
+# Corporate PR / announcement detection.
+# A title is flagged when ≥2 of these three signals fire together (verb + noun,
+# verb + Wir-quote, or noun + Wir-quote) AND no hard news event is present.
+_CORP_ANNOUNCE_VERB_RE = re.compile(
+    r"(?i)\b(?:kündigt|kündet)\b.{0,55}\ban\b"
+    r"|\b(?:plant|startet|launcht?|lanciert|enthüllt|präsentiert)\b"
+)
+_CORP_STRATEGY_NOUN_RE = re.compile(
+    r"(?i)\b(?:offensive|expansion|wachstumsstrategie|roadmap|"
+    r"markteinführung|marktstart|markteintritt|"
+    r"kooperation|partnerschaft|zusammenarbeit)\b"
+)
+_CORP_WIR_QUOTE_RE = re.compile(
+    r"(?i)[–—-]\s*['\"]?wir\s+(?:wollen|werden|müssen|möchten|planen|sind|haben)\b"
+)
+# Hard newsroom events that override the announcement flag (article is push-worthy
+# regardless of announcement language).
+_HARD_NEWS_EVENT_RE = re.compile(
+    r"(?i)\b(?:brand|feuer|explosion|einsturz|unfall|crash|absturz|"
+    r"mord|get[öo]tet|tot|tote[rns]?|erschossen|erstochen|gestorben|"
+    r"verhaftet|festgenommen|razzia|urteil|verurteilt|"
+    r"streik|insolvenz|pleite|konkurs|bankrott|entlassungen?|"
+    r"rücktritt|zurückgetreten|abgesetzt|gefeuert|"
+    r"beschlossen|verabschiedet|"
+    r"anschlag|attentat|entführ|"
+    r"erdbeben|überschwemmung|hochwasser|"
+    r"rekordhoch|rekordtief)\b"
+)
+
 # Narrow People-news exception: a named holder of a German political role and
 # a confirmed parenthood milestone. The rule deliberately ignores partner sex,
 # marital status, and every other identity trait carried by the headline.
@@ -795,6 +824,10 @@ def score_push_candidate(
         else:
             risks.append(relevance_reason)
 
+    if features.get("is_corporate_announcement") and not is_eil:
+        raw_score -= 15.0
+        risks.append("Ankündigungs-Malus: kein richtiges Push-Ereignis erkennbar")
+
     score = round(_clip(raw_score, 0.0, 100.0), 1)
     priority = _priority(score)
 
@@ -830,6 +863,7 @@ def score_push_candidate(
             "germanyRelevanceAdjustment": round(germany_adjustment, 1),
         },
         "germanyRelevance": germany_relevance,
+        "isCorporateAnnouncement": bool(features.get("is_corporate_announcement", False)),
     }
 
 
@@ -1150,6 +1184,20 @@ def _extract_push_features(
     ):
         has_development = True
 
+    _corp_verb = bool(_CORP_ANNOUNCE_VERB_RE.search(title))
+    _corp_noun = bool(_CORP_STRATEGY_NOUN_RE.search(title))
+    _corp_wir = bool(_CORP_WIR_QUOTE_RE.search(title))
+    _hard_event = bool(_HARD_NEWS_EVENT_RE.search(title))
+    _corp_signals = sum([_corp_verb, _corp_noun, _corp_wir])
+    _is_eil = bool(push.get("is_eilmeldung") or push.get("isEilmeldung"))
+    is_corporate_announcement = (
+        _corp_signals >= 2
+        and not _hard_event
+        and not is_politics
+        and not _is_eil
+        and cat not in {"sport"}
+    )
+
     return {
         "lower": lower,
         "is_video": is_video,
@@ -1179,6 +1227,7 @@ def _extract_push_features(
             _GENERIC_CASE_RE.search(title) or "passiert immer wieder" in feedback_text
         ),
         "feedback_text": feedback_text,
+        "is_corporate_announcement": is_corporate_announcement,
     }
 
 
@@ -1260,6 +1309,10 @@ def _score_bild_fit(
     if title.count("!") > 1 or "??" in title:
         score -= 8
         risks.append("Überzeichnung durch Satzzeichen kann Vertrauen kosten")
+
+    if features.get("is_corporate_announcement") and not is_eil:
+        score -= 22
+        risks.append("Unternehmens-PR: Ankündigung ohne konkretes Push-Ereignis")
 
     return _clip(score, 0, 100)
 
@@ -1546,6 +1599,9 @@ def _score_bild_reiz(
     if not hits and tone == "neutral":
         score -= 4
         risks.append("BILD-Reiz: noch kein klarer Hä?-, Aufreger- oder Nutzwert-Moment")
+    if features.get("is_corporate_announcement"):
+        score -= 18
+        risks.append("BILD-Reiz: Unternehmens-Ankündigung hat keinen Sofort-Klick-Anlass")
     return _clip(score, 0, 100)
 
 
