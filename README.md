@@ -49,7 +49,7 @@ cp .env.example .env
 # Cost guard: all paid external APIs are globally disabled unless explicitly enabled, and each feature has its own additional opt-in
 
 # 4. Start backend and frontend
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8050
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8050 --no-proxy-headers --no-access-log
 pnpm --dir frontend dev
 ```
 
@@ -358,7 +358,15 @@ Allowed origins are computed automatically from `PORT`, `RAILWAY_PUBLIC_DOMAIN`,
 
 ### Internal Network Access
 
-Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to restrict the app to AS/VPN egress IPs. On Render this protection is enabled by default, so non-exempt routes stay closed until the AS network CIDRs are configured. Keep `/api/health,/api/v1` in `INTERNAL_ACCESS_EXEMPT_PATHS` so platform health checks and authenticated consumer API calls can work while docs and legacy routes remain internal. `SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS` is a separate least-privilege allowlist: it grants only `GET /api/score-capture/health` and `GET /api/score-capture/by-cms-id/{cms_id}` to the approved BILD Next consumer and does not grant UI, debug, or write access.
+Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to restrict the app to AS/VPN egress IPs. On Render this protection is enabled by default, so non-exempt routes stay closed until the AS network CIDRs are configured. Keep `/api/health,/api/v1` in `INTERNAL_ACCESS_EXEMPT_PATHS` so platform health checks and authenticated consumer API calls can work while docs and legacy routes remain internal. `SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS` is a separate least-privilege allowlist: it grants only `GET /api/score-capture/health`, `GET /api/score-capture/by-cms-id/{cms_id}`, and the exact read-only `POST /api/score-capture/by-cms-id/batch?includeBreakdown=1` to the approved BILD Next consumer. It does not grant UI, debug, or browser-capture write access.
+
+On Render, CIDR authorization trusts only one syntactically valid `CF-Connecting-IP` value supplied by the guaranteed Cloudflare public ingress. A missing, malformed, duplicate, or comma-separated value fails closed. `True-Client-IP`, `X-Real-IP`, and `X-Forwarded-For` are never authorization sources. Outside Render, forwarded headers are ignored and only the validated socket peer (`request.client.host`) is used. The container starts Uvicorn with proxy-header rewriting disabled, so spoofed forwarding headers cannot replace that socket peer before application authorization. Uvicorn access logging is disabled because request paths can contain CMS IDs; application logs use a redacted score-source path instead.
+
+The CMS-ID source route remains backward compatible: without a query parameter it returns exactly `score` and `capturedAt`. The fixed opt-in query `?includeBreakdown=1` additionally returns `scoreBreakdown` and `orFactor` when the capture contains that complete pair; legacy captures keep the exact two-field response. New captures contain only numeric fields already displayed or applied by the candidate view. Engagement fields are `relevance`, `urgency`, `curiosity`, `freshness`, `timing`, `titleBoost`, `breaking`, `research`, `pushHistory`, and `topicSaturation`. Sport captures use `sportRelevance`, `timing`, `drama`, and `freshness`. `score` remains the displayed total, while `orFactor` is the separate sorting factor. The source neither recalculates nor changes the existing score.
+
+For lists, send 1 to 500 unique lowercase 24-character hexadecimal IDs to `POST /api/score-capture/by-cms-id/batch?includeBreakdown=1` as the exact JSON body `{"cmsIds":["…"]}`. The exact response is `{"results":[…]}` in request order. A found item contains `cmsId`, `status:"found"`, `score`, and `capturedAt`, plus the complete `scoreBreakdown`/`orFactor` pair when it was captured. A missing item contains only `cmsId` and `status:"notFound"`. `notFound` means that no fresh captured candidate-view score exists in the current eight-hour workday window; it does not mean that the CMS article itself is missing. The source performs one memory scan and one database scan for the complete batch. A database/read failure returns `503` for the whole request and is never converted into individual `notFound` results.
+
+The browser capture sends candidates in bounded chunks of 100. Its 30-second throttle and fingerprint advance only after every chunk receives an HTTP success response, so a failed capture remains retryable. If optional explanation values are outside their approved numeric bounds, the browser omits that enrichment pair and still sends the valid legacy total score.
 
 ---
 
@@ -464,7 +472,7 @@ Use `INTERNAL_ACCESS_ENABLED=1` together with `INTERNAL_ACCESS_ALLOWED_CIDRS` to
 | `CONSUMER_API_KEY` | No | — | Strong random read-only key for downstream consumer endpoints (`/api/v1/recommendations`, `/api/v1/articles`, `/api/v1/scores`); required to enable consumer API access |
 | `INTERNAL_ACCESS_ENABLED` | No | `true` on Render, `false` locally | Restrict non-exempt routes to the CIDRs listed in `INTERNAL_ACCESS_ALLOWED_CIDRS` |
 | `INTERNAL_ACCESS_ALLOWED_CIDRS` | No | `127.0.0.1/32,::1/128,145.243.0.0/16,91.220.134.0/24` | Comma-separated AS/VPN egress CIDRs or individual IPs in `/32` or `/128` notation |
-| `SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS` | No | BILD Next staging NAT `/32` address | Dedicated egress allowlist for the two read-only score-capture source routes; does not grant UI, debug, or POST access |
+| `SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS` | No | BILD Next staging NAT `/32` address | Dedicated egress allowlist for the two minimal GET routes and exact read-only batch POST; does not grant UI, debug, or browser-capture POST access |
 | `INTERNAL_ACCESS_EXEMPT_PATHS` | No | `/api/health` | Comma-separated route list that remains reachable without the internal allowlist; production should use `/api/health,/api/v1` so only health checks and authenticated consumer routes are externally reachable |
 | `DB_PATH` | No | `.push_history.db` | Override SQLite location, e.g. on a persistent disk |
 | `PUSH_DB_MAX_DAYS` | No | `90` | Maximum age of push rows loaded from SQLite into memory for analysis/runtime paths |

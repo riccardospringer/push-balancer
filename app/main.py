@@ -40,6 +40,7 @@ from app.config import (
     INTERNAL_ACCESS_ALLOWED_CIDRS,
     INTERNAL_ACCESS_ENABLED,
     INTERNAL_ACCESS_EXEMPT_PATHS,
+    IS_RENDER,
     PORT,
     SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS,
     PUSH_TEAMS_ALERTS_ENABLED,
@@ -229,6 +230,8 @@ def _is_deprecated_compatibility_path(path: str) -> bool:
 
 
 def _apply_runtime_headers(path: str, response: Response) -> Response:
+    if path == "/api/score-capture" or path.startswith("/api/score-capture/"):
+        response.headers["Cache-Control"] = "no-store"
     if _is_deprecated_compatibility_path(path):
         response.headers["Deprecation"] = "true"
         response.headers["Sunset"] = _DEPRECATION_SUNSET
@@ -243,25 +246,42 @@ def _path_is_exempt_from_internal_access(path: str) -> bool:
 
 
 def _extract_client_ip(request: Request) -> str | None:
-    for header_name in (
-        "cf-connecting-ip",
-        "true-client-ip",
-        "x-real-ip",
-    ):
-        header_value = request.headers.get(header_name, "").strip()
-        if header_value:
-            return header_value
+    """Return only an ingress-authenticated peer identity for CIDR decisions."""
+    if IS_RENDER:
+        cloudflare_values = request.headers.getlist("cf-connecting-ip")
+        if len(cloudflare_values) != 1:
+            return None
+        candidate = cloudflare_values[0].strip()
+    else:
+        candidate = request.client.host.strip() if request.client else ""
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return None
 
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        candidate = forwarded_for.split(",", 1)[0].strip()
-        if candidate:
-            return candidate
 
-    if request.client and request.client.host:
-        return request.client.host
+_SCORE_CAPTURE_CMS_PATH_PREFIX = "/api/score-capture/by-cms-id/"
+_SCORE_CAPTURE_BATCH_PATH = f"{_SCORE_CAPTURE_CMS_PATH_PREFIX}batch"
+_SCORE_CAPTURE_HEALTH_PATH = "/api/score-capture/health"
 
-    return None
+
+def _log_safe_request_path(path: str) -> str:
+    """Redact CMS identifiers before a request path enters application logs."""
+    if path == _SCORE_CAPTURE_BATCH_PATH:
+        return path
+    if path.startswith(_SCORE_CAPTURE_CMS_PATH_PREFIX):
+        return f"{_SCORE_CAPTURE_CMS_PATH_PREFIX}{{cms_id}}"
+    return path
+
+
+def _is_score_capture_source_path(path: str) -> bool:
+    return (
+        path == _SCORE_CAPTURE_HEALTH_PATH
+        or path == _SCORE_CAPTURE_BATCH_PATH
+        or path.startswith(_SCORE_CAPTURE_CMS_PATH_PREFIX)
+    )
 
 
 def _client_is_on_allowed_network(
@@ -292,14 +312,19 @@ def _is_approved_score_capture_consumer(
     path: str,
     client_ip: str | None,
 ) -> bool:
-    """Allow the approved Next consumer to read only the minimal score source."""
-    if method != "GET" or not _client_is_on_allowed_network(
+    """Allow the approved Next consumer only the minimal score-source methods."""
+    if not _client_is_on_allowed_network(
         client_ip,
         SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS,
     ):
         return False
-    return path == "/api/score-capture/health" or bool(
-        re.fullmatch(r"/api/score-capture/by-cms-id/[0-9a-fA-F]{24}", path)
+    if method == "POST":
+        return path == "/api/score-capture/by-cms-id/batch"
+    return method == "GET" and (
+        path == "/api/score-capture/health"
+        or bool(
+            re.fullmatch(r"/api/score-capture/by-cms-id/[0-9a-fA-F]{24}", path)
+        )
     )
 
 
@@ -1006,7 +1031,16 @@ async def validation_exception_handler(
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    log.exception("[API] Unhandled error on %s", request.url.path, exc_info=exc)
+    request_path = request.scope.get("path", request.url.path)
+    safe_path = _log_safe_request_path(request_path)
+    if _is_score_capture_source_path(request_path):
+        log.error(
+            "[API] Unhandled %s on %s",
+            type(exc).__name__,
+            safe_path,
+        )
+    else:
+        log.exception("[API] Unhandled error on %s", safe_path, exc_info=exc)
     return _problem_response(
         request=request,
         status_code=500,
@@ -1051,18 +1085,23 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
             return _legacy_frontend_response()
         return response
 
-    log.warning(
-        "[Access] Blockiere externen Zugriff auf %s von %s",
-        request.url.path,
-        client_ip or "<unknown>",
-    )
-    return _problem_response(
+    safe_path = _log_safe_request_path(normalized_path)
+    if _is_score_capture_source_path(normalized_path):
+        log.warning("[Access] Blockiere Score-Source-Zugriff auf %s", safe_path)
+    else:
+        log.warning(
+            "[Access] Blockiere externen Zugriff auf %s von %s",
+            safe_path,
+            client_ip or "<unknown>",
+        )
+    response = _problem_response(
         request=request,
         status_code=404,
         title="Not Found",
         detail="The requested resource was not found.",
         problem_type="about:blank",
     )
+    return _apply_runtime_headers(normalized_path, response)
 
 
 # ── CORS ────────────────────────────────────────────────────────────────────

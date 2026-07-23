@@ -66,7 +66,7 @@ paths:
       tags: [Consumer]
       operationId: getCapturedScoreByCmsId
       summary: Get the latest workday UI score by CMS ID
-      description: Returns only the latest workday score and capture timestamp already produced by the unchanged candidate UI. The route is protected by the service's internal CIDR allowlist.
+      description: By default, returns only the latest workday score and capture timestamp already produced by the unchanged candidate UI. The includeBreakdown=1 opt-in adds its captured numeric displayed/applied score fields and separate OR sorting factor. The route is protected by the service's internal CIDR allowlist.
       parameters:
         - name: cms_id
           in: path
@@ -75,6 +75,13 @@ paths:
           schema:
             type: string
             pattern: "^[0-9a-fA-F]{24}$"
+        - name: includeBreakdown
+          in: query
+          required: false
+          description: Set to 1 to include the captured numeric score breakdown and separate OR sorting factor. Omit it for the exact legacy response shape.
+          schema:
+            type: integer
+            enum: [1]
       responses:
         "200":
           description: Latest captured UI score from the eight-hour workday window.
@@ -90,6 +97,9 @@ paths:
                 type: object
                 additionalProperties: false
                 required: [score, capturedAt]
+                dependentRequired:
+                  scoreBreakdown: [orFactor]
+                  orFactor: [scoreBreakdown]
                 properties:
                   score:
                     type: number
@@ -99,10 +109,71 @@ paths:
                     type: integer
                     format: int64
                     minimum: 1
+                  scoreBreakdown:
+                    description: Captured displayed/applied score fields. Present only when includeBreakdown=1 and the capture contains the complete enrichment pair.
+                    oneOf:
+                      - $ref: "#/components/schemas/EngagementScoreBreakdown"
+                      - $ref: "#/components/schemas/SportScoreBreakdown"
+                  orFactor:
+                    description: Captured OR sorting factor. Present only when includeBreakdown=1 and the capture contains the complete enrichment pair.
+                    type: number
+                    minimum: 0.6
+                    maximum: 1.5
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/score-capture/by-cms-id/batch:
+    post:
+      tags: [Consumer]
+      operationId: getCapturedScoresByCmsIds
+      summary: Get captured UI scores for a CMS-ID batch
+      description: Resolves 1 to 500 unique lowercase CMS IDs in request order with one memory scan and one persistent-store scan. It never recalculates or substitutes a score. A storage read failure fails the complete request instead of being reported as notFound.
+      parameters:
+        - name: includeBreakdown
+          in: query
+          required: true
+          description: The batch contract requires the exact value 1.
+          schema:
+            type: integer
+            const: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [cmsIds]
+              properties:
+                cmsIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: "^[0-9a-f]{24}$"
+      responses:
+        "200":
+          description: One exact found or notFound result per requested CMS ID.
+          headers:
+            Cache-Control:
+              description: Prevents storage of the score response.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchCmsScoreCaptureResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/score-capture/health:
     get:
@@ -1938,6 +2009,166 @@ components:
             $ref: "#/components/schemas/Problem"
 
   schemas:
+    EngagementScoreBreakdown:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - relevance
+        - urgency
+        - curiosity
+        - freshness
+        - timing
+        - titleBoost
+        - breaking
+        - research
+        - pushHistory
+        - topicSaturation
+      properties:
+        kind:
+          type: string
+          const: engagement
+        relevance:
+          type: number
+          minimum: 0
+          maximum: 30
+        urgency:
+          type: number
+          minimum: 0
+          maximum: 25
+        curiosity:
+          type: number
+          minimum: 0
+          maximum: 25
+        freshness:
+          type: number
+          minimum: 0
+          maximum: 20
+        timing:
+          type: number
+          minimum: 0
+          maximum: 15
+        titleBoost:
+          type: number
+          minimum: 0
+          maximum: 15
+        breaking:
+          type: number
+          minimum: 0
+          maximum: 15
+        research:
+          type: number
+          minimum: 0
+          maximum: 12
+        pushHistory:
+          type: number
+          minimum: -4
+          maximum: 8
+        topicSaturation:
+          type: number
+          minimum: -30
+          maximum: 0
+
+    SportScoreBreakdown:
+      type: object
+      additionalProperties: false
+      required: [kind, sportRelevance, timing, drama, freshness]
+      properties:
+        kind:
+          type: string
+          const: sport
+        sportRelevance:
+          type: number
+          minimum: 0
+          maximum: 35
+        timing:
+          type: number
+          minimum: 0
+          maximum: 30
+        drama:
+          type: number
+          minimum: 0
+          maximum: 25
+        freshness:
+          type: number
+          minimum: 0
+          maximum: 10
+
+    BatchCmsScoreCaptureResponse:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/BatchCmsScoreFoundEnriched"
+              - $ref: "#/components/schemas/BatchCmsScoreFoundLegacy"
+              - $ref: "#/components/schemas/BatchCmsScoreNotFound"
+
+    BatchCmsScoreFoundEnriched:
+      type: object
+      additionalProperties: false
+      required: [cmsId, status, score, capturedAt, scoreBreakdown, orFactor]
+      properties:
+        cmsId:
+          type: string
+          pattern: "^[0-9a-f]{24}$"
+        status:
+          type: string
+          const: found
+        score:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100
+        capturedAt:
+          type: integer
+          format: int64
+          minimum: 1
+        scoreBreakdown:
+          oneOf:
+            - $ref: "#/components/schemas/EngagementScoreBreakdown"
+            - $ref: "#/components/schemas/SportScoreBreakdown"
+        orFactor:
+          type: number
+          minimum: 0.6
+          maximum: 1.5
+
+    BatchCmsScoreFoundLegacy:
+      type: object
+      additionalProperties: false
+      required: [cmsId, status, score, capturedAt]
+      properties:
+        cmsId:
+          type: string
+          pattern: "^[0-9a-f]{24}$"
+        status:
+          type: string
+          const: found
+        score:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100
+        capturedAt:
+          type: integer
+          format: int64
+          minimum: 1
+
+    BatchCmsScoreNotFound:
+      type: object
+      additionalProperties: false
+      required: [cmsId, status]
+      properties:
+        cmsId:
+          type: string
+          pattern: "^[0-9a-f]{24}$"
+        status:
+          type: string
+          const: notFound
+
     Problem:
       type: object
       required: [type, title, status]
