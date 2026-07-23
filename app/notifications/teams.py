@@ -1200,30 +1200,37 @@ def should_notify_teams(
         (context.get("contextAvailable") or {}).get("history")
         and context.get("historyAuthoritative")
     )
-    live_push_match_type = (
-        _live_push_match_type(live_push_match_reason) if live_comparison_available else ""
-    )
+    # Fail-open statt fail-closed: Der Live-Vergleich nutzt die (per Sync-Daemon
+    # gefuellte) DB-Historie. Ist die Quelle nicht garantiert frisch
+    # (historyAuthoritative=false), blockieren wir NICHT mehr pauschal – das legte
+    # zuvor den kompletten Kanal lahm (kein einziger Push kam an). Stattdessen
+    # senden wir mit Warnhinweis. Echte Artikel-Dubletten aus der vorhandenen
+    # Historie werden weiterhin hart abgefangen; die Teams-interne Dublettensperre
+    # ("Bereits per Teams gemeldet") ist davon unabhaengig und bleibt aktiv.
+    live_push_match_type = _live_push_match_type(live_push_match_reason)
     live_push_comparison = {
         "available": live_comparison_available,
-        "matched": bool(live_push_match_reason) if live_comparison_available else False,
+        "authoritative": live_comparison_available,
+        "matched": bool(live_push_match_reason),
         "matchType": live_push_match_type,
-        "reason": live_push_match_reason if live_comparison_available else "",
+        "reason": live_push_match_reason,
     }
-    if not live_comparison_available:
-        blockers.append(
-            "Live-Push-Dublettenpruefung nicht belastbar verfuegbar; "
-            "Empfehlung wird sicherheitshalber gestoppt"
-        )
-    elif live_push_match_type == "exact_article":
+    if live_push_match_type == "exact_article":
         blockers.append(
             "Bereits live gepusht (gleiche Artikel-URL oder CMS-ID); "
             "der Artikel darf nicht erneut per Teams vorgeschlagen werden"
+        )
+    elif not live_comparison_available:
+        positive.append(
+            "Live-Push-Dublettencheck nicht garantiert aktuell (Quelle nicht belastbar); "
+            "Empfehlung wird mit Warnhinweis gesendet – bitte vor dem Push kurz "
+            "gegen Live-Pushes pruefen"
         )
     elif live_push_match_reason:
         positive.append(
             "Live-Vergleich: verwandte Meldung erkannt, aber keine identische Artikel-URL"
         )
-    elif live_comparison_available:
+    else:
         positive.append("Live-Vergleich: zum Prüfzeitpunkt noch kein entsprechender echter Push")
 
     topic_dup_reason = _topic_already_alerted_reason(
@@ -1861,10 +1868,12 @@ def build_teams_push_recommendation(
     teams_dedup_approved = bool(
         context_available.get("alertState") and context_available.get("recentTeamsAlerts")
     )
+    # Fail-open: Nur ein echter Artikel-Dublettentreffer verhindert die Freigabe.
+    # Fehlende/nicht belastbare Live-Historie blockiert den Versand NICHT mehr –
+    # das legte zuvor den ganzen Kanal lahm; der Warnhinweis (livePushDedupWarning)
+    # uebernimmt die Absicherung, damit die CvD vor dem Push gegenpruefen kann.
     live_push_dedup_approved = bool(
-        context_available.get("history")
-        and context.get("historyAuthoritative")
-        and live_push_comparison.get("matchType") != "exact_article"
+        live_push_comparison.get("matchType") != "exact_article"
     )
     dispatch_approved = bool(
         decision.get("shouldNotify")
@@ -2038,7 +2047,11 @@ def build_teams_push_recommendation(
     subject_prefix = "🚨 Jetzt pushen" if dispatch_approved else "Nicht senden"
     subject = f"{subject_prefix}: {_compact_text(push_text or title, 120)}"
 
-    text_lines = [subject, "", "Empfohlener Push-Titel:", push_text]
+    dedup_warning = str(decision.get("livePushDedupWarning") or "").strip()
+    text_lines = [subject]
+    if dedup_warning:
+        text_lines.extend(["", f"ACHTUNG: {dedup_warning}"])
+    text_lines.extend(["", "Empfohlener Push-Titel:", push_text])
     if not push_text_matches_title:
         text_lines.extend(["", "Artikel:", title])
     if url:
@@ -2481,6 +2494,9 @@ def evaluate_and_send_best_candidate(
     selected_decision["livePushComparison"] = dict(
         dispatch_comparison.get("livePushComparison") or {}
     )
+    dispatch_warning = str(dispatch_comparison.get("warning") or "").strip()
+    if dispatch_warning:
+        selected_decision["livePushDedupWarning"] = dispatch_warning
     if dispatch_comparison.get("blocked"):
         dispatch_code = str(dispatch_comparison.get("code") or "live_push_dedup_blocked")
         dispatch_reason = str(
@@ -2834,27 +2850,28 @@ def _dispatch_live_push_comparison(
     config: TeamsAlertConfig,
     comparison_authoritative: bool = True,
 ) -> dict[str, Any]:
-    """Refresh exact live-push deduplication immediately before delivery."""
-    if not comparison_authoritative:
-        return {
-            "blocked": True,
-            "code": "live_push_dedup_not_authoritative",
-            "blockingReason": "Live-Push-Dublettenpruefung ist nicht aktuell belastbar",
-            "livePushComparison": {
-                "available": False,
-                "matched": False,
-                "matchType": "",
-            },
-        }
+    """Refresh exact live-push deduplication immediately before delivery.
+
+    Fail-open: Ist die Quelle nicht garantiert frisch oder die Historie nicht
+    ladbar, blockieren wir NICHT (das legte zuvor den ganzen Kanal lahm), sondern
+    liefern einen Warnhinweis zurueck und senden trotzdem. Echte Artikel-Dubletten
+    aus der vorhandenen DB-Historie werden weiterhin hart abgefangen.
+    """
+    _FAILOPEN_WARNING = (
+        "Live-Push-Dublettencheck war nicht belastbar – bitte vor dem Push kurz "
+        "prüfen, ob der Artikel nicht bereits live gepusht wurde."
+    )
     try:
         history = push_db_load_all(max_days=90, max_rows=3000)
     except Exception as exc:
         return {
-            "blocked": True,
-            "code": "live_push_dedup_unavailable",
-            "blockingReason": "Live-Push-Dublettenpruefung konnte nicht geladen werden",
+            "blocked": False,
+            "code": "live_push_dedup_unavailable_failopen",
+            "blockingReason": "",
+            "warning": _FAILOPEN_WARNING,
             "livePushComparison": {
                 "available": False,
+                "authoritative": False,
                 "matched": False,
                 "matchType": "",
             },
@@ -2862,11 +2879,13 @@ def _dispatch_live_push_comparison(
         }
     if not history:
         return {
-            "blocked": True,
-            "code": "live_push_dedup_empty",
-            "blockingReason": "Live-Push-Dublettenpruefung liefert keine belastbare Historie",
+            "blocked": False,
+            "code": "live_push_dedup_empty_failopen",
+            "blockingReason": "",
+            "warning": _FAILOPEN_WARNING,
             "livePushComparison": {
                 "available": False,
+                "authoritative": False,
                 "matched": False,
                 "matchType": "",
             },
@@ -2898,10 +2917,14 @@ def _dispatch_live_push_comparison(
             if exact_article_duplicate
             else ""
         ),
+        # Historie vorhanden und geprueft, aber Snapshot evtl. nicht garantiert
+        # frisch -> Warnhinweis, damit die CvD gegenpruefen kann.
+        "warning": "" if comparison_authoritative else _FAILOPEN_WARNING,
         "historyRows": len(history),
         "livePushCadenceIgnored": True,
         "livePushComparison": {
             "available": True,
+            "authoritative": bool(comparison_authoritative),
             "matched": bool(live_push_match_reason),
             "matchType": match_type,
             "reason": live_push_match_reason,

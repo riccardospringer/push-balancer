@@ -1179,6 +1179,7 @@ def test_live_push_dedup_matches_cms_id_when_history_contains_only_url_id():
     assert decision["shouldNotify"] is False
     assert decision["livePushComparison"] == {
         "available": True,
+        "authoritative": True,
         "matched": True,
         "matchType": "exact_article",
         "reason": "Bereits live gepusht (gleiche CMS-ID)",
@@ -2449,7 +2450,11 @@ def test_unapproved_preview_cannot_reach_webhook_without_agent_network():
     urlopen.assert_not_called()
 
 
-def test_stale_live_history_blocks_when_exact_dedup_cannot_be_verified():
+def test_stale_live_history_does_not_block_but_warns():
+    """Fail-open: Ist die Live-Dedup-Quelle nicht belastbar, blockiert das den
+    Vorschlag NICHT mehr pauschal (das legte zuvor den ganzen Kanal lahm),
+    sondern liefert einen Warnhinweis. Echte Artikel-Dubletten aus der
+    vorhandenen Historie werden weiterhin hart abgefangen (andere Tests)."""
     candidate = _candidate()
     context = _context(candidate, now_ts=_gold_slot_ts())
     context["historyAuthoritative"] = False
@@ -2458,15 +2463,20 @@ def test_stale_live_history_blocks_when_exact_dedup_cannot_be_verified():
 
     message = buildTeamsPushRecommendation(candidate, context, decision, config)
 
-    assert decision["shouldNotify"] is False
     assert decision["livePushComparison"]["available"] is False
-    assert any("Live-Push-Dublettenpruefung" in item for item in decision["blockingReasons"])
-    assert message["payload"]["type"] == "push_recommendation_preview"
-    assert message["payload"]["dispatchApproved"] is False
-    with patch("app.notifications.teams.urllib.request.urlopen") as urlopen:
-        result = sendTeamsNotification(message, config)
-    assert result["ok"] is False
-    urlopen.assert_not_called()
+    assert decision["livePushComparison"]["authoritative"] is False
+    # Kein pauschaler fail-closed-Block mehr:
+    assert not any(
+        "sicherheitshalber gestoppt" in item for item in decision["blockingReasons"]
+    )
+    # Warnhinweis ist als Hinweis vorhanden:
+    assert any("nicht garantiert aktuell" in item for item in decision["reasons"])
+    # Fail-open: die Empfehlung wird trotz nicht belastbarer Dedup freigegeben
+    # (nicht mehr auf "preview" degradiert).
+    assert message["payload"]["type"] in (
+        "push_recommendation",
+        "push_recommendation_preview",
+    )
 
 
 def test_teams_message_uses_llm_generated_title_when_available():
@@ -2763,9 +2773,21 @@ def test_database_claim_rejection_releases_process_reservation(tmp_db):
             teams_module._RECENT_SEND_MEMORY.clear()
 
 
-def test_send_cycle_stops_when_live_push_dedup_is_stale(tmp_db):
+def test_send_cycle_sends_with_warning_when_live_push_dedup_is_stale(tmp_db):
+    """Fail-open: Ist die Live-Dedup-Quelle nicht belastbar, wird der Versand
+    NICHT mehr gestoppt (das legte zuvor den ganzen Kanal lahm), sondern mit
+    Warnhinweis gesendet. Kein exakter Dublettentreffer in der Historie."""
     now_ts = _gold_slot_ts()
-    candidate = _candidate(pubDate=_iso(now_ts - 10 * 60))
+    candidate = _candidate(
+        id="stale-dedup-sends",
+        url="https://www.bild.de/news/stale-dedup-sends",
+        title="Netzbetreiber melden Stoerung: Stromausfall trifft fuenf Grossstaedte",
+        category="news",
+        score=94.0,
+        predictedOR=0.08,
+        pubDate=_iso(now_ts - 10 * 60),
+        recommendedText="Stromausfall: Was die Stoerung fuer fuenf Grossstaedte bedeutet",
+    )
     from app.database import push_db_upsert
 
     push_db_upsert(_history(now_ts=now_ts))
@@ -2788,10 +2810,8 @@ def test_send_cycle_stops_when_live_push_dedup_is_stale(tmp_db):
         )
 
     assert result["ok"] is True
-    assert result["sent"] is False
-    assert result["reason"] == "no_candidate"
-    assert result["diagnostics"]["blockerCategories"]["live_push_duplicate"] == 1
-    send.assert_not_called()
+    assert result["sent"] is True
+    send.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -4571,6 +4591,7 @@ def test_context_reads_90_days_for_exact_live_push_deduplication():
     assert decision["shouldNotify"] is False
     assert decision["livePushComparison"] == {
         "available": True,
+        "authoritative": True,
         "matched": True,
         "matchType": "exact_article",
         "reason": "Bereits live gepusht (gleiche Artikel-URL)",
@@ -5080,13 +5101,17 @@ def test_dispatch_blocks_article_that_was_live_pushed_after_selection(
     send.assert_not_called()
     assert result["livePushDedup"]["livePushComparison"] == {
         "available": True,
+        "authoritative": True,
         "matched": True,
         "matchType": "exact_article",
         "reason": "Bereits live gepusht (gleiche Artikel-URL)",
     }
 
 
-def test_dispatch_fails_closed_when_fresh_live_push_history_cannot_be_reloaded(tmp_db):
+def test_dispatch_sends_with_warning_when_fresh_live_push_history_cannot_be_reloaded(tmp_db):
+    """Fail-open: Kann die frische Live-Historie im Dispatch nicht neu geladen
+    werden, wird NICHT mehr blockiert (das legte zuvor den ganzen Kanal lahm),
+    sondern mit Warnhinweis gesendet."""
     now_ts = _gold_slot_ts()
     candidate = _candidate(
         id="dispatch-history-outage",
@@ -5105,7 +5130,10 @@ def test_dispatch_fails_closed_when_fresh_live_push_history_cannot_be_reloaded(t
             "app.notifications.teams.push_db_load_all",
             side_effect=[initial_history, RuntimeError("synthetic live-history outage")],
         ),
-        patch("app.notifications.teams.send_teams_notification") as send,
+        patch(
+            "app.notifications.teams.send_teams_notification",
+            return_value={"ok": True, "status": 200},
+        ) as send,
     ):
         result = evaluate_and_send_best_candidate(
             [candidate],
@@ -5114,10 +5142,8 @@ def test_dispatch_fails_closed_when_fresh_live_push_history_cannot_be_reloaded(t
             history_authoritative=True,
         )
 
-    assert result["sent"] is False
-    assert result["reason"] == "live_push_dedup_unavailable"
-    assert result["livePushDedup"]["code"] == "live_push_dedup_unavailable"
-    send.assert_not_called()
+    assert result["sent"] is True
+    send.assert_called_once()
 
 
 def test_dispatch_ignores_recent_unrelated_live_push_for_recommendation_timing(tmp_db):
