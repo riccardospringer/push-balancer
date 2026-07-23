@@ -838,6 +838,10 @@ def should_notify_teams(
     if allowed and section.lower() not in allowed and section_key not in allowed:
         blockers.append(f"Ressort {section} nicht fuer Teams Alerts freigegeben")
 
+    fiction_reason = _fiction_tv_teaser_reason(candidate)
+    if fiction_reason:
+        blockers.append(fiction_reason)
+
     relevance_candidate = dict(candidate)
     for flag in ("isBreaking", "isEilmeldung", "is_eilmeldung"):
         relevance_candidate[flag] = breaking
@@ -3844,6 +3848,7 @@ def _daily_plan_dedupe_and_rank(
             "Veroeffentlichungs- oder Aktualisierungszeit fehlt",
             "Faktenrisiko",
             "rein US-inlaendische",
+            "Fiktion/TV-Programm-Teaser",
             "ausgeschlossen",
             "nicht freigegeben",
             "Kein Artikel",
@@ -4075,6 +4080,7 @@ def _daily_plan_hard_blockers(
         "Sport ohne ",
         "Faktenrisiko",
         "rein US-inlaendische",
+        "Fiktion/TV-Programm-Teaser",
     )
     for reason in decision.get("blockingReasons") or []:
         text = str(reason or "")
@@ -7738,6 +7744,56 @@ def _url(candidate: dict[str, Any]) -> str:
 
 def _section(candidate: dict[str, Any]) -> str:
     return str(candidate.get("category") or candidate.get("cat") or "news").strip() or "news"
+
+
+# Fiktions-/TV-Programm-/Streaming-Teaser (z. B. "GZSZ heute auf RTL+: Ninas
+# Festnahme erschuettert den Kiez") duerfen NIE als Push empfohlen werden: kein
+# Nachrichtenwert, bewirbt oft Konkurrenz-Streaming. Crime-/Impact-Woerter im
+# Soap-Plot ("Festnahme", "erschuettert") treiben sonst den Score hoch.
+_SOAP_FORMAT_NAMES = (
+    "gzsz", "gute zeiten, schlechte zeiten", "awz", "alles was zaehlt",
+    "alles was zählt", "unter uns", "sturm der liebe", "rote rosen",
+    "berlin - tag & nacht", "berlin tag und nacht", "btn", "koeln 50667",
+    "köln 50667", "die bachelorette", "der bachelor", "bachelor in paradise",
+    "prominent getrennt", "sommerhaus der stars", "temptation island",
+    "are you the one", "ninja warrior", "let's dance", "lets dance",
+    "dschungelcamp", "ibes", "promi big brother", "big brother",
+)
+_STREAMING_PLATFORMS = (
+    "rtl+", "rtl plus", "joyn", "wow", "netflix", "disney+", "disney plus",
+    "amazon prime", "prime video", "paramount+", "paramount plus", "magenta tv",
+    "magentatv", "sky", "apple tv+", "waipu",
+)
+_TV_PROGRAM_MARKERS = (
+    "staffel", "folge", "-reboot", " reboot", "im stream", "im tv", "im free-tv",
+    "im free tv", "tv-vorschau", "tv-tipp", "heute im tv", "heute auf", "heute bei",
+    "heute im", "so geht es weiter", "in der vorschau", "vorschau",
+)
+
+
+def _fiction_tv_teaser_reason(candidate: dict[str, Any]) -> str:
+    """Erkenne Fiktions-/TV-Programm-/Streaming-Teaser fuer harten Ausschluss."""
+    title = _title(candidate).lower()
+    url = _url(candidate).lower()
+    if not title and not url:
+        return ""
+    # 1. Bekannte Soap-/Reality-Formatnamen -> immer Fiktion/Programm.
+    if any(name in title for name in _SOAP_FORMAT_NAMES):
+        return "Fiktion/TV-Programm-Teaser: Soap-/Reality-Format, kein Nachrichtenwert"
+    # 2. URL-Pfade fuer TV-Formate/Serien.
+    if any(
+        marker in url
+        for marker in ("/tv-fernsehformate", "/tv-serien", "/serien/", "/soaps", "/tv-programm")
+    ):
+        return "Fiktion/TV-Programm-Teaser: TV-Format-/Serien-Ressort, kein Nachrichtenwert"
+    # 3. Streaming-Plattform + Programm-/Folgen-Kontext (nicht: echte News ueber
+    #    eine Plattform, sondern reine Programm-/Folgen-Ankuendigung).
+    on_platform = any(p in title for p in _STREAMING_PLATFORMS)
+    program_ctx = any(m in title for m in _TV_PROGRAM_MARKERS)
+    if on_platform and program_ctx:
+        return "Fiktion/TV-Programm-Teaser: Programm-/Folgen-Ankuendigung auf Streaming-Plattform"
+    return ""
+
 
 
 def _score(candidate: dict[str, Any]) -> float:
