@@ -14,4 +14,4 @@ EXPOSE 8050
 # - mkdir -p falls /data zum Startzeitpunkt noch nicht existiert (Mount-Race)
 # - chown versucht Ownership, Fehler werden geloggt, brechen aber nicht ab
 # - chmod o+rw als Belt+Suspenders: selbst wenn chown failed, ist /data schreibbar
-CMD ["sh", "-c", "mkdir -p /data; chown -R appuser /data 2>&1 | head -3 || true; chmod -R u+rw,g+rw,o+rw /data 2>&1 | head -3 || true; ls -la /data | head -3; exec su -s /bin/sh appuser -c 'uvicorn app.main:app --host 0.0.0.0 --port 8050'"]
+CMD ["sh", "-c", "mkdir -p /data; chown -R appuser /data 2>&1 | head -3 || true; chmod -R u+rw,g+rw,o+rw /data 2>&1 | head -3 || true; ls -la /data | head -3; exec su -s /bin/sh appuser -c 'uvicorn app.main:app --host 0.0.0.0 --port 8050 --no-proxy-headers --no-access-log'"]

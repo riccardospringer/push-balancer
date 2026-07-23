@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from app import database
 from app.main import app as _test_app
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 client = TestClient(_test_app, raise_server_exceptions=True)
@@ -617,6 +618,7 @@ class TestConsumerApi:
 
 class TestInternalAccessControl:
     def test_allows_cf_connecting_ip_when_allowlisted(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -626,6 +628,7 @@ class TestInternalAccessControl:
         assert resp.status_code == 200
 
     def test_blocks_non_allowlisted_clients_when_enabled(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -637,14 +640,107 @@ class TestInternalAccessControl:
         assert data["title"] == "Not Found"
         assert data["status"] == 404
 
-    def test_allows_allowlisted_clients_when_enabled(self, monkeypatch):
+    def test_render_does_not_trust_allowlisted_x_forwarded_for(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
 
         resp = client.get("/api/pushes", headers={"X-Forwarded-For": "10.24.8.15"})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 404
+
+    def test_non_render_uses_only_valid_socket_peer(self, monkeypatch):
+        from app import main as main_module
+
+        monkeypatch.setattr(main_module, "IS_RENDER", False)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/pushes",
+                "raw_path": b"/api/pushes",
+                "query_string": b"",
+                "headers": [
+                    (b"cf-connecting-ip", b"203.0.113.7"),
+                    (b"x-forwarded-for", b"203.0.113.7"),
+                ],
+                "client": ("10.24.8.15", 43210),
+                "server": ("testserver", 80),
+            }
+        )
+
+        assert main_module._extract_client_ip(request) == "10.24.8.15"
+        assert main_module._client_is_on_allowed_network(
+            main_module._extract_client_ip(request),
+            ["10.0.0.0/8"],
+        )
+
+    def test_non_render_forwarded_headers_cannot_authorize_socket_peer(
+        self,
+        monkeypatch,
+    ):
+        from app import main as main_module
+
+        monkeypatch.setattr(main_module, "IS_RENDER", False)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/pushes",
+                "raw_path": b"/api/pushes",
+                "query_string": b"",
+                "headers": [
+                    (b"cf-connecting-ip", b"10.24.8.15"),
+                    (b"true-client-ip", b"10.24.8.15"),
+                    (b"x-real-ip", b"10.24.8.15"),
+                    (b"x-forwarded-for", b"10.24.8.15"),
+                ],
+                "client": ("192.0.2.44", 43210),
+                "server": ("testserver", 80),
+            }
+        )
+
+        extracted = main_module._extract_client_ip(request)
+        assert extracted == "192.0.2.44"
+        assert not main_module._client_is_on_allowed_network(
+            extracted,
+            ["10.0.0.0/8"],
+        )
+
+    def test_container_disables_uvicorn_proxy_and_access_logs(self):
+        dockerfile = (
+            Path(__file__).resolve().parents[1] / "Dockerfile"
+        ).read_text(encoding="utf-8")
+
+        assert "uvicorn app.main:app" in dockerfile
+        assert "--no-proxy-headers" in dockerfile
+        assert "--no-access-log" in dockerfile
+
+    def test_render_rejects_duplicate_cloudflare_identity_headers(self, monkeypatch):
+        from app import main as main_module
+
+        monkeypatch.setattr(main_module, "IS_RENDER", True)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/api/pushes",
+                "raw_path": b"/api/pushes",
+                "query_string": b"",
+                "headers": [
+                    (b"cf-connecting-ip", b"198.51.100.10"),
+                    (b"cf-connecting-ip", b"203.0.113.4"),
+                ],
+                "client": ("192.0.2.1", 43210),
+                "server": ("testserver", 443),
+            }
+        )
+
+        assert main_module._extract_client_ip(request) is None
 
     def test_health_stays_reachable_for_health_checks(self, monkeypatch):
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
@@ -690,6 +786,7 @@ class TestInternalAccessControl:
         assert "https://www.bild.de/test" in resp.text
 
     def test_legacy_frontend_path_serves_index_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -708,6 +805,7 @@ class TestInternalAccessControl:
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
 
     def test_unknown_frontend_path_falls_back_to_spa_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -719,6 +817,7 @@ class TestInternalAccessControl:
         assert "Push Balancer" in resp.text
 
     def test_dist_frontend_asset_prefix_is_rewritten_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -734,6 +833,7 @@ class TestInternalAccessControl:
         assert "javascript" in resp.headers.get("content-type", "")
 
     def test_dist_frontend_root_serves_spa_shell_for_allowlisted_clients(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
@@ -786,6 +886,7 @@ class TestInternalAccessControl:
         assert "/dist-frontend/assets/index-new.css" in repaired_html
 
     def test_root_serves_frontend_html_with_no_cache_headers(self, monkeypatch):
+        monkeypatch.setattr("app.main.IS_RENDER", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["145.243.0.0/16"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])

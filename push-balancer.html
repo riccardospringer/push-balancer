@@ -6960,31 +6960,112 @@ function _invalidateORCache() { _orCache.clear(); _orCacheVersion++; }
 // ── Score-Capture: echte Kandidaten-Scores ans Backend senden ─────────────────
 let _captureThrottle = 0;
 let _lastScoreCaptureFingerprint = '';
+let _scoreCaptureInFlight = false;
+const _SCORE_CAPTURE_CHUNK_SIZE = 100;
+
+function _captureScoreEnrichment(article) {
+  const b = article && article.scoreBreakdown;
+  if (!b || !Number.isFinite(article._xorFactor) || article._xorFactor < 0.6 || article._xorFactor > 1.5) return null;
+  const numericOrZero = value => Number.isFinite(value) ? value : 0;
+  const within = (value, minimum, maximum) => (
+    Number.isFinite(value) && value >= minimum && value <= maximum
+  );
+
+  // Keep this projection deliberately numeric and allowlisted. It mirrors the
+  // displayed/applied score fields without forwarding article text or ML detail.
+  const scoreBreakdown = isSportArticle(article) && Number.isFinite(b.sportRelevanz)
+    ? {
+        kind: 'sport',
+        sportRelevance: numericOrZero(b.sportRelevanz),
+        timing: numericOrZero(b.timing),
+        drama: numericOrZero(b.dramatik),
+        freshness: numericOrZero(b.frische),
+      }
+    : {
+        kind: 'engagement',
+        relevance: numericOrZero(b.relevanz),
+        urgency: numericOrZero(b.dringlichkeit),
+        curiosity: numericOrZero(b.neugier),
+        freshness: numericOrZero(b['aktualit\u00e4t']),
+        timing: numericOrZero(b.timing),
+        titleBoost: numericOrZero(b.individual),
+        breaking: numericOrZero(b.breaking),
+        research: numericOrZero(b.forschung),
+        pushHistory: numericOrZero(b.pushHistorie),
+        topicSaturation: numericOrZero(b._topicPenalty),
+      };
+  const bounds = scoreBreakdown.kind === 'sport'
+    ? {
+        sportRelevance: [0, 35],
+        timing: [0, 30],
+        drama: [0, 25],
+        freshness: [0, 10],
+      }
+    : {
+        relevance: [0, 30],
+        urgency: [0, 25],
+        curiosity: [0, 25],
+        freshness: [0, 20],
+        timing: [0, 15],
+        titleBoost: [0, 15],
+        breaking: [0, 15],
+        research: [0, 12],
+        pushHistory: [-4, 8],
+        topicSaturation: [-30, 0],
+      };
+  if (!Object.entries(bounds).every(([field, range]) => (
+    within(scoreBreakdown[field], range[0], range[1])
+  ))) return null;
+  return { scoreBreakdown, orFactor: article._xorFactor };
+}
+
 async function _captureArticleScores(articles) {
   const now = Date.now();
   if (!articles || articles.length === 0) return;
   const payload = articles
     .filter(a => a.link && a.score > 0)
-    .map(a => ({ url: a.link, score: Math.round(a.score * 10) / 10, ts: Math.floor(now / 1000) }));
+    .map(a => {
+      const item = {
+        url: a.link,
+        score: Math.round(a.score * 10) / 10,
+        ts: Math.floor(now / 1000),
+      };
+      const enrichment = _captureScoreEnrichment(a);
+      return enrichment ? { ...item, ...enrichment } : item;
+    });
   if (payload.length === 0) return;
 
   // Live-Pushes und Research-Daten treffen nach dem ersten Artikel-Rendern ein
   // und können den sichtbaren Score sofort deutlich ändern. In diesem Fall
   // darf die 30-Sekunden-Drossel den korrigierten UI-Score nicht zurückhalten.
   const fingerprint = payload
-    .map(item => item.url + '=' + item.score.toFixed(1))
+    .map(item => JSON.stringify({
+      url: item.url,
+      score: item.score,
+      scoreBreakdown: item.scoreBreakdown || null,
+      orFactor: item.orFactor == null ? null : item.orFactor,
+    }))
     .sort()
     .join('|');
   if (now - _captureThrottle < 30000 && fingerprint === _lastScoreCaptureFingerprint) return;
-  _captureThrottle = now;
-  _lastScoreCaptureFingerprint = fingerprint;
+  if (_scoreCaptureInFlight) return;
+  _scoreCaptureInFlight = true;
   try {
-    await fetch(API_BASE + '/api/score-capture', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scores: payload }),
-    });
-  } catch(e) { /* silent fail — Score-Capture ist optional */ }
+    for (let offset = 0; offset < payload.length; offset += _SCORE_CAPTURE_CHUNK_SIZE) {
+      const response = await fetch(API_BASE + '/api/score-capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scores: payload.slice(offset, offset + _SCORE_CAPTURE_CHUNK_SIZE) }),
+      });
+      if (!response.ok) return;
+    }
+    _captureThrottle = now;
+    _lastScoreCaptureFingerprint = fingerprint;
+  } catch(e) {
+    /* silent fail — Score-Capture ist optional and the next render retries */
+  } finally {
+    _scoreCaptureInFlight = false;
+  }
 }
 
 // Server-Batch-Prediction: holt ML-Prognosen fuer ALLE Kandidaten vom Server.

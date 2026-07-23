@@ -407,8 +407,8 @@ INTERNAL_ACCESS_EXEMPT_PATHS: list[str] = _csv_env(
     "/api/health",
 )
 # Stable NAT gateway address for the approved BILD Next staging consumer.
-# This allowlist applies only to the two read-only score-capture GET routes;
-# it does not widen access to the legacy UI, debug endpoint, or capture POST.
+# This allowlist applies only to the two read-only score-capture GET routes and
+# the exact read-only batch POST; it does not expose the UI, debug, or capture POST.
 SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS: list[str] = _csv_env(
     "SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS",
     "3.79.136.119/32",

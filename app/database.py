@@ -19,6 +19,15 @@ _push_db_lock = threading.Lock()
 
 # ── Push-Score Snapshot ────────────────────────────────────────────────────────
 
+
+class ArticleScoreReadError(RuntimeError):
+    """The stored score snapshot could not be read reliably."""
+
+
+class ArticleScoreWriteError(RuntimeError):
+    """The stored score snapshot could not be persisted reliably."""
+
+
 _CAT_SCORES: dict[str, int] = {
     "politik": 82, "sport": 78, "news": 76, "wirtschaft": 74,
     "unterhaltung": 66, "regional": 62, "digital": 68,
@@ -83,7 +92,7 @@ def get_article_score_snapshot_from_db(
     url: str,
     *,
     max_age_seconds: int = 8 * 3600,
-) -> dict[str, float | int] | None:
+) -> dict[str, object] | None:
     """Liest einen ausreichend frischen Kandidaten-Score samt Zeitstempel."""
     from app.routers.score_capture import _normalize_url
 
@@ -95,18 +104,30 @@ def get_article_score_snapshot_from_db(
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
         row = conn.execute(
-            "SELECT score, captured_at FROM article_score_log WHERE url_hash = ?", (key,)
+            """SELECT score, captured_at, score_breakdown_json, or_factor,
+                      enrichment_captured_at
+               FROM article_score_log WHERE url_hash = ?""",
+            (key,),
         ).fetchone()
         conn.close()
         if row:
             captured_at = int(row[1])
             age_seconds = max(0, now - captured_at)
             if age_seconds < max_age:
-                return {
+                snapshot: dict[str, object] = {
                     "score": float(row[0]),
                     "captured_at": captured_at,
                     "age_seconds": age_seconds,
                 }
+                enrichment = _load_article_score_enrichment(
+                    row[2],
+                    row[3],
+                    enrichment_captured_at=row[4],
+                    captured_at=captured_at,
+                )
+                if enrichment is not None:
+                    snapshot["score_breakdown"], snapshot["or_factor"] = enrichment
+                return snapshot
     except Exception:
         pass
     return None
@@ -116,39 +137,78 @@ def get_article_score_snapshot_by_cms_id_from_db(
     cms_id: str,
     *,
     max_age_seconds: int = 8 * 3600,
-) -> dict[str, float | int] | None:
+) -> dict[str, object] | None:
     """Liest den neuesten frischen Kandidaten-Score für eine eingebettete CMS-ID."""
-    from app.routers.score_capture import _CMS_ID_RE, _url_matches_cms_id
+    normalized_cms_id = cms_id.lower()
+    snapshots = get_article_score_snapshots_by_cms_ids_from_db(
+        [normalized_cms_id],
+        max_age_seconds=max_age_seconds,
+    )
+    return snapshots.get(normalized_cms_id)
 
-    if not _CMS_ID_RE.fullmatch(cms_id):
-        return None
+
+def get_article_score_snapshots_by_cms_ids_from_db(
+    cms_ids: list[str],
+    *,
+    max_age_seconds: int = 8 * 3600,
+) -> dict[str, dict[str, object]]:
+    """Read requested CMS scores in one fresh-table scan or raise explicitly."""
+    from app.routers.score_capture import _CMS_ID_RE, _cms_ids_in_trusted_url
+
+    if not cms_ids or any(not _CMS_ID_RE.fullmatch(cms_id) for cms_id in cms_ids):
+        return {}
     now = int(time.time())
     max_age = max(0, int(max_age_seconds))
     if max_age <= 0:
-        return None
+        return {}
 
+    requested = set(cms_ids)
     conn = None
     try:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
         rows = conn.execute(
-            """SELECT url, score, captured_at
+            """SELECT url, score, captured_at, score_breakdown_json, or_factor,
+                      enrichment_captured_at
                FROM article_score_log
-               WHERE captured_at > ? AND LOWER(url) LIKE ?
+               WHERE captured_at > ?
                ORDER BY captured_at DESC""",
-            (now - max_age, f"%{cms_id.lower()}%"),
+            (now - max_age,),
         ).fetchall()
-        for url, score, captured_at in rows:
-            if _url_matches_cms_id(url, cms_id):
-                return {
-                    "score": float(score),
-                    "captured_at": int(captured_at),
-                }
-    except Exception:
-        pass
+    except Exception as exc:
+        raise ArticleScoreReadError("article score storage is unavailable") from exc
     finally:
         if conn is not None:
             conn.close()
-    return None
+
+    snapshots: dict[str, dict[str, object]] = {}
+    try:
+        for (
+            url,
+            score,
+            captured_at,
+            score_breakdown_json,
+            or_factor,
+            enrichment_captured_at,
+        ) in rows:
+            for cms_id in _cms_ids_in_trusted_url(url).intersection(requested):
+                if cms_id in snapshots:
+                    continue
+                snapshot: dict[str, object] = {
+                    "score": float(score),
+                    "captured_at": int(captured_at),
+                }
+                enrichment = _load_article_score_enrichment(
+                    score_breakdown_json,
+                    or_factor,
+                    enrichment_captured_at=enrichment_captured_at,
+                    captured_at=captured_at,
+                )
+                if enrichment is not None:
+                    snapshot["score_breakdown"], snapshot["or_factor"] = enrichment
+                snapshots[cms_id] = snapshot
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ArticleScoreReadError("stored article score is invalid") from exc
+    return snapshots
 
 
 def get_article_score_from_db(url: str) -> float | None:
@@ -157,26 +217,95 @@ def get_article_score_from_db(url: str) -> float | None:
     return float(snapshot["score"]) if snapshot else None
 
 
-def save_article_score_to_db(url: str, score: float) -> None:
+def _load_article_score_enrichment(
+    score_breakdown_json: object,
+    or_factor: object,
+    *,
+    enrichment_captured_at: object,
+    captured_at: object,
+) -> tuple[dict, float] | None:
+    """Decode only a complete enrichment pair; legacy and corrupt rows stay minimal."""
+    if (
+        isinstance(enrichment_captured_at, bool)
+        or not isinstance(enrichment_captured_at, int)
+        or isinstance(captured_at, bool)
+        or not isinstance(captured_at, int)
+        or enrichment_captured_at != captured_at
+    ):
+        return None
+    if not isinstance(score_breakdown_json, str):
+        return None
+    if isinstance(or_factor, bool) or not isinstance(or_factor, (int, float)):
+        return None
+    try:
+        score_breakdown = json.loads(score_breakdown_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(score_breakdown, dict):
+        return None
+    return score_breakdown, float(or_factor)
+
+
+def save_article_score_to_db(
+    url: str,
+    score: float,
+    *,
+    captured_at: int | None = None,
+    score_breakdown: dict | None = None,
+    or_factor: float | None = None,
+    raise_on_error: bool = False,
+) -> None:
     """Speichert Kandidaten-Score persistent in article_score_log."""
     from app.routers.score_capture import _normalize_url
-    import hashlib
+
+    if (score_breakdown is None) != (or_factor is None):
+        raise ValueError("score_breakdown and or_factor must be provided together")
     key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
+    captured_at_value = int(time.time()) if captured_at is None else int(captured_at)
+    score_breakdown_json = (
+        json.dumps(score_breakdown, ensure_ascii=False, separators=(",", ":"))
+        if score_breakdown is not None
+        else None
+    )
+    enrichment_captured_at = (
+        captured_at_value if score_breakdown is not None and or_factor is not None else None
+    )
+    conn = None
     try:
         with _push_db_lock:
             conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
             conn.execute(
-                """INSERT INTO article_score_log (url_hash, url, score, captured_at)
-                   VALUES (?, ?, ?, ?)
+                """INSERT INTO article_score_log (
+                       url_hash, url, score, captured_at, score_breakdown_json, or_factor,
+                       enrichment_captured_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(url_hash) DO UPDATE SET
+                       url = excluded.url,
                        score = excluded.score,
-                       captured_at = excluded.captured_at""",
-                (key, url[:500], score, int(time.time()))
+                       captured_at = excluded.captured_at,
+                       score_breakdown_json = excluded.score_breakdown_json,
+                       or_factor = excluded.or_factor,
+                       enrichment_captured_at = excluded.enrichment_captured_at
+                   WHERE excluded.captured_at >= article_score_log.captured_at""",
+                (
+                    key,
+                    url[:500],
+                    score,
+                    captured_at_value,
+                    score_breakdown_json,
+                    or_factor,
+                    enrichment_captured_at,
+                ),
             )
             conn.commit()
             conn.close()
-    except Exception:
-        pass
+            conn = None
+    except Exception as exc:
+        if raise_on_error:
+            raise ArticleScoreWriteError("article score storage is unavailable") from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def calc_push_score_snapshot(title: str, cat: str, kicker: str = "", link: str = "") -> int:
@@ -275,8 +404,20 @@ def init_db() -> None:
         url_hash TEXT PRIMARY KEY,
         url TEXT NOT NULL,
         score REAL NOT NULL,
-        captured_at INTEGER NOT NULL
+        captured_at INTEGER NOT NULL,
+        score_breakdown_json TEXT,
+        or_factor REAL,
+        enrichment_captured_at INTEGER
     )""")
+    for _col, _type in [
+        ("score_breakdown_json", "TEXT"),
+        ("or_factor", "REAL"),
+        ("enrichment_captured_at", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE article_score_log ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_score_log_ts ON article_score_log(captured_at)")
 
     # Prediction log
