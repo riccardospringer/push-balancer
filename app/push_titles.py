@@ -76,8 +76,15 @@ _CONSUMER_TERMS = (
     "familien", "mieter", "kunden", "verbraucher", "krankenkasse",
 )
 _CRIME_TERMS = (
-    "messerattacke", "mord", "polizei", "festgenommen", "festnahme", "razzia",
-    "überfall", "ueberfall", "bahnhof", "täter", "taeter", "opfer",
+    "messerattacke", "messer", "attacke", "attackiert", "angriff", "angegriffen",
+    "mord", "ermordet", "getötet", "getoetet", "tötung", "toetung", "erstochen",
+    "erschossen", "schuss", "schüsse", "schuesse", "schießerei", "schiesserei",
+    "zündet", "zuendet", "angezündet", "angezuendet", "brandanschlag", "brandstiftung",
+    "vergewaltigt", "vergewaltigung", "missbrauch", "entführt", "entfuehrt", "entführung",
+    "entfuehrung", "geiseln", "leiche", "leichen", "verletzt", "verletzte", "schwerverletzt",
+    "polizei", "festgenommen", "festnahme", "razzia", "überfall", "ueberfall",
+    "raubüberfall", "raubueberfall", "bahnhof", "täter", "taeter", "opfer",
+    "unfall", "verunglückt", "verunglueckt", "tödlich", "toedlich", "explosion",
 )
 _WEATHER_TERMS = (
     "unwetter", "warnung", "gewitter", "sturm", "regen", "hitze", "schnee",

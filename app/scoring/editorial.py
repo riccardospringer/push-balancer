@@ -462,7 +462,11 @@ def assess_germany_relevance(push: dict[str, Any]) -> dict[str, Any]:
                 "hardBlock": True,
                 "reason": "Deutschland-Relevanz: rein US-inlaendische Crime-/People-Story ohne direkten Deutschland-Bezug",
             }
-        minimum_score = 85.0 if geopolitical else 90.0
+        # Reale BILD-Push-Scores liegen fast nie ueber ~80; die alten Schwellen
+        # (85/90) schlossen dadurch strukturell JEDE Auslandsmeldung dauerhaft
+        # aus. Realistische Bar: geopolitische Lagen ab 76, sonstiges Ausland ab
+        # 80 pruefbar. US-Inlands-Crime/People bleibt ueber usa_domestic hart.
+        minimum_score = 76.0 if geopolitical else 80.0
         adjustment = -8.0 if geopolitical else -12.0
         return {
             "level": "international",

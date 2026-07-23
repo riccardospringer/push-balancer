@@ -355,7 +355,10 @@ def test_non_breaking_international_geopolitics_needs_exceptional_score():
 
     assert relevance["level"] == "international"
     assert relevance["hardBlock"] is False
-    assert relevance["minimumScore"] == 85.0
+    # Realistische Bar: reale BILD-Push-Scores liegen fast nie ueber ~80. Die
+    # frueheren 85/90 schlossen jede Auslandslage strukturell dauerhaft aus.
+    # Geopolitische Lagen sind ab 76 pruefbar, bleiben aber abgewertet.
+    assert relevance["minimumScore"] == 76.0
     assert relevance["adjustment"] < 0
 
 

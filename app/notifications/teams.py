@@ -3825,6 +3825,51 @@ def _daily_plan_dedupe_and_rank(
             )
             selected.append(entry)
 
+    if len(selected) < min_count:
+        # Notauffuellung: Der Plan darf nie leer bleiben. Wenn selbst nach der
+        # regulaeren Ergaenzung zu wenige Kandidaten uebrig sind, holen wir
+        # schwaechere Kandidaten zurueck, die nur an weichen Gruenden
+        # (Nachrichtenwert/Timing/Relevanz) gescheitert sind. Strukturell
+        # unbrauchbare oder sicherheitskritische Faelle bleiben ausgeschlossen.
+        never_resurrect = (
+            "Bereits live gepusht",
+            "Bereits per Teams gemeldet",
+            "Thema bereits per Teams gemeldet",
+            "Teams-Hinweis wird bereits versendet",
+            "Bereits als Teams-Kandidat versucht",
+            "Artikel-Link",
+            "Headline",
+            "Agenten-Veto",
+            "Zeitstempel",
+            "Veroeffentlichungs- oder Aktualisierungszeit fehlt",
+            "Faktenrisiko",
+            "rein US-inlaendische",
+            "ausgeschlossen",
+            "nicht freigegeben",
+            "Kein Artikel",
+            "Dublette im Tagesplan",
+        )
+        selected_ids = {entry.get("candidateId") for entry in selected}
+        for item in skipped:
+            if len(selected) >= min_count:
+                break
+            if item.get("candidateId") in selected_ids:
+                continue
+            reason = str(item.get("skipReason") or "")
+            if any(marker in reason for marker in never_resurrect):
+                continue
+            entry = dict(item)
+            entry.pop("skipReason", None)
+            entry["priority"] = "C"
+            entry["confidence"] = "niedrig"
+            entry["status"] = "nur bei ruhiger Nachrichtenlage"
+            entry["why"] = (
+                "Notauffüllung bei dünner Nachrichtenlage: schwacher Kandidat, "
+                "redaktionell prüfen – kein automatischer Top-Push."
+            )
+            selected.append(entry)
+            selected_ids.add(entry.get("candidateId"))
+
     return selected, skipped
 
 
@@ -4006,9 +4051,17 @@ def _daily_plan_hard_blockers(
         hard.append("Kein Artikel-Link")
     if section in excluded:
         hard.append(f"Ressort {_format_section(section)} ist ausgeschlossen")
+    # Nur strukturell unbrauchbare / sicherheitskritische Gruende schliessen einen
+    # Kandidaten HART aus dem Tagesplan aus (auch aus der Mindestmengen-Auffuellung).
+    # Weichere Gruende (Ausland-Unterschreitung, Service/Teaser, nicht belastbare
+    # Live-Dubletten-Pruefung) werden ueber _daily_plan_rank_score nur abgewertet,
+    # damit der Plan an ausland- oder servicelastigen Tagen nicht leer bleibt.
+    # - "Bereits live gepusht" faengt echte Live-Dubletten weiterhin hart ab
+    #   (die blosse Nichtverfuegbarkeit der Pruefung tut das bewusst nicht mehr).
+    # - "rein US-inlaendische" haelt usa_domestic hart; die reine
+    #   Score-Unterschreitung internationaler Lagen wird nur abgewertet.
     hard_markers = (
         "Bereits live gepusht",
-        "Live-Push-Dublettenpruefung",
         "Bereits per Teams gemeldet",
         "Thema bereits per Teams gemeldet",
         "Teams-Hinweis wird bereits versendet",
@@ -4019,10 +4072,9 @@ def _daily_plan_hard_blockers(
         "Zeitstempel",
         "Veroeffentlichungs- oder Aktualisierungszeit fehlt",
         "Artikel ist zu alt",
-        "kein konkretes Nachrichten-Ereignis",
         "Sport ohne ",
         "Faktenrisiko",
-        "Deutschland-Relevanz",
+        "rein US-inlaendische",
     )
     for reason in decision.get("blockingReasons") or []:
         text = str(reason or "")
