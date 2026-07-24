@@ -6030,7 +6030,17 @@ def _editorial_cvd_review(
         )
     elif sport_review.get("eventful"):
         reasons.append(f"CvD-Sport-Gate: {sport_review['label']}")
-    missing_event_signal = config.event_gate_enabled and not breaking and not _has_news_event(title)
+    # Ein binaeres Keyword-Gate darf eine Meldung mit klar hohem Nachrichtenwert
+    # NICHT als "Service/Teaser" vetoen (z. B. Minister-Rauswurf: Nachrichtenwert
+    # 28+/30, aber Idiom "wirft raus" von der Wortliste verfehlt). Die expliziten
+    # Service-/Kurios-/Sport-Gates oben greifen unabhaengig weiter.
+    strong_news_value = news_value >= float(config.min_editorial_news_value) + 8.0
+    missing_event_signal = (
+        config.event_gate_enabled
+        and not breaking
+        and not strong_news_value
+        and not _has_news_event(title)
+    )
     if missing_event_signal:
         blockers.append("CvD: kein konkretes Nachrichten-Ereignis erkennbar (Service/Teaser)")
     if predicted_or is None and not breaking and alert_score < config.no_forecast_min_alert_score:
@@ -9018,6 +9028,56 @@ _NEWS_EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Gap-tolerante Boulevard-Idiome fuer konkrete Ereignisse, die die reine
+# Wortlisten-Regex verfehlt (Woerter stehen dazwischen, z. B. "Merz wirft
+# Verkehrsminister Patrick Schnieder raus"). Deckt die von naiven Detektoren am
+# haeufigsten uebersehenen Cluster ab: Rauswurf/Entlassung, Ruecktritt-Idiome,
+# Koalitions-/Regierungskrise, Gesetz-Betroffenheit, Rueckruf-Formulierung,
+# Boulevard-Intensivierer als Suffix ("Preis-Schock", "Wetter-Chaos").
+_NEWS_EVENT_IDIOM_PATTERNS = (
+    # Rauswurf / Entlassung (Politik, Sport, Wirtschaft)
+    r"wirft\b.{0,40}?\braus\b",
+    r"\braus(wurf|wirft|geworfen|geschmissen)",
+    r"\bfeuert\b",
+    r"entl(ä|ae)sst\b",
+    r"\bentlassung",
+    r"\babberuf",
+    r"gesch(as)?sst\b",
+    r"abges(ä|ae)gt\b",
+    r"\bmuss\s+(gehen|weg)\b",
+    r"vor\s+die\s+t(ü|ue)r\b",
+    r"\bmuss\s+seinen\s+hut\s+nehmen\b",
+    # Ruecktritt-Idiome ohne das Wort "Ruecktritt"
+    r"tritt\b.{0,15}?\bzur(ü|ue)ck\b",
+    r"schmei(ß|ss)t\b.{0,20}?\bhin\b",
+    r"wirft\b.{0,20}?\bhandtuch\b",
+    r"\bwackelt\b",
+    r"zieht\b.{0,15}?\brei(ß|ss)leine\b",
+    # Koalitions-/Regierungskrise
+    r"ampel\b.{0,12}?(platzt|geplatzt|\baus\b)",
+    r"koalitions(bruch|krise|krach)",
+    r"regierungs(krise|beben|umbildung)",
+    r"kabinetts(umbildung|beben)",
+    r"misstrauens(votum|antrag)",
+    r"\bvertrauensfrage\b",
+    r"\bneuwahl",
+    # Gesetz / Betroffenheit ohne das Wort "Gesetz"
+    r"das\s+(ä|ae)ndert\s+sich\s+f(ü|ue)r\b",
+    r"winkt\b.{0,15}?\bdurch\b",
+    r"\bdurchgewinkt\b",
+    r"\babgesegnet\b",
+    # Wirtschaft / Verbraucher
+    r"insolven",
+    r"\bpleite\b",
+    r"steht\s+vor\s+dem\s+aus\b",
+    r"macht\s+dicht\b",
+    r"baut\b.{0,20}?stellen\b.{0,10}?ab\b",
+    r"ruft\b.{0,30}?\bzur(ü|ue)ck\b",
+    # Boulevard-Intensivierer als Suffix: Preis-Schock, Steuer-Hammer, Wetter-Chaos ...
+    r"-\s?(schock|hammer|beben|knall|alarm|chaos|inferno)\b",
+)
+_NEWS_EVENT_IDIOM_RE = re.compile("|".join(_NEWS_EVENT_IDIOM_PATTERNS), re.IGNORECASE)
+
 
 def _has_news_event(title: str) -> bool:
     """True if the headline carries a concrete news-event signal (something happened)."""
@@ -9025,6 +9085,8 @@ def _has_news_event(title: str) -> bool:
     if "++" in text or re.search(r"(?i)\beil(meldung)?\b", text):
         return True
     if _NEWS_EVENT_RE.search(text):
+        return True
+    if _NEWS_EVENT_IDIOM_RE.search(text):
         return True
     lowered = text.casefold()
     compound_markers = (
@@ -9040,6 +9102,13 @@ def _has_news_event(title: str) -> bool:
         "rueckruf",
         "rückruf",
         "verbot",
+        "rauswurf",
+        "geschasst",
+        "insolvenz",
+        "misstrauensvotum",
+        "vertrauensfrage",
+        "koalitionsbruch",
+        "regierungskrise",
     )
     return any(marker in lowered for marker in compound_markers)
 

@@ -13,6 +13,7 @@ from app.notifications.teams import (
     buildTeamsPushRecommendation,
     build_teams_alert_context,
     build_teams_daily_schedule,
+    _has_news_event,
     _maybe_send_heartbeat,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
@@ -2887,6 +2888,40 @@ def test_heartbeat_suppressed_when_recent_post(tmp_db):
     assert result["fired"] is False
     assert result["reason"] == "recent_post"
     send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "BILD exklusiv: Merz wirft Verkehrsminister Patrick Schnieder raus!",
+        "Paukenschlag: Kanzler feuert Wirtschaftsminister",
+        "Nach Skandal: Minister muss gehen",
+        "Regierungsbeben! Habeck schmeißt hin",
+        "Ampel platzt: Koalition am Ende",
+        "Minister wackelt: Rücktrittsforderungen werden lauter",
+        "Preis-Schock an der Zapfsäule",
+        "Aldi ruft Hackfleisch zurück",
+        "Traditionsbäcker meldet Insolvenz an",
+    ],
+)
+def test_has_news_event_recognizes_boulevard_event_idioms(headline):
+    """Boulevard-Ereignis-Idiome (Rauswurf, Ruecktritt, Krise, Rueckruf, Insolvenz)
+    muessen als konkretes Nachrichten-Ereignis erkannt werden."""
+    assert _has_news_event(headline) is True
+
+
+@pytest.mark.parametrize(
+    "headline",
+    [
+        "So sparen Sie beim Tanken: 5 Tipps",
+        "Die 10 schönsten Strände Europas",
+        "Horoskop heute: Das erwartet die Sternzeichen",
+        "Testen Sie Ihr Wissen im großen Sommer-Quiz",
+    ],
+)
+def test_has_news_event_ignores_service_teaser(headline):
+    """Reine Service-/Ratgeber-/Raetsel-Teaser sind kein Nachrichten-Ereignis."""
+    assert _has_news_event(headline) is False
 
 
 def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
