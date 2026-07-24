@@ -43,6 +43,8 @@ from app.config import (
     PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS,
     PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED,
     PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME,
+    PUSH_TEAMS_HEARTBEAT_ENABLED,
+    PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE,
@@ -171,6 +173,7 @@ _HARD_TEAMS_BLOCKER_MARKERS = (
     "morgenfit:",
     "feld unsicher",
     "deutschland-relevanz",
+    "fiktion/tv-programm-teaser",
     "tagesplan:",
     "tagesplan im soll",
 )
@@ -294,6 +297,8 @@ class TeamsAlertConfig:
     deadline_fallback_min_editorial_score: float = PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE
     daily_schedule_send_enabled: bool = PUSH_TEAMS_DAILY_SCHEDULE_SEND_ENABLED
     daily_schedule_send_time: str = PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
+    heartbeat_enabled: bool = PUSH_TEAMS_HEARTBEAT_ENABLED
+    heartbeat_max_silence_minutes: int = PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES
     agent_review_enabled: bool = PUSH_TEAMS_AGENT_REVIEW_ENABLED
     agent_review_min_evidence_approvals: int = PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS
     agent_review_min_consensus_score: float = PUSH_TEAMS_AGENT_REVIEW_MIN_CONSENSUS_SCORE
@@ -3164,6 +3169,190 @@ def send_teams_daily_schedule_if_due(
     }
 
 
+def build_teams_heartbeat_message(
+    candidate: dict[str, Any],
+    context: dict[str, Any],
+    decision: dict[str, Any],
+    config: TeamsAlertConfig,
+    *,
+    silence_minutes: float,
+) -> dict[str, Any]:
+    """Baue eine klar markierte Heartbeat-/Fallback-Nachricht (unter Alarm-Schwelle).
+
+    Nutzt einen eigenen Payload-Typ ``teams_heartbeat``, den ``send_teams_notification``
+    ohne die strenge Dispatch-Freigabekette versendet (nur Webhook + Quiet Hours).
+    """
+    base = build_teams_push_recommendation(candidate, context, decision, config)
+    payload = dict(base.get("payload") or {})
+    score = _safe_float(payload.get("pushScore"))
+    if score is None:
+        score = _score(candidate)
+    push_text = str(payload.get("recommendedPushText") or _title(candidate)).strip()
+    title = str(payload.get("articleTitle") or _title(candidate)).strip()
+    url = str(payload.get("articleUrl") or _url(candidate)).strip()
+    why = [str(r) for r in (payload.get("whyPushworthy") or []) if str(r).strip()][:3]
+
+    subject = "Ruhige Lage – bester aktueller Vorschlag"
+    banner = (
+        f"RUHIGE NACHRICHTENLAGE – seit {int(silence_minutes)} Min kein Push. "
+        f"Bester aktueller Kandidat (Score {score:.0f}, unter Alarm-Schwelle "
+        f"{float(config.min_score):.0f}) – bitte redaktionell bewerten, kein Automatik-Push."
+    )
+    lines = [subject, "", banner, "", "Vorschlag:", push_text]
+    if title and not _same_editorial_text(push_text, title):
+        lines += ["", "Artikel:", title]
+    if url:
+        lines.append(url)
+    if why:
+        lines += ["", "Warum der beste aktuelle Kandidat:", *[f"- {r}" for r in why]]
+    text = "\n".join(lines)
+
+    why_html = "".join(f"<li>{html.escape(r)}</li>" for r in why)
+    article_html = (
+        f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
+        if url
+        else html.escape(title)
+    )
+    message_html = (
+        f"<p><strong>{html.escape(subject)}</strong></p>"
+        f"<p>{html.escape(banner)}</p>"
+        f"<p><strong>Vorschlag:</strong><br>{html.escape(push_text)}</p>"
+        + (f"<p><strong>Artikel:</strong><br>{article_html}</p>" if title else "")
+        + (f"<ul>{why_html}</ul>" if why_html else "")
+    )
+
+    payload["type"] = "teams_heartbeat"
+    payload["subject"] = subject
+    payload["recommendedAction"] = ""
+    payload["dispatchApproved"] = False
+    payload["heartbeat"] = True
+    payload["silenceMinutes"] = int(silence_minutes)
+    payload["belowAlertThreshold"] = True
+    payload["text"] = text
+    payload["messageText"] = text
+    payload["messageHtml"] = message_html
+    return {
+        "text": text,
+        "payload": payload,
+        "_heartbeat": True,
+        "summary": subject,
+    }
+
+
+def _maybe_send_heartbeat(
+    candidates: list[dict[str, Any]],
+    *,
+    config: TeamsAlertConfig,
+    now_ts: int,
+    history_authoritative: bool | None = None,
+) -> dict[str, Any]:
+    """Stelle sicher, dass der Channel nie laenger als die Heartbeat-Frist still ist.
+
+    Feuert nur, wenn seit ``heartbeat_max_silence_minutes`` kein Post rausging und
+    (ausserhalb der Quiet Hours) ein zulaessiger Kandidat existiert. Postet dann den
+    besten aktuell zulaessigen Kandidaten als klar markierten Fallback – auch unter
+    der Alarm-Schwelle. Harte Ausschluesse (Fiktion/TV, echte Live-Dubletten,
+    bereits per Teams gemeldet, Faktenrisiko, ausgeschlossene Ressorts) greifen weiter.
+    """
+    if not config.heartbeat_enabled:
+        return {"fired": False, "reason": "disabled"}
+    if _quiet_hours_reason(now_ts, config):
+        return {"fired": False, "reason": "quiet_hours"}
+    try:
+        last_sent = int(teams_alert_last_sent_ts() or 0)
+    except Exception:
+        last_sent = 0
+    max_silence = max(15, int(config.heartbeat_max_silence_minutes or 90))
+    silence_min = (now_ts - last_sent) / 60.0 if last_sent else float(max_silence + 1)
+    if last_sent and silence_min < max_silence:
+        return {"fired": False, "reason": "recent_post", "silenceMinutes": round(silence_min, 1)}
+
+    candidate_limit = max(
+        1,
+        min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT),
+    )
+    limited = list(candidates or [])[:candidate_limit]
+    if not limited:
+        return {"fired": False, "reason": "no_candidates"}
+    context = build_teams_alert_context(
+        limited,
+        history_authoritative=history_authoritative,
+        now_ts=now_ts,
+        config=config,
+    )
+    best: dict[str, Any] | None = None
+    best_decision: dict[str, Any] | None = None
+    best_score = float("-inf")
+    for cand in limited:
+        try:
+            decision = should_notify_teams(cand, context, config)
+        except Exception:
+            continue
+        if _daily_plan_hard_blockers(cand, decision, config):
+            continue
+        sc = _score(cand)
+        if sc > best_score:
+            best, best_decision, best_score = cand, decision, sc
+    if best is None or best_decision is None:
+        return {"fired": False, "reason": "no_eligible_candidate"}
+
+    message = build_teams_heartbeat_message(
+        best, context, best_decision, config, silence_minutes=silence_min
+    )
+    article_key = candidate_key(best)
+    send_result = send_teams_notification(message, config)
+    ok = bool(send_result.get("ok"))
+    status = "sent" if ok else "failed"
+    try:
+        teams_alert_record(
+            article_key=article_key,
+            article_id=str(best.get("id") or article_key),
+            article_url=_url(best),
+            title_hash=title_hash(best),
+            article_title=_title(best),
+            score=_score(best),
+            predicted_or=_safe_float(best.get("predictedOR")) or 0.0,
+            candidate_updated_at=_candidate_updated_ts(best),
+            is_breaking=_is_breaking(best),
+            reason="Heartbeat: bester aktueller Vorschlag (unter Alarm-Schwelle)",
+            status=status,
+            error=str(send_result.get("error") or ""),
+            decision_ts=now_ts,
+        )
+    except Exception as exc:
+        log.warning("[TeamsAlert] heartbeat record failed: %s", exc)
+    try:
+        hb_decision = dict(best_decision)
+        hb_decision["summary"] = "Heartbeat: bester aktueller Vorschlag (unter Alarm-Schwelle)"
+        _persist_teams_recommendation(
+            best,
+            hb_decision,
+            context,
+            config,
+            status="heartbeat",
+            send_status=status,
+            send_error=str(send_result.get("error") or ""),
+            sent_at_ts=now_ts if ok else 0,
+        )
+    except Exception as exc:
+        log.warning("[TeamsAlert] heartbeat persist failed: %s", exc)
+    log.info(
+        "[TeamsAlert] Heartbeat %s: %s (score %.1f, seit %d Min still)",
+        status,
+        article_key,
+        _score(best),
+        int(silence_min),
+    )
+    return {
+        "fired": ok,
+        "reason": status,
+        "candidateId": article_key,
+        "score": _score(best),
+        "silenceMinutes": round(silence_min, 1),
+        "sendResult": send_result,
+    }
+
+
 def run_teams_alert_cycle() -> dict[str, Any]:
     """Fetch current article candidates and run one Teams alert cycle."""
     try:
@@ -3192,6 +3381,19 @@ def run_teams_alert_cycle() -> dict[str, Any]:
             history_authoritative=bool(refresh_result.get("history_authoritative")),
         )
         result["dailySchedule"] = schedule_result
+        # Heartbeat/Mindest-Kadenz: Wenn kein regulaerer Alert rausging, sicherstellen,
+        # dass der Channel nicht laenger als die Heartbeat-Frist still bleibt.
+        if not result.get("sent"):
+            try:
+                result["heartbeat"] = _maybe_send_heartbeat(
+                    candidates,
+                    config=config,
+                    now_ts=int(time.time()),
+                    history_authoritative=bool(refresh_result.get("history_authoritative")),
+                )
+            except Exception as exc:
+                log.warning("[TeamsAlert] heartbeat skipped: %s", exc)
+                result["heartbeat"] = {"fired": False, "reason": "error", "error": str(exc)}
         return result
     except Exception as exc:
         log.exception("[TeamsAlert] Cycle failed")

@@ -593,6 +593,18 @@ PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME: str = os.environ.get(
     "PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME",
     "05:45",
 )
+# Heartbeat/Mindest-Kadenz: Der Teams-Channel soll nie laenger als
+# PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES still sein. Ist seit dieser Zeit kein
+# Post rausgegangen und liegt kein Kandidat ueber der Alarm-Schwelle, wird der
+# beste aktuell zulaessige Kandidat als klar markierter Fallback gepostet.
+PUSH_TEAMS_HEARTBEAT_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_HEARTBEAT_ENABLED",
+    True,
+)
+PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES: int = _env_int(
+    "PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES",
+    90,
+)
 # Lokales, deterministisches Pruefkollegium vor jedem Teams-Versand. Die
 # Spezialpruefer teilen nur einen fluechtigen Artikel-Snapshot und rufen weder
 # externe Modelle noch weitere Cloud-Dienste auf.

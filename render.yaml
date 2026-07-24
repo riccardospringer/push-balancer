@@ -140,6 +140,10 @@ services:
         value: "true"
       - key: PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
         value: "05:45"
+      - key: PUSH_TEAMS_HEARTBEAT_ENABLED
+        value: "true"
+      - key: PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES
+        value: "90"
       - key: PUSH_TEAMS_AGENT_REVIEW_ENABLED
         value: "false"
       - key: PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS

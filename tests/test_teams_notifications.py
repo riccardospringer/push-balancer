@@ -13,6 +13,7 @@ from app.notifications.teams import (
     buildTeamsPushRecommendation,
     build_teams_alert_context,
     build_teams_daily_schedule,
+    _maybe_send_heartbeat,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
     _daily_runtime_opportunities,
@@ -2812,6 +2813,104 @@ def test_send_cycle_sends_with_warning_when_live_push_dedup_is_stale(tmp_db):
     assert result["ok"] is True
     assert result["sent"] is True
     send.assert_called_once()
+
+
+def test_heartbeat_fires_for_best_candidate_when_channel_silent(tmp_db):
+    """Mindest-Kadenz: Ohne vorherigen Post feuert der Heartbeat den besten
+    zulaessigen Kandidaten – auch unter der Alarm-Schwelle – klar markiert."""
+    now_ts = _gold_slot_ts()
+    candidate = _candidate(
+        id="hb-silent",
+        url="https://www.bild.de/politik/inland/hb-silent",
+        title="Neue Details im Fall X: Ermittler praesentieren Zwischenstand",
+        category="politik",
+        score=72.0,
+        predictedOR=0.05,
+        pubDate=_iso(now_ts - 10 * 60),
+        recommendedText="Fall X: Ermittler praesentieren neuen Zwischenstand",
+    )
+    with patch(
+        "app.notifications.teams.send_teams_notification",
+        return_value={"ok": True, "status": 200},
+    ) as send:
+        result = _maybe_send_heartbeat(
+            [candidate],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result["fired"] is True
+    send.assert_called_once()
+    msg = send.call_args[0][0]
+    assert msg["payload"]["type"] == "teams_heartbeat"
+    assert msg["payload"]["belowAlertThreshold"] is True
+    assert "RUHIGE NACHRICHTENLAGE" in msg["text"]
+
+
+def test_heartbeat_suppressed_when_recent_post(tmp_db):
+    """Heartbeat feuert NICHT, wenn kuerzlich (< Frist) schon gepostet wurde."""
+    from app.database import teams_alert_record
+
+    now_ts = _gold_slot_ts()
+    teams_alert_record(
+        article_key="prev",
+        article_id="prev",
+        article_url="https://www.bild.de/x",
+        title_hash="h",
+        article_title="Frueherer Push",
+        score=80.0,
+        predicted_or=0.05,
+        candidate_updated_at=now_ts,
+        is_breaking=False,
+        reason="r",
+        status="sent",
+        error="",
+        decision_ts=now_ts - 10 * 60,
+    )
+    candidate = _candidate(
+        id="hb-recent",
+        url="https://www.bild.de/politik/inland/hb-recent",
+        title="Sachmeldung mit konkretem Ereignis",
+        category="politik",
+        score=72.0,
+        pubDate=_iso(now_ts - 10 * 60),
+    )
+    with patch("app.notifications.teams.send_teams_notification") as send:
+        result = _maybe_send_heartbeat(
+            [candidate],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result["fired"] is False
+    assert result["reason"] == "recent_post"
+    send.assert_not_called()
+
+
+def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
+    """Auch als Fallback darf kein Fiktions-/TV-Programm-Teaser (GZSZ) gepostet werden."""
+    now_ts = _gold_slot_ts()
+    gzsz = _candidate(
+        id="hb-gzsz",
+        url="https://www.bild.de/unterhaltung/tv-fernsehformate/gzsz",
+        title="GZSZ heute auf RTL+: Ninas Festnahme erschuettert den ganzen Kiez",
+        category="unterhaltung",
+        score=83.0,
+        pubDate=_iso(now_ts - 10 * 60),
+    )
+    with patch("app.notifications.teams.send_teams_notification") as send:
+        result = _maybe_send_heartbeat(
+            [gzsz],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result["fired"] is False
+    assert result["reason"] == "no_eligible_candidate"
+    send.assert_not_called()
 
 
 @pytest.mark.parametrize(
