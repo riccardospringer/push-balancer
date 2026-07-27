@@ -605,6 +605,26 @@ PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES: int = _env_int(
     "PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES",
     90,
 )
+# LLM-Slot-Fit: Vor dem Versand prueft ein LLM, ob der empfohlene Push inhaltlich
+# in den AKTUELLEN Zeitslot passt oder auf eine spaetere Hot Hour warten sollte
+# (basierend auf den historischen Opening-Rate-Baselines pro Stunde/Wochentag).
+# Zeitkritische/Breaking-Meldungen werden nie zurueckgehalten. Fail-safe: ohne
+# LLM-Key nur Annotation, kein Zurueckhalten.
+PUSH_TEAMS_SLOT_FIT_LLM_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_SLOT_FIT_LLM_ENABLED",
+    True,
+)
+# Ein deutlich besserer Slot rechtfertigt Zurueckhalten nur, wenn er innerhalb
+# dieser Stunden kommt (sonst sofort senden).
+PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS: int = _env_int(
+    "PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS",
+    3,
+)
+# Meldungen aelter als dies werden nie fuer einen besseren Slot zurueckgehalten
+# (Aktualitaet schlaegt Timing-Optimierung).
+PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS: float = float(
+    _env_int("PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS", 3)
+)
 # Lokales, deterministisches Pruefkollegium vor jedem Teams-Versand. Die
 # Spezialpruefer teilen nur einen fluechtigen Artikel-Snapshot und rufen weder
 # externe Modelle noch weitere Cloud-Dienste auf.

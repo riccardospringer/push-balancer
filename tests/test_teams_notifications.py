@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import logging
 import time
 import urllib.error
@@ -14,6 +15,7 @@ from app.notifications.teams import (
     build_teams_alert_context,
     build_teams_daily_schedule,
     _has_news_event,
+    _llm_slot_fit_review,
     _maybe_send_heartbeat,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
@@ -2926,6 +2928,106 @@ def test_has_news_event_recognizes_boulevard_event_idioms(headline):
 def test_has_news_event_ignores_service_teaser(headline):
     """Reine Service-/Ratgeber-/Raetsel-Teaser sind kein Nachrichten-Ereignis."""
     assert _has_news_event(headline) is False
+
+
+def test_slot_fit_review_failsafe_when_llm_unavailable():
+    """Ohne LLM-Key wird nicht zurueckgehalten: fitsNow=True, available=False."""
+    review = _llm_slot_fit_review(
+        _candidate(title="Ratgeber: So pflegen Sie Zimmerpflanzen", category="leben-wissen"),
+        now_ts=_gold_slot_ts(),
+        config=_config(agent_review_enabled=False),
+    )
+    assert review["available"] is False
+    assert review["fitsNow"] is True
+
+
+def _slot_fit_llm_patch(payload_json):
+    return (
+        patch("push_title_agent._llm_unavailable_reason", return_value=""),
+        patch("push_title_agent._llm_call", return_value=json.dumps(payload_json)),
+    )
+
+
+def test_slot_fit_defers_soft_story_to_better_hour(tmp_db):
+    """Weiche, nicht zeitkritische Meldung wird auf eine spaetere Hot Hour verschoben."""
+    now_ts = _gold_slot_ts()
+    now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
+    better = min(23, now_hour + 1)
+    candidate = _candidate(
+        id="slot-defer",
+        url="https://www.bild.de/news/stromausfall-x",
+        title="Netzbetreiber melden Stoerung: Stromausfall trifft fuenf Grossstaedte",
+        category="news",
+        score=94.0,
+        predictedOR=0.08,
+        pubDate=_iso(now_ts - 10 * 60),
+        recommendedText="Stromausfall: Was die Stoerung fuer fuenf Grossstaedte bedeutet",
+    )
+    unavail, call = _slot_fit_llm_patch(
+        {"fitsNow": False, "confidence": 0.9, "betterSlotHour": better, "reason": "weich"}
+    )
+    with (
+        unavail,
+        call,
+        patch("app.notifications.teams.send_teams_notification", return_value={"ok": True}) as send,
+        patch(
+            "app.notifications.teams._memory_send_blocker_or_reserve",
+            return_value={"blocked": False, "reserved": True},
+        ),
+    ):
+        result = evaluate_and_send_best_candidate(
+            [candidate],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result["sent"] is False
+    assert result["reason"] == "slot_deferred"
+    assert result["betterSlotHour"] == better
+    send.assert_not_called()
+
+
+def test_slot_fit_never_defers_breaking(tmp_db):
+    """Breaking wird nie fuer einen besseren Slot zurueckgehalten."""
+    now_ts = _gold_slot_ts()
+    now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
+    better = min(23, now_hour + 1)
+    candidate = _candidate(
+        id="slot-breaking",
+        url="https://www.bild.de/news/eil-x",
+        title="Netzbetreiber melden Stoerung: Stromausfall trifft fuenf Grossstaedte",
+        category="news",
+        score=94.0,
+        predictedOR=0.08,
+        isBreaking=True,
+        isEilmeldung=True,
+        breakingProvenance="cms_verified",
+        pubDate=_iso(now_ts - 5 * 60),
+        recommendedText="Stromausfall: Was die Stoerung fuer fuenf Grossstaedte bedeutet",
+    )
+    unavail, call = _slot_fit_llm_patch(
+        {"fitsNow": False, "confidence": 0.9, "betterSlotHour": better, "reason": "warten"}
+    )
+    with (
+        unavail,
+        call,
+        patch("app.notifications.teams.send_teams_notification", return_value={"ok": True}) as send,
+        patch(
+            "app.notifications.teams._memory_send_blocker_or_reserve",
+            return_value={"blocked": False, "reserved": True},
+        ),
+    ):
+        result = evaluate_and_send_best_candidate(
+            [candidate],
+            config=_config(agent_review_enabled=False),
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result.get("reason") != "slot_deferred"
+    assert result["sent"] is True
+    send.assert_called_once()
 
 
 def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):

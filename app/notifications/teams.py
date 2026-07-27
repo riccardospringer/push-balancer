@@ -45,6 +45,9 @@ from app.config import (
     PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME,
     PUSH_TEAMS_HEARTBEAT_ENABLED,
     PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES,
+    PUSH_TEAMS_SLOT_FIT_LLM_ENABLED,
+    PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS,
+    PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_ALERT_SCORE,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_EDITORIAL_SCORE,
     PUSH_TEAMS_DEADLINE_FALLBACK_MIN_SCORE,
@@ -299,6 +302,9 @@ class TeamsAlertConfig:
     daily_schedule_send_time: str = PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
     heartbeat_enabled: bool = PUSH_TEAMS_HEARTBEAT_ENABLED
     heartbeat_max_silence_minutes: int = PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES
+    slot_fit_llm_enabled: bool = PUSH_TEAMS_SLOT_FIT_LLM_ENABLED
+    slot_fit_max_defer_hours: int = PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS
+    slot_fit_max_article_age_hours: float = PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS
     agent_review_enabled: bool = PUSH_TEAMS_AGENT_REVIEW_ENABLED
     agent_review_min_evidence_approvals: int = PUSH_TEAMS_AGENT_REVIEW_MIN_EVIDENCE_APPROVALS
     agent_review_min_consensus_score: float = PUSH_TEAMS_AGENT_REVIEW_MIN_CONSENSUS_SCORE
@@ -2404,6 +2410,119 @@ def send_teams_notification(
         return {"ok": False, "error": error}
 
 
+def _remaining_hot_slots(
+    now_ts: int,
+    *,
+    max_hours: int = 6,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """Kommende Stunden heute mit belastbarer, hoher historischer Opening Rate."""
+    berlin = ZoneInfo("Europe/Berlin")
+    now_dt = dt.datetime.fromtimestamp(int(now_ts), berlin)
+    weekday = now_dt.weekday()
+    out: list[dict[str, Any]] = []
+    for hour in range(now_dt.hour + 1, min(24, now_dt.hour + 1 + max_hours)):
+        base = _slot_baseline(hour, weekday) or {}
+        avg = _safe_float(base.get("avg_or"))
+        if avg is None or int(base.get("count") or 0) <= 0:
+            continue
+        out.append(
+            {
+                "hour": hour,
+                "avgOR": round(avg, 2),
+                "topCat": base.get("top_cat"),
+                "stars": int(base.get("stars") or 0),
+            }
+        )
+    out.sort(key=lambda s: float(s.get("avgOR") or 0.0), reverse=True)
+    return out[:limit]
+
+
+def _llm_slot_fit_review(
+    candidate: dict[str, Any],
+    *,
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """LLM-Urteil, ob der Push inhaltlich in den aktuellen Zeitslot passt.
+
+    Beurteilt NUR das Timing gegen die historischen Opening-Rate-Baselines
+    (Hot Hours). Zeitkritische/frische Meldungen -> fitsNow. Fail-safe: bei
+    fehlendem LLM-Key oder Fehler kein Zurueckhalten (fitsNow=True, available=False).
+    """
+    result: dict[str, Any] = {
+        "available": False,
+        "fitsNow": True,
+        "confidence": 0.0,
+        "betterSlotHour": None,
+        "reason": "",
+    }
+    if not config.slot_fit_llm_enabled:
+        result["reason"] = "Slot-Fit-LLM deaktiviert"
+        return result
+    try:
+        from push_title_agent import _llm_call, _llm_unavailable_reason
+    except Exception as exc:  # pragma: no cover - Importschutz
+        result["reason"] = f"LLM-Modul nicht verfuegbar: {type(exc).__name__}"
+        return result
+    if _llm_unavailable_reason():
+        result["reason"] = "LLM nicht verfuegbar"
+        return result
+
+    berlin = ZoneInfo("Europe/Berlin")
+    now_dt = dt.datetime.fromtimestamp(int(now_ts), berlin)
+    hour, weekday = now_dt.hour, now_dt.weekday()
+    base = _slot_baseline(hour, weekday) or {}
+    cur_or = _safe_float(base.get("avg_or"))
+    cur_top = base.get("top_cat")
+    hot = _remaining_hot_slots(now_ts)
+    weekdays = [
+        "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag",
+    ]
+    hot_txt = (
+        "; ".join(
+            f"{h['hour']:02d}:00 (OR {float(h['avgOR']):.1f}%, Top {h.get('topCat') or 'n/a'})"
+            for h in hot
+        )
+        or "keine belastbaren Hot Slots mehr heute"
+    )
+    title = _title(candidate)
+    section = _section(candidate)
+    system = (
+        "Du bist BILD-Push-Timing-Experte. Beurteile AUSSCHLIESSLICH das Timing: "
+        "Passt dieser Push JETZT in diesen Zeitslot, oder faehrt er in einer spaeteren "
+        "Hot Hour (hoehere historische Opening Rate) mehr Reichweite? "
+        "Zeitkritische/aktuelle Meldungen (Breaking, frische Ereignisse, verderbliche "
+        "Aktualitaet, laufende Lagen) muessen SOFORT raus -> fitsNow=true. "
+        "Zeitlose/weiche Meldungen (Service, Ratgeber, Portraits, nicht dringende Themen) "
+        "duerfen auf eine bessere Stunde warten. Antworte NUR als JSON: "
+        '{"fitsNow": bool, "confidence": 0..1, "betterSlotHour": int|null, "reason": kurzer Grund}.'
+    )
+    user = (
+        f"Jetzt: {weekdays[weekday]} {hour:02d}:00 Uhr. "
+        f"Aktueller Slot historische Ø OR: {(cur_or if cur_or is not None else 0.0):.1f}% "
+        f"(Top-Ressort {cur_top or 'n/a'}).\n"
+        f"Kommende Hot Slots heute: {hot_txt}.\n"
+        f'Push-Kandidat: Ressort={section}; Schlagzeile="{title}".\n'
+        "Frage: Jetzt senden (fitsNow=true) oder auf betterSlotHour warten?"
+    )
+    try:
+        raw = _llm_call(system, user, temperature=0.2, max_tokens=200)
+        data = json.loads(raw)
+    except Exception as exc:
+        result["reason"] = f"LLM-Slotcheck fehlgeschlagen: {type(exc).__name__}"
+        return result
+    result["available"] = True
+    result["fitsNow"] = bool(data.get("fitsNow", True))
+    result["confidence"] = _clamp(_safe_float(data.get("confidence")) or 0.0, 0.0, 1.0)
+    better = data.get("betterSlotHour")
+    result["betterSlotHour"] = (
+        int(better) if isinstance(better, (int, float)) and 0 <= int(better) <= 23 else None
+    )
+    result["reason"] = str(data.get("reason") or "")[:200]
+    return result
+
+
 def evaluate_and_send_best_candidate(
     candidates: list[dict[str, Any]],
     *,
@@ -2629,6 +2748,64 @@ def evaluate_and_send_best_candidate(
             "candidateId": article_key,
             "evaluation": evaluation,
         }
+    # LLM-Slot-Fit: passt der Push inhaltlich in den aktuellen Zeitslot, oder
+    # faehrt er in einer spaeteren Hot Hour mehr Opening Rate? Zeitkritische/frische
+    # Meldungen werden nie zurueckgehalten (Aktualitaet schlaegt Timing-Optimierung).
+    slot_fit = _llm_slot_fit_review(selected, now_ts=decision_ts, config=config)
+    selected_decision = dict(selected_decision)
+    selected_decision["slotFitReview"] = slot_fit
+    if slot_fit.get("available") and not slot_fit.get("fitsNow") and not _is_breaking(selected):
+        better_hour = slot_fit.get("betterSlotHour")
+        age_hours = _freshness_hours(selected, decision_ts)
+        now_hour = dt.datetime.fromtimestamp(decision_ts, ZoneInfo("Europe/Berlin")).hour
+        hours_ahead = (
+            better_hour - now_hour
+            if isinstance(better_hour, int) and better_hour > now_hour
+            else None
+        )
+        fresh_enough = age_hours is None or age_hours <= float(
+            config.slot_fit_max_article_age_hours
+        )
+        if (
+            hours_ahead is not None
+            and 0 < hours_ahead <= int(config.slot_fit_max_defer_hours)
+            and fresh_enough
+        ):
+            log.info(
+                "[TeamsAlert] slot-fit defer article_ref=%s -> %02d:00 Uhr (%s)",
+                article_ref,
+                int(better_hour),
+                slot_fit.get("reason"),
+            )
+            _persist_teams_recommendation(
+                selected,
+                selected_decision,
+                context,
+                config,
+                status="slot_deferred",
+                send_status="deferred",
+                send_error=f"Besserer Zeitslot um {int(better_hour):02d}:00 Uhr",
+            )
+            return {
+                "ok": True,
+                "sent": False,
+                "reason": "slot_deferred",
+                "betterSlotHour": int(better_hour),
+                "slotFitReview": slot_fit,
+                "candidateId": article_key,
+                "evaluation": evaluation,
+            }
+    if slot_fit.get("available") and str(slot_fit.get("reason") or "").strip():
+        _timing_line = f"Timing-Check: {slot_fit['reason']}"
+        message = dict(message)
+        message["text"] = (str(message.get("text") or "") + "\n\n" + _timing_line).strip()
+        _sf_payload = dict(message.get("payload") or {})
+        _sf_payload["slotFit"] = slot_fit
+        _sf_payload["text"] = (
+            str(_sf_payload.get("text") or "") + "\n\n" + _timing_line
+        ).strip()
+        message["payload"] = _sf_payload
+
     memory_claim = _memory_send_blocker_or_reserve(
         article_key=article_key,
         title=_title(selected),
