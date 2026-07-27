@@ -605,6 +605,13 @@ PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES: int = _env_int(
     "PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES",
     90,
 )
+# Ein per Heartbeat (unter Alarm-Schwelle) bereits gemeldeter Artikel wird sonst
+# wie ein echter Alert dauerhaft gesperrt. Steigt sein Push-Score spaeter um
+# mindestens diesen Betrag ueber den Heartbeat-Score UND ueber die Alarm-Schwelle,
+# darf die eskalierende Story regulaer als Hard-Alert erneut in den Channel.
+PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN: float = float(
+    _env_int("PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN", 8)
+)
 # LLM-Slot-Fit: Vor dem Versand prueft ein LLM, ob der empfohlene Push inhaltlich
 # in den AKTUELLEN Zeitslot passt oder auf eine spaetere Hot Hour warten sollte
 # (basierend auf den historischen Opening-Rate-Baselines pro Stunde/Wochentag).

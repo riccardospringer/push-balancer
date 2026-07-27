@@ -45,6 +45,7 @@ from app.config import (
     PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME,
     PUSH_TEAMS_HEARTBEAT_ENABLED,
     PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES,
+    PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN,
     PUSH_TEAMS_SLOT_FIT_LLM_ENABLED,
     PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS,
     PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS,
@@ -302,6 +303,7 @@ class TeamsAlertConfig:
     daily_schedule_send_time: str = PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME
     heartbeat_enabled: bool = PUSH_TEAMS_HEARTBEAT_ENABLED
     heartbeat_max_silence_minutes: int = PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES
+    heartbeat_escalation_margin: float = PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN
     slot_fit_llm_enabled: bool = PUSH_TEAMS_SLOT_FIT_LLM_ENABLED
     slot_fit_max_defer_hours: int = PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS
     slot_fit_max_article_age_hours: float = PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS
@@ -2766,11 +2768,21 @@ def evaluate_and_send_best_candidate(
         fresh_enough = age_hours is None or age_hours <= float(
             config.slot_fit_max_article_age_hours
         )
+        # Nur zurueckhalten, wenn der Artikel zur Ziel-Hot-Hour NOCH sendbar ist.
+        # Sonst laeuft er vor dem besseren Slot in die harte Publikations-
+        # Altersgrenze und wuerde dort blockiert -> lautloser Drop statt Push.
+        sendable_at_target = (
+            age_hours is None
+            or hours_ahead is None
+            or (age_hours + float(hours_ahead)) <= float(config.max_article_age_hours)
+        )
         if (
             hours_ahead is not None
             and 0 < hours_ahead <= int(config.slot_fit_max_defer_hours)
             and fresh_enough
+            and sendable_at_target
         ):
+            target_ts = int(decision_ts + hours_ahead * 3600)
             log.info(
                 "[TeamsAlert] slot-fit defer article_ref=%s -> %02d:00 Uhr (%s)",
                 article_ref,
@@ -2785,6 +2797,7 @@ def evaluate_and_send_best_candidate(
                 status="slot_deferred",
                 send_status="deferred",
                 send_error=f"Besserer Zeitslot um {int(better_hour):02d}:00 Uhr",
+                scheduled_for_ts=target_ts,
             )
             return {
                 "ok": True,
@@ -3346,6 +3359,16 @@ def send_teams_daily_schedule_if_due(
     }
 
 
+# Stabiler Marker im teams_alerts.last_reason, an dem ein Heartbeat-Post (unter
+# Alarm-Schwelle) von einem echten Hard-Alert unterschieden wird. Wird sowohl beim
+# Speichern (teams_alert_record) als auch beim Re-Alert-Gate (_realert_blocker_or_reason)
+# genutzt, damit eine eskalierende Story nicht vom eigenen Heartbeat gesperrt wird.
+_HEARTBEAT_REASON_PREFIX = "Heartbeat:"
+_HEARTBEAT_ALERT_REASON = (
+    "Heartbeat: bester aktueller Vorschlag (unter Alarm-Schwelle)"
+)
+
+
 def build_teams_heartbeat_message(
     candidate: dict[str, Any],
     context: dict[str, Any],
@@ -3495,7 +3518,7 @@ def _maybe_send_heartbeat(
             predicted_or=_safe_float(best.get("predictedOR")) or 0.0,
             candidate_updated_at=_candidate_updated_ts(best),
             is_breaking=_is_breaking(best),
-            reason="Heartbeat: bester aktueller Vorschlag (unter Alarm-Schwelle)",
+            reason=_HEARTBEAT_ALERT_REASON,
             status=status,
             error=str(send_result.get("error") or ""),
             decision_ts=now_ts,
@@ -3504,7 +3527,7 @@ def _maybe_send_heartbeat(
         log.warning("[TeamsAlert] heartbeat record failed: %s", exc)
     try:
         hb_decision = dict(best_decision)
-        hb_decision["summary"] = "Heartbeat: bester aktueller Vorschlag (unter Alarm-Schwelle)"
+        hb_decision["summary"] = _HEARTBEAT_ALERT_REASON
         _persist_teams_recommendation(
             best,
             hb_decision,
@@ -3725,6 +3748,7 @@ def build_teams_daily_push_plan(
         selected_ids=selected_ids,
         limit=8,
     )
+    already_covered = _daily_plan_already_covered(raw_entries, limit=6)
 
     plan = {
         "type": "teams_daily_push_plan",
@@ -3745,6 +3769,7 @@ def build_teams_daily_push_plan(
         "doubleOpportunities": double_opportunities,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
+        "alreadyCovered": already_covered,
         "pacing": _push_pacing_review(
             context.get("teamsAlertsToday"),
             now,
@@ -3781,6 +3806,7 @@ def build_teams_daily_push_plan(
         "doubleOpportunities": double_opportunities,
         "watchTopics": watch_topics,
         "notRecommended": not_recommended,
+        "alreadyCovered": already_covered,
     }
     if persist:
         _persist_daily_plan_recommendations(plan, decided_at_ts=now)
@@ -3916,6 +3942,14 @@ def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
             lines.append(f"- {item.get('title')}: {item.get('reason')}")
     else:
         lines.append("- Aktuell keine zusätzlichen Beobachtungsthemen im Kandidatenfeld.")
+
+    covered = plan.get("alreadyCovered") or []
+    if covered:
+        lines.extend(["", "Heute bereits abgedeckt (starke Themen schon gepusht):"])
+        for item in covered:
+            lines.append(
+                f"- {item.get('title')} (Push-Score {item.get('score')}, {item.get('via')})"
+            )
 
     lines.extend(["", "Bewusst nicht pushen:"])
     skipped = plan.get("notRecommended") or []
@@ -5085,6 +5119,57 @@ def _daily_plan_not_recommended(
     return result
 
 
+# Marker in hardBlockers, an denen erkennbar ist, dass eine Story heute bereits
+# ueber einen Kanal abgedeckt wurde (Live-Push oder Teams-Hinweis).
+_ALREADY_COVERED_MARKERS = (
+    "Bereits live gepusht",
+    "Bereits per Teams gemeldet",
+    "bereits per Teams gemeldet",
+)
+
+
+def _daily_plan_already_covered(
+    raw_entries: list[dict[str, Any]],
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """Starke Stories, die heute bereits live/per Teams abgedeckt wurden.
+
+    Macht sichtbar, dass ein ansonsten schwacher Tagesplan daran liegt, dass die
+    Top-Themen schon gepusht sind - statt den Plan als "nichts Starkes heute"
+    fehlzulesen.
+    """
+    covered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in raw_entries:
+        blockers = list(entry.get("hardBlockers") or [])
+        hit = next(
+            (
+                reason
+                for reason in blockers
+                if any(marker in reason for marker in _ALREADY_COVERED_MARKERS)
+            ),
+            "",
+        )
+        if not hit:
+            continue
+        key = str(entry.get("candidateId") or entry.get("url") or entry.get("title") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        via = "Teams-Hinweis" if "Teams" in hit else "Live-Push"
+        covered.append(
+            {
+                "title": _compact_text(str(entry.get("title") or ""), 100),
+                "section": _format_section(str(entry.get("section") or "")),
+                "score": round(float(entry.get("score") or 0.0), 1),
+                "via": via,
+            }
+        )
+    covered.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return covered[:limit]
+
+
 def _daily_plan_quality_summary(items: list[dict[str, Any]]) -> dict[str, int]:
     fixed = sum(1 for item in items if item.get("status") == "fix")
     optional = sum(1 for item in items if item.get("status") == "optional")
@@ -5155,6 +5240,19 @@ def _build_teams_daily_plan_html(subject: str, plan: dict[str, Any]) -> str:
         f"{html.escape(str(item.get('reason') or ''))}</li>"
         for item in plan.get("notRecommended") or []
     )
+    covered = plan.get("alreadyCovered") or []
+    covered_html = "".join(
+        f"<li>{html.escape(str(item.get('title') or ''))} "
+        f"(Push-Score {html.escape(str(item.get('score') or ''))}, "
+        f"{html.escape(str(item.get('via') or ''))})</li>"
+        for item in covered
+    )
+    covered_block = (
+        "<p><strong>Heute bereits abgedeckt (starke Themen schon gepusht)</strong></p>"
+        f"<ul>{covered_html}</ul>"
+        if covered
+        else ""
+    )
     return (
         f"<h2>{html.escape(subject)}</h2>"
         f"<p>Ziel: {int(plan.get('minimumItems') or 0)} hochwertige Push-Chancen. "
@@ -5163,6 +5261,7 @@ def _build_teams_daily_plan_html(subject: str, plan: dict[str, Any]) -> str:
         f"<ol>{items_html}</ol>"
         "<p><strong>Top 5 Pushes des Tages</strong></p>"
         f"<ul>{top_html}</ul>"
+        f"{covered_block}"
         "<p><strong>Bewusst nicht pushen</strong></p>"
         f"<ul>{skipped_html}</ul>"
     )
@@ -7905,6 +8004,36 @@ def _realert_blocker_or_reason(
         }
     if alert_status != "sent":
         return {}
+    # Wurde die Story bislang nur als weicher Heartbeat (unter Alarm-Schwelle)
+    # gepostet, darf sie NICHT dauerhaft wie ein echter Alert gesperrt bleiben:
+    # eskaliert sie zu echten Hard-News, muss der regulaere Alert erneut raus.
+    last_reason = str(alert_state.get("last_reason") or "")
+    if last_reason.startswith(_HEARTBEAT_REASON_PREFIX):
+        last_score = _safe_float(alert_state.get("last_score")) or 0.0
+        min_score = _effective_thresholds(config, breaking)[0]
+        score_escalated = score >= min_score and score >= last_score + float(
+            config.heartbeat_escalation_margin
+        )
+        if breaking:
+            return {
+                "positive": (
+                    "Breaking-News zu zuvor nur per Heartbeat gemeldeter Story - "
+                    "regulaerer Hard-Alert erlaubt"
+                )
+            }
+        if score_escalated:
+            return {
+                "positive": (
+                    "Story eskaliert: zuvor nur als Heartbeat gemeldet, Push-Score jetzt "
+                    f"{score:.0f} (vorher {last_score:.0f}) - regulaerer Hard-Alert erlaubt"
+                )
+            }
+        return {
+            "blocker": (
+                "Bereits als Heartbeat gemeldet; erneuter Alert erst bei klarer "
+                f"Eskalation (Push-Score >= {last_score + float(config.heartbeat_escalation_margin):.0f})"
+            )
+        }
     return {
         "blocker": "Bereits per Teams gemeldet; derselbe Artikel wird nicht erneut vorgeschlagen"
     }

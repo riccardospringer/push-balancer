@@ -17,6 +17,9 @@ from app.notifications.teams import (
     _has_news_event,
     _llm_slot_fit_review,
     _maybe_send_heartbeat,
+    _realert_blocker_or_reason,
+    _daily_plan_already_covered,
+    _HEARTBEAT_ALERT_REASON,
     evaluate_and_send_best_candidate,
     evaluate_teams_alert_candidates,
     _daily_runtime_opportunities,
@@ -3028,6 +3031,124 @@ def test_slot_fit_never_defers_breaking(tmp_db):
     assert result.get("reason") != "slot_deferred"
     assert result["sent"] is True
     send.assert_called_once()
+
+
+def test_slot_fit_does_not_defer_when_article_ages_out_before_slot(tmp_db):
+    """Kein Zurueckhalten, wenn der Artikel den besseren Slot nicht mehr erlebt.
+
+    Sonst laeuft er vor der Ziel-Hot-Hour in die harte Publikations-Altersgrenze
+    und wuerde dort geblockt -> lautloser Drop statt Push.
+    """
+    now_ts = _gold_slot_ts()
+    now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
+    better = min(23, now_hour + 2)
+    candidate = _candidate(
+        id="slot-ageout",
+        url="https://www.bild.de/news/stromausfall-ageout",
+        title="Netzbetreiber melden Stoerung: Stromausfall trifft fuenf Grossstaedte",
+        category="news",
+        score=94.0,
+        predictedOR=0.08,
+        pubDate=_iso(now_ts - 90 * 60),  # 1,5h alt
+        recommendedText="Stromausfall: Was die Stoerung fuer fuenf Grossstaedte bedeutet",
+    )
+    # Sendbar jetzt (1,5h < 2h), aber 1,5h + 2h Wartezeit > 2h Altersgrenze.
+    cfg = _config(
+        agent_review_enabled=False,
+        max_article_age_hours=2,
+        slot_fit_max_article_age_hours=4,
+        slot_fit_max_defer_hours=3,
+    )
+    unavail, call = _slot_fit_llm_patch(
+        {"fitsNow": False, "confidence": 0.9, "betterSlotHour": better, "reason": "weich"}
+    )
+    with (
+        unavail,
+        call,
+        patch("app.notifications.teams.send_teams_notification", return_value={"ok": True}) as send,
+        patch(
+            "app.notifications.teams._memory_send_blocker_or_reserve",
+            return_value={"blocked": False, "reserved": True},
+        ),
+    ):
+        result = evaluate_and_send_best_candidate(
+            [candidate],
+            config=cfg,
+            now_ts=now_ts,
+            history_authoritative=True,
+        )
+
+    assert result.get("reason") != "slot_deferred"
+    assert result["sent"] is True
+    send.assert_called_once()
+
+
+def test_heartbeat_story_can_escalate_to_hard_alert():
+    """Eine nur per Heartbeat gemeldete Story darf bei klarer Score-Eskalation
+    regulaer als Hard-Alert erneut in den Channel; ohne Eskalation bleibt sie
+    gesperrt. Ein echter Alert (kein Heartbeat) sperrt weiterhin dauerhaft."""
+    cfg = _config(dynamic_threshold_enabled=False)
+    hb_state = {
+        "status": "sent",
+        "last_reason": _HEARTBEAT_ALERT_REASON,
+        "last_score": 72.0,
+        "last_decision_ts": NOW_TS - 3600,
+    }
+    # Kein deutlicher Anstieg -> weiter gesperrt (aber mit Eskalations-Hinweis).
+    low = _realert_blocker_or_reason({}, hb_state, 74.0, 6.0, False, NOW_TS, cfg)
+    assert "blocker" in low and "Heartbeat" in low["blocker"]
+    # Klar eskaliert (>= last_score + margin und >= min_score) -> erlaubt.
+    high = _realert_blocker_or_reason({}, hb_state, 85.0, 6.0, False, NOW_TS, cfg)
+    assert "blocker" not in high
+    assert "positive" in high
+    # Breaking auf Heartbeat-Story -> erlaubt.
+    brk = _realert_blocker_or_reason({}, hb_state, 60.0, 6.0, True, NOW_TS, cfg)
+    assert "blocker" not in brk
+    # Echter Alert (kein Heartbeat) -> weiterhin harter Dauerblock.
+    real_state = {
+        "status": "sent",
+        "last_reason": "Score/OR ok",
+        "last_score": 88.0,
+        "last_decision_ts": NOW_TS - 3600,
+    }
+    real = _realert_blocker_or_reason({}, real_state, 90.0, 6.0, False, NOW_TS, cfg)
+    assert "blocker" in real and "Heartbeat" not in real["blocker"]
+
+
+def test_daily_plan_already_covered_surfaces_pushed_stories():
+    """Bereits live/per Teams abgedeckte Top-Themen werden sichtbar gemacht."""
+    entries = [
+        {
+            "candidateId": "a",
+            "title": "Terror-Experte Neumann zur Lage",
+            "section": "news",
+            "score": 94.1,
+            "hardBlockers": ["Bereits per Teams gemeldet; derselbe Artikel ..."],
+        },
+        {
+            "candidateId": "b",
+            "title": "Porsche baut 5000 Stellen ab",
+            "section": "wirtschaft",
+            "score": 81.0,
+            "hardBlockers": ["Bereits live gepusht (gleiche Artikel-URL oder CMS-ID); ..."],
+        },
+        {
+            "candidateId": "c",
+            "title": "Schwache Service-Story",
+            "section": "news",
+            "score": 61.0,
+            "hardBlockers": [],
+        },
+    ]
+    covered = _daily_plan_already_covered(entries)
+    assert [c["title"] for c in covered] == [
+        "Terror-Experte Neumann zur Lage",
+        "Porsche baut 5000 Stellen ab",
+    ]
+    assert covered[0]["via"] == "Teams-Hinweis"
+    assert covered[1]["via"] == "Live-Push"
+    # Sortierung nach Score absteigend.
+    assert covered[0]["score"] >= covered[1]["score"]
 
 
 def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
