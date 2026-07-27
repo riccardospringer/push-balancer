@@ -3,13 +3,16 @@ app/routers/score_capture.py — Score-Snapshot-Endpoint.
 
 POST /api/score-capture  — empfängt Artikel-Scores vom Kandidaten-Tab (Browser)
 GET  /api/score-capture/by-cms-id/{cms_id} — gibt einen gespeicherten Score zurück
-POST /api/score-capture/by-cms-id/batch — liest 1–500 gespeicherte Scores gebündelt
+POST /api/score-capture/by-cms-id/batch — liest 1–500 Scores gebündelt
 
 Der Browser sendet alle Kandidaten-Scores aus dem unveränderten Standardfilter
 alle 30s wenn der Kandidaten-Tab offen ist.
 Wenn ein Push rausgeht, wird der zuletzt gespeicherte Score für diese URL genutzt.
 Persistenz-TTL: 8 Stunden; der CMS-ID-Endpunkt nutzt dieses Arbeitsfenster,
 damit ein bereits angezeigter Original-Score nicht nach drei Minuten verschwindet.
+Wenn kein frischer Capture existiert, wird ein aktueller serverseitiger
+Kandidaten-Score aus der Sitemap genutzt, damit Consumer nicht von einer offenen
+POC-Browser-Session abhängen.
 """
 from __future__ import annotations
 
@@ -263,8 +266,9 @@ def get_score_snapshots_for_cms_ids(
     *,
     max_age_seconds: int = _CACHE_TTL,
     allow_db_fallback: bool = True,
+    allow_server_fallback: bool = True,
 ) -> dict[str, dict[str, object]]:
-    """Resolve requested IDs with exactly one memory and one persistent-store scan."""
+    """Resolve IDs from capture storage and, if needed, current server candidates."""
     if not cms_ids or any(not _CMS_ID_RE.fullmatch(cms_id) for cms_id in cms_ids):
         return {}
     max_age = max(0, int(max_age_seconds))
@@ -315,7 +319,60 @@ def get_score_snapshots_for_cms_ids(
             or int(database_snapshot["capturedAt"]) > int(existing["capturedAt"])
         ):
             resolved[cms_id] = database_snapshot
+    if allow_server_fallback:
+        missing = [cms_id for cms_id in cms_ids if cms_id not in resolved]
+        if missing:
+            resolved.update(_get_server_candidate_score_snapshots(missing, now=now))
     return resolved
+
+
+def _get_server_candidate_score_snapshots(
+    cms_ids: list[str],
+    *,
+    now: int | None = None,
+) -> dict[str, dict[str, object]]:
+    """Compute current scores from the server-side candidate feed.
+
+    This is a read fallback for CMS consumers only. Stored/captured scores still
+    win, and the legacy push-send score snapshot is not changed.
+    """
+    requested = {cms_id.lower() for cms_id in cms_ids if _CMS_ID_RE.fullmatch(cms_id)}
+    if not requested:
+        return {}
+
+    try:
+        from app.routers.feed import build_articles_payload
+
+        payload = build_articles_payload(
+            offset=0,
+            limit=500,
+            include_teams_decisions=False,
+            use_internal_score_api=False,
+        )
+    except Exception:
+        return {}
+
+    captured_at = int(time.time() if now is None else now)
+    snapshots: dict[str, dict[str, object]] = {}
+    for article in payload.get("articles") or []:
+        if not isinstance(article, dict):
+            continue
+        try:
+            score = float(article.get("score"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(score) or not 0 < score <= 100:
+            continue
+        url = article.get("url") or article.get("link") or article.get("id")
+        for cms_id in _cms_ids_in_trusted_url(url).intersection(requested):
+            snapshots.setdefault(
+                cms_id,
+                {
+                    "score": round(score, 1),
+                    "capturedAt": captured_at,
+                },
+            )
+    return snapshots
 
 
 class ScoreCaptureItem(BaseModel):
@@ -482,8 +539,8 @@ def get_score_capture_by_cms_id(
     summary="Get captured UI scores for a CMS-ID batch",
     description=(
         "Returns found or notFound in request order for 1 to 500 unique lowercase CMS "
-        "IDs. The source performs one memory scan and one persistent-store scan and "
-        "never recalculates or substitutes a score."
+        "IDs. Fresh captured UI scores win; missing IDs are resolved from the current "
+        "server-side candidate feed when possible."
     ),
 )
 def post_score_capture_by_cms_id_batch(
