@@ -45,8 +45,13 @@ SPORT_BREAKDOWN = {
 
 
 @pytest.fixture(autouse=True)
-def isolated_score_cache(tmp_db):
+def isolated_score_cache(tmp_db, monkeypatch):
     del tmp_db
+    monkeypatch.setattr(
+        score_capture,
+        "_get_server_candidate_score_snapshots",
+        lambda cms_ids, *, now=None: {},
+    )
     with score_capture._lock:
         previous = dict(score_capture._score_cache)
         score_capture._score_cache.clear()
@@ -273,6 +278,52 @@ def test_batch_newest_snapshot_wins_without_recalculation(tmp_db, monkeypatch):
     assert response.status_code == 200
     assert response.json()["results"][0]["score"] == 58.3
     assert response.json()["results"][0]["scoreBreakdown"] == ENGAGEMENT_BREAKDOWN
+
+
+def test_batch_uses_server_candidate_fallback_for_missing_capture(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+
+    def server_fallback(cms_ids, *, now=None):
+        assert cms_ids == [CMS_ID]
+        assert now == NOW
+        return {CMS_ID: {"score": 64.2, "capturedAt": NOW}}
+
+    monkeypatch.setattr(
+        score_capture,
+        "_get_server_candidate_score_snapshots",
+        server_fallback,
+    )
+
+    response = client.post(
+        "/api/score-capture/by-cms-id/batch?includeBreakdown=1",
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "cmsId": CMS_ID,
+                "status": "found",
+                "score": 64.2,
+                "capturedAt": NOW,
+            }
+        ]
+    }
+
+
+def test_single_lookup_uses_server_candidate_fallback_for_missing_capture(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        score_capture,
+        "_get_server_candidate_score_snapshots",
+        lambda cms_ids, *, now=None: {CMS_ID: {"score": 64.2, "capturedAt": NOW}},
+    )
+
+    response = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == {"score": 64.2, "capturedAt": NOW}
 
 
 @pytest.mark.parametrize(
