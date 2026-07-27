@@ -601,6 +601,19 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         10,
         "BILD-Reiz: Verbraucher- oder Geld-Nutzwert für viele",
     ),
+    "economy_crisis": (
+        re.compile(
+            r"(?i)(\bkrise\b|gewinneinbruch|gewinnwarnung|umsatzeinbruch|"
+            r"milliardenverlust|\bverlust\b|\binsolven|\bpleite\b|stellenabbau|"
+            r"jobabbau|jobkahlschlag|jobs\s+(weg|in\s+gefahr)|arbeitspl(ä|ae)tze|"
+            r"streicht\b.{0,25}?\bstellen|baut\b.{0,20}?stellen\b.{0,10}?ab|"
+            r"kurzarbeit|(werk|standort)\b.{0,15}?schlie(ß|ss)|werkschlie(ß|ss)ung|"
+            r"werksschlie(ß|ss)ung|macht\b.{0,10}?dicht|sparprogramm|rezession|"
+            r"wirtschaftskrise|absatzkrise|massenentlassung|entlassungswelle)"
+        ),
+        12,
+        "BILD-Reiz: Wirtschafts-/Konzernkrise mit breiter Betroffenheit (Jobs, Wirtschaft)",
+    ),
     "prominence": (
         re.compile(
             r"(?i)\b(star|promi|tv|lanz|bohlen|helene|gottschalk|messi|klose|"
@@ -831,6 +844,14 @@ def score_push_candidate(
         # Component weights are calibrated mostly on hard-news shapes. Keep a
         # bounded correction for this confirmed, unusually broad People event.
         raw_score += 6.0
+
+    if "economy_crisis" in (features.get("trigger_hits") or {}) and not is_eil:
+        # Wirtschafts-/Konzernkrise (Gewinneinbruch, Insolvenz, Stellenabbau, ...)
+        # trifft sehr viele Menschen direkt (Jobs, Wirtschaft) und ist ein Top-
+        # Push-Anlass. Die Komponentengewichte sind auf Hard-News kalibriert,
+        # daher eine bounded Korrektur analog zur Elternschaft.
+        raw_score += 6.0
+        drivers.append("Deutschland-Relevanz: Wirtschaftskrise mit breiter Betroffenheit (Jobs)")
 
     # Reuters DNR 2025: Overload-Treiber (Sensationalismus/Clickbait/Neugier-Frame)
     # direkt abwerten, nicht nur im 0.04-gewichteten Risiko-Term.

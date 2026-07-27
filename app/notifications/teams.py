@@ -3192,19 +3192,18 @@ def build_teams_heartbeat_message(
     url = str(payload.get("articleUrl") or _url(candidate)).strip()
     why = [str(r) for r in (payload.get("whyPushworthy") or []) if str(r).strip()][:3]
 
-    subject = "Ruhige Lage – bester aktueller Vorschlag"
-    banner = (
-        f"RUHIGE NACHRICHTENLAGE – seit {int(silence_minutes)} Min kein Push. "
-        f"Bester aktueller Kandidat (Score {score:.0f}, unter Alarm-Schwelle "
-        f"{float(config.min_score):.0f}) – bitte redaktionell bewerten, kein Automatik-Push."
-    )
-    lines = [subject, "", banner, "", "Vorschlag:", push_text]
+    subject = "Push-Empfehlung"
+    header = "PUSH-EMPFEHLUNG"
+    context_line = "Aktuell stärkster Push-Kandidat im Feld."
+    lines = [header, "", "Empfohlener Push-Titel:", push_text]
     if title and not _same_editorial_text(push_text, title):
         lines += ["", "Artikel:", title]
     if url:
         lines.append(url)
+    lines += ["", f"Push-Score: {score:.0f}/100"]
     if why:
-        lines += ["", "Warum der beste aktuelle Kandidat:", *[f"- {r}" for r in why]]
+        lines += ["", "Warum dieser Push?", *[f"- {r}" for r in why]]
+    lines += ["", context_line]
     text = "\n".join(lines)
 
     why_html = "".join(f"<li>{html.escape(r)}</li>" for r in why)
@@ -3214,11 +3213,16 @@ def build_teams_heartbeat_message(
         else html.escape(title)
     )
     message_html = (
-        f"<p><strong>{html.escape(subject)}</strong></p>"
-        f"<p>{html.escape(banner)}</p>"
-        f"<p><strong>Vorschlag:</strong><br>{html.escape(push_text)}</p>"
+        f"<p><strong>{html.escape(header)}</strong></p>"
+        f"<p><strong>Empfohlener Push-Titel:</strong><br>{html.escape(push_text)}</p>"
         + (f"<p><strong>Artikel:</strong><br>{article_html}</p>" if title else "")
-        + (f"<ul>{why_html}</ul>" if why_html else "")
+        + f"<p><strong>Push-Score:</strong> {score:.0f}/100</p>"
+        + (
+            f"<p><strong>Warum dieser Push?</strong></p><ul>{why_html}</ul>"
+            if why_html
+            else ""
+        )
+        + f"<p>{html.escape(context_line)}</p>"
     )
 
     payload["type"] = "teams_heartbeat"

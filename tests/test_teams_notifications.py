@@ -2846,7 +2846,11 @@ def test_heartbeat_fires_for_best_candidate_when_channel_silent(tmp_db):
     msg = send.call_args[0][0]
     assert msg["payload"]["type"] == "teams_heartbeat"
     assert msg["payload"]["belowAlertThreshold"] is True
-    assert "RUHIGE NACHRICHTENLAGE" in msg["text"]
+    assert "PUSH-EMPFEHLUNG" in msg["text"]
+    assert "Empfohlener Push-Titel:" in msg["text"]
+    # Kein verwirrendes "ruhige Nachrichtenlage / unter Alarm-Schwelle"-Framing mehr:
+    assert "RUHIGE NACHRICHTENLAGE" not in msg["text"]
+    assert "unter Alarm-Schwelle" not in msg["text"]
 
 
 def test_heartbeat_suppressed_when_recent_post(tmp_db):
