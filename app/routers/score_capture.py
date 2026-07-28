@@ -320,9 +320,33 @@ def get_score_snapshots_for_cms_ids(
         ):
             resolved[cms_id] = database_snapshot
     if allow_server_fallback:
-        missing = [cms_id for cms_id in cms_ids if cms_id not in resolved]
-        if missing:
-            resolved.update(_get_server_candidate_score_snapshots(missing, now=now))
+        needs_server_details = [
+            cms_id
+            for cms_id in cms_ids
+            if cms_id not in resolved
+            or resolved[cms_id].get("scoreBreakdown") is None
+            or resolved[cms_id].get("orFactor") is None
+        ]
+        if needs_server_details:
+            server_snapshots = _get_server_candidate_score_snapshots(
+                list(dict.fromkeys(needs_server_details)),
+                now=now,
+            )
+            for cms_id, server_snapshot in server_snapshots.items():
+                existing = resolved.get(cms_id)
+                if existing is None:
+                    resolved[cms_id] = server_snapshot
+                    continue
+                if (
+                    existing.get("scoreBreakdown") is None
+                    and server_snapshot.get("scoreBreakdown") is not None
+                ):
+                    existing["scoreBreakdown"] = server_snapshot["scoreBreakdown"]
+                if (
+                    existing.get("orFactor") is None
+                    and server_snapshot.get("orFactor") is not None
+                ):
+                    existing["orFactor"] = server_snapshot["orFactor"]
     return resolved
 
 

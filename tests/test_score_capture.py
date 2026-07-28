@@ -326,6 +326,40 @@ def test_single_lookup_uses_server_candidate_fallback_for_missing_capture(monkey
     assert response.json() == {"score": 64.2, "capturedAt": NOW}
 
 
+def test_capture_score_wins_while_missing_details_are_backfilled(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _cache_score(score=49.1, ts=NOW - 5)
+    monkeypatch.setattr(
+        score_capture,
+        "_get_server_candidate_score_snapshots",
+        lambda cms_ids, *, now=None: {
+            CMS_ID: {
+                "score": 66.2,
+                "capturedAt": NOW,
+                "scoreBreakdown": ENGAGEMENT_BREAKDOWN,
+                "orFactor": 1.16,
+            }
+        },
+    )
+
+    response = client.post(
+        "/api/score-capture/by-cms-id/batch?includeBreakdown=1",
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "cmsId": CMS_ID,
+            "status": "found",
+            "score": 49.1,
+            "capturedAt": NOW - 5,
+            "scoreBreakdown": ENGAGEMENT_BREAKDOWN,
+            "orFactor": 1.16,
+        }
+    ]
+
+
 def test_server_candidate_score_details_are_never_null_for_engagement_fallback():
     details = score_capture._server_candidate_score_details(
         {
