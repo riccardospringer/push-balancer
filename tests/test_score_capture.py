@@ -326,6 +326,72 @@ def test_single_lookup_uses_server_candidate_fallback_for_missing_capture(monkey
     assert response.json() == {"score": 64.2, "capturedAt": NOW}
 
 
+def test_server_candidate_score_details_are_never_null_for_engagement_fallback():
+    details = score_capture._server_candidate_score_details(
+        {
+            "category": "politik",
+            "isBreaking": True,
+            "predictedOR": None,
+            "scoreBreakdown": {
+                "bildFit": 80.0,
+                "openingRatePotential": 64.0,
+                "bildReiz": 72.0,
+                "freshness": 90.0,
+                "historicalTiming": 60.0,
+                "headlineStrength": 50.0,
+                "editorialFeedback": 75.0,
+                "mixBalance": 70.0,
+            },
+        },
+        66.2,
+    )
+
+    assert details == {
+        "scoreBreakdown": {
+            "kind": "engagement",
+            "relevance": 24.0,
+            "urgency": 16.0,
+            "curiosity": 18.0,
+            "freshness": 18.0,
+            "timing": 9.0,
+            "titleBoost": 7.5,
+            "breaking": 15.0,
+            "research": 9.0,
+            "pushHistory": 1.6,
+            "topicSaturation": -9.0,
+        },
+        "orFactor": 1.16,
+    }
+
+
+def test_server_candidate_score_details_are_never_null_for_sport_fallback():
+    details = score_capture._server_candidate_score_details(
+        {
+            "category": "sport",
+            "isSport": True,
+            "predictedOR": 1.22,
+            "scoreBreakdown": {
+                "bildFit": 80.0,
+                "historicalTiming": 60.0,
+                "bildReiz": 72.0,
+                "freshness": 90.0,
+            },
+        },
+        70.0,
+    )
+
+    assert details == {
+        "scoreBreakdown": {
+            "kind": "sport",
+            "sportRelevance": 28.0,
+            "timing": 18.0,
+            "drama": 18.0,
+            "freshness": 9.0,
+        },
+        "orFactor": 1.22,
+    }
+
+
 @pytest.mark.parametrize(
     "body",
     [
