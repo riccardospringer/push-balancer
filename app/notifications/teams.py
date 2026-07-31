@@ -131,7 +131,7 @@ log = logging.getLogger("push-balancer")
 
 _TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v7"
 _MANDATORY_QUIET_HOURS_START_MINUTE = 0
-_MANDATORY_QUIET_HOURS_END_MINUTE = 5 * 60 + 30
+_MANDATORY_QUIET_HOURS_END_MINUTE = 6 * 60
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
 _HARD_BREAKING_PUSH_SCORE_FLOOR = 72.0
 _PUSH_SCORE_SELECTION_BAND = 3.0
@@ -6793,7 +6793,7 @@ def _quiet_hours_reason(now_ts: int, config: TeamsAlertConfig) -> str:
     local_dt = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
     current = local_dt.hour * 60 + local_dt.minute
     if _MANDATORY_QUIET_HOURS_START_MINUTE <= current < _MANDATORY_QUIET_HOURS_END_MINUTE:
-        return "Teams-Ruhezeit aktiv: 00:00 bis 05:30 Uhr"
+        return "Teams-Ruhezeit aktiv: 00:00 bis 06:00 Uhr"
 
     start = _parse_hhmm_to_minutes(config.quiet_hours_start)
     end = _parse_hhmm_to_minutes(config.quiet_hours_end)
