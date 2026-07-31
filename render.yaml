@@ -95,9 +95,9 @@ services:
       - key: PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD
         value: "80"
       - key: PUSH_TEAMS_QUIET_HOURS_START
-        value: "00:00"
+        value: "23:00"
       - key: PUSH_TEAMS_QUIET_HOURS_END
-        value: "05:30"
+        value: "06:00"
       - key: PUSH_TEAMS_REQUIRE_ARTICLE_FORECAST
         value: "true"
       - key: PUSH_TEAMS_REALERT_SCORE_DELTA
