@@ -50,10 +50,11 @@ services:
         value: "16"
       - key: PUSH_BALANCER_SCORE_API_MAX_RETRIES
         value: "1"
-      # Teams-Empfehlungen laufen ausschliesslich auf Next/K8s. Render bleibt
-      # Daten-/Score-Oberflaeche, darf aber keine Teams-Posts versenden.
+      # Render ist wieder aktiver Teams-Sender: der Next/K8s-Pod liefert nicht
+      # (Outbound gestoert), und ohne Sender kommen keine Empfehlungen im Kanal
+      # an. Sobald Next verifiziert laeuft, hier zurueck auf "false".
       - key: PUSH_TEAMS_ALERTS_ENABLED
-        value: "false"
+        value: "true"
       - key: PUSH_TEAMS_WEBHOOK_URL
         sync: false
       - key: PUSH_TEAMS_MIN_SCORE
