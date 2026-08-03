@@ -415,9 +415,9 @@ SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS: list[str] = _csv_env(
 )
 
 # ── Microsoft Teams Push Recommendation Alerts ─────────────────────────────
-# Disabled by default. Enabling this sends selected article metadata to the
-# configured Teams/Power Automate endpoint and requires editorial/privacy approval.
-PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
+# Permanently retired on Render: Next/K8s is the sole Teams sender.  Do not read
+# the legacy dashboard env value here; an old true override caused off-slot posts.
+PUSH_TEAMS_ALERTS_ENABLED: bool = False
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
 # Kanonischer Push-Score fuer die Teams-Auswahl. Der Consumer bleibt bis zur
 # dokumentierten Privacy-/Product-Freigabe aus; bei Aktivierung gibt es keinen
