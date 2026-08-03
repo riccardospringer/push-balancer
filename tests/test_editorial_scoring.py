@@ -420,6 +420,35 @@ def test_evening_celebrity_relationship_money_conflict_gets_strong_push_score():
     assert any("Beziehungs- und Geldkonflikt" in driver for driver in scored["performanceDrivers"])
 
 
+def test_a_list_hiatus_with_fan_concern_and_video_is_a_top_people_push():
+    now = int(time.time())
+    headline = (
+        "Ariana Grande wird eine Auszeit einlegen: Fans sorgen sich um sie – "
+        "auch wegen dieses Videos"
+    )
+    scored = _score(
+        headline,
+        "unterhaltung",
+        now=now,
+        hours_ago=0.5,
+        predicted_or=4.75,
+        url="https://www.bild.de/unterhaltung/stars-und-leute/6a6f459eef632fe6ede68a67",
+    )
+    name_only = _score(
+        "Ariana Grande zeigt ihr neues Outfit in einem Video",
+        "unterhaltung",
+        now=now,
+        hours_ago=0.5,
+        predicted_or=4.75,
+    )
+
+    assert scored["score"] >= 85.0
+    assert scored["score"] >= name_only["score"] + 15.0
+    assert scored["scoreBreakdown"]["bildReiz"] >= 90.0
+    assert scored["scoreBreakdown"]["videoFit"] >= 85.0
+    assert any("A-List" in driver for driver in scored["performanceDrivers"])
+
+
 def test_weak_video_is_penalized_but_live_video_can_rank_high():
     now = int(time.time())
     weak = _score(
