@@ -352,6 +352,25 @@ _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE = re.compile(
     r"Baby\s+ist\s+da)\b"
 )
 
+# Narrow high-interest People development. All signals must be present so a
+# famous name, fan wording, or a video teaser alone can never trigger the rule.
+_A_LIST_PEOPLE_RE = re.compile(
+    r"(?i)\b(ariana grande|taylor swift|beyonc[eé]|rihanna|lady gaga|"
+    r"justin bieber|selena gomez|britney spears|adele|billie eilish|"
+    r"jennifer lopez)\b"
+)
+_A_LIST_PEOPLE_DEVELOPMENT_RE = re.compile(
+    r"(?i)\b(?:auszeit(?:\s+\S+){0,3}\s+einleg(?:en|t)|"
+    r"(?:legt|nimmt)\s+(?:eine\s+)?auszeit(?:\s+ein)?|"
+    r"zieht\s+sich(?:\s+\S+){0,3}\s+zur[üu]ck)\b"
+)
+_A_LIST_PEOPLE_CONCERN_RE = re.compile(
+    r"(?i)\b(?:fans?\s+sorg(?:en|t)\s+sich|fans?\s+mach(?:en|t)\s+sich\s+sorgen)\b"
+)
+_A_LIST_PEOPLE_EVIDENCE_RE = re.compile(
+    r"(?i)\b(?:video|videos|clip|clips|aufnahme|aufnahmen)\b"
+)
+
 
 def is_german_public_figure_parenthood_story(push: dict[str, Any]) -> bool:
     """Return True for a concrete, confirmed German public-figure family event.
@@ -369,6 +388,23 @@ def is_german_public_figure_parenthood_story(push: dict[str, Any]) -> bool:
         is_people_section
         and _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE.search(title)
         and not _INTERNATIONAL_URL_RE.search(url)
+    )
+
+
+def is_strong_a_list_people_development_story(push: dict[str, Any]) -> bool:
+    """Return True for a concrete, evidenced A-list People development."""
+    title = _title(push)
+    url = str(push.get("url") or push.get("link") or "").strip()
+    category = _cat(push)
+    is_people_section = category in {"unterhaltung", "stars", "leute"} or bool(
+        re.search(r"(?i)/(?:unterhaltung|stars-und-leute|stars|leute)/", url)
+    )
+    return bool(
+        is_people_section
+        and _A_LIST_PEOPLE_RE.search(title)
+        and _A_LIST_PEOPLE_DEVELOPMENT_RE.search(title)
+        and _A_LIST_PEOPLE_CONCERN_RE.search(title)
+        and _A_LIST_PEOPLE_EVIDENCE_RE.search(title)
     )
 
 
@@ -539,12 +575,14 @@ _POLITICS_ABSTRACT_RE = re.compile(
     r"diskussion|plan|pläne|plaene|strategie|konzept|programm|papier|"
     r"setzt.*thema|wirtschaftliche wende|verschärfen druck|verschaerfen druck)\b"
 )
-_VIDEO_RE = re.compile(r"(?i)\b(video|clip|stream|live|liveticker|gucken|ansehen|aufnahme)\b")
+_VIDEO_RE = re.compile(
+    r"(?i)\b(video|videos|clip|clips|stream|live|liveticker|gucken|ansehen|aufnahme|aufnahmen)\b"
+)
 _VIDEO_STRONG_RE = re.compile(
     r"(?i)\b(live|jetzt gucken|jetzt sehen|spektakulär|spektakulaer|moment|"
     r"szene|aufnahme|kamera|explosion|brand|unfall|tor|rekord|promi|sport)\b"
 )
-_VIDEO_WEAK_RE = re.compile(r"(?i)\b(video|clip)\b")
+_VIDEO_WEAK_RE = re.compile(r"(?i)\b(video|videos|clip|clips)\b")
 _VAGUE_RE = re.compile(
     r"(?i)\b(das steckt dahinter|darum|so geht es|was dahinter steckt|"
     r"rätsel|raetsel|mysteriös|mysterioes|unklar|diese sache|dieses detail)\b"
@@ -844,6 +882,11 @@ def score_push_candidate(
         # Component weights are calibrated mostly on hard-news shapes. Keep a
         # bounded correction for this confirmed, unusually broad People event.
         raw_score += 6.0
+    if features.get("a_list_people_development"):
+        # The normal weighting underprices this rare five-signal People shape
+        # even after its transparent component lifts. Keep the correction small
+        # and bounded; the strict classifier prevents generic celebrity boosts.
+        raw_score += 4.0
 
     if "economy_crisis" in (features.get("trigger_hits") or {}) and not is_eil:
         # Wirtschafts-/Konzernkrise (Gewinneinbruch, Insolvenz, Stellenabbau, ...)
@@ -1191,10 +1234,15 @@ def _extract_push_features(
             trigger_strength += weight
 
     public_figure_parenthood = is_german_public_figure_parenthood_story(push)
+    a_list_people_development = is_strong_a_list_people_development_story(push)
     is_politics = (
         cat == "politik" or bool(_POLITICS_RE.search(title))
     ) and not public_figure_parenthood
-    has_development = bool(_FRESH_DEVELOPMENT_RE.search(title)) or public_figure_parenthood
+    has_development = (
+        bool(_FRESH_DEVELOPMENT_RE.search(title))
+        or public_figure_parenthood
+        or a_list_people_development
+    )
     strong_politics = is_politics and bool(_POLITICS_STRONG_RE.search(title)) and has_development
     abstract_politics = (
         is_politics and bool(_POLITICS_ABSTRACT_RE.search(title)) and not has_development
@@ -1265,6 +1313,7 @@ def _extract_push_features(
         and not _EXCLUSIVE_RE.search(title),
         "strong_non_politics": strong_non_politics,
         "public_figure_parenthood": public_figure_parenthood,
+        "a_list_people_development": a_list_people_development,
         "is_exclusive": bool(_EXCLUSIVE_RE.search(title)),
         "is_vague": bool(_VAGUE_RE.search(title)),
         "is_generic_case": bool(
@@ -1331,6 +1380,9 @@ def _score_bild_fit(
     if features.get("public_figure_parenthood"):
         score += 8
         drivers.append("BILD-Fit: konkrete positive People-News mit oeffentlicher Person")
+    if features.get("a_list_people_development"):
+        score = max(score, 75.0)
+        drivers.append("BILD-Fit: konkrete A-List-Entwicklung mit sichtbarem Fan-Interesse")
     if features.get("is_vague"):
         score -= 9
         risks.append("Headline wirkt unkonkret oder verrätselt")
@@ -1351,6 +1403,7 @@ def _score_bild_fit(
         and tone == "neutral"
         and not features.get("trigger_hits", {}).get("prominence")
         and not features.get("public_figure_parenthood")
+        and not features.get("a_list_people_development")
     ):
         score -= 5
         risks.append("Unterhaltung ohne Prominenz, Konflikt oder Überraschung")
@@ -1627,6 +1680,12 @@ def _score_bild_reiz(
     if tone in {"breaking", "conflict", "utility", "emotion", "curiosity"}:
         score += {"breaking": 13, "conflict": 8, "utility": 8, "emotion": 7, "curiosity": 6}[tone]
 
+    if features.get("a_list_people_development"):
+        score = max(score, 90.0)
+        drivers.append(
+            "BILD-Reiz: A-List-Auszeit, Fan-Sorge und Video-Beleg erzeugen starken Sofort-Klick"
+        )
+
     if (
         features.get("is_stale")
         and tone == "breaking"
@@ -1658,7 +1717,7 @@ def _score_bild_reiz(
         risks.append("BILD-Reiz: Fall wirkt generisch oder schon bekannt")
     if features.get("is_vague"):
         score -= 9
-    if not hits and tone == "neutral":
+    if not hits and tone == "neutral" and not features.get("a_list_people_development"):
         score -= 4
         risks.append("BILD-Reiz: noch kein klarer Hä?-, Aufreger- oder Nutzwert-Moment")
     if features.get("is_corporate_announcement"):
@@ -1692,6 +1751,8 @@ def _score_headline_strength(
         score += 5
     if tone in {"breaking", "utility", "conflict", "curiosity"}:
         score += 6
+    if features.get("a_list_people_development"):
+        score = max(score, 82.0)
     if features.get("is_vague"):
         score -= 15
         risks.append("Headline-Stärke: verrätselt statt konkret")
@@ -1747,14 +1808,18 @@ def _score_video_fit(
         return 68.0
 
     score = 56.0
-    if features.get("video_strong"):
+    if features.get("video_strong") or features.get("a_list_people_development"):
         score += 24
         drivers.append("Video: klarer Jetzt-Anlass oder starker Schauwert")
     if features.get("has_development"):
         score += 8
     if features.get("trigger_strength", 0) >= 16:
         score += 7
-    if features.get("video_weak") and not features.get("video_strong"):
+    if (
+        features.get("video_weak")
+        and not features.get("video_strong")
+        and not features.get("a_list_people_development")
+    ):
         score -= 16
         risks.append("Video: Bewegtbild allein liefert noch keinen Push-Anlass")
     if features.get("is_vague"):
@@ -1857,6 +1922,9 @@ def _score_opening_potential(
         drivers.append(
             "Opening-Potenzial: positive prominente Lebensnachricht weckt konkrete Neugier"
         )
+    if features.get("a_list_people_development"):
+        content += 20
+        drivers.append("Opening-Potenzial: konkrete A-List-Wendung mit belegter Fan-Sorge")
     if features.get("is_video"):
         if features.get("video_strong"):
             content += 5
@@ -1867,6 +1935,7 @@ def _score_opening_potential(
         tone == "neutral"
         and not re.search(r"\d|:|\?|!", title)
         and not features.get("public_figure_parenthood")
+        and not features.get("a_list_people_development")
     ):
         content -= 7
         risks.append("Öffnungsanreiz ist noch zu allgemein")
