@@ -3305,7 +3305,7 @@ def test_memory_blocked_top_candidate_does_not_starve_runner_up(tmp_db):
     from app.notifications import teams as teams_module
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     config = _smart_config(
         agent_review_enabled=False,
@@ -3376,7 +3376,7 @@ def test_database_claim_rejection_releases_process_reservation(tmp_db):
     from app.notifications import teams as teams_module
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     candidate = _candidate(
         id="claim-race",
@@ -3583,7 +3583,7 @@ def _slot_fit_llm_patch(payload_json):
 
 def test_mandatory_slot_never_defers_soft_story_to_better_hour(tmp_db):
     """Ein fester Pflichtslot darf nicht durch die optionale Slot-Fit-Jury ausfallen."""
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 1)
     candidate = _candidate(
@@ -3625,7 +3625,7 @@ def test_mandatory_slot_never_defers_soft_story_to_better_hour(tmp_db):
 
 def test_slot_fit_never_defers_breaking(tmp_db):
     """Breaking wird nie fuer einen besseren Slot zurueckgehalten."""
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 1)
     candidate = _candidate(
@@ -3675,7 +3675,7 @@ def test_slot_fit_does_not_defer_when_article_ages_out_before_slot(tmp_db):
     Sonst laeuft er vor der Ziel-Hot-Hour in die harte Publikations-Altersgrenze
     und wuerde dort geblockt -> lautloser Drop statt Push.
     """
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 2)
     candidate = _candidate(
@@ -3794,7 +3794,7 @@ def test_daily_plan_already_covered_surfaces_pushed_stories():
 def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
     """Auch als Fallback darf kein Fiktions-/TV-Programm-Teaser (GZSZ) gepostet werden."""
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     gzsz = _candidate(
         id="hb-gzsz",
@@ -3819,7 +3819,7 @@ def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
 
 def test_heartbeat_policy_blocks_before_message_build_or_live_refresh(tmp_db):
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     candidate = _candidate(
         id="heartbeat-race",
@@ -4383,7 +4383,7 @@ def test_send_cycle_considers_expanded_candidate_beyond_dashboard_top_limit(tmp_
     from app.database import push_db_upsert
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     push_db_upsert(_history(minutes_since_last_push=65, now_ts=now_ts))
     weak = [
@@ -5342,16 +5342,16 @@ def test_smart_schedule_uses_deterministic_berlin_layout_on_monday():
     labels = [slot["label"] for slot in schedule["slots"]]
 
     assert schedule["weekday"] == "Montag"
-    assert schedule["count"] == 15
+    assert schedule["count"] == 12
     # Morgen-Doppel 06/07/08 (6 Slots gleichverteilt, mathematisch maximal
-    # gespreizt), Mittagsslot 12:30, montags Abendstart 17:30 und danach die
-    # unveraenderte dynamische Heatmap-Verteilung.
+    # gespreizt), Mittagsslot 12:30, Abendbereich (User-Vorgabe 2026-08-04):
+    # taeglich 17:30 bis 22:45, fuenf Slots mit maximalem Abstand.
     assert labels == [
         "06:00", "06:36", "07:12", "07:47", "08:23", "08:59",
         "12:30",
-        "17:30", "18:34", "19:08", "19:42", "20:17", "20:51", "21:25", "21:59",
+        "17:30", "18:49", "20:08", "21:26", "22:45",
     ]
-    assert {"10:45", "11:45", "22:45", "23:45"}.isdisjoint(labels)
+    assert {"10:45", "11:45", "23:45"}.isdisjoint(labels)
     assert all(slot["required"] is True for slot in schedule["slots"])
     assert "06:00 + 06:36" in {
         opportunity["label"] for opportunity in schedule["doubleOpportunities"]
@@ -5366,15 +5366,15 @@ def test_smart_schedule_is_truly_weekday_specific():
     monday_labels = {slot["label"] for slot in monday["slots"]}
     wednesday_labels = {slot["label"] for slot in wednesday["slots"]}
 
-    # Der Abend-Hot-Block folgt der Heatmap: Montag 18-21 komplett rot/gelb,
-    # Mittwoch nur 20-21 -> andere Slotzeiten plus Reserve-Entscheidungen.
-    assert monday_labels != wednesday_labels
+    # User-Vorgabe 2026-08-04: fixes Tagesraster (Morgen-Doppel, 12:30,
+    # Abend 17:30-22:45) gilt an JEDEM Wochentag identisch.
+    assert monday_labels == wednesday_labels
     assert {"06:00", "06:36", "07:12", "07:47", "08:23", "08:59", "12:30"}.issubset(monday_labels)
     assert {"06:00", "06:36", "12:30"}.issubset(wednesday_labels)
     assert "10:45" not in wednesday_labels
     assert "23:45" not in wednesday_labels
-    assert wednesday["requiredCount"] == 11
-    assert wednesday["count"] == 11
+    assert wednesday["requiredCount"] == 12
+    assert wednesday["count"] == 12
     assert wednesday["meetsTargetCoverage"] is True
 
 
@@ -5535,7 +5535,7 @@ def test_midday_restart_with_one_alert_can_still_reach_daily_minimum():
         current += dt.timedelta(minutes=5)
         index += 1
 
-    assert teams_alerts_today == 11
+    assert teams_alerts_today == 10
     assert "deadline_fallback" in send_modes
 
 
@@ -5570,7 +5570,7 @@ def test_wednesday_first_binding_deadline_is_due_at_0645_and_releases_candidate(
     assert decision["slotGate"]["minimumDouble"] is True
     assert decision["slotGate"]["minimumCommitment"] is True
     assert decision["slotGate"]["dueCount"] == 2
-    assert decision["slotGate"]["plannedOpportunityCount"] == 11
+    assert decision["slotGate"]["plannedOpportunityCount"] == 12
 
 
 def test_due_minimum_slot_uses_raw_push_score_over_secondary_model_floors():
@@ -5619,11 +5619,11 @@ def test_double_opportunities_report_incompatible_cooldown_configuration():
         ),
     )
 
-    assert schedule["requiredCount"] == 15
+    assert schedule["requiredCount"] == 12
     assert schedule["doubleOpportunities"]
     assert all(not item["cooldownCompatible"] for item in schedule["doubleOpportunities"])
     assert schedule["qualityOpportunityCount"] >= 1
-    assert schedule["count"] == 15
+    assert schedule["count"] == 12
     assert schedule["meetsTargetCoverage"] is True
 
 
@@ -5906,14 +5906,14 @@ def test_morning_double_start_0712_is_a_binding_top_one_decision():
 
 
 def test_shortfall_recovery_fires_only_at_raster_times():
-    early = _smart_slot_decision(hour=20, minute=2, pushes_today=10)
-    at_slot = _smart_slot_decision(hour=20, minute=18, pushes_today=10)
+    early = _smart_slot_decision(hour=20, minute=2, pushes_today=9)
+    at_slot = _smart_slot_decision(hour=20, minute=9, pushes_today=9)
     on_plan = _smart_slot_decision(hour=20, minute=20, pushes_today=13)
 
-    # Vor der Raster-Zeit 20:17 wird trotz Rueckstand gesammelt ...
+    # Vor der Raster-Zeit 20:08 wird trotz Rueckstand gesammelt ...
     assert early["shouldNotify"] is False
     assert early["slotGate"]["mode"] == "wait"
-    assert early["slotGate"]["slot"]["label"] == "20:17"
+    assert early["slotGate"]["slot"]["label"] == "20:08"
     # ... ab der Raster-Zeit holt die faellige Entscheidung auf ...
     assert at_slot["shouldNotify"] is True
     assert at_slot["slotGate"]["mode"] == "deadline_fallback"
@@ -6011,13 +6011,13 @@ def test_confirmed_sport_event_can_pass_but_routine_sport_cannot():
     )
 
     confirmed_decision = _smart_slot_decision(
-        hour=19,
+        hour=20,
         minute=9,
         candidate=confirmed,
         pushes_today=9,
     )
     routine_decision = _smart_slot_decision(
-        hour=19,
+        hour=20,
         minute=9,
         candidate=routine,
         pushes_today=9,
@@ -6073,13 +6073,13 @@ def test_daily_schedule_is_sent_only_once_per_berlin_day(tmp_db):
         second = send_teams_daily_schedule_if_due(config, now_ts=now_ts + 60)
 
     assert first["sent"] is True
-    assert first["count"] == 15
+    assert first["count"] == 12
     assert second["sent"] is False
     assert second["reason"] == "already_sent"
     assert send.call_count == 1
     payload = send.call_args.args[0]["payload"]
     assert payload["type"] == "push_daily_schedule"
-    assert len(payload["slots"]) == 15
+    assert len(payload["slots"]) == 12
 
 
 def test_daily_schedule_never_claims_or_sends_during_quiet_hours():
@@ -6118,7 +6118,7 @@ def test_daily_push_plan_returns_minimum_15_teams_ready_items():
     assert plan["count"] == 15
     assert plan["meetsMinimum"] is True
     assert plan["requiredSlotCount"] == 15
-    assert plan["qualityOpportunityCount"] == 5
+    assert plan["qualityOpportunityCount"] == 3
     assert len(plan["items"]) == 15
     quality_chances = [item for item in plan["items"] if item["qualityOnly"]]
     assert quality_chances == []
@@ -6707,7 +6707,7 @@ def test_empty_cycle_reports_aggregate_minimum_pacing_diagnostics(tmp_db):
     diagnostics = result["diagnostics"]
     assert result["sent"] is False
     assert result["reason"] == "no_candidate"
-    assert diagnostics["plannedOpportunityCount"] == 11
+    assert diagnostics["plannedOpportunityCount"] == 12
     assert diagnostics["dueOpportunityCount"] == 2
     assert diagnostics["teamsAlertsToday"] == 0
     assert diagnostics["scoreEligibleCandidates"] == 0
@@ -6969,12 +6969,14 @@ def test_monday_evening_gate_opens_at_1730_not_before():
 def test_runtime_double_slots_equal_the_advertised_monday_slots():
     schedule = build_teams_daily_schedule("2026-07-13", _smart_config())
     advertised = {int(item["hour"]) for item in schedule["doubleOpportunities"]}
-    unadvertised = _smart_slot_decision(hour=17, minute=2, pushes_today=10)
-    advertised_catchup = _smart_slot_decision(hour=20, minute=18, pushes_today=10)
+    unadvertised = _smart_slot_decision(hour=17, minute=2, pushes_today=9)
+    advertised_catchup = _smart_slot_decision(hour=20, minute=9, pushes_today=9)
 
     # Morgen-Doppel 6/7/8 plus die Abendstunden, in denen nach dem 17:30-Lead-in
     # weiterhin zwei Entscheidungen liegen.
-    assert advertised == {6, 7, 8, 19, 20, 21}
+    # Abendbereich (17:30-22:45, 5 Einzelslots) hat keine Stunden-Doppel
+    # mehr; beworbene Doppelchancen bleiben nur im Morgenblock.
+    assert advertised == {6, 7, 8}
     assert unadvertised["slotGate"]["doubleOpportunity"] is False
     assert unadvertised["shouldNotify"] is False
     assert advertised_catchup["shouldNotify"] is True
@@ -7215,11 +7217,7 @@ def test_mandatory_slot_forces_best_sport_only_when_daily_quota_requires_it():
     assert unavailable["mandatorySportQuota"]["applied"] is False
 
 
-def test_mandatory_slot_shows_best_opposite_ressort_as_alternative():
-    """User-Vorgabe: Top Nicht-Sport -> Alternative Sport (und umgekehrt).
-
-    Der echte Platz 2 (Unterhaltung) bleibt Margin-Basis, aber als Alternative
-    erscheint der beste gegenlaeufige Kandidat (Sport, Rang 3)."""
+def test_mandatory_slot_shows_only_true_api_rank2_as_alternative():
     config = _smart_config(require_internal_score_api=True)
     now_ts = int(
         _daily_runtime_opportunities(dt.date(2026, 6, 19), config)[-1]["ts"]
@@ -7271,79 +7269,12 @@ def test_mandatory_slot_shows_best_opposite_ressort_as_alternative():
     message = buildTeamsPushRecommendation(top1, context, selected, config)
 
     assert result["selectedCandidateId"] == top1["url"]
-    # Alternative = bester Sport-Kandidat, weil die Top-Meldung Nicht-Sport ist.
-    assert selected["competition"]["runnerUp"]["articleUrl"] == third["url"]
-    # Margin-Basis bleibt der echte Platz 2.
-    assert selected["competition"]["runnerUpScore"] == runner_up["score"]
-    assert third["url"] in message["text"]
-    assert runner_up["url"] not in message["text"]
-    assert third["title"] in message["payload"]["messageHtml"]
-    assert runner_up["title"] not in message["payload"]["messageHtml"]
+    assert selected["competition"]["runnerUp"]["articleUrl"] == runner_up["url"]
+    assert runner_up["url"] in message["text"]
+    assert third["url"] not in message["text"]
+    assert runner_up["title"] in message["payload"]["messageHtml"]
+    assert third["title"] not in message["payload"]["messageHtml"]
     assert message["text"].count("Alternative (Platz 2):") == 1
-
-
-def test_sport_top_gets_non_sport_alternative_and_vice_versa():
-    """Sport-Top -> Nicht-Sport-Alternative; ohne gegenlaeufigen Kandidaten
-    bleibt die Alternative leer statt die Ressort-Vorgabe zu verletzen."""
-    config = _smart_config(require_internal_score_api=True)
-    now_ts = int(
-        _daily_runtime_opportunities(dt.date(2026, 6, 19), config)[-1]["ts"]
-    )
-
-    def _mk(id_, section, score):
-        return _candidate(
-            id=id_,
-            url=f"https://www.bild.de/{section}/{id_}",
-            title=f"Kandidat {id_}",
-            category=section,
-            score=score,
-            scoreSource="internal_score_api",
-            pubDate=_iso(now_ts - 5 * 60),
-        )
-
-    def _context(candidates):
-        return build_teams_alert_context(
-            candidates,
-            history=_history(now_ts=now_ts),
-            history_authoritative=True,
-            alert_state={},
-            last_teams_alert_ts=now_ts - 60,
-            teams_alerts_today=10,
-            recent_alerts=[],
-            now_ts=now_ts,
-            config=config,
-        )
-
-    def _evaluate(candidates):
-        result = evaluate_teams_alert_candidates(
-            candidates, _context(candidates), config
-        )
-        selected = next(
-            item["decision"]
-            for item in result["decisions"]
-            if item["decision"].get("shouldNotify")
-        )
-        return result, selected
-
-    # Sport-Top: die Alternative muss Nicht-Sport sein (Rang 3 statt Rang 2).
-    sport_top = _mk("opp-sport-top", "sport", 93.0)
-    sport_second = _mk("opp-sport-2", "sport", 90.0)
-    news_third = _mk("opp-news-3", "politik", 87.0)
-    result, selected = _evaluate([news_third, sport_top, sport_second])
-    assert result["selectedCandidateId"] == sport_top["url"]
-    assert selected["competition"]["runnerUp"]["articleUrl"] == news_third["url"]
-
-    # Nur Sport-Kandidaten: keine gegenlaeufige Alternative verfuegbar -> leer.
-    result, selected = _evaluate([sport_top, sport_second])
-    assert result["selectedCandidateId"] == sport_top["url"]
-    assert selected["competition"]["runnerUp"] == {}
-    message = buildTeamsPushRecommendation(
-        sport_top, _context([sport_top, sport_second]), selected, config
-    )
-    assert (
-        "Keine weitere gültige Alternative verfügbar"
-        in message["payload"]["messageHtml"]
-    )
 
 
 def test_mandatory_slot_skips_exact_live_duplicate_and_promo_then_uses_next_rank():

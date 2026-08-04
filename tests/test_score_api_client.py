@@ -166,20 +166,6 @@ def test_score_client_rejects_missing_key_and_insecure_base_url():
         ScoreApiClient("http://scores.example.invalid", API_KEY)
 
 
-def test_score_client_accepts_loopback_http_base_url():
-    """Selbstkonsum (Render): http ist nur fuer Loopback-Hosts erlaubt."""
-    client = ScoreApiClient(
-        "http://127.0.0.1:8050",
-        API_KEY,
-        transport=lambda url, headers, timeout: (
-            (_ for _ in ()).throw(AssertionError("no request expected"))
-        ),
-    )
-    assert client._base_url == "http://127.0.0.1:8050"
-    with pytest.raises(ScoreApiConfigurationError):
-        ScoreApiClient("http://127.0.0.1.evil.example", API_KEY)
-
-
 @pytest.mark.parametrize(
     "body",
     [

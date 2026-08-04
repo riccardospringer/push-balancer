@@ -2366,38 +2366,6 @@ def evaluate_teams_alert_candidates(
             else:
                 selection_confidence = "niedrig"
 
-    # Angezeigte Alternative (User-Vorgabe): immer das gegenlaeufige Ressort.
-    # Top Sport -> Alternative Nicht-Sport, Top Nicht-Sport -> Alternative
-    # Sport. Der echte Zweitplatzierte (runner_up_*) bleibt unveraendert die
-    # Basis der Margin-/Unsicherheits-Bewertung; hier wird nur bestimmt,
-    # welcher Kandidat im Teams-Post als Alternative erscheint. Gibt es keinen
-    # gegenlaeufigen Kandidaten, bleibt die Alternative leer statt die
-    # Vorgabe zu verletzen.
-    alternative_candidate = runner_up_candidate
-    alternative_decision = runner_up_decision
-    if selected_candidate is not None:
-        selected_is_sport = _is_sport_item(selected_candidate)
-        if alternative_candidate is None or (
-            _is_sport_item(alternative_candidate) == selected_is_sport
-        ):
-            opposite_pair = max(
-                (
-                    item
-                    for item in runner_up_pool
-                    if candidate_key(item[0]) != selected_key
-                    and _is_sport_item(item[0]) != selected_is_sport
-                ),
-                key=_selection_key,
-                default=None,
-            )
-            if opposite_pair is not None:
-                alternative_candidate, alternative_decision = opposite_pair
-            elif alternative_candidate is not None and (
-                _is_sport_item(alternative_candidate) == selected_is_sport
-            ):
-                alternative_candidate = None
-                alternative_decision = None
-
     # "Klarer Gewinner"-Regel: wenn der Top-Kandidat nur knapp vor dem Verfolger
     # liegt und selbst nicht eindeutig stark ist, ist das Feld unsicher -> kein Alert.
     uncertainty_reason = ""
@@ -2512,18 +2480,16 @@ def evaluate_teams_alert_candidates(
                         if runner_up_decision is not None
                         else None
                     ),
-                    # Anzeige-Alternative: bester Kandidat des gegenlaeufigen
-                    # Ressorts (Sport<->Nicht-Sport), nicht zwingend Platz 2.
                     "runnerUp": (
                         {
-                            "articleTitle": _title(alternative_candidate),
-                            "articleUrl": _url(alternative_candidate),
-                            "category": _section(alternative_candidate),
-                            "pushScore": float(alternative_decision.get("score") or 0.0),
+                            "articleTitle": _title(runner_up_candidate),
+                            "articleUrl": _url(runner_up_candidate),
+                            "category": _section(runner_up_candidate),
+                            "pushScore": float(runner_up_decision.get("score") or 0.0),
                             "rankingPosition": 2,
                         }
-                        if alternative_candidate is not None
-                        and alternative_decision is not None
+                        if runner_up_candidate is not None
+                        and runner_up_decision is not None
                         else {}
                     ),
                     "scoreDelta": (
@@ -6663,8 +6629,11 @@ def _daily_plan_slots(
 #   montags beginnt das Abendfenster bereits um 17:30
 _MORNING_DOUBLE_HOURS = (6, 7, 8)
 _MIDDAY_HOUR = 12
-_EVENING_HOT_HOURS = (18, 19, 20, 21)
-_MONDAY_EVENING_START_MINUTE = 17 * 60 + 30
+# Abendbereich (User-Vorgabe 2026-08-04): beginnt JEDEN Tag um 17:30 mit fuenf
+# Pflichtslots bis 22:45 (letzter deutlich vor der Ruhezeit 23:00).
+_EVENING_START_MINUTE = 17 * 60 + 30
+_EVENING_END_MINUTE = 22 * 60 + 45
+_EVENING_SLOT_COUNT = 5
 
 
 def _evenly_spaced_minutes(start_minute: int, end_minute: int, count: int) -> list[int]:
@@ -6686,30 +6655,18 @@ def _morning_double_minutes() -> list[int]:
 
 
 def _evening_hot_layout(target_date: dt.date, config: TeamsAlertConfig) -> list[int]:
-    """Abend-Hot-Hours maximal ausschoepfen: 2 Slots je roter/gelber Stunde.
+    """Abendbereich (User-Vorgabe 2026-08-04): 5 Pflichtslots, immer ab 17:30.
 
-    Die Heatmap-Verteilung bleibt unveraendert. Montags wird nur der erste Slot
-    auf 17:30 vorgezogen; die folgenden dynamischen Slots behalten ihre Zeiten.
+    Wochentagsunabhaengig fix: Start 17:30, letzter Slot 22:45 (deutlich vor
+    der Ruhezeit 23:00), mathematisch maximal gespreizt ->
+    17:30, 18:49, 20:08, 21:26, 22:45. Die Heatmap steuert weiterhin nur die
+    Reserve-Slots ausserhalb des Blocks.
     """
-    weekday = target_date.weekday()
-    hot_hours = [
-        hour
-        for hour in _EVENING_HOT_HOURS
-        if _daily_plan_slot(target_date, hour, 0, weekday, config).get("tier")
-        in {"rot", "gelb"}
-    ]
-    if not hot_hours:
-        # Fallback: 21 Uhr ist historisch die staerkste Stunde des Tages.
-        hot_hours = [21]
-    first, last = min(hot_hours), max(hot_hours)
-    layout = _evenly_spaced_minutes(
-        first * 60,
-        last * 60 + 59,
-        len(hot_hours) * 2,
+    return _evenly_spaced_minutes(
+        _EVENING_START_MINUTE,
+        _EVENING_END_MINUTE,
+        _EVENING_SLOT_COUNT,
     )
-    if weekday == 0 and layout:
-        layout[0] = min(layout[0], _MONDAY_EVENING_START_MINUTE)
-    return layout
 
 
 def _daily_plan_slot_candidates(
@@ -6764,9 +6721,14 @@ def _daily_plan_slot_candidates(
         _binding_slot(
             total_minute,
             "evening_hot",
-            "verbindlicher Abend-Hot-Hour-Slot (Heatmap maximal ausgeschoepft, "
-            "gleichverteilt ueber den Hot-Block)",
+            "verbindlicher Abendbereich-Slot (17:30 bis 22:45, mathematisch "
+            "maximal gespreizt)",
         )
+    # Der Abendblock beansprucht den gesamten Bereich 17-22 Uhr: keine
+    # zusaetzlichen :45-Reserven zwischen den gespreizten Pflichtslots
+    # (die wuerden den Mindestabstand verletzen, z.B. 19:45 vor 20:08).
+    for hour in range(_EVENING_START_MINUTE // 60, _EVENING_END_MINUTE // 60 + 1):
+        covered_hours.add(hour)
 
     # Das montags vorgezogene 17:30-Fenster ist ein einzelner Lead-in und darf
     # nicht als Doppelchance derselben Stunde beworben oder bewertet werden.
@@ -8371,6 +8333,11 @@ def _editorial_cvd_review(
         )
     if soft_matches and not breaking and news_value < config.min_editorial_news_value + 6.0:
         blockers.append("CvD: weiches Thema ohne ausreichenden aktuellen Nachrichtenwert")
+    promotional_reason = _promotional_article_reason(candidate)
+    if promotional_reason:
+        # Werbung ist NIE pushwuerdig — auch nicht als Breaking oder mit
+        # hohem Rohscore (heute 04.08.: "ANZEIGE: ..." stand mit 83.4 im Feld).
+        blockers.append(f"CvD: {promotional_reason}")
     if is_soft_service and not breaking and not urgent_public_service:
         blockers.append("CvD: Service-/Raetsel-/Ratgeber-Format, nicht pushwuerdig")
     if live_ticker and not breaking and not live_ticker_has_update:

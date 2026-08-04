@@ -498,19 +498,7 @@ if PUSH_BALANCER_SCORE_API_SELF_CONSUME:
         SCORE_API_KEY = _secrets.token_urlsafe(32)
         os.environ.setdefault("SCORE_API_KEY", SCORE_API_KEY)
     PUSH_BALANCER_SCORE_API_ENABLED = True
-    # Loopback-Port = der Port, auf den uvicorn tatsaechlich gebunden ist.
-    # NICHT config.PORT verwenden: Render injiziert PORT=10000, waehrend das
-    # Dockerfile uvicorn fest auf 8050 startet — mit PORT waere der
-    # Selbstkonsum ein Connection-refused auf 127.0.0.1:10000 (alle Scores
-    # 'unavailable'). 8050 ist der Dockerfile-/Dev-Standard; abweichende
-    # Setups uebersteuern per PUSH_BALANCER_SELF_CONSUME_PORT.
-    PUSH_BALANCER_SELF_CONSUME_PORT: int = _env_int(
-        "PUSH_BALANCER_SELF_CONSUME_PORT",
-        8050,
-    )
-    PUSH_BALANCER_SCORE_API_BASE_URL = (
-        f"http://127.0.0.1:{PUSH_BALANCER_SELF_CONSUME_PORT}"
-    )
+    PUSH_BALANCER_SCORE_API_BASE_URL = f"http://127.0.0.1:{PORT}"
     PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
 PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS: float = _env_float(
     "PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS",
@@ -721,7 +709,7 @@ PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN: float = float(
 )
 # Nachrichtentyp 2: Jeder tatsaechlich versendete Live-Push der Redaktion wird
 # als eigene Teams-Nachricht gespiegelt und fliesst sofort in die weitere Planung.
-# Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04). Default False,
+# Nur PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04). Default False,
 # weil Render-Blueprint-Env-Sync neue Keys nicht zuverlaessig anlegt — der
 # Code-Default ist der einzige garantiert wirksame Schalter.
 PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED: bool = _env_flag(
