@@ -22,6 +22,7 @@ from app.config import (
     OPENAI_TITLE_GENERATION_ENABLED,
     PAID_EXTERNAL_APIS_ENABLED,
     POWER_AUTOMATE_API_KEY,
+    POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY,
     PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
     PUSH_LIVE_FETCH_ENABLED,
     RESEARCH_EXTERNAL_CONTEXT_ENABLED,
@@ -249,16 +250,26 @@ def get_teams_readiness() -> JSONResponse:
         history_authoritative = bool(
             refresh.get("history_authoritative") and isinstance(history, list)
         )
+        history_required = bool(
+            PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+            or POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
+        )
         context = build_teams_alert_context(
             candidates,
             history=history if isinstance(history, list) else [],
-            history_authoritative=history_authoritative,
+            history_authoritative=(history_authoritative or not history_required),
             now_ts=now_ts,
             config=config,
         )
         last_push_ts = int(context.get("lastPushTs") or 0)
         history_info = {
-            "ok": history_authoritative,
+            "ok": bool(history_authoritative or not history_required),
+            "required": history_required,
+            "fallbackMode": (
+                "durable_slot_and_receipt_dedup"
+                if not history_required and not history_authoritative
+                else None
+            ),
             "source": str(refresh.get("source") or "unknown"),
             "snapshotAgeSeconds": refresh.get("snapshot_age_seconds"),
             "lastPushAgeMinutes": (

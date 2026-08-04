@@ -1008,6 +1008,62 @@ class TestTeamsReadiness:
         ]
         assert data["volume"]["min"] <= data["volume"]["max"]
 
+    def test_power_automate_readiness_allows_cloud_only_history_fallback(
+        self,
+        monkeypatch,
+    ):
+        import app.notifications.teams as teams_module
+        import app.routers.feed as feed_router
+        import app.routers.health as health_router
+
+        monkeypatch.setattr(health_router, "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED", False)
+        monkeypatch.setattr(health_router, "POWER_AUTOMATE_API_KEY", "synthetic-pa-key")
+        monkeypatch.setattr(
+            health_router,
+            "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+            False,
+        )
+        monkeypatch.setattr(
+            teams_module,
+            "_refresh_push_history_for_dedup",
+            lambda: {
+                "history": [],
+                "history_authoritative": False,
+                "source": "db-fallback",
+                "snapshot_age_seconds": None,
+            },
+        )
+        monkeypatch.setattr(
+            feed_router,
+            "build_articles_payload",
+            lambda **_kwargs: {
+                "articles": [
+                    {
+                        "url": "https://www.bild.de/news/cloud-only-readiness",
+                        "title": "Cloud-only Readiness",
+                        "score": 90.0,
+                        "scoreSource": "internal_score_api",
+                    }
+                ]
+            },
+        )
+
+        response = client.get("/api/teams-readiness")
+        data = response.json()
+
+        assert response.status_code == 200
+        assert data["pushHistory"] == {
+            "ok": True,
+            "required": False,
+            "fallbackMode": "durable_slot_and_receipt_dedup",
+            "source": "db-fallback",
+            "snapshotAgeSeconds": None,
+            "lastPushAgeMinutes": None,
+            "pushesToday": 0,
+            "sportPushesToday": 0,
+            "historyAuthoritative": False,
+        }
+
 
 class TestTagesplanEndpoint:
     def test_tagesplan_returns_200(self):

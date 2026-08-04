@@ -458,6 +458,13 @@ PUSH_TEAMS_BACKGROUND_SENDER_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED",
     False,
 )
+# Power Automate must remain operational without an AS-network relay. When the
+# live push history is reachable it is still used for exact duplicate checks;
+# otherwise the durable slot and Teams receipt claims prevent repeated posts.
+POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY: bool = _env_flag(
+    "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+    False,
+)
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
 # Kanonischer Push-Score fuer die Teams-Auswahl. In Produktion (render.yaml)
 # auf Anweisung des Product Owners aktiviert (2026-07-29); lokal default aus.
