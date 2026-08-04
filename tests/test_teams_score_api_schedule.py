@@ -8,8 +8,11 @@ import pytest
 from app.notifications.teams import (
     TeamsAlertConfig,
     _daily_runtime_opportunities,
+    _mandatory_slot_top1_binding_slot,
+    binding_slot_window_open,
     build_teams_daily_schedule,
     evaluate_teams_alert_candidates,
+    seconds_to_defer_cycle_for_binding_slot,
 )
 from app.push_schedule.weekly_baseline import PDF_OR_MATRIX
 from app.routers.feed import _apply_internal_score_api_scores
@@ -27,9 +30,9 @@ def _config(**overrides):
         "require_internal_score_api": True,
         "allowed_sections": (),
         "excluded_sections": (),
-        "target_pushes_per_day": 15,
-        "min_alerts_per_day": 15,
-        "max_alerts_per_day": 18,
+        "target_pushes_per_day": 11,
+        "min_alerts_per_day": 11,
+        "max_alerts_per_day": 15,
         "global_cooldown_minutes": 30,
         "min_minutes_since_last_push": 30,
         "slot_deadline_minute": 45,
@@ -44,19 +47,72 @@ def _labels(date_iso):
     return schedule, {slot["label"] for slot in schedule["slots"]}
 
 
-def test_monday_uses_all_18_binding_base_and_golden_slots():
+def test_monday_uses_the_deterministic_berlin_layout():
     schedule, labels = _labels("2026-07-13")
-    expected_hours = {7, 8, 9, 18, 19, 20, 21, 22}
-    expected = {"06:15", "06:45"}
-    expected.update(f"{hour:02d}:{minute:02d}" for hour in expected_hours for minute in (15, 45))
 
-    assert labels == expected
-    assert schedule["count"] == 18
-    assert schedule["requiredCount"] == 18
-    assert schedule["runtimeOpportunityCount"] == 18
-    assert schedule["minimumDoubleCount"] == 9
-    assert schedule["optionalDoubleCount"] == 0
+    # Morgen-Doppel 06/07/08 (gleichverteilt, mathematisch maximal gespreizt),
+    # Mittagsslot 12:30, montags erster Abend-Slot 17:30, danach unveraenderte
+    # dynamische Heatmap-Verteilung 18-21.
+    assert labels == {
+        "06:00", "06:36", "07:12", "07:47", "08:23", "08:59",
+        "12:30",
+        "17:30", "18:34", "19:08", "19:42", "20:17", "20:51", "21:25", "21:59",
+    }
+    # Ab 22:00 gilt die Ruhezeit; die Totzone 10/11 bleibt draussen.
+    assert {"10:45", "11:45", "22:15", "22:45", "23:45"}.isdisjoint(labels)
+    assert schedule["count"] == 15
+    assert schedule["requiredCount"] == 15
+    assert schedule["runtimeOpportunityCount"] == 15
     assert schedule["meetsTargetCoverage"] is True
+
+
+def test_date_scoped_delay_moves_only_the_remaining_monday_slots():
+    config = _config(
+        slot_delay_date="2026-08-03",
+        slot_delay_from="19:08",
+        slot_delay_minutes=14,
+    )
+    berlin = ZoneInfo("Europe/Berlin")
+    today = [
+        dt.datetime.fromtimestamp(slot["ts"], berlin).strftime("%H:%M")
+        for slot in _daily_runtime_opportunities(dt.date(2026, 8, 3), config)
+    ]
+    tomorrow = [
+        dt.datetime.fromtimestamp(slot["ts"], berlin).strftime("%H:%M")
+        for slot in _daily_runtime_opportunities(dt.date(2026, 8, 4), config)
+    ]
+
+    assert today[-6:] == ["19:22", "19:56", "20:31", "21:05", "21:39", "22:13"]
+    assert "19:08" not in today
+    assert "19:08" in tomorrow
+    old_slot = int(dt.datetime(2026, 8, 3, 19, 8, tzinfo=berlin).timestamp())
+    new_slot = int(dt.datetime(2026, 8, 3, 19, 22, tzinfo=berlin).timestamp())
+    assert _mandatory_slot_top1_binding_slot(old_slot, config) is None
+    assert _mandatory_slot_top1_binding_slot(new_slot, config)["ts"] == new_slot
+
+
+def test_worker_defers_slow_cycle_before_slot_and_retries_inside_window():
+    config = _config(
+        slot_delay_date="2026-08-03",
+        slot_delay_from="19:08",
+        slot_delay_minutes=14,
+    )
+    berlin = ZoneInfo("Europe/Berlin")
+    before = dt.datetime(2026, 8, 3, 19, 20, tzinfo=berlin).timestamp()
+    inside = dt.datetime(2026, 8, 3, 19, 22, 30, tzinfo=berlin).timestamp()
+
+    assert seconds_to_defer_cycle_for_binding_slot(
+        before,
+        config,
+        guard_seconds=180,
+    ) == pytest.approx(120.5)
+    assert binding_slot_window_open(before, config) is False
+    assert seconds_to_defer_cycle_for_binding_slot(
+        inside,
+        config,
+        guard_seconds=180,
+    ) == 0.0
+    assert binding_slot_window_open(inside, config) is True
 
 
 @pytest.mark.parametrize(
@@ -71,24 +127,41 @@ def test_monday_uses_all_18_binding_base_and_golden_slots():
         ("2026-07-19", 6),
     ],
 )
-def test_every_weekday_pairs_each_red_yellow_hour_and_reaches_15_to_18(
+def test_every_weekday_uses_the_deterministic_layout_and_reaches_11_to_15(
     date_iso,
     weekday,
 ):
     schedule, labels = _labels(date_iso)
+    slots = sorted(schedule["slots"], key=lambda slot: int(slot["ts"]))
 
-    assert {"06:15", "06:45"}.issubset(labels)
-    assert 15 <= schedule["runtimeOpportunityCount"] <= 18
+    # Morgen-Doppel und Mittagsslot sind an jedem Wochentag identisch verbindlich.
+    assert {"06:00", "06:36", "07:12", "07:47", "08:23", "08:59", "12:30"}.issubset(labels)
+    assert 11 <= schedule["runtimeOpportunityCount"] <= 15
     assert len(labels) == schedule["runtimeOpportunityCount"]
     assert not ({"10:45", "11:45"} & labels)
 
-    golden_hours = {
+    # Genau zwei Entscheidungen je Morgenstunde 06/07/08.
+    for hour in (6, 7, 8):
+        assert sum(1 for slot in slots if int(slot["hour"]) == hour) == 2
+
+    # Abend-Hot-Hours (rot/gelb 18-21 laut Heatmap) maximal ausschoepfen:
+    # zwei Slots je Hot-Stunde, gleichverteilt ueber den Block.
+    hot_hours = [
         hour
-        for hour in range(6, 24)
+        for hour in (18, 19, 20, 21)
         if (PDF_OR_MATRIX.get((hour, weekday)) or {}).get("avg_or", 0.0) >= 6.0
-    }
-    for hour in golden_hours:
-        assert {f"{hour:02d}:15", f"{hour:02d}:45"}.issubset(labels)
+    ]
+    evening = [slot for slot in slots if slot.get("slotRole") == "evening_hot"]
+    assert len(evening) >= 2 * max(1, len(hot_hours))
+    if weekday == 0:
+        assert evening[0]["label"] == "17:30"
+
+    # Mindestabstand zwischen allen verbindlichen Entscheidungen: 30 Minuten.
+    gaps = [
+        (int(later["ts"]) - int(earlier["ts"])) // 60
+        for earlier, later in zip(slots, slots[1:])
+    ]
+    assert min(gaps) >= 30
 
     opportunities = _daily_runtime_opportunities(dt.date.fromisoformat(date_iso), _config())
     assert all(
@@ -105,8 +178,32 @@ def test_schedule_keeps_berlin_wall_clock_slots_across_dst_seasons(date_iso):
         for item in opportunities
     ]
 
-    assert local[0] == "06:15"
-    assert local[1] == "06:45"
+    assert local[0] == "06:00"
+    assert local[1] == "06:36"
+
+
+@pytest.mark.parametrize(
+    "date_iso",
+    [
+        "2026-07-13",
+        "2026-07-14",
+        "2026-07-15",
+        "2026-07-16",
+        "2026-07-17",
+        "2026-07-18",
+        "2026-07-19",
+    ],
+)
+def test_every_calculated_slot_is_a_mandatory_top1_window(date_iso):
+    config = _config()
+    day = dt.date.fromisoformat(date_iso)
+    for slot in _daily_runtime_opportunities(day, config):
+        slot_ts = int(slot["ts"])
+        assert _mandatory_slot_top1_binding_slot(slot_ts, config)["ts"] == slot_ts
+        assert _mandatory_slot_top1_binding_slot(slot_ts + 299, config)["ts"] == slot_ts
+        assert _mandatory_slot_top1_binding_slot(slot_ts - 1, config) is None
+        assert _mandatory_slot_top1_binding_slot(slot_ts + 300, config) is None
+        assert _mandatory_slot_top1_binding_slot(slot_ts + 301, config) is None
 
 
 def _mock_decision(candidate):
@@ -201,21 +298,37 @@ def test_exact_api_score_tie_uses_secondary_score_without_field_veto():
 def test_0645_refresh_reorders_scores_and_excludes_no_data_fallback():
     score_round = 0
 
-    def transport(url, _headers, _timeout):
-        cms_id = url.rsplit("/", 1)[-1]
+    def batch_transport(_url, _headers, request_body, _timeout):
+        cms_ids = json.loads(request_body)["cmsIds"]
         scores = ({CMS_A: 90.0, CMS_B: 86.0}, {CMS_A: 89.0, CMS_B: 92.0})[score_round]
+        results = [
+            {
+                "status": "found",
+                "cmsId": cms_id,
+                "score": scores[cms_id],
+                "scoredAt": (
+                    "2026-07-20T06:44:30Z"
+                    if score_round
+                    else "2026-07-20T06:14:30Z"
+                ),
+                "scoreBreakdown": None,
+                "orFactor": None,
+            }
+            for cms_id in cms_ids
+        ]
         body = {
-            "cmsId": cms_id,
-            "score": scores[cms_id],
-            "scoredAt": "2026-07-20T06:44:30Z" if score_round else "2026-07-20T06:14:30Z",
+            "requestedCount": len(results),
+            "uniqueCount": len(set(cms_ids)),
+            "foundCount": len(results),
+            "notFoundCount": 0,
+            "results": results,
         }
         return 200, json.dumps(body).encode("utf-8")
 
     client = ScoreApiClient(
         "https://scores.example.invalid",
         "synthetic-key",
-        transport=transport,
-        cache_ttl_seconds=0,
+        batch_transport=batch_transport,
     )
     articles = [
         {

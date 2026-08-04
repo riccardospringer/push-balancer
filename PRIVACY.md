@@ -32,7 +32,7 @@ The Germany-relevance gate has the defined editorial purpose of prioritising sto
 
 The offline synthetic reader-mode panel is a non-personal editorial stress test. Its 144 cells are combinations of topic interest, attention state, and usage motive, not representations of recruited or observed BILD users. The bundled study uses invented headlines and `example.invalid` URLs only. The panel cannot estimate opening rate, does not read production history, and is technically marked shadow-only and not permitted for production decisions. Using real response data, demographic attributes, identifiers, or the panel as an automated Teams gate remains outside the approved scope and requires a new review.
 
-The score-driven Teams mode queries the internal Push Balancer score projection for the current article field in approved batches of at most 500 unique CMS document IDs. Its defined purpose is to make the already calculated article score the canonical ranking signal at each binding editorial slot. In this mode a fresh API score is mandatory: a missing result, stale data, timeout, malformed data, missing configuration, or rejected credentials can never fall back to a locally invented score. Secondary article models only break an exact API-score tie after the existing factual, freshness, section, Germany-relevance, title, cooldown, and Teams-dedup gates. It adds no reader, device, session, employee, or Adobe data and does not infer reader sentiment.
+The score-driven Teams mode queries the internal Push Balancer score projection for the current article field in one approved batch of at most 200 unique CMS document IDs (within the source API's approved 500-ID ceiling). Its defined purpose is to make the already calculated article score the canonical ranking signal at each binding editorial slot. In this mode a source-valid workday API score is mandatory: a missing result, data at or beyond the source's eight-hour boundary, timeout, malformed data, missing configuration, or rejected credentials can never fall back to a locally invented score. Secondary article models only break an exact API-score tie after the existing factual, freshness, section, Germany-relevance, title, cooldown, and Teams-dedup gates. It adds no reader, device, session, employee, or Adobe data and does not infer reader sentiment.
 
 The adaptive post-send threshold uses the timestamp of the last successfully sent Teams recommendation to raise the next article's raw-score floor to at most 80 and decay it back to the configured baseline. A canonical article score strictly above 80 may waive only local soft quality and pacing gates. Quiet hours, slot timing, publication/factual integrity, section and event rules, Teams cooldown, daily cap, exact live-push and Teams article/topic deduplication, title approval, and transport checks remain hard. The calculation does not use actual live-push timing, recipient behavior, identifiers, or employee activity and introduces no external call.
 
@@ -54,6 +54,9 @@ The adaptive post-send threshold uses the timestamp of the last successfully sen
 - Adaptive-threshold metadata: current/base/peak article-score threshold, decay phase, elapsed time since the last Teams recommendation, and aggregate count of waived soft gates
 - Optional Adobe Analytics traffic aggregates
 - Optional OpenAI input for title optimisation when explicitly configured
+- For the CMS score adapter: one caller-supplied CMS document ID, its canonical
+  URL held only for the request, and the returned score, numeric score
+  components, opening-rate sorting factor, and calculation time
 
 The runtime review does not receive recipient-level behavior, employee performance data, raw production logs, secrets, session identifiers, or the raw 90-day history. It receives only an ephemeral index and the minimum article/decision signals required for its checks.
 
@@ -79,6 +82,7 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - Adobe Analytics API when configured
 - Microsoft Power Automate and Microsoft Teams for the configured editorial group chat
 - OpenAI API when configured for title generation
+- Internal UrlServer only when the optional legacy-URL fallback is configured
 
 ## Runtime safeguards in this repository
 
@@ -106,12 +110,24 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - Process-local duplicate state is checked before ranking so a blocked article cannot starve the candidate field. Rejected durable claims and failed webhook attempts release only their ephemeral reservation; aggregate diagnostics retain reason counts without adding titles, URLs, CMS IDs, or personal data.
 - The weekday runtime plan creates 15-18 executable decisions. `06:15` and `06:45` are always binding; every red/yellow matrix hour is evaluated at both `:15` and `:45`, with a fresh API re-ranking for the second decision. Strong non-peak `:45` slots fill the day to at least 15, avoiding the 10/11 o'clock dead zone where possible. The independent Teams cooldown is 30 minutes. The separate 05:45 planning message does not enter that cooldown. Empty-cycle diagnostics contain aggregate counts and blocker categories, never article titles, URLs, CMS IDs, or raw histories.
 - After that cooldown, the local article-score floor is 80 and decays linearly to 75 by minute 90 after the last successful Teams recommendation. It is capped at the strict `>80` soft-gate override boundary, uses no live-push timestamp, creates no new external request, and retains all hard safety, timing, title, duplicate, and transport gates.
-- Verified breaking requires a structured breaking flag plus an EIL/BREAKING marker or trusted editorial provenance. It may bypass slot wait, the global Teams cooldown, and the daily cap only after factual, publication-time, section, quality, score, and Teams-dedup checks pass; hard quiet hours remain absolute.
+- Verified breaking requires a structured breaking flag plus an EIL/BREAKING marker or trusted editorial provenance. It may receive priority only inside an open binding slot after factual, publication-time, section, quality, score, cooldown, and Teams-dedup checks pass; the global Teams cooldown, raster, transport-time wall-clock check, and hard quiet hours remain absolute.
 - Quiet hours are enforced twice: candidate evaluation and the generic Teams sender both block every payload from 00:00 through 05:29 Berlin time.
 - The transport additionally rejects recommendation payloads without the current non-personal policy-version marker, independent Teams pacing, or the applicable raw Push Score floor; these checks run before the webhook request.
 - Unapproved recommendation objects are marked as local previews and the sender rejects them before any webhook request.
 - Decision logs use a short one-way article reference and aggregate counts instead of full article URLs, headlines, or raw reviewer inputs.
 - Secrets such as `OPENAI_API_KEY`, Adobe credentials, `ADMIN_API_KEY`, `PUSH_SYNC_SECRET`, `PUSH_TEAMS_WEBHOOK_URL`, and `NPM_TOKEN` are runtime-only values.
+- `SCORE_API_KEY` protects the CMS-ID lookup independently of admin access; the
+  endpoint is disabled when the score key is unset.
+- The CMS-ID adapter returns no title, URL, prose explanation, prediction,
+  history, or model metadata. Its optional breakdown is limited to allowlisted
+  numeric values already produced by the existing scoring UI. It uses generic
+  not-found responses and marks all responses `no-store`.
+- CMS IDs are matched locally against IDs already embedded in current BILD
+  article paths; mappings are not persisted or cached by the adapter.
+- Secrets such as `OPENAI_API_KEY`, Adobe credentials, `ADMIN_API_KEY`,
+  `PUSH_SYNC_SECRET`, `SCORE_API_KEY`, `URL_API_KEY`, and `NPM_TOKEN` are
+  runtime-only values. `URL_API_KEY` must be a dedicated service API key,
+  never an employee browser/session token.
 
 ## External transfer notes
 
@@ -135,6 +151,106 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - Internal API results are held only in process memory for at most 45 seconds by this consumer and are not added to a new persistence table. The selected score and timestamp follow the existing 45-day Teams recommendation retention and the destination tenant's retention policy.
 - The adaptive-threshold phase and minimized high-score override verdict are stored only inside the existing Teams recommendation decision snapshot and follow its 45-day cleanup; no new table or identifier is introduced.
 - Any new persisted data category should document retention and deletion behavior in the corresponding handover or PR note.
+- The adapter adds no application-level retention. Platform access-log retention
+  and deletion remain a rollout gate because the request path contains a CMS ID
+  and operational logs can contain caller IP addresses.
+
+## CMS score migration approval gate
+
+The code migration does not copy Render databases, snapshots, logs, trained
+runtime models, or secrets. It does include the seed model already published in
+the Render source so that the cold-start algorithm is reproducible; its training
+provenance and permitted use on the Next platform still require approval. A
+later state migration or production cutover must
+not proceed until the Product/System Owner and Privacy Manager have confirmed:
+
+- purpose and legal basis for the consuming team's use
+- controller/processor roles and the approved internal recipient
+- Next ingress, egress, authentication, and observability path
+- access-log and database retention, deletion, access, export, and correction handling
+- whether any Runtime DB/model transfer is necessary for numeric state parity
+- the Render software/model inventory and cross-architecture parity result;
+  source hashes alone do not prove identical live scores on the ARM64 target
+
+Escalate to the Data Protection Officer and Legal/Group Legal if any of these
+items, an international transfer, or employee-related monitoring remains unclear.
+
+## PRIVACY NOTE — numeric score composition
+
+- **Purpose:** Allow one approved internal backend to retrieve, by CMS document
+  ID, the exact Push score total and an allowlisted numeric explanation already
+  produced by the existing Render UI. The total remains authoritative because
+  existing caps, age multipliers, and TV adjustments can prevent naive
+  summation. This change adds no scoring, profiling logic, or recomputation.
+- **Data categories:** CMS document ID; captured total score; allowlisted numeric
+  score components; OR sorting factor; UTC capture time. Platform access logs
+  may additionally contain caller IP/network identifiers and the CMS ID in the
+  path. No title, URL, prose explanation, predicted opening rate, user-level
+  event, secret, or model metadata is returned.
+- **Data subjects:** The payload describes editorial articles, not individual
+  readers. Aggregated engagement signals may contribute to existing derived
+  values. Operational network identifiers can relate to authorised employees or
+  service operators and remain subject to the approved logging policy.
+- **Legal basis:** The controller's recorded legal basis for the existing
+  internal editorial decision-support purpose must be confirmed as covering
+  this additive payload before rollout. This repository does not determine or
+  extend that basis.
+- **Roles:** The responsible Axel Springer entity remains controller. The named
+  internal consumer, BILD Next platform operators, Render hosting role, and any
+  processors/subprocessors must be recorded in the release evidence.
+- **Recipients / transfers:** Output is limited to the specifically named and
+  approved internal consumer workload. The existing fixed Render source remains
+  the only upstream; no new AI, analytics, or support recipient is introduced.
+  Confirm that Render hosting and any international-transfer safeguards remain
+  within the already approved scope. Escalate to DPO and Legal/Group Legal if
+  the recipient, role, location, or transfer path is new or unclear.
+- **Retention / deletion:** Next adds no persistence or response cache and sends
+  `Cache-Control: no-store`. Source snapshots have an eight-hour logical
+  visibility window. Before rollout, name the owner of Render's
+  `article_score_log` and document its physical deletion/expiry process, plus
+  retention and deletion for ingress, proxy, application, and platform logs.
+- **Safeguards:** Dedicated server-side API key; internal network gate; fixed
+  HTTPS upstream and query; redirects rejected; strict allowlists, numeric
+  bounds, and complete-pair validation; generic errors and redacted route
+  logging; no fallback score; no recalculation; synthetic test data; legacy
+  snapshots represented with null explanation fields.
+- **Required approvals / gates:** Product/System Owner and Privacy Manager must
+  confirm the additive payload scope, purpose, legal basis, roles, and the named
+  consumer identity (repository plus namespace/service account, or approved
+  egress IP/CIDR). Release evidence must also name the Render deletion owner and
+  process and record incident-owner closure or an explicitly scoped release
+  decision. DPO and Legal/Group Legal review is required if sensitive or
+  employee data, a new recipient, a new purpose, or an unclear international
+  transfer is involved. Technical completion alone is not deployment approval.
+
+## Approval record and PRIVACY NOTE — bounded score batch (2026-07-23)
+
+The user supplied the required confirmation on 2026-07-23: batches of up to
+500 CMS IDs are approved, the consumer is named in the controlled release
+evidence, the `article_score_log` deletion process is regulated, and the
+documented incident hold is lifted. No consumer identity or secret is copied
+into source control.
+
+- **Purpose:** Reduce latency and request volume for the approved internal
+  article-list consumer. Existing scores are only read, never changed.
+- **Data categories / subjects:** The same CMS IDs, scores, timestamps, numeric
+  breakdown, and OR factor as the single lookup. These describe editorial
+  articles, not individual readers.
+- **Legal basis / roles / recipients:** Unchanged from the approved internal
+  score workflow; accountable owners and the named consumer remain in the
+  controlled release evidence.
+- **Recipients / transfers:** One existing Render source and one named internal
+  consumer. No new provider, AI system, analytics recipient, or transfer.
+- **Retention / deletion:** Next adds no persistence or cache. The approved
+  `article_score_log` deletion process remains authoritative. Bodies and CMS
+  IDs must not be logged.
+- **Safeguards:** 1–500 validated 24-hex IDs; one deduplicated upstream POST;
+  strict order, shape, bounds, and one-MiB response validation; fixed HTTPS
+  host/path/query; redirects rejected; API key; `no-store`; no partial fallback;
+  and at most two concurrent batches per worker with immediate `429` beyond it.
+- **Approval status:** Batch scope, named consumer, deletion handling, and
+  incident-hold release were confirmed by the user on 2026-07-23. Normal
+  environment-specific deployment and access evidence must still be retained.
 
 ## Required approvals before activation
 
@@ -211,6 +327,18 @@ No approval is inferred from successful technical tests.
 - Do not log secrets, tokens, or raw payloads unnecessarily
 - Keep retention, deletion paths, and role-based access in mind when changing persistence or observability
 - Escalate any new external integration, profiling logic, or privacy-relevant processing before rollout
+
+## PRIVACY NOTE: mandatory Teams slot claim and People-story calibration
+
+- Purpose: deliver exactly one highest-ranked technically valid editorial article recommendation per calculated Teams slot, prevent duplicate slot delivery across worker cycles/restarts, and correct the existing article-level score for a concrete high-interest A-list People development.
+- Data categories: existing public article title, canonical URL, CMS ID, section, publication time, article-level Push Score, exact duplicate status, binding-slot timestamp, delivery status, and truncated technical error. The slot table stores only a SHA-256 article reference, not the URL or title.
+- Data subjects: people incidentally named in already-public editorial article metadata; no reader, recipient, device, session, or employee scoring. The score remains an article-content score and does not assess the named person.
+- Legal basis: unchanged from the established editorial recommendation and internal-score workflows; responsible Legal/DPO documentation remains authoritative.
+- Roles: unchanged Axel Springer editorial controller/system-owner roles and existing internal score-service ownership.
+- External recipients / international transfer: no new service, recipient, or transfer. Microsoft Power Automate/Teams receives the existing minimized recommendation plus a non-personal deterministic `slotId`; raw history and slot-claim state stay local.
+- Retention / deletion: the new slot claim is deleted by the existing cleanup after 45 days. Internal score results remain memory-only under the existing short cache; existing recommendation and Teams-tenant retention remain unchanged.
+- Safeguards: one atomic `PRIMARY KEY(binding_slot_ts)` claim, hashed article reference, stable slot ID, five-minute wall-clock revalidation, fresh internal score requirement, authoritative exact live/Teams duplicate checks, promo/fiction rejection, quiet hours, no secret or raw-history payload, original-headline fallback when optional quality generation fails, and no repeat POST after an acknowledgement-ambiguous mandatory-slot timeout.
+- Required documentation / approvals: no new personal-data category, behavioral profiling, provider, or processing purpose is introduced. Product/System Owner should record the mandatory Top-1 policy and Microsoft-side `slotId` idempotency handling; Privacy Manager/DPO/Legal must reassess before adding new personal attributes, observed-user data, employee data, recipients, or transfer paths.
 
 ## PR / handover template
 

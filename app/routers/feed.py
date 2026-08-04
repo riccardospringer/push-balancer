@@ -33,6 +33,7 @@ from app.config import (
     LIVE_FEED_FALLBACK_ENABLED,
     PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS,
     PUSH_BALANCER_SCORE_API_BASE_URL,
+    PUSH_BALANCER_SCORE_API_BATCH_TIMEOUT_SECONDS,
     PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
     PUSH_BALANCER_SCORE_API_KEY,
     PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS,
@@ -472,6 +473,7 @@ def _get_internal_score_api_client():
         PUSH_BALANCER_SCORE_API_BASE_URL,
         bool(PUSH_BALANCER_SCORE_API_KEY),
         PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS,
+        PUSH_BALANCER_SCORE_API_BATCH_TIMEOUT_SECONDS,
         PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
         PUSH_BALANCER_SCORE_API_MAX_RETRIES,
     )
@@ -480,6 +482,7 @@ def _get_internal_score_api_client():
             PUSH_BALANCER_SCORE_API_BASE_URL,
             PUSH_BALANCER_SCORE_API_KEY,
             timeout_seconds=PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS,
+            batch_timeout_seconds=PUSH_BALANCER_SCORE_API_BATCH_TIMEOUT_SECONDS,
             cache_ttl_seconds=PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS,
             max_retries=PUSH_BALANCER_SCORE_API_MAX_RETRIES,
         )
@@ -542,7 +545,7 @@ def _apply_internal_score_api_scores(
             "Z",
         )
         article["pushBalancerScoreAgeSeconds"] = max(0, int(age_seconds))
-        if age_seconds < -300 or age_seconds > max(0, int(max_age_seconds)):
+        if age_seconds < -300 or age_seconds >= max(0, int(max_age_seconds)):
             article["scoreApiStatus"] = "stale"
             article["scoreSource"] = "internal_score_api_stale"
             continue
@@ -551,7 +554,12 @@ def _apply_internal_score_api_scores(
         article["score"] = score
         article["pushBalancerScore"] = score
         article["scoreSource"] = "internal_score_api"
-        article["scoreApiStatus"] = "ok"
+        # Ein ueberbrueckter Ausfall bleibt sichtbar, aendert aber nichts an
+        # der Kanonizitaet: der Score ist derselbe und die Frische wurde oben
+        # unveraendert gegen die Altersgrenze geprueft.
+        buffered = bool(getattr(lookup.value, "served_from_outage_buffer", False))
+        article["scoreApiStatus"] = "ok_outage_buffered" if buffered else "ok"
+        article["scoreServedFromOutageBuffer"] = buffered
         article["scoreBreakdownSource"] = "internal_score_api_with_editorial_context"
         article["scoreReason"] = "Kanonischer Push Score aus der internen Push-Balancer-API"
 
@@ -713,7 +721,7 @@ def _iso_from_unix_ts(ts: int | float | None) -> str | None:
         return None
 
 
-@router.get("/api/teams-alerts")
+@router.get("/api/teams-alerts", include_in_schema=False)
 def get_teams_alerts(limit: int = Query(default=20, ge=1, le=100)) -> JSONResponse:
     """Return recent Teams recommendation decisions for dashboard transparency."""
     try:
@@ -762,7 +770,7 @@ def _parse_db_json(value: str, fallback: Any) -> Any:
         return fallback
 
 
-@router.get("/api/teams-recommendations")
+@router.get("/api/teams-recommendations", include_in_schema=False)
 def get_teams_recommendations(limit: int = Query(default=50, ge=1, le=200)) -> JSONResponse:
     """Return persisted Teams push suggestions and day-plan entries."""
     try:
@@ -849,7 +857,11 @@ def get_teams_daily_plan(
     return JSONResponse(content=plan)
 
 
-@router.post("/api/teams-alerts/test", dependencies=[Depends(require_admin_key)])
+@router.post(
+    "/api/teams-alerts/test",
+    dependencies=[Depends(require_admin_key)],
+    include_in_schema=False,
+)
 def post_teams_alert_test() -> JSONResponse:
     """Send a clearly marked test message to the configured Teams channel.
 
@@ -914,7 +926,7 @@ def _fetch_feeds_live(feeds: dict[str, str]) -> dict:
     return result
 
 
-@router.get("/api/competitors")
+@router.get("/api/competitors", include_in_schema=False)
 def get_competitors() -> JSONResponse:
     """Liefert alle Competitor-Feeds aus Background-Cache.
 
@@ -943,7 +955,7 @@ def get_competitor(name: str) -> Response:
     return Response(content=data, media_type="application/xml; charset=utf-8")
 
 
-@router.get("/api/sport-competitors")
+@router.get("/api/sport-competitors", include_in_schema=False)
 def get_sport_competitors() -> JSONResponse:
     """Liefert Sport-Competitor-Feeds aus Background-Cache.
 

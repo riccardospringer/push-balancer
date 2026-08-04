@@ -1,0 +1,26 @@
+# Copy into https://github.com/spring-media/bildnext-flux-cd under stg/push-balancer
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageUpdateAutomation
+metadata:
+  name: push-balancer
+  namespace: bildnext
+spec:
+  interval: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system-bildnext-flux-cd-stg-main
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        email: fluxcdbot@users.noreply.github.com
+        name: fluxcdbot
+      messageTemplate: "Auto-release {{range .Updated.Images}}{{println .}}{{end}}"
+    push:
+      branch: main
+  update:
+    path: ./stg/push-balancer
+    strategy: Setters

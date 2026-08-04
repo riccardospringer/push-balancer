@@ -1,0 +1,121 @@
+# Teams-Kanal-Laufzeit (voller Push Balancer, app.main:app) auf Next.
+# Zweites Release neben der Score-API: gleiche Chart/Image-Quelle, eigener
+# State (PVC) und eigene Secrets. Kein Ingress noetig - der Teams-Worker
+# arbeitet rein outbound (BILD-Push-API, Score-API, Teams-Webhook).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: push-balancer-teams
+  namespace: bildnext
+spec:
+  releaseName: push-balancer-teams
+  interval: 5m
+  chart:
+    spec:
+      chart: next-push-balancer-chart
+      version: "0.1.34"
+      sourceRef:
+        name: next-helm-charts
+        kind: HelmRepository
+        namespace: flux-system
+  values:
+    replicaCount: 1
+    image: ghcr.io/spring-media/next-push.balancer
+    tag: 0.1.34 # {"$imagepolicy": "bildnext:push-balancer:tag"}
+    digest: "" # Approved 0.1.34 digest to set before activation: sha256:6c834f5275d50d57974afdedc184fb2027e9dff2651629c30f09ae7f0985fb99
+    imagePullPolicy: IfNotPresent
+    imagePullSecrets:
+      - name: ghcr-imagepull-secret
+    imagePullSecret:
+      # The score release already materializes the pull secret in this
+      # namespace; keep a single owner to avoid ExternalSecret conflicts.
+      enabled: false
+      name: ghcr-imagepull-secret
+    serviceAccount:
+      create: true
+      annotations: {}
+      name: "bildnext-push-balancer-teams"
+    service:
+      type: ClusterIP
+      port: 8050
+      targetPort: 8050
+    ingress:
+      # Bewusst aus: der Teams-Kanal sendet nur outbound.
+      enabled: false
+      rolloutGateApproved: false
+      requireTls: true
+      className: ""
+      annotations: {}
+      hosts: []
+      tls: []
+    reloader:
+      enabled: true
+    # SQLite-State (Push-Historie, Teams-Claims) muss Neustarts ueberleben,
+    # sonst drohen doppelte Live-Push-Posts und verlorene Tageszaehler.
+    persistence:
+      enabled: true
+      size: 2Gi
+      storageClass: gp3
+      accessMode: ReadWriteOnce
+      mountPath: /data
+    readinessProbe:
+      enabled: true
+      httpGet:
+        path: /api/ready
+        port: http
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+      successThreshold: 1
+    configMapName: push-balancer-teams-config
+    secretName: push-balancer-teams-secret
+    config:
+      ASGI_APP: "app.main:app"
+      # Interne Basis-URLs im Cluster-Repo setzen; sie bleiben aus dem
+      # oeffentlichen Repository draussen.
+      PUSH_API_BASE: ""
+      PUSH_BALANCER_SCORE_API_ENABLED: "true"
+      PUSH_BALANCER_SCORE_API_BASE_URL: ""
+      DB_PATH: "/data/.push_history.db"
+      PUSH_DB_MAX_ROWS: "5000"
+      PUSH_TEAMS_ALERTS_ENABLED: "true"
+      PUSH_LIVE_FETCH_ENABLED: "true"
+      LIVE_FEED_FALLBACK_ENABLED: "true"
+      BACKGROUND_AUTOMATIONS_ENABLED: "false"
+      HEALTH_ACTIVE_CHECKS_ENABLED: "false"
+      RESEARCH_EXTERNAL_CONTEXT_ENABLED: "false"
+      ARTICLE_PREDICTION_ENRICHMENT_ENABLED: "true"
+      TAGESPLAN_ON_DEMAND_BUILD_ENABLED: "false"
+      PAID_EXTERNAL_APIS_ENABLED: "false"
+      INTERNAL_ACCESS_ENABLED: "true"
+      INTERNAL_ACCESS_ALLOWED_CIDRS: "127.0.0.1/32,::1/128"
+      INTERNAL_ACCESS_EXEMPT_PATHS: "/api/health,/api/ready"
+      TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128"
+    externalSecret:
+      enabled: true
+      refreshInterval: "5m"
+      secretStoreRef:
+        # Replace with the ClusterSecretStore available in prd.
+        name: example-secret-manager
+        kind: ClusterSecretStore
+      data:
+        - secretKey: PUSH_TEAMS_WEBHOOK_URL
+          remoteRef:
+            key: /example/project/push-balancer/teams-webhook-url
+        - secretKey: PUSH_BALANCER_SCORE_API_KEY
+          remoteRef:
+            key: /example/project/push-balancer/score-api-consumer-key
+    networkPolicy:
+      # Default deny. Erlaube im Cluster-Repo Egress zu: DNS, BILD-Push-API,
+      # interner Score-API, www.bild.de (Sitemap) und dem Teams/Power-Automate-
+      # Webhook (HTTPS). Ingress bleibt leer - nur Probes aus dem Pod-Netz.
+      enabled: true
+      policyTypes:
+        - Ingress
+        - Egress
+      ingress: []
+      egress: []
+    flux:
+      # ImageRepository/ImagePolicy werden bereits vom Score-Release verwaltet.
+      enabled: false

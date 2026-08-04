@@ -355,6 +355,7 @@ function ArticleRow({
           {article.isBreaking && <Badge variant="red">Breaking</Badge>}
           {article.isEilmeldung && <Badge variant="red">Eilmeldung</Badge>}
           {article.isSport && <Badge variant="blue">Sport</Badge>}
+          {article.isVideo && <Badge variant="purple">Video</Badge>}
           {article.isPlusArticle && <Badge variant="amber">Plus</Badge>}
         </div>
       </TableCell>
@@ -454,7 +455,8 @@ export function KandidatenPage() {
                 margin: '2px 0 0',
               }}
             >
-              {data.count} Artikel · aktualisiert {fmtDateTime(data.fetchedAt)}
+              {data.count} Artikel · aktualisiert {fmtDateTime(data.fetchedAt)} ·
+              Bedarf kombiniert Frische, Ressort-Fit, Breaking-Signale und Typ
             </p>
           )}
         </div>
@@ -524,7 +526,7 @@ export function KandidatenPage() {
                 onClick={() => setSortKey(k)}
               >
                 {k === 'score'
-                  ? 'Push Score'
+                  ? 'Push-Bedarf'
                   : k === 'predictedOR'
                     ? 'XOR'
                     : 'Datum'}
@@ -562,7 +564,7 @@ export function KandidatenPage() {
             <thead>
               <tr>
                 <TableHeader>Artikel</TableHeader>
-                <TableHeader>Push Score</TableHeader>
+                <TableHeader>Push-Bedarf</TableHeader>
                 <TableHeader>XOR (Prognose)</TableHeader>
                 <TableHeader>Tags</TableHeader>
                 <TableHeader></TableHeader>

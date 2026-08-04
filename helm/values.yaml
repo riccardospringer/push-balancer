@@ -1,0 +1,231 @@
+# Default values for Push Balancer.
+
+replicaCount: 1
+
+image: ghcr.io/spring-media/next-push.balancer
+tag: 0.1.59
+# Optional immutable release pin. It takes precedence over tag and is required
+# before the private score ingress can be enabled.
+digest: ""
+imagePullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: ghcr-imagepull-secret
+
+imagePullSecret:
+  enabled: true
+  name: ghcr-imagepull-secret
+  refreshInterval: 5m
+  secretStoreRef:
+    name: example-parameter-store
+    kind: ClusterSecretStore
+  remoteRef:
+    key: /example/project/github/imagepullsecret
+
+nameOverride: ""
+fullnameOverride: ""
+systemNamespace: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "bildnext-push-balancer"
+
+podAnnotations: {}
+
+# Requires a compatible Reloader controller in the target cluster. ConfigMap
+# template changes also trigger rollouts through a checksum annotation.
+reloader:
+  enabled: true
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+temporaryDirectory:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 64Mi
+
+service:
+  type: ClusterIP
+  portName: http-8050
+  port: 8050
+  targetPort: 8050
+  annotations: {}
+
+# A separate workload is required so the application cannot bypass its exact
+# HTTPS hostname allowlist. The proxy never terminates TLS or logs requests.
+egressProxy:
+  enabled: false
+  port: 3128
+  sentinelPort: 3129
+  allowedConnectHosts: []
+  noProxy: "localhost,127.0.0.1,::1"
+  # Optional AWS VPC CNI control for clusters where a broader, additive
+  # namespace policy would otherwise permit the app to bypass this proxy.
+  # This renders cluster-scoped resources and therefore requires both the
+  # networking.k8s.aws/v1alpha1 CRD and explicit helm-controller RBAC.
+  clusterNetworkPolicy:
+    enabled: false
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  networkPolicy:
+    # Select the real cluster DNS pods, or set only cidr for NodeLocal DNS.
+    dns:
+      cidr: ""
+      namespace: ""
+      podLabels: {}
+    # These CIDRs belong only to the allowlisting proxy, never to the app pod.
+    # Ports and protocol are fixed to TCP/443 by the template.
+    upstreamCidrs: []
+
+ingress:
+  enabled: false
+  # Helm refuses to render an enabled ingress until both this explicit approval
+  # gate and a TLS configuration are present.
+  rolloutGateApproved: false
+  requireTls: true
+  # Set only when the approved ingress controller terminates TLS with a
+  # platform-managed certificate instead of a Kubernetes TLS Secret.
+  platformManagedTls: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations: []
+
+affinity: {}
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /api/ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+
+configMapName: push-balancer-config
+secretName: push-balancer-secret
+
+config:
+  ASGI_APP: "app.score_main:app"
+  PUSH_API_BASE: ""
+  URL_API_BASE: ""
+  PUBLIC_ARTICLE_BASE_URL: "https://www.bild.de"
+  DB_PATH: "/data/.push_history.db"
+  PUSH_DB_MAX_ROWS: "5000"
+  PAID_EXTERNAL_APIS_ENABLED: "false"
+  BACKGROUND_AUTOMATIONS_ENABLED: "false"
+  HEALTH_ACTIVE_CHECKS_ENABLED: "false"
+  ECONOMY_MODE: "true"
+  PUSH_LIVE_FETCH_ENABLED: "false"
+  LIVE_FEED_FALLBACK_ENABLED: "false"
+  RESEARCH_EXTERNAL_CONTEXT_ENABLED: "false"
+  ARTICLE_PREDICTION_ENRICHMENT_ENABLED: "true"
+  TAGESPLAN_ON_DEMAND_BUILD_ENABLED: "false"
+  OPENAI_TITLE_GENERATION_ENABLED: "false"
+  OPENAI_BACKFILL_ENABLED: "false"
+  OPENAI_PREDICTION_SCORING_ENABLED: "false"
+  ADOBE_TRAFFIC_ENABLED: "false"
+  INTERNAL_ACCESS_ENABLED: "true"
+  INTERNAL_ACCESS_EXEMPT_PATHS: "/api/health,/api/ready"
+  TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128"
+
+externalSecret:
+  enabled: false
+  refreshInterval: "5m"
+  secretStoreRef:
+    name: example-secret-manager
+    kind: ClusterSecretStore
+  template:
+    data: {}
+  data: []
+  # Optional External Secrets dataFrom entries, including extract/rewrite.
+  dataFrom: []
+
+# Additional Kubernetes EnvVar entries. Supports both literal `value` and
+# least-privilege `valueFrom.secretKeyRef` projections.
+extraEnv: []
+extraEnvFrom: []
+
+persistence:
+  enabled: false
+  size: 2Gi
+  storageClass: gp3
+  accessMode: ReadWriteOnce
+  mountPath: /data
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable:
+
+networkPolicy:
+  # Empty rules intentionally create a default-deny policy. The private Flux
+  # deployment must supply approved ingress, DNS and upstream egress rules.
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+
+flux:
+  enabled: false
+  namespace: flux-system
+  imagerepository:
+    interval: "1m"
+    secretRefName: ghcr-imagepull-secret
+  imagepolicy:
+    filterTags:
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    policy:
+      semver:
+        range: '>=0.1.0'

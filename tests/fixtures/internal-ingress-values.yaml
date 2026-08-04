@@ -1,0 +1,38 @@
+digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+egressProxy:
+  enabled: true
+  allowedConnectHosts:
+    - api.stg.editorial.one
+    - www.bild.de
+  networkPolicy:
+    dns:
+      namespace: kube-system
+      podLabels:
+        k8s-app: kube-dns
+    upstreamCidrs:
+      - cidr: 203.0.113.0/24
+networkPolicy:
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-system
+          podSelector:
+            matchLabels:
+              app: synthetic-ingress
+      ports:
+        - protocol: TCP
+          port: 8050
+ingress:
+  enabled: true
+  rolloutGateApproved: true
+  requireTls: true
+  platformManagedTls: true
+  className: skipper
+  annotations:
+    zalando.org/aws-load-balancer-scheme: internal
+  hosts:
+    - host: score.internal.stg.example.invalid
+      paths:
+        - path: /api/v1/scores
+          pathType: Prefix

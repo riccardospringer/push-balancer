@@ -1,89 +1,94 @@
 openapi: 3.1.0
-
 info:
   title: Push Balancer API
   version: 3.1.0
-  description: |
-    Push Balancer is an editorial decision-support API for push notification planning.
+  description: 'Push Balancer is an editorial decision-support API for push notification planning.
+
     It exposes article candidates, live push history, research insights, and advisory
+
     machine-learning model outputs for editorial workflows.
+
+    '
   contact:
     name: Axel Springer National Media & Tech GmbH & Co. KG
     url: https://github.com/riccardospringer/next-push.balancer
     email: push-balancer@axelspringer.com
-
 servers:
-  - url: http://localhost:8050
-    description: Local development
-
+- url: http://localhost:8050
+  description: Local development
 tags:
-  - name: System
-    description: Health and runtime diagnostics
-  - name: Articles
-    description: Article candidate discovery from the BILD sitemap
-  - name: Consumer
-    description: Versioned read-only API for downstream app integrations
-  - name: Feeds
-    description: Sitemap, competitor, and international feed access
-  - name: Pushes
-    description: Live push history and refresh actions
-  - name: Competition
-    description: Competitor monitoring feeds
-  - name: Research
-    description: Research insights and derived editorial rules
-  - name: Analytics
-    description: Adobe traffic analytics and editorial support data
-  - name: ML
-    description: Advisory machine-learning model contracts
-  - name: GBRT
-    description: Gradient boosted regression tree model contracts
-  - name: Planning
-    description: Daily plan and retrospective planning data
-  - name: AI
-    description: Title generation and other AI-assisted capabilities
-  - name: Compatibility
-    description: Compatibility routes retained for operational clients and transitional integrations
-
+- name: System
+  description: Health and runtime diagnostics
+- name: Articles
+  description: Article candidate discovery from the BILD sitemap
+- name: Consumer
+  description: Versioned read-only API for downstream app integrations
+- name: Feeds
+  description: Sitemap, competitor, and international feed access
+- name: Pushes
+  description: Live push history and refresh actions
+- name: Competition
+  description: Competitor monitoring feeds
+- name: Research
+  description: Research insights and derived editorial rules
+- name: Analytics
+  description: Adobe traffic analytics and editorial support data
+- name: ML
+  description: Advisory machine-learning model contracts
+- name: GBRT
+  description: Gradient boosted regression tree model contracts
+- name: Planning
+  description: Daily plan and retrospective planning data
+- name: AI
+  description: Title generation and other AI-assisted capabilities
+- name: Compatibility
+  description: Compatibility routes retained for operational clients and transitional integrations
 paths:
   /api/health:
     get:
-      tags: [System]
+      tags:
+      - System
       operationId: getHealth
       summary: Get the current health status
       description: Returns service health, endpoint checks, uptime, and research activity metadata.
       responses:
-        "200":
+        '200':
           description: Health status
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/score-capture/by-cms-id/{cms_id}:
     get:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: getCapturedScoreByCmsId
       summary: Get the latest workday UI score by CMS ID
-      description: By default, returns only the latest workday score and capture timestamp already produced by the unchanged candidate UI. The includeBreakdown=1 opt-in adds its captured numeric displayed/applied score fields and separate OR sorting factor. The route is protected by the service's internal CIDR allowlist.
+      description: By default, returns only the latest workday score and capture timestamp already produced
+        by the unchanged candidate UI. The includeBreakdown=1 opt-in adds its captured numeric displayed/applied
+        score fields and separate OR sorting factor. The route is protected by the service's internal
+        CIDR allowlist.
       parameters:
-        - name: cms_id
-          in: path
-          required: true
-          description: A 24-character hexadecimal CMS document identifier.
-          schema:
-            type: string
-            pattern: "^[0-9a-fA-F]{24}$"
-        - name: includeBreakdown
-          in: query
-          required: false
-          description: Set to 1 to include the captured numeric score breakdown and separate OR sorting factor. Omit it for the exact legacy response shape.
-          schema:
-            type: integer
-            enum: [1]
+      - name: cms_id
+        in: path
+        required: true
+        description: A 24-character hexadecimal CMS document identifier.
+        schema:
+          type: string
+          pattern: ^[0-9a-fA-F]{24}$
+      - name: includeBreakdown
+        in: query
+        required: false
+        description: Set to 1 to include the captured numeric score breakdown and separate OR sorting
+          factor. Omit it for the exact legacy response shape.
+        schema:
+          type: integer
+          enum:
+          - 1
       responses:
-        "200":
+        '200':
           description: Latest captured UI score from the eight-hour workday window.
           headers:
             Cache-Control:
@@ -96,10 +101,14 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [score, capturedAt]
+                required:
+                - score
+                - capturedAt
                 dependentRequired:
-                  scoreBreakdown: [orFactor]
-                  orFactor: [scoreBreakdown]
+                  scoreBreakdown:
+                  - orFactor
+                  orFactor:
+                  - scoreBreakdown
                 properties:
                   score:
                     type: number
@@ -110,36 +119,40 @@ paths:
                     format: int64
                     minimum: 1
                   scoreBreakdown:
-                    description: Captured displayed/applied score fields. Present only when includeBreakdown=1 and the capture contains the complete enrichment pair.
+                    description: Captured displayed/applied score fields. Present only when includeBreakdown=1
+                      and the capture contains the complete enrichment pair.
                     oneOf:
-                      - $ref: "#/components/schemas/EngagementScoreBreakdown"
-                      - $ref: "#/components/schemas/SportScoreBreakdown"
+                    - $ref: '#/components/schemas/EngagementScoreBreakdown'
+                    - $ref: '#/components/schemas/SportScoreBreakdown'
                   orFactor:
-                    description: Captured OR sorting factor. Present only when includeBreakdown=1 and the capture contains the complete enrichment pair.
+                    description: Captured OR sorting factor. Present only when includeBreakdown=1 and
+                      the capture contains the complete enrichment pair.
                     type: number
                     minimum: 0.6
                     maximum: 1.5
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/score-capture/by-cms-id/batch:
     post:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: getCapturedScoresByCmsIds
       summary: Get captured UI scores for a CMS-ID batch
-      description: Resolves 1 to 500 unique lowercase CMS IDs in request order with one memory scan and one persistent-store scan. It never recalculates or substitutes a score. A storage read failure fails the complete request instead of being reported as notFound.
+      description: Resolves 1 to 500 unique lowercase CMS IDs in request order with one memory scan and
+        one persistent-store scan. It never recalculates or substitutes a score. A storage read failure
+        fails the complete request instead of being reported as notFound.
       parameters:
-        - name: includeBreakdown
-          in: query
-          required: true
-          description: The batch contract requires the exact value 1.
-          schema:
-            type: integer
-            const: 1
+      - name: includeBreakdown
+        in: query
+        required: true
+        description: The batch contract requires the exact value 1.
+        schema:
+          type: integer
+          const: 1
       requestBody:
         required: true
         content:
@@ -147,7 +160,8 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [cmsIds]
+              required:
+              - cmsIds
               properties:
                 cmsIds:
                   type: array
@@ -156,9 +170,9 @@ paths:
                   uniqueItems: true
                   items:
                     type: string
-                    pattern: "^[0-9a-f]{24}$"
+                    pattern: ^[0-9a-f]{24}$
       responses:
-        "200":
+        '200':
           description: One exact found or notFound result per requested CMS ID.
           headers:
             Cache-Control:
@@ -169,20 +183,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BatchCmsScoreCaptureResponse"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/BatchCmsScoreCaptureResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/score-capture/health:
     get:
-      tags: [System]
+      tags:
+      - System
       operationId: getScoreCaptureHealth
       summary: Check score capture reachability
-      description: Returns a minimal readiness response behind the same internal CIDR allowlist as the CMS-ID score lookup.
+      description: Returns a minimal readiness response behind the same internal CIDR allowlist as the
+        CMS-ID score lookup.
       responses:
-        "200":
+        '200':
           description: Score capture route is reachable.
           headers:
             Cache-Control:
@@ -195,104 +210,112 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [status]
+                required:
+                - status
                 properties:
                   status:
                     type: string
                     const: ok
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/memory-stats:
     get:
-      tags: [System]
+      tags:
+      - System
       operationId: getMemoryStats
       summary: Get internal memory diagnostics
       description: Returns internal memory and buffer diagnostics for administrative troubleshooting.
       security:
-        - adminApiKey: []
+      - adminApiKey: []
       responses:
-        "200":
+        '200':
           description: Memory diagnostics
           content:
             application/json:
               schema:
                 type: object
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/articles:
     get:
-      tags: [Articles]
+      tags:
+      - Articles
       operationId: listArticles
       summary: List article candidates
       description: Returns typed article candidates from the BILD sitemap enriched with heuristic scoring.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - $ref: "#/components/parameters/LimitArticles"
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/LimitArticles'
       responses:
-        "200":
+        '200':
           description: Article candidates
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ArticleCollectionResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
+                $ref: '#/components/schemas/ArticleCollectionResponse'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/teams-daily-plan:
     get:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: getTeamsDailyPushPlan
       summary: Build a Teams-ready daily push plan
-      description: Returns a CvD-oriented day plan with at least the configured minimum number of push suggestions where possible. The endpoint is advisory-only and never sends Teams or user push notifications.
+      description: Returns a CvD-oriented day plan with at least the configured minimum number of push
+        suggestions where possible. The endpoint is advisory-only and never sends Teams or user push notifications.
       parameters:
-        - name: date
-          in: query
-          description: Optional target day in YYYY-MM-DD format. Defaults to today in the service timezone.
-          required: false
-          schema:
-            type: string
-            format: date
-        - name: limit
-          in: query
-          description: Maximum number of article candidates to inspect before planning.
-          required: false
-          schema:
-            type: integer
-            minimum: 15
-            maximum: 200
-            default: 120
-        - name: min_items
-          in: query
-          description: Minimum number of planned push suggestions.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 30
-            default: 15
-        - name: max_items
-          in: query
-          description: Maximum number of planned push suggestions.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 30
-            default: 18
+      - name: date
+        in: query
+        description: Optional target day in YYYY-MM-DD format. Defaults to today in the service timezone.
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        description: Maximum number of article candidates to inspect before planning.
+        required: false
+        schema:
+          type: integer
+          minimum: 15
+          maximum: 200
+          default: 120
+      - name: min_items
+        in: query
+        description: Minimum number of planned push suggestions.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 15
+      - name: max_items
+        in: query
+        description: Maximum number of planned push suggestions.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 30
+          default: 18
       responses:
-        "200":
+        '200':
           description: Teams-ready daily push plan.
           content:
             application/json:
               schema:
                 type: object
-                required: [type, date, weekday, count, items, messageText]
+                required:
+                - type
+                - date
+                - weekday
+                - count
+                - items
+                - messageText
                 properties:
                   type:
                     type: string
@@ -335,253 +358,256 @@ paths:
                   messageHtml:
                     type: string
                     description: HTML Teams message for Power Automate.
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/v1/status:
     get:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: getConsumerApiStatus
       summary: Get consumer API status
       description: Returns readiness and integration metadata for the versioned read-only consumer API.
       security:
-        - consumerBearerAuth: []
-        - consumerApiKey: []
+      - consumerBearerAuth: []
+      - consumerApiKey: []
       responses:
-        "200":
+        '200':
           description: Consumer API status.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConsumerStatusResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/ConsumerStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/recommendations:
     get:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: listConsumerRecommendations
       summary: List consumer recommendations
-      description: Returns the simplest drop-in list of ranked article recommendations for trusted downstream app integrations.
+      description: Returns the simplest drop-in list of ranked article recommendations for trusted downstream
+        app integrations.
       security:
-        - consumerBearerAuth: []
-        - consumerApiKey: []
+      - consumerBearerAuth: []
+      - consumerApiKey: []
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          description: Maximum number of recommendations to return.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: category
-          in: query
-          description: Optional lowercase category filter, for example `politik` or `sport`.
-          required: false
-          schema:
-            type: string
-            example: "politik"
-        - name: minScore
-          in: query
-          description: Optional minimum 0-100 advisory score.
-          required: false
-          schema:
-            type: number
-            format: float
-            minimum: 0
-            maximum: 100
-            default: 60
-            example: 70
-        - name: includeExplanations
-          in: query
-          description: Include score explanations, drivers, risks, and score breakdowns.
-          required: false
-          schema:
-            type: boolean
-            default: false
-            example: false
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        description: Maximum number of recommendations to return.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: category
+        in: query
+        description: Optional lowercase category filter, for example `politik` or `sport`.
+        required: false
+        schema:
+          type: string
+          example: politik
+      - name: minScore
+        in: query
+        description: Optional minimum 0-100 advisory score.
+        required: false
+        schema:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          default: 60
+          example: 70
+      - name: includeExplanations
+        in: query
+        description: Include score explanations, drivers, risks, and score breakdowns.
+        required: false
+        schema:
+          type: boolean
+          default: false
+          example: false
       responses:
-        "200":
+        '200':
           description: Consumer recommendations.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConsumerArticleCollectionResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/ConsumerArticleCollectionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/articles:
     get:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: listConsumerArticles
       summary: List consumer article candidates
-      description: Returns ranked article candidates and advisory scores for trusted downstream app integrations. The endpoint is read-only and never triggers push delivery.
+      description: Returns ranked article candidates and advisory scores for trusted downstream app integrations.
+        The endpoint is read-only and never triggers push delivery.
       security:
-        - consumerBearerAuth: []
-        - consumerApiKey: []
+      - consumerBearerAuth: []
+      - consumerApiKey: []
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          description: Maximum number of article candidates to return.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 50
-        - name: category
-          in: query
-          description: Optional lowercase category filter, for example `politik` or `sport`.
-          required: false
-          schema:
-            type: string
-            example: "politik"
-        - name: minScore
-          in: query
-          description: Optional minimum 0-100 advisory score.
-          required: false
-          schema:
-            type: number
-            format: float
-            minimum: 0
-            maximum: 100
-            example: 70
-        - name: includeExplanations
-          in: query
-          description: Include score explanations, drivers, risks, and score breakdowns.
-          required: false
-          schema:
-            type: boolean
-            default: true
-            example: true
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        description: Maximum number of article candidates to return.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      - name: category
+        in: query
+        description: Optional lowercase category filter, for example `politik` or `sport`.
+        required: false
+        schema:
+          type: string
+          example: politik
+      - name: minScore
+        in: query
+        description: Optional minimum 0-100 advisory score.
+        required: false
+        schema:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 70
+      - name: includeExplanations
+        in: query
+        description: Include score explanations, drivers, risks, and score breakdowns.
+        required: false
+        schema:
+          type: boolean
+          default: true
+          example: true
       responses:
-        "200":
+        '200':
           description: Consumer article candidates.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConsumerArticleCollectionResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/ConsumerArticleCollectionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/scores:
     get:
-      tags: [Consumer]
+      tags:
+      - Consumer
       operationId: listConsumerScores
       summary: List consumer article scores
-      description: Returns a compact read-only score projection for trusted downstream apps that only need article IDs, URLs, and advisory ranking values.
+      description: Returns a compact read-only score projection for trusted downstream apps that only
+        need article IDs, URLs, and advisory ranking values.
       security:
-        - consumerBearerAuth: []
-        - consumerApiKey: []
+      - consumerBearerAuth: []
+      - consumerApiKey: []
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          description: Maximum number of score entries to return.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 100
-        - name: category
-          in: query
-          description: Optional lowercase category filter, for example `politik` or `sport`.
-          required: false
-          schema:
-            type: string
-            example: "sport"
-        - name: minScore
-          in: query
-          description: Optional minimum 0-100 advisory score.
-          required: false
-          schema:
-            type: number
-            format: float
-            minimum: 0
-            maximum: 100
-            example: 75
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        description: Maximum number of score entries to return.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+      - name: category
+        in: query
+        description: Optional lowercase category filter, for example `politik` or `sport`.
+        required: false
+        schema:
+          type: string
+          example: sport
+      - name: minScore
+        in: query
+        description: Optional minimum 0-100 advisory score.
+        required: false
+        schema:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 75
       responses:
-        "200":
+        '200':
           description: Consumer score projection.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConsumerScoreCollectionResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/ConsumerScoreCollectionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/pushes:
     get:
-      tags: [Pushes]
+      tags:
+      - Pushes
       operationId: listPushes
       summary: List recent push notifications
       description: Returns recent push history together with same-day aggregate statistics.
       parameters:
-        - name: limit
-          in: query
-          description: Maximum number of push entries to return.
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 300
-            default: 100
+      - name: limit
+        in: query
+        description: Maximum number of push entries to return.
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 100
       responses:
-        "200":
+        '200':
           description: Recent push history
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PushCollectionResponse"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
+                $ref: '#/components/schemas/PushCollectionResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/pushes/refresh:
     post:
-      tags: [Pushes]
+      tags:
+      - Pushes
       operationId: refreshPushes
       summary: Refresh the live push view
       description: Triggers a frontend-safe refresh flow for the live push view.
       responses:
-        "200":
+        '200':
           description: Refresh result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SyncResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/SyncResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/pushes/sync:
     post:
-      tags: [Pushes]
+      tags:
+      - Pushes
       operationId: syncPushRelay
       summary: Sync push relay payload
       description: Accepts push relay payloads from a trusted upstream worker using a shared secret.
@@ -591,40 +617,40 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PushSyncRequest"
+              $ref: '#/components/schemas/PushSyncRequest'
       responses:
-        "200":
+        '200':
           description: Sync result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PushSyncResponse"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/PushSyncResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/push-refresh-jobs:
     post:
-      tags: [Pushes]
+      tags:
+      - Pushes
       operationId: createPushRefreshJob
       summary: Create a push refresh job
       description: Creates a lightweight refresh job for the live push overview.
       responses:
-        "200":
+        '200':
           description: Refresh job result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SyncResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/SyncResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/predictions/feedback:
     post:
-      tags: [Pushes]
+      tags:
+      - Pushes
       operationId: createPredictionFeedback
       summary: Create prediction feedback
       description: Stores an observed opening rate for a previously predicted push notification.
@@ -634,112 +660,113 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PredictionFeedbackRequest"
+              $ref: '#/components/schemas/PredictionFeedbackRequest'
       responses:
-        "200":
+        '200':
           description: Feedback was stored successfully.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AcknowledgementResponse"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/AcknowledgementResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/feeds/competitor:
     get:
-      tags: [Competition]
+      tags:
+      - Competition
       operationId: listEditorialCompetitorItems
       summary: Get editorial competitor monitoring items
       description: Returns grouped and enriched competitor items for the editorial desk.
       responses:
-        "200":
+        '200':
           description: Competitor monitoring response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompetitorResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/CompetitorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/feeds/competitor/sport:
     get:
-      tags: [Competition]
+      tags:
+      - Competition
       operationId: listSportCompetitorItems
       summary: Get sport competitor monitoring items
       description: Returns grouped and enriched competitor items for the sport desk.
       responses:
-        "200":
+        '200':
           description: Competitor monitoring response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompetitorResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/CompetitorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/research-insights:
     get:
-      tags: [Research]
+      tags:
+      - Research
       operationId: getResearchInsights
       summary: Get current research insights
       description: Returns lightweight research insights prepared for the frontend.
       responses:
-        "200":
+        '200':
           description: Research insights
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ResearchInsightsResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/ResearchInsightsResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/research-rules:
     get:
-      tags: [Research]
+      tags:
+      - Research
       operationId: listResearchRules
       summary: List active research rules
       description: Returns the currently active editorial research rules with pagination metadata.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - $ref: "#/components/parameters/LimitDefault"
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/LimitDefault'
       responses:
-        "200":
+        '200':
           description: Active research rules
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ResearchRulesResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/ResearchRulesResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/check-plus:
     get:
-      tags: [Analytics]
+      tags:
+      - Analytics
       operationId: checkPlusByUrl
       summary: Check a single article URL for BILD Plus
       description: Checks whether a single BILD article URL appears to be behind the BILD Plus paywall.
       parameters:
-        - name: url
-          in: query
-          required: true
-          description: Full BILD article URL to inspect.
-          schema:
-            type: string
-            format: uri
-            example: "https://www.bild.de/politik/test-artikel"
+      - name: url
+        in: query
+        required: true
+        description: Full BILD article URL to inspect.
+        schema:
+          type: string
+          format: uri
+          example: https://www.bild.de/politik/test-artikel
       responses:
-        "200":
+        '200':
           description: Map of the requested URL to its paywall status.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UrlBooleanMap"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
+                $ref: '#/components/schemas/UrlBooleanMap'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
     post:
-      tags: [Analytics]
+      tags:
+      - Analytics
       operationId: checkPlusBatch
       summary: Check multiple article URLs for BILD Plus
       description: Checks up to twenty BILD article URLs for BILD Plus paywall detection in one request.
@@ -749,275 +776,282 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CheckPlusRequest"
+              $ref: '#/components/schemas/CheckPlusRequest'
       responses:
-        "200":
+        '200':
           description: Map of requested URLs to their paywall status.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UrlBooleanMap"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
+                $ref: '#/components/schemas/UrlBooleanMap'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/analytics/adobe-traffic:
     get:
-      tags: [Analytics]
+      tags:
+      - Analytics
       operationId: getAdobeTraffic
       summary: Get Adobe traffic analytics
       description: Returns aggregated Adobe traffic data for the frontend analytics view.
       responses:
-        "200":
+        '200':
           description: Adobe analytics payload
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AdobeTrafficResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/AdobeTrafficResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml-model:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: getMlModelStatus
       summary: Get ML model status
       description: Returns the stable ML model status contract consumed by the frontend.
       responses:
-        "200":
+        '200':
           description: ML model status
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MlStatusResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/MlStatusResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml-model/monitoring:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: getMlModelMonitoring
       summary: Get ML monitoring data
       description: Returns recent prediction comparisons and rolling monitoring metrics.
       responses:
-        "200":
+        '200':
           description: ML monitoring payload
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MlMonitoringResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/MlMonitoringResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml-model/retraining-jobs:
     post:
-      tags: [ML]
+      tags:
+      - ML
       operationId: createMlRetrainingJob
       summary: Trigger an ML retraining job
       description: Starts a manual retraining job for the LightGBM model.
       security:
-        - adminApiKey: []
+      - adminApiKey: []
       responses:
-        "200":
+        '200':
           description: Retraining trigger result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/JobResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/gbrt-model:
     get:
-      tags: [GBRT]
+      tags:
+      - GBRT
       operationId: getGbrtModelStatus
       summary: Get GBRT model status
       description: Returns the stable GBRT model status contract consumed by the frontend.
       responses:
-        "200":
+        '200':
           description: GBRT model status
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GbrtStatusResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/GbrtStatusResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/gbrt-model/retraining-jobs:
     post:
-      tags: [GBRT]
+      tags:
+      - GBRT
       operationId: createGbrtRetrainingJob
       summary: Trigger a GBRT retraining job
       description: Starts a manual retraining job for the GBRT model.
       security:
-        - adminApiKey: []
+      - adminApiKey: []
       responses:
-        "200":
+        '200':
           description: Retraining trigger result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/JobResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/gbrt-model/promotions:
     post:
-      tags: [GBRT]
+      tags:
+      - GBRT
       operationId: createGbrtPromotion
       summary: Promote the GBRT challenger model
       description: Promotes the currently loaded GBRT challenger to the active model.
       security:
-        - adminApiKey: []
+      - adminApiKey: []
       responses:
-        "200":
+        '200':
           description: Promotion result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/JobResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/tagesplan:
     get:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: getDailyPlan
       summary: Get the daily push plan
       description: Returns the current planning view for the requested date and mode.
       parameters:
-        - name: date
-          in: query
-          required: false
-          description: Planning date in ISO-8601 date format.
-          schema:
-            type: string
-            format: date
-        - name: mode
-          in: query
-          required: false
-          description: Planning mode.
-          schema:
-            type: string
-            enum: [redaktion, sport]
+      - name: date
+        in: query
+        required: false
+        description: Planning date in ISO-8601 date format.
+        schema:
+          type: string
+          format: date
+      - name: mode
+        in: query
+        required: false
+        description: Planning mode.
+        schema:
+          type: string
+          enum:
+          - redaktion
+          - sport
       responses:
-        "200":
+        '200':
           description: Daily plan
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TagesplanResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/TagesplanResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/tagesplan/retro:
     get:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: getDailyPlanRetro
       summary: Get daily plan retrospective data
       description: Returns the recent retrospective overview for the selected planning mode.
       parameters:
-        - name: mode
-          in: query
-          required: false
-          description: Planning mode.
-          schema:
-            type: string
-            enum: [redaktion, sport]
+      - name: mode
+        in: query
+        required: false
+        description: Planning mode.
+        schema:
+          type: string
+          enum:
+          - redaktion
+          - sport
       responses:
-        "200":
+        '200':
           description: Daily plan retrospective
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TagesplanRetroResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/TagesplanRetroResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/tagesplan/history:
     get:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: listDailyPlanHistory
       summary: List daily plan history
       description: Returns historical push-planning performance grouped by day and slot hour.
       parameters:
-        - name: days
-          in: query
-          required: false
-          description: Number of trailing days to include in the history view.
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 90
-            default: 7
-            example: 7
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of historical slot items to return.
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 1000
-            default: 200
-            example: 200
+      - name: days
+        in: query
+        required: false
+        description: Number of trailing days to include in the history view.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 90
+          default: 7
+          example: 7
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of historical slot items to return.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 1000
+          default: 200
+          example: 200
       responses:
-        "200":
+        '200':
           description: Historical daily plan performance data.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TagesplanHistoryResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/TagesplanHistoryResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/tagesplan/suggestions:
     get:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: listDailyPlanSuggestions
       summary: List article suggestions for a daily plan
       description: Returns saved article suggestions for the requested date and mode.
       parameters:
-        - name: date
-          in: query
-          required: false
-          description: Planning date in ISO-8601 date format.
-          schema:
-            type: string
-            format: date
-        - name: mode
-          in: query
-          required: false
-          description: Planning mode.
-          schema:
-            type: string
-            enum: [redaktion, sport]
+      - name: date
+        in: query
+        required: false
+        description: Planning date in ISO-8601 date format.
+        schema:
+          type: string
+          format: date
+      - name: mode
+        in: query
+        required: false
+        description: Planning mode.
+        schema:
+          type: string
+          enum:
+          - redaktion
+          - sport
       responses:
-        "200":
+        '200':
           description: Daily plan suggestions
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TagesplanSuggestionsResponse"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/TagesplanSuggestionsResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/tagesplan/log-suggestions:
     post:
-      tags: [Planning]
+      tags:
+      - Planning
       operationId: createDailyPlanSuggestionsLog
       summary: Store daily plan suggestions
-      description: Stores suggested articles for a daily plan slot in either the current React payload shape or the compatibility flat payload shape.
+      description: Stores suggested articles for a daily plan slot in either the current React payload
+        shape or the compatibility flat payload shape.
       requestBody:
         required: true
         description: Daily plan suggestion payload in React or legacy format.
@@ -1025,25 +1059,25 @@ paths:
           application/json:
             schema:
               oneOf:
-                - $ref: "#/components/schemas/LogSuggestionsReactRequest"
-                - $ref: "#/components/schemas/LogSuggestionsLegacyRequest"
+              - $ref: '#/components/schemas/LogSuggestionsReactRequest'
+              - $ref: '#/components/schemas/LogSuggestionsLegacyRequest'
       responses:
-        "200":
+        '200':
           description: Suggestion log result.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SuggestionsLogResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/SuggestionsLogResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/push-title/generate:
     post:
-      tags: [AI]
+      tags:
+      - AI
       operationId: generatePushTitle
       summary: Generate push title variants
       description: Generates advisory title variants for a given article title and category.
@@ -1052,22 +1086,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenerateTitleRequest"
+              $ref: '#/components/schemas/GenerateTitleRequest'
       responses:
-        "200":
+        '200':
           description: Generated title variants
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenerateTitleResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/GenerateTitleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/push-title-generations:
     post:
-      tags: [AI]
+      tags:
+      - AI
       operationId: createPushTitleGeneration
       summary: Create advisory push title variants
       description: Creates advisory push title variants for a given article title and category.
@@ -1076,571 +1110,335 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenerateTitleRequest"
+              $ref: '#/components/schemas/GenerateTitleRequest'
       responses:
-        "200":
+        '200':
           description: Generated title variants
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenerateTitleResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/GenerateTitleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/feed:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: getBildSitemap
       summary: Get the BILD news sitemap
       description: Returns the raw BILD news sitemap XML used to build article candidates.
       responses:
-        "200":
+        '200':
           description: Raw XML sitemap.
           content:
             application/xml:
               schema:
                 type: string
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
-  /api/push/{path}:
-    get:
-      tags: [Compatibility]
-      operationId: proxyPushApi
-      summary: Proxy a push API path for compatibility clients
-      description: Proxies a push-statistics API path and falls back to synchronized cache data when the upstream is unavailable.
-      deprecated: true
-      parameters:
-        - name: path
-          in: path
-          required: true
-          description: Push API path segment to proxy for compatibility clients.
-          schema:
-            type: string
-            example: "messages"
-      responses:
-        "200":
-          description: Proxied push API payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
-  /api/competitors:
-    get:
-      tags: [Feeds]
-      operationId: listCompetitorFeeds
-      summary: List cached competitor feeds
-      description: Returns the flat competitor feed dictionary retained for compatibility clients.
-      deprecated: true
-      responses:
-        "200":
-          description: Flat competitor feed dictionary.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/FeedMapResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/competitor/{name}:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: getCompetitorFeed
       summary: Get a single competitor feed
       description: Returns the raw XML for a single configured competitor feed.
       parameters:
-        - name: name
-          in: path
-          required: true
-          description: Competitor feed identifier.
-          schema:
-            type: string
-            example: "welt"
+      - name: name
+        in: path
+        required: true
+        description: Competitor feed identifier.
+        schema:
+          type: string
+          example: welt
       responses:
-        "200":
+        '200':
           description: Raw competitor feed XML.
           content:
             application/xml:
               schema:
                 type: string
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
-  /api/sport-competitors:
-    get:
-      tags: [Feeds]
-      operationId: listSportCompetitorFeeds
-      summary: List cached sport competitor feeds
-      description: Returns the flat sport competitor feed dictionary retained for compatibility clients.
-      deprecated: true
-      responses:
-        "200":
-          description: Flat sport competitor feed dictionary.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/FeedMapResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/sport-europa:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: listSportEuropaFeeds
       summary: List sport Europe feeds
       description: Returns paginated sport-focused Europe feeds from the background cache.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of feed groups to return.
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 100
-            default: 20
-            example: 20
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of feed groups to return.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+          example: 20
       responses:
-        "200":
+        '200':
           description: Paginated sport Europe feeds.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FeedGroupCollectionResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+                $ref: '#/components/schemas/FeedGroupCollectionResponse'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/sport-global:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: listSportGlobalFeeds
       summary: List sport global feeds
       description: Returns paginated sport-focused global feeds from the background cache.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of feed groups to return.
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 100
-            default: 20
-            example: 20
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of feed groups to return.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+          example: 20
       responses:
-        "200":
+        '200':
           description: Paginated sport global feeds.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FeedGroupCollectionResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+                $ref: '#/components/schemas/FeedGroupCollectionResponse'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/international:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: listInternationalFeeds
       summary: List international feeds
       description: Returns paginated international feeds from the background cache.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of feed groups to return.
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 100
-            default: 20
-            example: 20
+      - $ref: '#/components/parameters/Offset'
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of feed groups to return.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          default: 20
+          example: 20
       responses:
-        "200":
+        '200':
           description: Paginated international feeds.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FeedGroupCollectionResponse"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+                $ref: '#/components/schemas/FeedGroupCollectionResponse'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/international/{name}:
     get:
-      tags: [Feeds]
+      tags:
+      - Feeds
       operationId: getInternationalFeed
       summary: Get a single international feed
       description: Returns the raw XML for a single configured international feed.
       parameters:
-        - name: name
-          in: path
-          required: true
-          description: International feed identifier.
-          schema:
-            type: string
-            example: "bbc"
+      - name: name
+        in: path
+        required: true
+        description: International feed identifier.
+        schema:
+          type: string
+          example: bbc
       responses:
-        "200":
+        '200':
           description: Raw international feed XML.
           content:
             application/xml:
               schema:
                 type: string
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "502":
-          $ref: "#/components/responses/BadGateway"
-
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/competitors/xor:
     post:
-      tags: [Competition]
+      tags:
+      - Competition
       operationId: createCompetitorXorAnalysis
       summary: Create competitor XOR predictions
-      description: Calculates simplified opening-rate predictions for competitor headlines using cached word-performance scoring.
+      description: Calculates simplified opening-rate predictions for competitor headlines using cached
+        word-performance scoring.
       requestBody:
         required: true
         description: Headlines to score.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CompetitorXorRequest"
+              $ref: '#/components/schemas/CompetitorXorRequest'
       responses:
-        "200":
+        '200':
           description: Simplified competitor XOR prediction result.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompetitorXorResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
-  /api/forschung:
-    get:
-      tags: [Research]
-      operationId: getResearchState
-      summary: Get the full research state
-      description: Returns the current full research-worker state used by legacy research views and diagnostics.
-      deprecated: true
-      responses:
-        "200":
-          description: Full research state payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/learnings:
-    get:
-      tags: [Research]
-      operationId: getResearchLearnings
-      summary: Get data-driven learnings
-      description: Returns research learnings and statistical summaries derived from historical push-performance data.
-      deprecated: true
-      responses:
-        "200":
-          description: Learnings payload for legacy research views.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/adobe/traffic:
-    get:
-      tags: [Analytics]
-      operationId: getAdobeTrafficLegacy
-      summary: Get compatibility Adobe traffic payload
-      description: Returns the Adobe Analytics payload including enablement and loading flags for compatibility clients.
-      deprecated: true
-      responses:
-        "200":
-          description: Legacy Adobe analytics payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/CompetitorXorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/ml/safety-status:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: getMlSafetyStatus
       summary: Get ML safety status
       description: Returns the advisory-only safety guard state for the ML subsystem.
       responses:
-        "200":
+        '200':
           description: Safety status payload.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MlSafetyStatusResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/ml/status:
-    get:
-      tags: [ML]
-      operationId: getMlLegacyStatus
-      summary: Get compatibility ML model status
-      description: Returns the detailed ML status payload retained for compatibility clients.
-      deprecated: true
-      responses:
-        "200":
-          description: Legacy ML status payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MlStatusResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/MlSafetyStatusResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml/predict:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: getMlPrediction
       summary: Predict a single article opening rate
-      description: Returns a single advisory opening-rate prediction for an article using the active ML model stack.
+      description: Returns a single advisory opening-rate prediction for an article using the active ML
+        model stack.
       parameters:
-        - name: title
-          in: query
-          required: false
-          description: Article title to score.
-          schema:
-            type: string
-        - name: cat
-          in: query
-          required: false
-          description: Editorial category to score.
-          schema:
-            type: string
-        - name: hour
-          in: query
-          required: false
-          description: Local hour of day used for the prediction.
-          schema:
-            type: integer
-            format: int32
-        - name: is_eilmeldung
-          in: query
-          required: false
-          description: Whether the article should be treated as an urgent bulletin.
-          schema:
-            type: integer
-            format: int32
-        - name: link
-          in: query
-          required: false
-          description: Canonical article URL.
-          schema:
-            type: string
-            format: uri
-        - name: push_id
-          in: query
-          required: false
-          description: Optional push identifier used for prediction logging.
-          schema:
-            type: string
+      - name: title
+        in: query
+        required: false
+        description: Article title to score.
+        schema:
+          type: string
+      - name: cat
+        in: query
+        required: false
+        description: Editorial category to score.
+        schema:
+          type: string
+      - name: hour
+        in: query
+        required: false
+        description: Local hour of day used for the prediction.
+        schema:
+          type: integer
+          format: int32
+      - name: is_eilmeldung
+        in: query
+        required: false
+        description: Whether the article should be treated as an urgent bulletin.
+        schema:
+          type: integer
+          format: int32
+      - name: link
+        in: query
+        required: false
+        description: Canonical article URL.
+        schema:
+          type: string
+          format: uri
+      - name: push_id
+        in: query
+        required: false
+        description: Optional push identifier used for prediction logging.
+        schema:
+          type: string
       responses:
-        "200":
+        '200':
           description: Single ML prediction result.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MlPredictionResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/MlPredictionResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml/experiments:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: listMlExperiments
       summary: List ML experiments
       description: Returns paginated ML experiment runs and their stored metadata.
       parameters:
-        - $ref: "#/components/parameters/Offset"
-        - $ref: "#/components/parameters/LimitDefault"
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/LimitDefault'
       responses:
-        "200":
+        '200':
           description: Paginated experiment collection.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LegacyCollectionResponse"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/LegacyCollectionResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml/experiments/compare:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: compareMlExperiments
       summary: Compare two ML experiments
       description: Returns a lightweight comparison between two experiment identifiers.
       parameters:
-        - name: a
-          in: query
-          required: false
-          description: First experiment identifier.
-          schema:
-            type: string
-        - name: b
-          in: query
-          required: false
-          description: Second experiment identifier.
-          schema:
-            type: string
+      - name: a
+        in: query
+        required: false
+        description: First experiment identifier.
+        schema:
+          type: string
+      - name: b
+        in: query
+        required: false
+        description: Second experiment identifier.
+        schema:
+          type: string
       responses:
-        "200":
+        '200':
           description: Experiment comparison payload.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/LegacyJsonObject'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/ml/ab-status:
     get:
-      tags: [ML]
+      tags:
+      - ML
       operationId: getMlAbStatus
       summary: Get ML A/B test status
-      description: Returns a not-implemented response because the A/B status flow is not yet migrated into the FastAPI runtime.
+      description: Returns a not-implemented response because the A/B status flow is not yet migrated
+        into the FastAPI runtime.
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-
-  /api/ml/monitoring:
-    get:
-      tags: [ML]
-      operationId: listMlMonitoringEvents
-      summary: List ML monitoring events
-      description: Returns the legacy monitoring payload including event items and drift metrics.
-      deprecated: true
-      parameters:
-        - $ref: "#/components/parameters/Offset"
-        - $ref: "#/components/parameters/LimitDefault"
-      responses:
-        "200":
-          description: Monitoring payload with event items.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/ml/retrain:
-    post:
-      tags: [ML]
-      operationId: createMlLegacyRetrainingJob
-      summary: Trigger a legacy ML retraining job
-      description: Triggers the legacy LightGBM retraining endpoint retained for operational compatibility.
-      deprecated: true
-      security:
-        - adminApiKey: []
-      responses:
-        "200":
-          description: Retraining trigger result.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/ml/monitoring/tick:
-    post:
-      tags: [ML]
-      operationId: createMlMonitoringTick
-      summary: Trigger a manual ML monitoring tick
-      description: Triggers the legacy manual monitoring tick endpoint for diagnostics and drift checks.
-      deprecated: true
-      security:
-        - adminApiKey: []
-      responses:
-        "200":
-          description: Monitoring tick result.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AcknowledgementResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+        '501':
+          $ref: '#/components/responses/NotImplemented'
   /api/ml/predict-batch:
     post:
-      tags: [ML]
+      tags:
+      - ML
       operationId: createMlBatchPrediction
       summary: Create ML batch predictions
       description: Returns advisory opening-rate predictions for up to 300 articles in one request.
@@ -1650,229 +1448,94 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PredictBatchRequest"
+              $ref: '#/components/schemas/PredictBatchRequest'
       responses:
-        "200":
+        '200':
           description: Batch prediction payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PredictBatchResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/predict-batch:
-    post:
-      tags: [ML]
-      operationId: createMlBatchPredictionAlias
-      summary: Create ML batch predictions via alias
-      description: Compatibility alias for the batch prediction endpoint retained for operational clients.
-      deprecated: true
-      requestBody:
-        required: true
-        description: Articles to score in a batch request.
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/PredictBatchRequest"
-      responses:
-        "200":
-          description: Batch prediction payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PredictBatchResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/gbrt/status:
-    get:
-      tags: [GBRT]
-      operationId: getGbrtLegacyStatus
-      summary: Get compatibility GBRT status
-      description: Returns the detailed GBRT status payload retained for compatibility clients and diagnostics.
-      deprecated: true
-      responses:
-        "200":
-          description: Legacy GBRT status payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/gbrt/model.json:
-    get:
-      tags: [GBRT]
-      operationId: getGbrtModelJson
-      summary: Get the serialized GBRT model
-      description: Returns the serialized GBRT model JSON used by legacy clients for client-side evaluation.
-      deprecated: true
-      responses:
-        "200":
-          description: Serialized GBRT model payload.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LegacyJsonObject"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
+                $ref: '#/components/schemas/PredictBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/gbrt/predict:
     get:
-      tags: [GBRT]
+      tags:
+      - GBRT
       operationId: getGbrtPrediction
       summary: Predict a single article opening rate with GBRT
       description: Returns a single advisory opening-rate prediction using the GBRT model.
       parameters:
-        - name: title
-          in: query
-          required: false
-          description: Article title to score.
-          schema:
-            type: string
-        - name: cat
-          in: query
-          required: false
-          description: Editorial category to score.
-          schema:
-            type: string
-        - name: hour
-          in: query
-          required: false
-          description: Local hour of day used for the prediction.
-          schema:
-            type: integer
-            format: int32
-        - name: is_eilmeldung
-          in: query
-          required: false
-          description: Whether the article should be treated as an urgent bulletin.
-          schema:
-            type: integer
-            format: int32
-        - name: plus
-          in: query
-          required: false
-          description: Whether the article is a paywalled plus article.
-          schema:
-            type: integer
-            format: int32
+      - name: title
+        in: query
+        required: false
+        description: Article title to score.
+        schema:
+          type: string
+      - name: cat
+        in: query
+        required: false
+        description: Editorial category to score.
+        schema:
+          type: string
+      - name: hour
+        in: query
+        required: false
+        description: Local hour of day used for the prediction.
+        schema:
+          type: integer
+          format: int32
+      - name: is_eilmeldung
+        in: query
+        required: false
+        description: Whether the article should be treated as an urgent bulletin.
+        schema:
+          type: integer
+          format: int32
+      - name: plus
+        in: query
+        required: false
+        description: Whether the article is a paywalled plus article.
+        schema:
+          type: integer
+          format: int32
       responses:
-        "200":
+        '200':
           description: Single GBRT prediction result.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GbrtPredictionResponse"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /api/gbrt/retrain:
-    post:
-      tags: [GBRT]
-      operationId: createGbrtLegacyRetrainingJob
-      summary: Trigger a legacy GBRT retraining job
-      description: Triggers the compatibility GBRT retraining endpoint retained for operational clients.
-      deprecated: true
-      security:
-        - adminApiKey: []
-      responses:
-        "200":
-          description: Retraining trigger result.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/gbrt/force-promote:
-    post:
-      tags: [GBRT]
-      operationId: createGbrtLegacyPromotion
-      summary: Promote the GBRT challenger via compatibility endpoint
-      description: Triggers the compatibility GBRT promotion endpoint retained for operational clients.
-      deprecated: true
-      security:
-        - adminApiKey: []
-      responses:
-        "200":
-          description: Promotion result.
-          headers:
-            Deprecation:
-              $ref: "#/components/headers/Deprecation"
-            Sunset:
-              $ref: "#/components/headers/Sunset"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/GbrtPromotionResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+                $ref: '#/components/schemas/GbrtPredictionResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/schwab-chat:
     post:
-      tags: [AI]
+      tags:
+      - AI
       operationId: createSchwabChatMessage
       summary: Create a Schwab chat message
-      description: Returns a not-implemented response because the Schwab chat flow is not yet migrated into the FastAPI runtime.
+      description: Returns a not-implemented response because the Schwab chat flow is not yet migrated
+        into the FastAPI runtime.
       requestBody:
         required: true
         description: Chat message and conversation history.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SchwabChatRequest"
+              $ref: '#/components/schemas/SchwabChatRequest'
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/schwab-approval:
     post:
-      tags: [AI]
+      tags:
+      - AI
       operationId: createSchwabApproval
       summary: Store a Schwab approval decision
       description: Stores an editorial approval or rejection decision for an advisory push recommendation.
@@ -1882,17 +1545,297 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SchwabApprovalRequest"
+              $ref: '#/components/schemas/SchwabApprovalRequest'
       responses:
-        "200":
+        '200':
           description: Approval log acknowledgement.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SchwabApprovalResponse"
-        "422":
-          $ref: "#/components/responses/UnprocessableContent"
-
+                $ref: '#/components/schemas/SchwabApprovalResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+  /api/v1/scores/{cms_id}:
+    get:
+      tags:
+      - Score
+      summary: Get the existing Push Balancer score by CMS ID
+      description: Returns the latest workday score exposed by the Render score source. Fresh captured
+        UI scores remain authoritative; the source may use its server-side candidate fallback when no
+        current capture exists. Allowlisted numeric explanation fields are included when available.
+      operationId: getScoreByCmsId
+      security:
+      - scoreApiKey: []
+      parameters:
+      - name: cms_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9_-]+$
+          description: CMS document identifier
+          title: Cms Id
+        description: CMS document identifier
+      responses:
+        '200':
+          description: Existing score projection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleScoreResponse'
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+        '401':
+          description: Invalid or missing score API key
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '404':
+          description: No current score is available
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '422':
+          description: Invalid CMS ID
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '502':
+          description: An upstream source is unavailable
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '503':
+          description: Score lookup is not configured or unavailable
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+  /api/v1/scores/batch:
+    post:
+      tags:
+      - Score
+      summary: Get existing Push Balancer scores for up to 500 CMS IDs
+      description: Returns one ordered result per requested CMS-ID position while making exactly one deduplicated
+        batch request to the Render score source. Duplicate CMS IDs remain duplicated in the public result.
+        The adapter never fans out to single lookups and does not calculate a score itself.
+      operationId: getScoresByCmsIds
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchScoreRequest'
+        required: true
+      responses:
+        '200':
+          description: Ordered existing-score projections and not-found results
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchScoreResponse'
+        '401':
+          description: Invalid or missing score API key
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '422':
+          description: Invalid batch request
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '429':
+          description: At most two batch lookups may run per worker
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+            Retry-After:
+              description: Seconds before another bounded batch attempt.
+              schema:
+                type: string
+                const: '1'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '502':
+          description: The upstream batch source is unavailable
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+        '503':
+          description: Score lookup is not configured or unavailable
+          headers:
+            Cache-Control:
+              description: Prevents storage of the CMS-ID lookup response.
+              schema:
+                type: string
+                const: no-store
+            Vary:
+              description: Separates responses by the score-only credential.
+              schema:
+                type: string
+                const: X-Score-Key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
+      security:
+      - scoreApiKey: []
 components:
   securitySchemes:
     adminApiKey:
@@ -1909,6 +1852,10 @@ components:
       type: http
       scheme: bearer
       description: Bearer token authentication for versioned downstream consumer endpoints.
+    scoreApiKey:
+      type: apiKey
+      in: header
+      name: X-Score-Key
   parameters:
     Offset:
       name: offset
@@ -1939,91 +1886,78 @@ components:
         minimum: 1
         maximum: 200
         default: 60
-
-  headers:
-    Deprecation:
-      description: Indicates that the endpoint is deprecated and should no longer be used for new integrations.
-      schema:
-        type: string
-        example: "true"
-    Sunset:
-      description: RFC 7231 HTTP-date after which the deprecated endpoint is expected to be removed.
-      schema:
-        type: string
-        example: "Wed, 31 Dec 2026 23:59:59 GMT"
-
+  headers: {}
   responses:
     BadRequest:
       description: The request payload or parameters are invalid.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     NotFound:
       description: The requested resource does not exist.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     NotImplemented:
       description: The requested capability is not implemented in the current runtime.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     Forbidden:
       description: The caller is not allowed to perform this action.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     Unauthorized:
       description: Authentication failed or was missing.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     BadGateway:
       description: Upstream dependency is currently unavailable.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     InternalServerError:
       description: An unexpected server-side error occurred.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     ServiceUnavailable:
       description: The requested capability is temporarily unavailable.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
+            $ref: '#/components/schemas/Problem'
     UnprocessableContent:
       description: The request could not be validated.
       content:
         application/problem+json:
           schema:
-            $ref: "#/components/schemas/Problem"
-
+            $ref: '#/components/schemas/Problem'
   schemas:
     EngagementScoreBreakdown:
       type: object
       additionalProperties: false
       required:
-        - kind
-        - relevance
-        - urgency
-        - curiosity
-        - freshness
-        - timing
-        - titleBoost
-        - breaking
-        - research
-        - pushHistory
-        - topicSaturation
+      - kind
+      - relevance
+      - urgency
+      - curiosity
+      - freshness
+      - timing
+      - titleBoost
+      - breaking
+      - research
+      - pushHistory
+      - topicSaturation
       properties:
         kind:
           type: string
@@ -2068,11 +2002,15 @@ components:
           type: number
           minimum: -30
           maximum: 0
-
     SportScoreBreakdown:
       type: object
       additionalProperties: false
-      required: [kind, sportRelevance, timing, drama, freshness]
+      required:
+      - kind
+      - sportRelevance
+      - timing
+      - drama
+      - freshness
       properties:
         kind:
           type: string
@@ -2093,11 +2031,11 @@ components:
           type: number
           minimum: 0
           maximum: 10
-
     BatchCmsScoreCaptureResponse:
       type: object
       additionalProperties: false
-      required: [results]
+      required:
+      - results
       properties:
         results:
           type: array
@@ -2105,18 +2043,23 @@ components:
           maxItems: 500
           items:
             oneOf:
-              - $ref: "#/components/schemas/BatchCmsScoreFoundEnriched"
-              - $ref: "#/components/schemas/BatchCmsScoreFoundLegacy"
-              - $ref: "#/components/schemas/BatchCmsScoreNotFound"
-
+            - $ref: '#/components/schemas/BatchCmsScoreFoundEnriched'
+            - $ref: '#/components/schemas/BatchCmsScoreFoundLegacy'
+            - $ref: '#/components/schemas/BatchCmsScoreNotFound'
     BatchCmsScoreFoundEnriched:
       type: object
       additionalProperties: false
-      required: [cmsId, status, score, capturedAt, scoreBreakdown, orFactor]
+      required:
+      - cmsId
+      - status
+      - score
+      - capturedAt
+      - scoreBreakdown
+      - orFactor
       properties:
         cmsId:
           type: string
-          pattern: "^[0-9a-f]{24}$"
+          pattern: ^[0-9a-f]{24}$
         status:
           type: string
           const: found
@@ -2130,21 +2073,24 @@ components:
           minimum: 1
         scoreBreakdown:
           oneOf:
-            - $ref: "#/components/schemas/EngagementScoreBreakdown"
-            - $ref: "#/components/schemas/SportScoreBreakdown"
+          - $ref: '#/components/schemas/EngagementScoreBreakdown'
+          - $ref: '#/components/schemas/SportScoreBreakdown'
         orFactor:
           type: number
           minimum: 0.6
           maximum: 1.5
-
     BatchCmsScoreFoundLegacy:
       type: object
       additionalProperties: false
-      required: [cmsId, status, score, capturedAt]
+      required:
+      - cmsId
+      - status
+      - score
+      - capturedAt
       properties:
         cmsId:
           type: string
-          pattern: "^[0-9a-f]{24}$"
+          pattern: ^[0-9a-f]{24}$
         status:
           type: string
           const: found
@@ -2156,32 +2102,35 @@ components:
           type: integer
           format: int64
           minimum: 1
-
     BatchCmsScoreNotFound:
       type: object
       additionalProperties: false
-      required: [cmsId, status]
+      required:
+      - cmsId
+      - status
       properties:
         cmsId:
           type: string
-          pattern: "^[0-9a-f]{24}$"
+          pattern: ^[0-9a-f]{24}$
         status:
           type: string
           const: notFound
-
     Problem:
       type: object
-      required: [type, title, status]
+      required:
+      - type
+      - title
+      - status
       properties:
         type:
           type: string
           format: uri
           description: URI identifying the problem type.
-          example: "https://api.editorialsuite.io/problems/http-403"
+          example: https://api.editorialsuite.io/problems/http-403
         title:
           type: string
           description: Short human-readable summary of the problem.
-          example: "Forbidden"
+          example: Forbidden
         status:
           type: integer
           format: int32
@@ -2190,16 +2139,16 @@ components:
         detail:
           type: string
           description: Human-readable explanation for this specific occurrence.
-          example: "Invalid sync secret"
+          example: Invalid sync secret
         instance:
           type: string
           format: uri
           description: Request path of the failed API call.
-          example: "/api/pushes/sync"
-
+          example: /api/pushes/sync
     HealthCheck:
       type: object
-      required: [ok]
+      required:
+      - ok
       properties:
         ok:
           type: boolean
@@ -2208,17 +2157,23 @@ components:
         error:
           type: string
           description: Optional error summary.
-          example: ""
-
+          example: ''
     HealthResponse:
       type: object
-      required: [status, uptime, checks]
+      required:
+      - status
+      - uptime
+      - checks
+      - costControls
       properties:
         status:
           type: string
-          enum: [healthy, degraded, unhealthy]
+          enum:
+          - healthy
+          - degraded
+          - unhealthy
           description: Overall service health.
-          example: "healthy"
+          example: healthy
         uptime:
           type: integer
           format: int64
@@ -2227,8 +2182,38 @@ components:
         checks:
           type: object
           additionalProperties:
-            $ref: "#/components/schemas/HealthCheck"
+            $ref: '#/components/schemas/HealthCheck'
           description: Named check results.
+        costControls:
+          type: object
+          description: Effective runtime feature flags for paid external integrations.
+          required:
+          - paidExternalApisEnabled
+          - openaiTitleGenerationEnabled
+          - openaiPredictionScoringEnabled
+          - openaiBackfillEnabled
+          - adobeTrafficEnabled
+          properties:
+            paidExternalApisEnabled:
+              type: boolean
+              description: Master kill switch for paid third-party APIs and LLM calls.
+              example: false
+            openaiTitleGenerationEnabled:
+              type: boolean
+              description: Whether advisory OpenAI title generation is active after all gates are evaluated.
+              example: false
+            openaiPredictionScoringEnabled:
+              type: boolean
+              description: Whether prediction-time LLM scoring is active after all gates are evaluated.
+              example: false
+            openaiBackfillEnabled:
+              type: boolean
+              description: Whether optional OpenAI backfill jobs are active after all gates are evaluated.
+              example: false
+            adobeTrafficEnabled:
+              type: boolean
+              description: Whether Adobe traffic enrichment is active after all gates are evaluated.
+              example: false
         research:
           type: object
           description: Optional metadata about the current research worker state.
@@ -2242,34 +2227,39 @@ components:
               type: string
               format: date-time
               description: Timestamp of the latest successful research state refresh.
-              example: "2026-04-09T09:25:00Z"
-
+              example: '2026-04-09T09:25:00Z'
     Article:
       type: object
-      required: [id, url, title, category, pubDate, score]
+      required:
+      - id
+      - url
+      - title
+      - category
+      - pubDate
+      - score
       properties:
         id:
           type: string
           description: Stable article identifier.
-          example: "https://www.bild.de/politik/test-artikel"
+          example: https://www.bild.de/politik/test-artikel
         url:
           type: string
           format: uri
           description: Canonical article URL.
-          example: "https://www.bild.de/politik/test-artikel"
+          example: https://www.bild.de/politik/test-artikel
         title:
           type: string
           description: Editorial article title.
-          example: "Breaking Test Artikel"
+          example: Breaking Test Artikel
         category:
           type: string
           description: Inferred editorial category.
-          example: "politik"
+          example: politik
         pubDate:
           type: string
           format: date-time
           description: Article publication timestamp.
-          example: "2026-04-09T08:00:00Z"
+          example: '2026-04-09T08:00:00Z'
         score:
           type: number
           format: float
@@ -2283,28 +2273,34 @@ components:
         scoreReason:
           type: string
           description: Short editorial explanation for the 0-100 push score.
-          example: "stark: hoch wegen aktuelle Entwicklung, BILD-Reiz und klare Zeile."
+          example: 'stark: hoch wegen aktuelle Entwicklung, BILD-Reiz und klare Zeile.'
         performanceDrivers:
           type: array
           description: Main editorial and performance drivers.
           items:
             type: string
-          example: ["Aktualität: sehr frisch veröffentlicht", "BILD-Reiz: große Zielgruppe unmittelbar betroffen"]
+          example:
+          - 'Aktualität: sehr frisch veröffentlicht'
+          - 'BILD-Reiz: große Zielgruppe unmittelbar betroffen'
         risks:
           type: array
           description: Main fatigue, mix, trust, or clickiness risks.
           items:
             type: string
-          example: ["Politik-Dichte: ähnliche Themen heute bereits stark vertreten"]
+          example:
+          - 'Politik-Dichte: ähnliche Themen heute bereits stark vertreten'
         recommendedText:
           type: string
           description: Suggested push text improvement based on the editorial score.
-          example: "Messer-Alarm an Kita: Polizei nimmt Verdächtigen fest"
+          example: 'Messer-Alarm an Kita: Polizei nimmt Verdächtigen fest'
         mixPriority:
           type: string
-          enum: [hoch, mittel, niedrig]
+          enum:
+          - hoch
+          - mittel
+          - niedrig
           description: Recommended priority for the candidate in the current push mix.
-          example: "hoch"
+          example: hoch
         scoreBreakdown:
           type: object
           description: Dimension-level 0-100 score components.
@@ -2344,7 +2340,8 @@ components:
               format: float
         teamsAlert:
           type: object
-          description: Transparent Teams recommendation decision for this candidate, when Teams evaluation is enabled.
+          description: Transparent Teams recommendation decision for this candidate, when Teams evaluation
+            is enabled.
           additionalProperties: true
         isBreaking:
           type: boolean
@@ -2362,15 +2359,20 @@ components:
           type: boolean
           description: Whether the article appears to be paywalled.
           example: false
-
     ArticleCollectionResponse:
       type: object
-      required: [articles, total, count, offset, limit, fetchedAt]
+      required:
+      - articles
+      - total
+      - count
+      - offset
+      - limit
+      - fetchedAt
       properties:
         articles:
           type: array
           items:
-            $ref: "#/components/schemas/Article"
+            $ref: '#/components/schemas/Article'
           description: Current page of ranked article candidates.
         total:
           type: integer
@@ -2396,20 +2398,25 @@ components:
           type: string
           format: date-time
           description: Timestamp when the collection was built.
-          example: "2026-04-09T09:15:00Z"
-
+          example: '2026-04-09T09:15:00Z'
     ConsumerStatusResponse:
       type: object
-      required: [apiVersion, status, advisoryOnly, actionAllowed, authentication, endpoints]
+      required:
+      - apiVersion
+      - status
+      - advisoryOnly
+      - actionAllowed
+      - authentication
+      - endpoints
       properties:
         apiVersion:
           type: string
           description: Version of the downstream consumer API contract.
-          example: "v1"
+          example: v1
         status:
           type: string
           description: Readiness status of the consumer API.
-          example: "ok"
+          example: ok
         advisoryOnly:
           type: boolean
           description: Indicates that the response is only editorial decision support.
@@ -2421,7 +2428,9 @@ components:
         authentication:
           type: object
           description: Supported authentication modes for consumer calls.
-          required: [bearer, consumerKeyHeader]
+          required:
+          - bearer
+          - consumerKeyHeader
           properties:
             bearer:
               type: boolean
@@ -2434,24 +2443,31 @@ components:
         endpoints:
           type: object
           description: Canonical consumer endpoint paths.
-          required: [recommendations, articles, scores]
+          required:
+          - recommendations
+          - articles
+          - scores
           properties:
             recommendations:
               type: string
               description: Drop-in recommendations endpoint path.
-              example: "/api/v1/recommendations"
+              example: /api/v1/recommendations
             articles:
               type: string
               description: Full article candidate endpoint path.
-              example: "/api/v1/articles"
+              example: /api/v1/articles
             scores:
               type: string
               description: Compact score projection endpoint path.
-              example: "/api/v1/scores"
-
+              example: /api/v1/scores
     ConsumerArticleFlags:
       type: object
-      required: [breaking, eilmeldung, sport, video, plusArticle]
+      required:
+      - breaking
+      - eilmeldung
+      - sport
+      - video
+      - plusArticle
       properties:
         breaking:
           type: boolean
@@ -2473,58 +2489,70 @@ components:
           type: boolean
           description: Whether the article appears to be paywalled.
           example: false
-
     ConsumerArticleExplanation:
       type: object
-      required: [reason, drivers, risks, breakdown]
+      required:
+      - reason
+      - drivers
+      - risks
+      - breakdown
       properties:
         reason:
           type: string
           description: Short editorial explanation for the advisory score.
-          example: "Starker Score durch Breaking-Mechanik und gutes Zeitfenster."
+          example: Starker Score durch Breaking-Mechanik und gutes Zeitfenster.
         drivers:
           type: array
           description: Main aggregated performance and editorial drivers.
           items:
             type: string
-          example: ["Opening-Potenzial: hoher Aktualitäts- und Unterbrechungswert"]
+          example:
+          - 'Opening-Potenzial: hoher Aktualitäts- und Unterbrechungswert'
         risks:
           type: array
           description: Main fatigue, mix, trust, or clickiness risks.
           items:
             type: string
-          example: ["Keine starken Ermüdungs- oder Klickigkeits-Signale"]
+          example:
+          - Keine starken Ermüdungs- oder Klickigkeits-Signale
         breakdown:
           type: object
           description: Dimension-level 0-100 score components.
           additionalProperties: true
-
     ConsumerArticle:
       type: object
-      required: [id, url, title, category, publishedAt, score, recommendedText, flags]
+      required:
+      - id
+      - url
+      - title
+      - category
+      - publishedAt
+      - score
+      - recommendedText
+      - flags
       properties:
         id:
           type: string
           description: Stable article identifier.
-          example: "https://www.bild.de/politik/consumer-test"
+          example: https://www.bild.de/politik/consumer-test
         url:
           type: string
           format: uri
           description: Canonical article URL.
-          example: "https://www.bild.de/politik/consumer-test"
+          example: https://www.bild.de/politik/consumer-test
         title:
           type: string
           description: Editorial article title.
-          example: "Eilmeldung: Consumer Test Artikel"
+          example: 'Eilmeldung: Consumer Test Artikel'
         category:
           type: string
           description: Inferred editorial category.
-          example: "politik"
+          example: politik
         publishedAt:
           type: string
           format: date-time
           description: Article publication timestamp.
-          example: "2026-04-09T08:00:00Z"
+          example: '2026-04-09T08:00:00Z'
         score:
           type: number
           format: float
@@ -2532,36 +2560,44 @@ components:
           example: 88.0
         predictedOpenRate:
           type:
-            - number
-            - "null"
+          - number
+          - 'null'
           format: float
           description: Advisory predicted opening-rate ratio, where 0.055 means 5.5%.
           example: 0.055
         priority:
           type: string
           description: Current mix priority label.
-          example: "hoch"
+          example: hoch
         recommendedText:
           type: string
           description: Suggested push text for editorial review.
-          example: "Eilmeldung: Consumer Test Artikel"
+          example: 'Eilmeldung: Consumer Test Artikel'
         flags:
-          $ref: "#/components/schemas/ConsumerArticleFlags"
+          $ref: '#/components/schemas/ConsumerArticleFlags'
         explanation:
-          $ref: "#/components/schemas/ConsumerArticleExplanation"
-
+          $ref: '#/components/schemas/ConsumerArticleExplanation'
     ConsumerArticleCollectionResponse:
       type: object
-      required: [apiVersion, advisoryOnly, actionAllowed, articles, total, count, offset, limit, fetchedAt]
+      required:
+      - apiVersion
+      - advisoryOnly
+      - actionAllowed
+      - articles
+      - total
+      - count
+      - offset
+      - limit
+      - fetchedAt
       properties:
         kind:
           type: string
           description: Optional response kind for drop-in recommendation calls.
-          example: "recommendations"
+          example: recommendations
         apiVersion:
           type: string
           description: Version of the downstream consumer API contract.
-          example: "v1"
+          example: v1
         advisoryOnly:
           type: boolean
           description: Indicates that the response is only editorial decision support.
@@ -2574,7 +2610,7 @@ components:
           type: array
           description: Current page of ranked article candidates for consumers.
           items:
-            $ref: "#/components/schemas/ConsumerArticle"
+            $ref: '#/components/schemas/ConsumerArticle'
         total:
           type: integer
           format: int64
@@ -2599,29 +2635,36 @@ components:
           type: string
           format: date-time
           description: Timestamp when the collection was built.
-          example: "2026-04-09T09:15:00Z"
-
+          example: '2026-04-09T09:15:00Z'
     ConsumerScore:
       type: object
-      required: [articleId, url, title, category, score, predictedOpenRate, priority, updatedAt]
+      required:
+      - articleId
+      - url
+      - title
+      - category
+      - score
+      - predictedOpenRate
+      - priority
+      - updatedAt
       properties:
         articleId:
           type: string
           description: Stable article identifier.
-          example: "https://www.bild.de/politik/consumer-test"
+          example: https://www.bild.de/politik/consumer-test
         url:
           type: string
           format: uri
           description: Canonical article URL.
-          example: "https://www.bild.de/politik/consumer-test"
+          example: https://www.bild.de/politik/consumer-test
         title:
           type: string
           description: Editorial article title.
-          example: "Eilmeldung: Consumer Test Artikel"
+          example: 'Eilmeldung: Consumer Test Artikel'
         category:
           type: string
           description: Inferred editorial category.
-          example: "politik"
+          example: politik
         score:
           type: number
           format: float
@@ -2629,29 +2672,37 @@ components:
           example: 88.0
         predictedOpenRate:
           type:
-            - number
-            - "null"
+          - number
+          - 'null'
           format: float
           description: Advisory predicted opening-rate ratio, where 0.055 means 5.5%.
           example: 0.055
         priority:
           type: string
           description: Current mix priority label.
-          example: "hoch"
+          example: hoch
         updatedAt:
           type: string
           format: date-time
           description: Timestamp when the score projection was built.
-          example: "2026-04-09T09:15:00Z"
-
+          example: '2026-04-09T09:15:00Z'
     ConsumerScoreCollectionResponse:
       type: object
-      required: [apiVersion, advisoryOnly, actionAllowed, scores, total, count, offset, limit, fetchedAt]
+      required:
+      - apiVersion
+      - advisoryOnly
+      - actionAllowed
+      - scores
+      - total
+      - count
+      - offset
+      - limit
+      - fetchedAt
       properties:
         apiVersion:
           type: string
           description: Version of the downstream consumer API contract.
-          example: "v1"
+          example: v1
         advisoryOnly:
           type: boolean
           description: Indicates that the response is only editorial decision support.
@@ -2664,7 +2715,7 @@ components:
           type: array
           description: Current page of compact article scores for consumers.
           items:
-            $ref: "#/components/schemas/ConsumerScore"
+            $ref: '#/components/schemas/ConsumerScore'
         total:
           type: integer
           format: int64
@@ -2689,29 +2740,35 @@ components:
           type: string
           format: date-time
           description: Timestamp when the score projection was built.
-          example: "2026-04-09T09:15:00Z"
-
+          example: '2026-04-09T09:15:00Z'
     Push:
       type: object
-      required: [id, title, channel, sentAt, recipients, opened, openRate]
+      required:
+      - id
+      - title
+      - channel
+      - sentAt
+      - recipients
+      - opened
+      - openRate
       properties:
         id:
           type: string
           description: Unique identifier of the push notification event.
-          example: "push-2026-04-09-081500"
+          example: push-2026-04-09-081500
         title:
           type: string
           description: Headline text that was sent to end users.
-          example: "Eilmeldung: Regierung beschliesst neues Entlastungspaket"
+          example: 'Eilmeldung: Regierung beschliesst neues Entlastungspaket'
         channel:
           type: string
           description: Delivery channel or app surface used for the push.
-          example: "bild-app"
+          example: bild-app
         sentAt:
           type: string
           format: date-time
           description: Timestamp when the push notification was sent.
-          example: "2026-04-09T08:15:00Z"
+          example: '2026-04-09T08:15:00Z'
         recipients:
           type: integer
           format: int32
@@ -2736,11 +2793,14 @@ components:
           type: string
           format: uri
           description: Canonical article URL associated with the push, if available.
-          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
-
+          example: https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html
     PushDaySummary:
       type: object
-      required: [count, avgOR, topOR, recipients]
+      required:
+      - count
+      - avgOR
+      - topOR
+      - recipients
       properties:
         count:
           type: integer
@@ -2762,15 +2822,20 @@ components:
           format: int32
           description: Total addressed recipients across today's pushes.
           example: 1985000
-
     PushCollectionResponse:
       type: object
-      required: [pushes, channels, today, total, offset, limit]
+      required:
+      - pushes
+      - channels
+      - today
+      - total
+      - offset
+      - limit
       properties:
         pushes:
           type: array
           items:
-            $ref: "#/components/schemas/Push"
+            $ref: '#/components/schemas/Push'
           description: Current page of recent push notifications.
         channels:
           type: array
@@ -2778,7 +2843,7 @@ components:
             type: string
           description: Distinct channels represented in the current page.
         today:
-          $ref: "#/components/schemas/PushDaySummary"
+          $ref: '#/components/schemas/PushDaySummary'
           description: Same-day aggregate statistics for the returned push history.
         total:
           type: integer
@@ -2795,10 +2860,11 @@ components:
           format: int32
           description: Page size used for this response.
           example: 100
-
     SyncResponse:
       type: object
-      required: [ok, synced]
+      required:
+      - ok
+      - synced
       properties:
         ok:
           type: boolean
@@ -2809,30 +2875,32 @@ components:
           format: int32
           description: Number of push rows considered by the refresh.
           example: 50
-
     AcknowledgementResponse:
       type: object
-      required: [ok]
+      required:
+      - ok
       properties:
         ok:
           type: boolean
           description: Whether the action completed successfully.
           example: true
-
     LegacyJsonObject:
       type: object
       description: Flexible compatibility payload that remains exposed for operational clients.
       additionalProperties: true
-
     LegacyCollectionResponse:
       type: object
-      required: [items, total, offset, limit]
+      required:
+      - items
+      - total
+      - offset
+      - limit
       properties:
         items:
           type: array
           description: Current page of compatibility collection items.
           items:
-            $ref: "#/components/schemas/LegacyJsonObject"
+            $ref: '#/components/schemas/LegacyJsonObject'
         total:
           type: integer
           format: int64
@@ -2848,15 +2916,17 @@ components:
           format: int32
           description: Page size used for this response.
           example: 20
-
     PushSyncRequest:
       type: object
-      required: [secret, messages, channels]
+      required:
+      - secret
+      - messages
+      - channels
       properties:
         secret:
           type: string
           description: Shared secret used to authenticate the upstream push synchronizer.
-          example: "sync-shared-secret"
+          example: sync-shared-secret
         messages:
           type: array
           description: Raw push message objects from the upstream synchronizer.
@@ -2867,10 +2937,11 @@ components:
           description: Channel metadata accompanying the synchronized push messages.
           items:
             type: object
-
     PushSyncResponse:
       type: object
-      required: [ok, received]
+      required:
+      - ok
+      - received
       properties:
         ok:
           type: boolean
@@ -2881,15 +2952,16 @@ components:
           format: int32
           description: Number of synchronized push messages accepted from the payload.
           example: 24
-
     PredictionFeedbackRequest:
       type: object
-      required: [pushId, actualOr]
+      required:
+      - pushId
+      - actualOr
       properties:
         pushId:
           type: string
           description: Identifier of the push notification that received a prediction.
-          example: "push-2026-04-10-0815"
+          example: push-2026-04-10-0815
         actualOr:
           type: number
           format: float
@@ -2898,11 +2970,11 @@ components:
         title:
           type: string
           description: Optional push title for audit and training traceability.
-          example: "Breaking Test Artikel: Das ist jetzt wichtig"
-
+          example: 'Breaking Test Artikel: Das ist jetzt wichtig'
     CheckPlusRequest:
       type: object
-      required: [urls]
+      required:
+      - urls
       properties:
         urls:
           type: array
@@ -2910,34 +2982,32 @@ components:
           items:
             type: string
             format: uri
-            example: "https://www.bild.de/politik/test-artikel"
-
+            example: https://www.bild.de/politik/test-artikel
     UrlBooleanMap:
       type: object
       description: Map of article URLs to boolean inspection results.
       additionalProperties:
         type: boolean
-
     FeedItemCompact:
       type: object
       properties:
         t:
           type: string
           description: Compact title field used by legacy feed views.
-          example: "Breaking Test Artikel"
+          example: Breaking Test Artikel
         l:
           type: string
           format: uri
           description: Compact link field used by legacy feed views.
-          example: "https://www.bild.de/politik/test-artikel"
+          example: https://www.bild.de/politik/test-artikel
         p:
           type: string
           description: Publication date string as provided by the source feed.
-          example: "Fri, 10 Apr 2026 08:00:00 GMT"
+          example: Fri, 10 Apr 2026 08:00:00 GMT
         d:
           type: string
           description: Short feed description snippet.
-          example: "Kurzbeschreibung"
+          example: Kurzbeschreibung
         c:
           type: array
           description: Feed categories.
@@ -2947,38 +3017,41 @@ components:
           type: boolean
           description: Whether the item looks like a live ticker.
           example: false
-
     FeedMapResponse:
       type: object
       description: Flat mapping of feed names to compact feed item arrays.
       additionalProperties:
         type: array
         items:
-          $ref: "#/components/schemas/FeedItemCompact"
-
+          $ref: '#/components/schemas/FeedItemCompact'
     FeedGroup:
       type: object
-      required: [name, articles]
+      required:
+      - name
+      - articles
       properties:
         name:
           type: string
           description: Feed group identifier.
-          example: "bbc"
+          example: bbc
         articles:
           type: array
           description: Articles returned for this feed group.
           items:
-            $ref: "#/components/schemas/FeedItemCompact"
-
+            $ref: '#/components/schemas/FeedItemCompact'
     FeedGroupCollectionResponse:
       type: object
-      required: [items, total, offset, limit]
+      required:
+      - items
+      - total
+      - offset
+      - limit
       properties:
         items:
           type: array
           description: Current page of feed groups.
           items:
-            $ref: "#/components/schemas/FeedGroup"
+            $ref: '#/components/schemas/FeedGroup'
         total:
           type: integer
           format: int64
@@ -2994,20 +3067,19 @@ components:
           format: int32
           description: Page size used for this response.
           example: 20
-
     CompetitorXorRequest:
       type: object
-      required: [titles]
+      required:
+      - titles
       properties:
         titles:
           type: array
           description: Titles or title/category objects to score.
           items:
             oneOf:
-              - type: string
-                example: "Breaking Test Artikel"
-              - $ref: "#/components/schemas/LegacyJsonObject"
-
+            - type: string
+              example: Breaking Test Artikel
+            - $ref: '#/components/schemas/LegacyJsonObject'
     CompetitorXorResult:
       type: object
       properties:
@@ -3019,11 +3091,11 @@ components:
         basis:
           type: string
           description: Basis used for the simplified score.
-          example: "word_perf"
+          example: word_perf
         cat:
           type: string
           description: Derived editorial category.
-          example: "Politik"
+          example: Politik
         isLiveticker:
           type: boolean
           description: Whether the title looks like a live ticker.
@@ -3037,16 +3109,18 @@ components:
           format: int32
           description: Number of performance-bearing words matched in the cache.
           example: 3
-
     CompetitorXorResponse:
       type: object
-      required: [results, count, elapsedMs]
+      required:
+      - results
+      - count
+      - elapsedMs
       properties:
         results:
           type: object
           description: Prediction result keyed by the submitted title text.
           additionalProperties:
-            $ref: "#/components/schemas/CompetitorXorResult"
+            $ref: '#/components/schemas/CompetitorXorResult'
         count:
           type: integer
           format: int32
@@ -3057,33 +3131,41 @@ components:
           format: float
           description: Server-side execution time in milliseconds.
           example: 32.5
-
     CompetitorItem:
       type: object
-      required: [title, url, pubDate, outlet, outletColor, isGap, isExklusiv, isHot, outlets]
+      required:
+      - title
+      - url
+      - pubDate
+      - outlet
+      - outletColor
+      - isGap
+      - isExklusiv
+      - isHot
+      - outlets
       properties:
         title:
           type: string
           description: Headline of the monitored competitor article.
-          example: "Regierung plant neues Milliardenpaket"
+          example: Regierung plant neues Milliardenpaket
         url:
           type: string
           format: uri
           description: Canonical URL of the competitor article.
-          example: "https://www.welt.de/politik/deutschland/article123456789/paket.html"
+          example: https://www.welt.de/politik/deutschland/article123456789/paket.html
         pubDate:
           type: string
           format: date-time
           description: Publication timestamp of the competitor article.
-          example: "2026-04-09T08:05:00Z"
+          example: '2026-04-09T08:05:00Z'
         outlet:
           type: string
           description: Primary outlet name assigned to the item.
-          example: "welt"
+          example: welt
         outletColor:
           type: string
           description: Color token used to highlight the outlet in the UI.
-          example: "#0057B8"
+          example: '#0057B8'
         isGap:
           type: boolean
           description: Whether the item is classified as a competitor gap opportunity.
@@ -3101,10 +3183,13 @@ components:
           description: All outlets associated with this clustered competitor item.
           items:
             type: string
-
     CompetitorSummary:
       type: object
-      required: [total, gaps, exklusiv, hot]
+      required:
+      - total
+      - gaps
+      - exklusiv
+      - hot
       properties:
         total:
           type: integer
@@ -3126,57 +3211,66 @@ components:
           format: int32
           description: Number of items flagged as hot or urgent.
           example: 8
-
     CompetitorResponse:
       type: object
-      required: [items, summary, fetchedAt]
+      required:
+      - items
+      - summary
+      - fetchedAt
       properties:
         items:
           type: array
           description: Grouped and enriched competitor items for editorial monitoring.
           items:
-            $ref: "#/components/schemas/CompetitorItem"
+            $ref: '#/components/schemas/CompetitorItem'
         summary:
-          $ref: "#/components/schemas/CompetitorSummary"
+          $ref: '#/components/schemas/CompetitorSummary'
           description: Aggregate counts for the current competitor snapshot.
         fetchedAt:
           type: string
           format: date-time
           description: Timestamp when the competitor snapshot was assembled.
-          example: "2026-04-09T09:20:00Z"
-
+          example: '2026-04-09T09:20:00Z'
     LearningItem:
       type: object
-      required: [id, text, impact, createdAt]
+      required:
+      - id
+      - text
+      - impact
+      - createdAt
       properties:
         id:
           type: string
           description: Stable identifier of the research learning item.
-          example: "learning-prime-time-politik"
+          example: learning-prime-time-politik
         text:
           type: string
           description: Human-readable learning derived from historical performance data.
-          example: "Politik pushes perform strongest before 09:00 on weekdays."
+          example: Politik pushes perform strongest before 09:00 on weekdays.
         impact:
           type: string
-          enum: [high, medium, low]
+          enum:
+          - high
+          - medium
+          - low
           description: Editorial impact level assigned to the learning.
-          example: "high"
+          example: high
         createdAt:
           type: string
           format: date-time
           description: Timestamp when the learning item was generated.
-          example: "2026-04-09T06:00:00Z"
-
+          example: '2026-04-09T06:00:00Z'
     ResearchInsightsResponse:
       type: object
-      required: [learnings, experiments]
+      required:
+      - learnings
+      - experiments
       properties:
         learnings:
           type: array
           description: Current set of research learnings for editorial users.
           items:
-            $ref: "#/components/schemas/LearningItem"
+            $ref: '#/components/schemas/LearningItem'
         experiments:
           type: array
           description: Experiment snapshots and metadata included with the insights response.
@@ -3186,23 +3280,28 @@ components:
           nullable: true
           type: object
           description: Optional A/B test snapshot when an experiment comparison is active.
-
     ResearchRule:
       type: object
-      required: [id, category, rule, confidence, supportCount, createdAt]
+      required:
+      - id
+      - category
+      - rule
+      - confidence
+      - supportCount
+      - createdAt
       properties:
         id:
           type: string
           description: Stable identifier of the derived research rule.
-          example: "rule-politik-prime-time"
+          example: rule-politik-prime-time
         category:
           type: string
           description: Editorial category the rule applies to.
-          example: "Politik"
+          example: Politik
         rule:
           type: string
           description: Human-readable rule text derived from research data.
-          example: "Politik pushes perform above average between 07:00 and 09:00."
+          example: Politik pushes perform above average between 07:00 and 09:00.
         confidence:
           type: number
           format: float
@@ -3217,11 +3316,14 @@ components:
           type: string
           format: date-time
           description: Timestamp when the rule snapshot was generated.
-          example: "2026-04-09T06:00:00Z"
-
+          example: '2026-04-09T06:00:00Z'
     ResearchRulesResponse:
       type: object
-      required: [version, rules, rollingAccuracy, generatedAt]
+      required:
+      - version
+      - rules
+      - rollingAccuracy
+      - generatedAt
       properties:
         version:
           type: integer
@@ -3232,7 +3334,7 @@ components:
           type: array
           description: Derived research rules in the current snapshot.
           items:
-            $ref: "#/components/schemas/ResearchRule"
+            $ref: '#/components/schemas/ResearchRule'
         rollingAccuracy:
           type: number
           format: float
@@ -3242,11 +3344,13 @@ components:
           type: string
           format: date-time
           description: Timestamp when the rules snapshot was generated.
-          example: "2026-04-09T06:00:00Z"
-
+          example: '2026-04-09T06:00:00Z'
     AdobeTrafficEntry:
       type: object
-      required: [hour, pageviews, visitors]
+      required:
+      - hour
+      - pageviews
+      - visitors
       properties:
         hour:
           type: integer
@@ -3263,54 +3367,61 @@ components:
           format: int32
           description: Number of unique visitors attributed to that hour bucket.
           example: 11200
-
     AdobeTrafficArticle:
       type: object
-      required: [title, url, pageviews]
+      required:
+      - title
+      - url
+      - pageviews
       properties:
         title:
           type: string
           description: Article headline in the Adobe traffic ranking.
-          example: "Bundestag debattiert ueber neues Entlastungspaket"
+          example: Bundestag debattiert ueber neues Entlastungspaket
         url:
           type: string
           format: uri
           description: Canonical URL of the ranked article.
-          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
+          example: https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html
         pageviews:
           type: integer
           format: int32
           description: Number of pageviews attributed to the article.
           example: 28400
-
     AdobeTrafficResponse:
       type: object
-      required: [hourly, topArticles, fetchedAt]
+      required:
+      - hourly
+      - topArticles
+      - fetchedAt
       properties:
         hourly:
           type: array
           description: Hourly Adobe Analytics traffic breakdown.
           items:
-            $ref: "#/components/schemas/AdobeTrafficEntry"
+            $ref: '#/components/schemas/AdobeTrafficEntry'
         topArticles:
           type: array
           description: Top-performing articles in the current Adobe snapshot.
           items:
-            $ref: "#/components/schemas/AdobeTrafficArticle"
+            $ref: '#/components/schemas/AdobeTrafficArticle'
         fetchedAt:
           type: string
           format: date-time
           description: Timestamp when the Adobe snapshot was fetched.
-          example: "2026-04-09T09:30:00Z"
-
+          example: '2026-04-09T09:30:00Z'
     MlSafetyStatusResponse:
       type: object
-      required: [safetyMode, advisoryOnly, actionAllowed, message]
+      required:
+      - safetyMode
+      - advisoryOnly
+      - actionAllowed
+      - message
       properties:
         safetyMode:
           type: string
           description: Current ML safety mode.
-          example: "ADVISORY_ONLY"
+          example: ADVISORY_ONLY
         advisoryOnly:
           type: boolean
           description: Always true because the system never sends pushes autonomously.
@@ -3322,21 +3433,30 @@ components:
         message:
           type: string
           description: Human-readable explanation of the safety posture.
-          example: "All predictions are advisory only."
-
+          example: All predictions are advisory only.
     MlStatusResponse:
       type: object
-      required: [modelVersion, trainedAt, mae, rmse, r2, trainingRows, features, isEnsemble, advisoryOnly, actionAllowed]
+      required:
+      - modelVersion
+      - trainedAt
+      - mae
+      - rmse
+      - r2
+      - trainingRows
+      - features
+      - isEnsemble
+      - advisoryOnly
+      - actionAllowed
       properties:
         modelVersion:
           type: string
           description: Version identifier of the active ML model bundle.
-          example: "lgbm-2026-04-09-0600"
+          example: lgbm-2026-04-09-0600
         trainedAt:
           type: string
           format: date-time
           description: Timestamp when the active ML model bundle was trained.
-          example: "2026-04-09T06:00:00Z"
+          example: '2026-04-09T06:00:00Z'
         mae:
           type: number
           format: float
@@ -3374,15 +3494,17 @@ components:
           type: boolean
           description: Whether autonomous downstream actions are permitted.
           example: false
-
     MlMonitoringPrediction:
       type: object
-      required: [id, predictedOR, timestamp]
+      required:
+      - id
+      - predictedOR
+      - timestamp
       properties:
         id:
           type: string
           description: Identifier of the monitored prediction record.
-          example: "pred-2026-04-09-081500"
+          example: pred-2026-04-09-081500
         predictedOR:
           type: number
           format: float
@@ -3402,17 +3524,19 @@ components:
           type: string
           format: date-time
           description: Timestamp when the prediction record was created.
-          example: "2026-04-09T08:15:00Z"
-
+          example: '2026-04-09T08:15:00Z'
     MlMonitoringResponse:
       type: object
-      required: [recentPredictions, rollingMAE, drift]
+      required:
+      - recentPredictions
+      - rollingMAE
+      - drift
       properties:
         recentPredictions:
           type: array
           description: Recently logged prediction records for monitoring.
           items:
-            $ref: "#/components/schemas/MlMonitoringPrediction"
+            $ref: '#/components/schemas/MlMonitoringPrediction'
         rollingMAE:
           type: number
           format: float
@@ -3423,7 +3547,6 @@ components:
           format: float
           description: Drift score summarizing recent model instability.
           example: 0.12
-
     MlPredictionResponse:
       type: object
       properties:
@@ -3440,7 +3563,7 @@ components:
         basis:
           type: string
           description: Basis or model family used for the prediction.
-          example: "lightgbm"
+          example: lightgbm
         confidence:
           type: number
           format: float
@@ -3467,8 +3590,7 @@ components:
         safetyMode:
           type: string
           description: Current safety mode.
-          example: "ADVISORY_ONLY"
-
+          example: ADVISORY_ONLY
     MlAbStatusResponse:
       type: object
       properties:
@@ -3493,17 +3615,16 @@ components:
           format: int32
           description: Number of evaluated comparison samples.
           example: 0
-
     PredictBatchRequest:
       type: object
-      required: [articles]
+      required:
+      - articles
       properties:
         articles:
           type: array
           description: Articles to score in the batch request.
           items:
-            $ref: "#/components/schemas/LegacyJsonObject"
-
+            $ref: '#/components/schemas/LegacyJsonObject'
     PredictBatchEntry:
       type: object
       properties:
@@ -3520,7 +3641,7 @@ components:
         basis:
           type: string
           description: Basis or model family used for the prediction.
-          example: "lightgbm"
+          example: lightgbm
         confidence:
           type: number
           format: float
@@ -3539,21 +3660,26 @@ components:
         modelType:
           type: string
           description: Model family used to compute the prediction.
-          example: "lightgbm"
-
+          example: lightgbm
     PredictBatchResponse:
       type: object
-      required: [predictions, modelType, count, elapsedMs, cached, computed]
+      required:
+      - predictions
+      - modelType
+      - count
+      - elapsedMs
+      - cached
+      - computed
       properties:
         predictions:
           type: object
           description: Prediction results keyed by article identifier.
           additionalProperties:
-            $ref: "#/components/schemas/PredictBatchEntry"
+            $ref: '#/components/schemas/PredictBatchEntry'
         modelType:
           type: string
           description: Dominant model family used for the batch.
-          example: "lightgbm"
+          example: lightgbm
         count:
           type: integer
           format: int32
@@ -3574,10 +3700,10 @@ components:
           format: int32
           description: Number of predictions computed fresh for this request.
           example: 6
-
     JobResponse:
       type: object
-      required: [ok]
+      required:
+      - ok
       properties:
         ok:
           type: boolean
@@ -3586,15 +3712,20 @@ components:
         message:
           type: string
           description: Human-readable status message for the job request.
-          example: "Retraining job scheduled."
+          example: Retraining job scheduled.
         jobId:
           type: string
           description: Identifier of the scheduled job, if available.
-          example: "job-ml-retrain-2026-04-09-0600"
-
+          example: job-ml-retrain-2026-04-09-0600
     GbrtStatusResponse:
       type: object
-      required: [active, modelVersion, mae, trainingRows, features, lastRetrain]
+      required:
+      - active
+      - modelVersion
+      - mae
+      - trainingRows
+      - features
+      - lastRetrain
       properties:
         active:
           type: boolean
@@ -3603,7 +3734,7 @@ components:
         modelVersion:
           type: string
           description: Version identifier of the active GBRT model.
-          example: "gbrt-2026-04-09-0600"
+          example: gbrt-2026-04-09-0600
         mae:
           type: number
           format: float
@@ -3622,8 +3753,7 @@ components:
         lastRetrain:
           type: string
           description: Timestamp of the last successful GBRT retraining run.
-          example: "2026-04-09T06:00:00Z"
-
+          example: '2026-04-09T06:00:00Z'
     GbrtPredictionResponse:
       type: object
       properties:
@@ -3635,7 +3765,7 @@ components:
         basisMethod:
           type: string
           description: Basis or model family used for the prediction.
-          example: "gbrt"
+          example: gbrt
         confidence:
           type: number
           format: float
@@ -3667,13 +3797,15 @@ components:
           description: Applied online bias correction.
           example: 0.2
         features:
-          $ref: "#/components/schemas/LegacyJsonObject"
+          $ref: '#/components/schemas/LegacyJsonObject'
         importance:
-          $ref: "#/components/schemas/LegacyJsonObject"
-
+          $ref: '#/components/schemas/LegacyJsonObject'
     GbrtPromotionResponse:
       type: object
-      required: [ok, message, nTrees]
+      required:
+      - ok
+      - message
+      - nTrees
       properties:
         ok:
           type: boolean
@@ -3682,16 +3814,20 @@ components:
         message:
           type: string
           description: Human-readable promotion result.
-          example: "GBRT challenger was promoted."
+          example: GBRT challenger was promoted.
         nTrees:
           type: integer
           format: int32
           description: Number of trees in the promoted model.
           example: 120
-
     TagesplanSlot:
       type: object
-      required: [hour, label, predictedOR, isGoldenHour, recommendation]
+      required:
+      - hour
+      - label
+      - predictedOR
+      - isGoldenHour
+      - recommendation
       properties:
         hour:
           type: integer
@@ -3701,7 +3837,7 @@ components:
         label:
           type: string
           description: Human-readable label for the planning slot.
-          example: "09:00"
+          example: 09:00
         predictedOR:
           type: number
           format: float
@@ -3719,12 +3855,12 @@ components:
         pushedTitle:
           type: string
           description: Title of the push that was actually sent for this slot, if any.
-          example: "Eilmeldung: Regierung beschliesst neues Entlastungspaket"
+          example: 'Eilmeldung: Regierung beschliesst neues Entlastungspaket'
         pushedAt:
           type: string
           format: date-time
           description: Timestamp when the actual push was sent for this slot.
-          example: "2026-04-09T09:03:00Z"
+          example: '2026-04-09T09:03:00Z'
         isGoldenHour:
           type: boolean
           description: Whether this slot is identified as the best-performing hour of the day.
@@ -3732,26 +3868,34 @@ components:
         recommendation:
           type: string
           description: Recommended article title or guidance for the slot.
-          example: "Politik-Aufmacher mit Entlastungspaket priorisieren"
-
+          example: Politik-Aufmacher mit Entlastungspaket priorisieren
     TagesplanResponse:
       type: object
-      required: [date, mode, slots, goldenHour, avgOR, pushedCount, mae, trainedOnRows, pushedToday]
+      required:
+      - date
+      - mode
+      - slots
+      - goldenHour
+      - avgOR
+      - pushedCount
+      - mae
+      - trainedOnRows
+      - pushedToday
       properties:
         date:
           type: string
           format: date
           description: Planning date represented by the current daily plan.
-          example: "2026-04-09"
+          example: '2026-04-09'
         mode:
           type: string
           description: Current planning mode used to assemble the Tagesplan.
-          example: "live"
+          example: live
         slots:
           type: array
           description: Ordered daily planning slots from morning to late evening.
           items:
-            $ref: "#/components/schemas/TagesplanSlot"
+            $ref: '#/components/schemas/TagesplanSlot'
         goldenHour:
           type: integer
           format: int32
@@ -3786,16 +3930,20 @@ components:
           type: boolean
           description: Whether the frontend should treat the current plan as still loading.
           example: false
-
     TagesplanRetroDay:
       type: object
-      required: [date, avgOR, pushedCount, mae, slots]
+      required:
+      - date
+      - avgOR
+      - pushedCount
+      - mae
+      - slots
       properties:
         date:
           type: string
           format: date
           description: Retrospective day represented by this entry.
-          example: "2026-04-08"
+          example: '2026-04-08'
         avgOR:
           type: number
           format: float
@@ -3815,11 +3963,13 @@ components:
           type: array
           description: Slot-level retrospective entries for the given day.
           items:
-            $ref: "#/components/schemas/TagesplanSlot"
-
+            $ref: '#/components/schemas/TagesplanSlot'
     TagesplanRetroSummary:
       type: object
-      required: [avgOR, totalPushes, avgMAE]
+      required:
+      - avgOR
+      - totalPushes
+      - avgMAE
       properties:
         avgOR:
           type: number
@@ -3836,28 +3986,32 @@ components:
           format: float
           description: Average mean absolute error across the retrospective window.
           example: 1.56
-
     TagesplanRetroResponse:
       type: object
-      required: [days, summary]
+      required:
+      - days
+      - summary
       properties:
         days:
           type: array
           description: Retrospective day entries in the requested lookback window.
           items:
-            $ref: "#/components/schemas/TagesplanRetroDay"
+            $ref: '#/components/schemas/TagesplanRetroDay'
         summary:
-          $ref: "#/components/schemas/TagesplanRetroSummary"
-
+          $ref: '#/components/schemas/TagesplanRetroSummary'
     TagesplanHistoryItem:
       type: object
-      required: [date, hour, avgOr, nPushes]
+      required:
+      - date
+      - hour
+      - avgOr
+      - nPushes
       properties:
         date:
           type: string
           format: date
           description: Local publication date for the historical slot aggregate.
-          example: "2026-04-09"
+          example: '2026-04-09'
         hour:
           type: integer
           format: int32
@@ -3873,16 +4027,21 @@ components:
           format: int32
           description: Number of pushes contributing to the aggregate.
           example: 3
-
     TagesplanHistoryResponse:
       type: object
-      required: [items, total, offset, limit, days, loading]
+      required:
+      - items
+      - total
+      - offset
+      - limit
+      - days
+      - loading
       properties:
         items:
           type: array
           description: Current page of historical daily plan slot aggregates.
           items:
-            $ref: "#/components/schemas/TagesplanHistoryItem"
+            $ref: '#/components/schemas/TagesplanHistoryItem'
         total:
           type: integer
           format: int64
@@ -3907,10 +4066,14 @@ components:
           type: boolean
           description: Whether the frontend should treat the history as still loading.
           example: false
-
     TagesplanSuggestion:
       type: object
-      required: [hour, title, url, score, predictedOR]
+      required:
+      - hour
+      - title
+      - url
+      - score
+      - predictedOR
       properties:
         hour:
           type: integer
@@ -3920,12 +4083,12 @@ components:
         title:
           type: string
           description: Suggested article title for the slot.
-          example: "Regierung beschliesst neues Entlastungspaket"
+          example: Regierung beschliesst neues Entlastungspaket
         url:
           type: string
           format: uri
           description: Canonical article URL of the suggested story.
-          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
+          example: https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html
         score:
           type: number
           format: float
@@ -3936,16 +4099,20 @@ components:
           format: float
           description: Predicted opening rate for the suggestion.
           example: 7.6
-
     TagesplanSuggestionsResponse:
       type: object
-      required: [items, total, offset, limit, grouped]
+      required:
+      - items
+      - total
+      - offset
+      - limit
+      - grouped
       properties:
         items:
           type: array
           description: Flattened page of saved suggestion items.
           items:
-            $ref: "#/components/schemas/TagesplanSuggestion"
+            $ref: '#/components/schemas/TagesplanSuggestion'
         total:
           type: integer
           format: int64
@@ -3967,28 +4134,27 @@ components:
           additionalProperties:
             type: array
             items:
-              $ref: "#/components/schemas/TagesplanSuggestion"
-
+              $ref: '#/components/schemas/TagesplanSuggestion'
     LogSuggestionReactItem:
       type: object
       properties:
         title:
           type: string
           description: Suggested article title.
-          example: "Breaking Test Artikel"
+          example: Breaking Test Artikel
         link:
           type: string
           format: uri
           description: Suggested article URL.
-          example: "https://www.bild.de/politik/test-artikel"
+          example: https://www.bild.de/politik/test-artikel
         cat:
           type: string
           description: Editorial category shorthand.
-          example: "politik"
+          example: politik
         category:
           type: string
           description: Editorial category alias.
-          example: "politik"
+          example: politik
         score:
           type: number
           format: float
@@ -4007,17 +4173,19 @@ components:
         best_cat:
           type: string
           description: Best-performing category hint for the suggestion.
-          example: "politik"
-
+          example: politik
     LogSuggestionsReactRequest:
       type: object
-      required: [dateIso, slotHour, suggestions]
+      required:
+      - dateIso
+      - slotHour
+      - suggestions
       properties:
         dateIso:
           type: string
           format: date
           description: Planning date for the saved slot suggestions.
-          example: "2026-04-10"
+          example: '2026-04-10'
         slotHour:
           type: integer
           format: int32
@@ -4027,8 +4195,7 @@ components:
           type: array
           description: Suggested articles for the selected slot.
           items:
-            $ref: "#/components/schemas/LogSuggestionReactItem"
-
+            $ref: '#/components/schemas/LogSuggestionReactItem'
     LogSuggestionLegacyItem:
       type: object
       properties:
@@ -4045,20 +4212,20 @@ components:
         title:
           type: string
           description: Suggested article title.
-          example: "Breaking Test Artikel"
+          example: Breaking Test Artikel
         link:
           type: string
           format: uri
           description: Suggested article URL.
-          example: "https://www.bild.de/politik/test-artikel"
+          example: https://www.bild.de/politik/test-artikel
         category:
           type: string
           description: Editorial category.
-          example: "politik"
+          example: politik
         cat:
           type: string
           description: Editorial category shorthand alias.
-          example: "politik"
+          example: politik
         score:
           type: number
           format: float
@@ -4072,26 +4239,29 @@ components:
         best_cat:
           type: string
           description: Best-performing category hint for the suggestion.
-          example: "politik"
-
+          example: politik
     LogSuggestionsLegacyRequest:
       type: object
-      required: [date_iso, suggestions]
+      required:
+      - date_iso
+      - suggestions
       properties:
         date_iso:
           type: string
           format: date
           description: Planning date for the compatibility flat suggestion payload.
-          example: "2026-04-10"
+          example: '2026-04-10'
         suggestions:
           type: array
           description: Flat list of compatibility suggestion rows.
           items:
-            $ref: "#/components/schemas/LogSuggestionLegacyItem"
-
+            $ref: '#/components/schemas/LogSuggestionLegacyItem'
     SuggestionsLogResponse:
       type: object
-      required: [ok, saved, format]
+      required:
+      - ok
+      - saved
+      - format
       properties:
         ok:
           type: boolean
@@ -4105,43 +4275,44 @@ components:
         format:
           type: string
           description: Payload format that was accepted by the endpoint.
-          example: "react"
-
+          example: react
     GenerateTitleRequest:
       type: object
-      required: [title]
+      required:
+      - title
       properties:
         url:
           type: string
           format: uri
           description: Canonical article URL used as additional title-generation context.
-          example: "https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html"
+          example: https://www.bild.de/politik/inland/entlastungspaket-123456.bild.html
         title:
           type: string
           description: Source article title for which advisory push variants should be generated.
-          example: "Regierung beschliesst neues Entlastungspaket"
+          example: Regierung beschliesst neues Entlastungspaket
         category:
           type: string
           description: Optional editorial category used to steer the generated variants.
-          example: "Politik"
-
+          example: Politik
     SchwabChatRequest:
       type: object
-      required: [message]
+      required:
+      - message
       properties:
         message:
           type: string
           description: Chat message to send to the compatibility Schwab flow.
-          example: "Welche Push-Idee ist besser?"
+          example: Welche Push-Idee ist besser?
         history:
           type: array
           description: Prior conversation history entries.
           items:
-            $ref: "#/components/schemas/LegacyJsonObject"
-
+            $ref: '#/components/schemas/LegacyJsonObject'
     SchwabChatResponse:
       type: object
-      required: [ok, message]
+      required:
+      - ok
+      - message
       properties:
         ok:
           type: boolean
@@ -4150,24 +4321,27 @@ components:
         message:
           type: string
           description: Status message for the currently unavailable compatibility flow.
-          example: "Chat function is being migrated."
-
+          example: Chat function is being migrated.
     SchwabApprovalRequest:
       type: object
-      required: [decision]
+      required:
+      - decision
       properties:
         decision:
           type: string
           description: Editorial approval decision.
-          example: "approved"
+          example: approved
         push_id:
           type: string
           description: Optional push identifier associated with the decision.
-          example: "push-2026-04-10-0815"
-
+          example: push-2026-04-10-0815
     SchwabApprovalResponse:
       type: object
-      required: [ok, advisoryOnly, actionAllowed, message]
+      required:
+      - ok
+      - advisoryOnly
+      - actionAllowed
+      - message
       properties:
         ok:
           type: boolean
@@ -4184,16 +4358,19 @@ components:
         message:
           type: string
           description: Human-readable explanation of the logged approval.
-          example: "Decision logged. Push sending still requires manual CMS action."
-
+          example: Decision logged. Push sending still requires manual CMS action.
     GenerateTitleResponse:
       type: object
-      required: [title, alternativeTitles, reasoning, advisoryOnly]
+      required:
+      - title
+      - alternativeTitles
+      - reasoning
+      - advisoryOnly
       properties:
         title:
           type: string
           description: The recommended advisory push title.
-          example: "Breaking Test Artikel: Das ist jetzt wichtig"
+          example: 'Breaking Test Artikel: Das ist jetzt wichtig'
         alternativeTitles:
           type: array
           items:
@@ -4202,8 +4379,361 @@ components:
         reasoning:
           type: string
           description: Short explanation for the recommended title.
-          example: "The recommended variant is shorter, clearer, and emphasizes the strongest news angle."
+          example: The recommended variant is shorter, clearer, and emphasizes the strongest news angle.
         advisoryOnly:
           type: boolean
           description: Always true because the API never sends push notifications autonomously.
           example: true
+    ArticleScoreResponse:
+      oneOf:
+      - not:
+          anyOf:
+          - required:
+            - scoreBreakdown
+          - required:
+            - orFactor
+      - properties:
+          scoreBreakdown:
+            type: 'null'
+          orFactor:
+            type: 'null'
+        required:
+        - scoreBreakdown
+        - orFactor
+      - properties:
+          scoreBreakdown:
+            not:
+              type: 'null'
+          orFactor:
+            not:
+              type: 'null'
+        required:
+        - scoreBreakdown
+        - orFactor
+      properties:
+        cmsId:
+          type: string
+          title: Cmsid
+          description: CMS document identifier
+        score:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Score
+          description: Authoritative existing Push Balancer total score
+        scoredAt:
+          type: string
+          minLength: 1
+          title: Scoredat
+          description: Timestamp of the existing score calculation
+        scoreBreakdown:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/EngagementScoreBreakdownResponse'
+            - $ref: '#/components/schemas/SportScoreBreakdownResponse'
+            discriminator:
+              propertyName: kind
+              mapping:
+                engagement: '#/components/schemas/EngagementScoreBreakdownResponse'
+                sport: '#/components/schemas/SportScoreBreakdownResponse'
+          - type: 'null'
+          title: Scorebreakdown
+          description: Allowlisted captured numeric explanation values; existing score caps, age multipliers,
+            and TV adjustments mean they are not guaranteed to sum to score. Null for a legacy snapshot
+        orFactor:
+          anyOf:
+          - type: number
+            maximum: 1.5
+            minimum: 0.6
+          - type: 'null'
+          title: Orfactor
+          description: Captured opening-rate sorting factor, or null for a legacy snapshot
+      additionalProperties: true
+      type: object
+      required:
+      - cmsId
+      - score
+      - scoredAt
+      title: ArticleScoreResponse
+      description: Score contract intentionally excluding article metadata and prose.
+    BatchFoundScoreResponse:
+      oneOf:
+      - properties:
+          scoreBreakdown:
+            type: 'null'
+          orFactor:
+            type: 'null'
+        required:
+        - scoreBreakdown
+        - orFactor
+      - properties:
+          scoreBreakdown:
+            not:
+              type: 'null'
+          orFactor:
+            not:
+              type: 'null'
+        required:
+        - scoreBreakdown
+        - orFactor
+      properties:
+        status:
+          type: string
+          const: found
+          title: Status
+        cmsId:
+          type: string
+          pattern: ^[0-9a-fA-F]{24}$
+          title: Cmsid
+        score:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Score
+        scoredAt:
+          type: string
+          minLength: 1
+          title: Scoredat
+        scoreBreakdown:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/EngagementScoreBreakdownResponse'
+            - $ref: '#/components/schemas/SportScoreBreakdownResponse'
+            discriminator:
+              propertyName: kind
+              mapping:
+                engagement: '#/components/schemas/EngagementScoreBreakdownResponse'
+                sport: '#/components/schemas/SportScoreBreakdownResponse'
+          - type: 'null'
+          title: Scorebreakdown
+        orFactor:
+          anyOf:
+          - type: number
+            maximum: 1.5
+            minimum: 0.6
+          - type: 'null'
+          title: Orfactor
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - cmsId
+      - score
+      - scoredAt
+      - scoreBreakdown
+      - orFactor
+      title: BatchFoundScoreResponse
+      description: One found score; fields mirror the single lookup plus a discriminator.
+    BatchNotFoundScoreResponse:
+      properties:
+        status:
+          type: string
+          const: notFound
+          title: Status
+        cmsId:
+          type: string
+          pattern: ^[0-9a-fA-F]{24}$
+          title: Cmsid
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - cmsId
+      title: BatchNotFoundScoreResponse
+      description: Exact per-position result when no current snapshot exists.
+    BatchScoreRequest:
+      properties:
+        cmsIds:
+          items:
+            type: string
+            pattern: ^[0-9a-fA-F]{24}$
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Cmsids
+      additionalProperties: false
+      type: object
+      required:
+      - cmsIds
+      title: BatchScoreRequest
+      description: Bounded, body-only CMS-ID batch request.
+    BatchScoreResponse:
+      properties:
+        requestedCount:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Requestedcount
+        uniqueCount:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Uniquecount
+        foundCount:
+          type: integer
+          maximum: 500.0
+          minimum: 0.0
+          title: Foundcount
+        notFoundCount:
+          type: integer
+          maximum: 500.0
+          minimum: 0.0
+          title: Notfoundcount
+        results:
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/BatchFoundScoreResponse'
+            - $ref: '#/components/schemas/BatchNotFoundScoreResponse'
+            discriminator:
+              propertyName: status
+              mapping:
+                found: '#/components/schemas/BatchFoundScoreResponse'
+                notFound: '#/components/schemas/BatchNotFoundScoreResponse'
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Results
+      additionalProperties: false
+      type: object
+      required:
+      - requestedCount
+      - uniqueCount
+      - foundCount
+      - notFoundCount
+      - results
+      title: BatchScoreResponse
+      description: Ordered score results and position-based summary counts.
+    EngagementScoreBreakdownResponse:
+      properties:
+        kind:
+          type: string
+          const: engagement
+          title: Kind
+        relevance:
+          type: number
+          maximum: 30.0
+          minimum: 0.0
+          title: Relevance
+        urgency:
+          type: number
+          maximum: 25.0
+          minimum: 0.0
+          title: Urgency
+        curiosity:
+          type: number
+          maximum: 25.0
+          minimum: 0.0
+          title: Curiosity
+        freshness:
+          type: number
+          maximum: 20.0
+          minimum: 0.0
+          title: Freshness
+        timing:
+          type: number
+          maximum: 15.0
+          minimum: 0.0
+          title: Timing
+        titleBoost:
+          type: number
+          maximum: 15.0
+          minimum: 0.0
+          title: Titleboost
+        breaking:
+          type: number
+          maximum: 15.0
+          minimum: 0.0
+          title: Breaking
+        research:
+          type: number
+          maximum: 12.0
+          minimum: 0.0
+          title: Research
+        pushHistory:
+          type: number
+          maximum: 8.0
+          minimum: -4.0
+          title: Pushhistory
+        topicSaturation:
+          type: number
+          maximum: 0.0
+          minimum: -30.0
+          title: Topicsaturation
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - relevance
+      - urgency
+      - curiosity
+      - freshness
+      - timing
+      - titleBoost
+      - breaking
+      - research
+      - pushHistory
+      - topicSaturation
+      title: EngagementScoreBreakdownResponse
+      description: Captured numeric inputs from the legacy engagement tooltip.
+    ProblemResponse:
+      properties:
+        type:
+          type: string
+          title: Type
+        title:
+          type: string
+          title: Title
+        status:
+          type: integer
+          title: Status
+        detail:
+          type: string
+          title: Detail
+        instance:
+          type: string
+          title: Instance
+      type: object
+      required:
+      - type
+      - title
+      - status
+      - detail
+      - instance
+      title: ProblemResponse
+      description: Problem-details shape returned by the shared exception handlers.
+    SportScoreBreakdownResponse:
+      properties:
+        kind:
+          type: string
+          const: sport
+          title: Kind
+        sportRelevance:
+          type: number
+          maximum: 35.0
+          minimum: 0.0
+          title: Sportrelevance
+        timing:
+          type: number
+          maximum: 30.0
+          minimum: 0.0
+          title: Timing
+        drama:
+          type: number
+          maximum: 25.0
+          minimum: 0.0
+          title: Drama
+        freshness:
+          type: number
+          maximum: 10.0
+          minimum: 0.0
+          title: Freshness
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - sportRelevance
+      - timing
+      - drama
+      - freshness
+      title: SportScoreBreakdownResponse
+      description: Captured numeric inputs from the legacy sport tooltip.

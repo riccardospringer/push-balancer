@@ -1,0 +1,244 @@
+{{- if and .Values.egressProxy.enabled (empty .Values.digest) -}}
+{{- fail "egress proxy rollout is blocked: an immutable image digest is required" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (empty .Values.egressProxy.allowedConnectHosts) -}}
+{{- fail "egress proxy rollout is blocked: at least one exact CONNECT hostname is required" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (not .Values.networkPolicy.enabled) -}}
+{{- fail "egress proxy rollout is blocked: the application default-deny NetworkPolicy is required" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (not (has "Egress" .Values.networkPolicy.policyTypes)) -}}
+{{- fail "egress proxy rollout is blocked: the application NetworkPolicy must select Egress" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (not (empty .Values.networkPolicy.egress)) -}}
+{{- fail "egress proxy rollout is blocked: direct application egress rules are forbidden" -}}
+{{- end -}}
+{{- $dns := .Values.egressProxy.networkPolicy.dns -}}
+{{- $dnsByCidr := not (empty $dns.cidr) -}}
+{{- $dnsBySelector := and (not (empty $dns.namespace)) (not (empty $dns.podLabels)) -}}
+{{- if and .Values.egressProxy.enabled (eq $dnsByCidr $dnsBySelector) -}}
+{{- fail "egress proxy rollout is blocked: target-cluster DNS egress is required" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (empty .Values.egressProxy.networkPolicy.upstreamCidrs) -}}
+{{- fail "egress proxy rollout is blocked: approved upstream egress is required" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (eq (int .Values.egressProxy.port) (int .Values.egressProxy.sentinelPort)) -}}
+{{- fail "egress proxy rollout is blocked: proxy and policy sentinel ports must differ" -}}
+{{- end -}}
+{{- if and .Values.egressProxy.enabled (or (lt (int .Values.egressProxy.port) 1) (gt (int .Values.egressProxy.port) 65535) (lt (int .Values.egressProxy.sentinelPort) 1) (gt (int .Values.egressProxy.sentinelPort) 65535)) -}}
+{{- fail "egress proxy rollout is blocked: proxy and policy sentinel ports must be valid TCP ports" -}}
+{{- end -}}
+{{- if .Values.egressProxy.enabled }}
+{{- range .Values.egressProxy.allowedConnectHosts }}
+{{- if not (regexMatch "^([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9.-]{0,251}[A-Za-z0-9])$" .) }}
+{{- fail "egress proxy rollout is blocked: CONNECT allowlist entries must be exact DNS hostnames" -}}
+{{- end }}
+{{- if not (has (lower .) (list "api.stg.editorial.one" "api.editorial.one" "push-balancer.onrender.com" "www.bild.de")) }}
+{{- fail "egress proxy rollout is blocked: CONNECT hostname is not approved for this service" -}}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "push-balancer.egressProxyName" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "push-balancer.egressProxyName" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  replicas: {{ .Values.egressProxy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "push-balancer.egressProxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "push-balancer.egressProxySelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "push-balancer.egressProxyName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: egress-proxy
+          image: "{{ .Values.image }}@{{ .Values.digest }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["python", "-I", "-B", "/app/app/egress_proxy.py"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: EGRESS_PROXY_PORT
+              value: {{ .Values.egressProxy.port | quote }}
+            - name: EGRESS_PROXY_SENTINEL_PORT
+              value: {{ .Values.egressProxy.sentinelPort | quote }}
+            - name: EGRESS_PROXY_ALLOWED_HOSTS
+              value: {{ join "," .Values.egressProxy.allowedConnectHosts | quote }}
+          ports:
+            - name: connect
+              containerPort: {{ .Values.egressProxy.port }}
+              protocol: TCP
+            - name: policy-sentinel
+              containerPort: {{ .Values.egressProxy.sentinelPort }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: connect
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 2
+          readinessProbe:
+            tcpSocket:
+              port: connect
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.egressProxy.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "push-balancer.egressProxyName" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  type: ClusterIP
+  ports:
+    - name: connect
+      port: {{ .Values.egressProxy.port }}
+      targetPort: {{ .Values.egressProxy.port }}
+      protocol: TCP
+    {{- if .Values.egressProxy.clusterNetworkPolicy.enabled }}
+    - name: policy-sentinel
+      port: {{ .Values.egressProxy.sentinelPort }}
+      targetPort: {{ .Values.egressProxy.sentinelPort }}
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "push-balancer.egressProxySelectorLabels" . | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "push-balancer.egressProxyName" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "push-balancer.egressProxySelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "push-balancer.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.egressProxy.port }}
+        {{- if .Values.egressProxy.clusterNetworkPolicy.enabled }}
+        - protocol: TCP
+          port: {{ .Values.egressProxy.sentinelPort }}
+        {{- end }}
+  egress:
+    - to:
+        {{- if $dnsByCidr }}
+        - ipBlock:
+            cidr: {{ $dns.cidr | quote }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $dns.podLabels | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- range .Values.egressProxy.networkPolicy.upstreamCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+            {{- with .except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "push-balancer.fullname" . }}-to-egress-proxy
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "push-balancer.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- if $dnsByCidr }}
+        - ipBlock:
+            cidr: {{ $dns.cidr | quote }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $dns.podLabels | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "push-balancer.egressProxySelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.egressProxy.port }}
+        {{- if .Values.egressProxy.clusterNetworkPolicy.enabled }}
+        - protocol: TCP
+          port: {{ .Values.egressProxy.sentinelPort }}
+        {{- end }}
+{{- end }}

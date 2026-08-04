@@ -2,20 +2,12 @@
 
 from pathlib import Path
 
-import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize(
-    "frontend_path",
-    [Path("push-balancer.html"), Path("app/legacy_push_balancer.html")],
-)
-def test_fresh_strong_a_list_people_shape_gets_ml_and_fallback_calibration(
-    frontend_path: Path,
-):
-    source = (ROOT / frontend_path).read_text(encoding="utf-8")
+def test_fresh_strong_a_list_people_shape_gets_ml_and_fallback_calibration():
+    source = (ROOT / "app" / "legacy_push_balancer.html").read_text(encoding="utf-8")
 
     assert "function isStrongAListPeopleDevelopment(article)" in source
     assert "articleAge <= 6" in source

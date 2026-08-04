@@ -11,6 +11,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -46,6 +47,22 @@ from app.config import (
     PUSH_TEAMS_HEARTBEAT_ENABLED,
     PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES,
     PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN,
+    PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED,
+    PUSH_TEAMS_LIVE_PUSH_POST_LOOKBACK_MINUTES,
+    PUSH_TEAMS_LIVE_PUSH_POSTS_PER_CYCLE,
+    PUSH_TEAMS_TRANSPORT_FAILURE_COOLDOWN_MINUTES,
+    PUSH_TEAMS_WEBHOOK_MAX_ATTEMPTS,
+    PUSH_TEAMS_WEBHOOK_RETRY_BACKOFF_SECONDS,
+    PUSH_TEAMS_WORKER_STALL_SECONDS,
+    PUSH_TEAMS_HOT_FRESH_ENABLED,
+    PUSH_TEAMS_HOT_FRESH_MAX_AGE_MINUTES,
+    PUSH_TEAMS_HOT_FRESH_MIN_SCORE,
+    PUSH_TEAMS_HOT_FRESH_MIN_GAP_MINUTES,
+    PUSH_TEAMS_SPORT_MAX_PER_DAY,
+    PUSH_TEAMS_SPORT_MIN_PER_DAY,
+    PUSH_TEAMS_SPORT_PREFERENCE_BAND,
+    PUSH_TEAMS_SPORT_SHARE_HIGH,
+    PUSH_TEAMS_SPORT_SHARE_LOW,
     PUSH_TEAMS_SLOT_FIT_LLM_ENABLED,
     PUSH_TEAMS_SLOT_FIT_MAX_DEFER_HOURS,
     PUSH_TEAMS_SLOT_FIT_MAX_ARTICLE_AGE_HOURS,
@@ -62,6 +79,7 @@ from app.config import (
     PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE,
     PUSH_TEAMS_EVENT_GATE_ENABLED,
     PUSH_TEAMS_EXCLUDED_SECTIONS,
+    PUSH_TEAMS_EXTERNALLY_RECOMMENDED_URLS,
     PUSH_TEAMS_GLOBAL_COOLDOWN_MINUTES,
     PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD,
     PUSH_TEAMS_INDEPENDENT_PACING_ENABLED,
@@ -103,6 +121,9 @@ from app.config import (
     PUSH_TEAMS_TOPIC_DEDUP_HOURS,
     PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY,
     PUSH_TEAMS_SLOT_DEADLINE_MINUTE,
+    PUSH_TEAMS_SLOT_DELAY_DATE,
+    PUSH_TEAMS_SLOT_DELAY_FROM,
+    PUSH_TEAMS_SLOT_DELAY_MINUTES,
     PUSH_TEAMS_SLOT_GATE_ENABLED,
     PUSH_TEAMS_VISIT_OPTIMIZATION_ENABLED,
     PUSH_TEAMS_VISIT_SELECTION_WEIGHT,
@@ -112,12 +133,15 @@ from app.database import (
     push_db_load_all,
     teams_daily_schedule_record,
     teams_daily_schedule_try_claim,
+    teams_live_push_post_record,
+    teams_live_push_post_try_claim,
     teams_alert_last_sent_ts,
     teams_alert_list_recent,
     teams_alert_load_for_keys,
     teams_alert_record,
     teams_alert_sent_count_since,
     teams_alert_try_claim_send,
+    teams_recommendation_list_recent,
     teams_recommendation_record,
 )
 from app.notifications.teams_review import add_agent_review_veto, run_agent_review_network
@@ -126,15 +150,43 @@ from app.scoring.editorial import (
     assess_germany_relevance,
     is_german_public_figure_parenthood_story,
 )
+from app.teams_slot_claims import (
+    teams_recommendation_slot_record,
+    teams_recommendation_slot_try_claim,
+)
 
 log = logging.getLogger("push-balancer")
 
-_TEAMS_RECOMMENDATION_POLICY_VERSION = "internal-score-adaptive-threshold-v7"
-_MANDATORY_QUIET_HOURS_START_MINUTE = 0
+_TEAMS_RECOMMENDATION_POLICY_VERSION = "live-aware-dual-message-v11"
+# Verbindliche Ruhezeit: zwischen 22:00 und 06:00 Uhr keine regulaeren
+# Push-Empfehlungen (Fenster wickelt ueber Mitternacht).
+# Verbindliche Ruhezeit: zwischen 23:00 und 06:00 Uhr keine regulaeren
+# Push-Empfehlungen. Aktives Fenster ist damit 06:00-23:00 (Fenster wickelt
+# ueber Mitternacht).
+_MANDATORY_QUIET_HOURS_START_MINUTE = 23 * 60
 _MANDATORY_QUIET_HOURS_END_MINUTE = 6 * 60
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
 _HARD_BREAKING_PUSH_SCORE_FLOOR = 72.0
 _PUSH_SCORE_SELECTION_BAND = 3.0
+_BINDING_SLOT_DISPATCH_GRACE_SECONDS = 5 * 60
+_MANDATORY_TOP1_CANDIDATE_LIMIT = 200
+
+
+def _active_binding_slot(
+    slots: list[dict[str, Any]],
+    now_ts: int,
+) -> dict[str, Any] | None:
+    """Return the newest binding slot whose narrow dispatch window is open."""
+    active = [
+        slot
+        for slot in slots
+        if 0
+        <= int(now_ts) - int(slot.get("ts") or 0)
+        < _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+    ]
+    if not active:
+        return None
+    return max(active, key=lambda slot: int(slot.get("ts") or 0))
 
 _HARD_TEAMS_BLOCKER_MARKERS = (
     "alerts deaktiviert",
@@ -159,6 +211,7 @@ _HARD_TEAMS_BLOCKER_MARKERS = (
     "re-alert-cooldown",
     "teams-cooldown aktiv",
     "tageslimit fuer teams-hinweise",
+    "tagesmaximum erreicht",
     "staerkerer kandidat vorhanden",
     "wahrscheinlich ueberholt",
     "bereits als vollzogen gemeldet",
@@ -169,6 +222,7 @@ _HARD_TEAMS_BLOCKER_MARKERS = (
     "live-ticker ohne neue pushwürdige lage",
     "kein konkretes nachrichten-ereignis",
     "service-/raetsel-/ratgeber-format",
+    "gewinnspiel/promo/advertorial",
     "kurios-/click-reiz",
     "enger kurios-/click-reiz",
     "termin-/prozesslage ohne neue entwicklung",
@@ -181,6 +235,217 @@ _HARD_TEAMS_BLOCKER_MARKERS = (
     "tagesplan:",
     "tagesplan im soll",
 )
+
+# CvD-FORMAT-Einstufungen, die ein hoher kanonischer Push-Balancer-Score im
+# High-Score-Override ueberstimmen darf (siehe _high_score_override_review):
+# Es geht nur um die Format-Frage (Erklaerstueck/Service statt Ereignis) —
+# nicht um Sicherheit. Hochbewertete Verbraucher-/Erklaer-News sind pushwuerdig,
+# wenn der Score es hergibt; die Redaktion pusht solche Stuecke selbst.
+_FORMAT_ONLY_BLOCKER_MARKERS = (
+    "erklär-/debattenstück ohne neue aktuelle lage",
+    "erklaer-/debattenstueck ohne neue aktuelle lage",
+    "kein konkretes nachrichten-ereignis",
+)
+
+# Laufzeit-Gesundheit des Kanals: der Worker schreibt hier seinen Herzschlag,
+# der Transport seine Zustellergebnisse. /api/health und /api/teams-readiness
+# lesen daraus, damit Stille nie unbemerkt bleibt.
+_CHANNEL_HEALTH_LOCK = threading.Lock()
+_CHANNEL_HEALTH: dict[str, Any] = {
+    "workerStartedTs": 0,
+    "lastCycleTs": 0,
+    "lastCycleOk": None,
+    "lastCycleError": "",
+    "cycleCount": 0,
+    "consecutiveCycleErrors": 0,
+    "workerRestarts": 0,
+    "lastSendTs": 0,
+    "lastTransportOkTs": 0,
+    "lastTransportFailureTs": 0,
+    "consecutiveTransportFailures": 0,
+}
+
+
+def _record_transport_result(*, ok: bool, now_ts: float | None = None) -> None:
+    """Zustellergebnis fuer die Gesundheitsanzeige festhalten."""
+    stamp = int(now_ts or time.time())
+    with _CHANNEL_HEALTH_LOCK:
+        if ok:
+            _CHANNEL_HEALTH["lastTransportOkTs"] = stamp
+            _CHANNEL_HEALTH["consecutiveTransportFailures"] = 0
+        else:
+            _CHANNEL_HEALTH["lastTransportFailureTs"] = stamp
+            _CHANNEL_HEALTH["consecutiveTransportFailures"] = (
+                int(_CHANNEL_HEALTH.get("consecutiveTransportFailures") or 0) + 1
+            )
+
+
+def record_worker_cycle(
+    *,
+    ok: bool,
+    sent: bool = False,
+    error: str = "",
+    now_ts: float | None = None,
+) -> None:
+    """Herzschlag des Teams-Workers: jeder Zyklus meldet sich hier."""
+    stamp = int(now_ts or time.time())
+    with _CHANNEL_HEALTH_LOCK:
+        _CHANNEL_HEALTH["lastCycleTs"] = stamp
+        _CHANNEL_HEALTH["lastCycleOk"] = bool(ok)
+        _CHANNEL_HEALTH["lastCycleError"] = str(error or "")[:300]
+        _CHANNEL_HEALTH["cycleCount"] = int(_CHANNEL_HEALTH.get("cycleCount") or 0) + 1
+        if ok:
+            _CHANNEL_HEALTH["consecutiveCycleErrors"] = 0
+        else:
+            _CHANNEL_HEALTH["consecutiveCycleErrors"] = (
+                int(_CHANNEL_HEALTH.get("consecutiveCycleErrors") or 0) + 1
+            )
+        if sent:
+            _CHANNEL_HEALTH["lastSendTs"] = stamp
+
+
+def record_worker_start(*, restart: bool = False, now_ts: float | None = None) -> None:
+    """Workerstart (oder Neustart durch den Watchdog) protokollieren."""
+    stamp = int(now_ts or time.time())
+    with _CHANNEL_HEALTH_LOCK:
+        _CHANNEL_HEALTH["workerStartedTs"] = stamp
+        if restart:
+            _CHANNEL_HEALTH["workerRestarts"] = (
+                int(_CHANNEL_HEALTH.get("workerRestarts") or 0) + 1
+            )
+
+
+def channel_configuration_problems(
+    config: TeamsAlertConfig | None = None,
+) -> list[str]:
+    """Liste harter Konfigurationsprobleme, die den Kanal still verstummen lassen.
+
+    Leere Liste = betriebsbereit. Jeder Eintrag ist ein Grund, aus dem der
+    aktivierte Kanal nichts senden koennte - der Startup-Selbstcheck macht das
+    laut, statt es als scheinbar ruhigen Kanal untergehen zu lassen.
+    """
+    config = config or TeamsAlertConfig()
+    if not config.enabled:
+        return []
+    problems: list[str] = []
+    if not str(config.webhook_url or "").strip():
+        problems.append(
+            "PUSH_TEAMS_WEBHOOK_URL fehlt - ohne Webhook kann keine Nachricht "
+            "zugestellt werden."
+        )
+    if config.require_internal_score_api:
+        try:
+            from app.config import (
+                PUSH_BALANCER_SCORE_API_BASE_URL,
+                PUSH_BALANCER_SCORE_API_KEY,
+            )
+        except Exception:  # pragma: no cover - Importschutz
+            PUSH_BALANCER_SCORE_API_BASE_URL = ""
+            PUSH_BALANCER_SCORE_API_KEY = ""
+        if not str(PUSH_BALANCER_SCORE_API_BASE_URL or "").strip():
+            problems.append(
+                "PUSH_BALANCER_SCORE_API_ENABLED=1, aber "
+                "PUSH_BALANCER_SCORE_API_BASE_URL fehlt - fail-closed, kein "
+                "kanonischer Score, keine Empfehlung."
+            )
+        if not str(PUSH_BALANCER_SCORE_API_KEY or "").strip():
+            problems.append(
+                "PUSH_BALANCER_SCORE_API_ENABLED=1, aber "
+                "PUSH_BALANCER_SCORE_API_KEY fehlt - fail-closed, der Kanal "
+                "bleibt stumm, bis der Key gesetzt ist."
+            )
+    if int(config.max_alerts_per_day or 0) < int(config.min_alerts_per_day or 0):
+        problems.append(
+            "PUSH_TEAMS_MAX_ALERTS_PER_DAY liegt unter MIN - das Tagesziel ist "
+            "widerspruechlich."
+        )
+    return problems
+
+
+def log_channel_startup_selfcheck(config: TeamsAlertConfig | None = None) -> list[str]:
+    """Beim Start pruefen und Konfigurationsprobleme laut protokollieren."""
+    config = config or TeamsAlertConfig()
+    problems = channel_configuration_problems(config)
+    if not config.enabled:
+        log.info("[TeamsAlert] Selbstcheck: Kanal ist deaktiviert.")
+        return problems
+    if problems:
+        for problem in problems:
+            log.error("[TeamsAlert] STARTUP-PROBLEM: %s", problem)
+        log.error(
+            "[TeamsAlert] Der Kanal ist aktiviert, kann aber wegen %d "
+            "Konfigurationsproblem(en) nichts senden - bitte beheben.",
+            len(problems),
+        )
+    else:
+        log.info(
+            "[TeamsAlert] Selbstcheck bestanden: Webhook gesetzt, Score-Quelle "
+            "konfiguriert, Tagesziel %d-%d.",
+            int(config.min_alerts_per_day or 0),
+            int(config.max_alerts_per_day or 0),
+        )
+    return problems
+
+
+def channel_health(
+    config: TeamsAlertConfig | None = None,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Aggregierter Laufzeitzustand des Teams-Kanals fuer Health-Endpunkte.
+
+    ``status`` ist ``ok``, ``degraded`` oder ``stalled``. Ein stehengebliebener
+    Worker oder eine Serie fehlgeschlagener Zustellungen faellt damit sofort
+    auf, statt als scheinbar ruhiger Kanal unterzugehen.
+    """
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    with _CHANNEL_HEALTH_LOCK:
+        snapshot = dict(_CHANNEL_HEALTH)
+
+    last_cycle_ts = int(snapshot.get("lastCycleTs") or 0)
+    cycle_age = (now - last_cycle_ts) if last_cycle_ts else None
+    stall_after = max(60, int(config.worker_stall_seconds or 600))
+    transport_failures = int(snapshot.get("consecutiveTransportFailures") or 0)
+    cycle_errors = int(snapshot.get("consecutiveCycleErrors") or 0)
+
+    if not config.enabled:
+        status = "disabled"
+        reason = "Teams-Kanal ist deaktiviert."
+    elif last_cycle_ts == 0:
+        status = "starting"
+        reason = "Der Worker hat noch keinen Zyklus abgeschlossen."
+    elif cycle_age is not None and cycle_age > stall_after:
+        status = "stalled"
+        reason = (
+            f"Seit {cycle_age} Sekunden kein Worker-Zyklus "
+            f"(Grenze {stall_after} s) - der Kanal steht."
+        )
+    elif transport_failures >= 3:
+        status = "degraded"
+        reason = (
+            f"{transport_failures} Zustellungen in Folge fehlgeschlagen - "
+            "Webhook pruefen."
+        )
+    elif cycle_errors >= 3:
+        status = "degraded"
+        reason = (
+            f"{cycle_errors} Worker-Zyklen in Folge mit Fehler: "
+            f"{snapshot.get('lastCycleError') or 'unbekannt'}"
+        )
+    else:
+        status = "ok"
+        reason = ""
+
+    return {
+        **snapshot,
+        "status": status,
+        "reason": reason,
+        "healthy": status in {"ok", "starting", "disabled"},
+        "cycleAgeSeconds": cycle_age,
+        "stallAfterSeconds": stall_after,
+    }
+
 
 _RECENT_SEND_LOCK = threading.Lock()
 _RECENT_SEND_MEMORY: dict[str, dict[str, Any]] = {}
@@ -274,6 +539,9 @@ class TeamsAlertConfig:
     independent_pacing_enabled: bool = PUSH_TEAMS_INDEPENDENT_PACING_ENABLED
     allowed_sections: tuple[str, ...] = tuple(PUSH_TEAMS_ALLOWED_SECTIONS)
     excluded_sections: tuple[str, ...] = tuple(PUSH_TEAMS_EXCLUDED_SECTIONS)
+    externally_recommended_urls: tuple[str, ...] = tuple(
+        PUSH_TEAMS_EXTERNALLY_RECOMMENDED_URLS
+    )
     breaking_override: bool = PUSH_TEAMS_BREAKING_OVERRIDE
     breaking_min_score: float = PUSH_TEAMS_BREAKING_MIN_SCORE
     breaking_min_or: float = PUSH_TEAMS_BREAKING_MIN_OR
@@ -293,6 +561,9 @@ class TeamsAlertConfig:
     slot_gate_enabled: bool = PUSH_TEAMS_SLOT_GATE_ENABLED
     slot_deadline_minute: int = PUSH_TEAMS_SLOT_DEADLINE_MINUTE
     peak_slot_min_or: float = PUSH_TEAMS_PEAK_SLOT_MIN_OR
+    slot_delay_date: str = PUSH_TEAMS_SLOT_DELAY_DATE
+    slot_delay_from: str = PUSH_TEAMS_SLOT_DELAY_FROM
+    slot_delay_minutes: int = PUSH_TEAMS_SLOT_DELAY_MINUTES
     early_exceptional_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE
     early_exceptional_alert_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_ALERT_SCORE
     early_exceptional_editorial_score: float = PUSH_TEAMS_EARLY_EXCEPTIONAL_EDITORIAL_SCORE
@@ -328,6 +599,22 @@ class TeamsAlertConfig:
     topic_dedup_hours: float = PUSH_TEAMS_TOPIC_DEDUP_HOURS
     topic_dedup_similarity: float = PUSH_TEAMS_TOPIC_DEDUP_SIMILARITY
     pushed_topic_window_hours: float = PUSH_TEAMS_PUSHED_TOPIC_WINDOW_HOURS
+    live_push_posts_enabled: bool = PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED
+    live_push_post_lookback_minutes: int = PUSH_TEAMS_LIVE_PUSH_POST_LOOKBACK_MINUTES
+    live_push_posts_per_cycle: int = PUSH_TEAMS_LIVE_PUSH_POSTS_PER_CYCLE
+    webhook_max_attempts: int = PUSH_TEAMS_WEBHOOK_MAX_ATTEMPTS
+    webhook_retry_backoff_seconds: float = PUSH_TEAMS_WEBHOOK_RETRY_BACKOFF_SECONDS
+    transport_failure_cooldown_minutes: int = PUSH_TEAMS_TRANSPORT_FAILURE_COOLDOWN_MINUTES
+    worker_stall_seconds: int = PUSH_TEAMS_WORKER_STALL_SECONDS
+    hot_fresh_enabled: bool = PUSH_TEAMS_HOT_FRESH_ENABLED
+    hot_fresh_min_score: float = PUSH_TEAMS_HOT_FRESH_MIN_SCORE
+    hot_fresh_max_age_minutes: float = PUSH_TEAMS_HOT_FRESH_MAX_AGE_MINUTES
+    hot_fresh_min_gap_minutes: float = PUSH_TEAMS_HOT_FRESH_MIN_GAP_MINUTES
+    sport_min_per_day: int = PUSH_TEAMS_SPORT_MIN_PER_DAY
+    sport_max_per_day: int = PUSH_TEAMS_SPORT_MAX_PER_DAY
+    sport_share_low: float = PUSH_TEAMS_SPORT_SHARE_LOW
+    sport_share_high: float = PUSH_TEAMS_SPORT_SHARE_HIGH
+    sport_preference_band: float = PUSH_TEAMS_SPORT_PREFERENCE_BAND
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -435,6 +722,7 @@ def _memory_send_blocker_locked(
     now_ts: int,
     config: TeamsAlertConfig,
     bypass_global_cooldown: bool = False,
+    allow_related_topic: bool = False,
 ) -> dict[str, Any]:
     cooldown_seconds = (
         0 if bypass_global_cooldown else _effective_global_cooldown_minutes(config) * 60
@@ -471,7 +759,8 @@ def _memory_send_blocker_locked(
         other_tokens = set(entry.get("tokens") or set())
         threshold = min(float(config.topic_dedup_similarity or 0.5), 0.45)
         if (
-            title_tokens
+            not allow_related_topic
+            and title_tokens
             and _same_topic(title_tokens, other_tokens, threshold)
             and age < topic_seconds
         ):
@@ -492,6 +781,7 @@ def _memory_send_blocker(
     now_ts: int,
     config: TeamsAlertConfig,
     bypass_global_cooldown: bool = False,
+    allow_related_topic: bool = False,
 ) -> dict[str, Any]:
     """Check process-local duplicate state without reserving a send."""
     with _RECENT_SEND_LOCK:
@@ -501,6 +791,7 @@ def _memory_send_blocker(
             now_ts=now_ts,
             config=config,
             bypass_global_cooldown=bypass_global_cooldown,
+            allow_related_topic=allow_related_topic,
         )
 
 
@@ -511,6 +802,7 @@ def _memory_send_blocker_or_reserve(
     now_ts: int,
     config: TeamsAlertConfig,
     bypass_global_cooldown: bool = False,
+    allow_related_topic: bool = False,
 ) -> dict[str, Any]:
     """Atomically reserve a process-local send after duplicate checks."""
     with _RECENT_SEND_LOCK:
@@ -520,6 +812,7 @@ def _memory_send_blocker_or_reserve(
             now_ts=now_ts,
             config=config,
             bypass_global_cooldown=bypass_global_cooldown,
+            allow_related_topic=allow_related_topic,
         )
         if blocker.get("blocked"):
             return blocker
@@ -556,6 +849,8 @@ def _memory_eligible_candidates(
     *,
     now_ts: int,
     config: TeamsAlertConfig,
+    bypass_global_cooldown: bool = False,
+    allow_related_topic: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Remove process-local duplicates before ranking the candidate field."""
     eligible: list[dict[str, Any]] = []
@@ -567,7 +862,8 @@ def _memory_eligible_candidates(
             title=_title(candidate),
             now_ts=now_ts,
             config=config,
-            bypass_global_cooldown=bool(_is_breaking(candidate) and config.breaking_override),
+            bypass_global_cooldown=bypass_global_cooldown,
+            allow_related_topic=allow_related_topic,
         )
         if not blocker.get("blocked"):
             eligible.append(candidate)
@@ -594,6 +890,7 @@ def build_teams_alert_context(
     alert_state: dict[str, dict[str, Any]] | None = None,
     last_teams_alert_ts: int | None = None,
     teams_alerts_today: int | None = None,
+    teams_recommendation_mix_today: dict[str, Any] | None = None,
     recent_alerts: list[dict[str, Any]] | None = None,
     now_ts: int | None = None,
     config: TeamsAlertConfig | None = None,
@@ -606,6 +903,7 @@ def build_teams_alert_context(
         "alertState": alert_state is not None,
         "globalCooldown": last_teams_alert_ts is not None,
         "dailyAlertCount": teams_alerts_today is not None,
+        "teamsRecommendationMix": teams_recommendation_mix_today is not None,
         "recentTeamsAlerts": recent_alerts is not None,
     }
     if history is None:
@@ -645,9 +943,63 @@ def build_teams_alert_context(
     )
 
     day_start = _local_day_start_ts(now)
-    pushes_today = sum(
-        1 for item in history if _safe_int(item.get("ts_num", item.get("ts", 0))) >= day_start
-    )
+    day_pushes = [
+        item for item in history if _safe_int(item.get("ts_num", item.get("ts", 0))) >= day_start
+    ]
+    pushes_today = len(day_pushes)
+    sport_pushes_today = sum(1 for item in day_pushes if _is_sport_item(item))
+    if teams_recommendation_mix_today is None:
+        try:
+            local_date = dt.datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin")).date()
+            next_day_start = int(
+                dt.datetime.combine(
+                    local_date + dt.timedelta(days=1),
+                    dt.time.min,
+                    tzinfo=ZoneInfo("Europe/Berlin"),
+                ).timestamp()
+            )
+            sent_recommendations = [
+                item
+                for item in teams_recommendation_list_recent(limit=200)
+                if str(item.get("recommendation_type") or "") == "teams_alert"
+                and str(item.get("send_status") or "") == "sent"
+                and day_start <= _safe_int(item.get("sent_at_ts")) < next_day_start
+            ]
+            teams_recommendation_mix_today = {
+                "available": True,
+                "sent": len(sent_recommendations),
+                "sport": sum(
+                    1 for item in sent_recommendations if _is_sport_item(item)
+                ),
+            }
+            context_available["teamsRecommendationMix"] = True
+        except Exception as exc:
+            log.warning("[TeamsAlert] Could not load daily Teams section mix: %s", exc)
+            teams_recommendation_mix_today = {
+                "available": False,
+                "sent": 0,
+                "sport": 0,
+            }
+    else:
+        teams_recommendation_mix_today = {
+            "available": bool(teams_recommendation_mix_today.get("available", True)),
+            "sent": max(0, _safe_int(teams_recommendation_mix_today.get("sent"))),
+            "sport": max(0, _safe_int(teams_recommendation_mix_today.get("sport"))),
+        }
+    last_push_info: dict[str, Any] | None = None
+    if history:
+        latest = max(
+            history,
+            key=lambda item: _safe_int(item.get("ts_num", item.get("ts", 0))),
+        )
+        latest_ts = _safe_int(latest.get("ts_num", latest.get("ts", 0)))
+        if latest_ts > 0:
+            last_push_info = {
+                "ts": latest_ts,
+                "title": str(latest.get("title") or latest.get("headline") or "").strip(),
+                "category": str(latest.get("cat") or "news"),
+                "isSport": _is_sport_item(latest),
+            }
 
     alerts_today = teams_alerts_today
     if alerts_today is None:
@@ -670,6 +1022,8 @@ def build_teams_alert_context(
                 recent_alerts.append(
                     {
                         "key": str(row.get("article_key") or ""),
+                        "url": str(row.get("article_url") or ""),
+                        "articleId": str(row.get("article_id") or ""),
                         "title": str(row.get("article_title") or ""),
                     }
                 )
@@ -686,7 +1040,10 @@ def build_teams_alert_context(
         "lastTeamsAlertTs": int(last_teams_alert_ts or 0),
         "recentPushCount6h": recent_6h_count,
         "pushesToday": pushes_today,
+        "sportPushesToday": sport_pushes_today,
+        "lastPushInfo": last_push_info,
         "teamsAlertsToday": int(alerts_today or 0),
+        "teamsRecommendationMixToday": teams_recommendation_mix_today,
         "recentTeamsAlerts": recent_alerts,
         "suspectForecastValues": _detect_suspect_forecast_values(candidates, config),
         "reachStats": _reach_baselines(history, now, config),
@@ -733,6 +1090,181 @@ def _detect_suspect_forecast_values(
         if count >= min_field or (value in known and count >= known_min):
             suspects.append(value)
     return sorted(suspects)
+
+
+def _day_volume_summary(
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Tagesstand aus echten Live-Pushes: Volumen, Restkapazitaet, Sportanteil."""
+    raw_sent = context.get("pushesToday")
+    sent_known = raw_sent is not None
+    sent = _safe_int(raw_sent) if sent_known else 0
+    sport = _safe_int(context.get("sportPushesToday"))
+    min_target = max(1, int(config.min_alerts_per_day or 15))
+    max_target = max(min_target, int(config.max_alerts_per_day or 17))
+    remaining_min = max(0, min_target - sent)
+    remaining_max = max(0, max_target - sent)
+    share = (sport / sent) if sent > 0 else None
+    share_percent = int(round(share * 100)) if share is not None else 0
+    sport_min = max(0, int(config.sport_min_per_day or 5))
+    sport_max = max(sport_min, int(config.sport_max_per_day or 6))
+    if sent <= 0:
+        sport_status = "offen"
+    elif sport > sport_max or (share is not None and share > float(config.sport_share_high)):
+        sport_status = "ueber"
+    elif sport < sport_min and (share is None or share < float(config.sport_share_low)):
+        sport_status = "unter"
+    else:
+        sport_status = "im"
+    sport_status_sentence = {
+        "unter": "Der Sportanteil liegt aktuell unter dem Zielbereich.",
+        "im": "Der Sportanteil liegt aktuell im Zielbereich.",
+        "ueber": "Der Sportanteil liegt aktuell über dem Zielbereich.",
+        "offen": "Heute wurde noch kein Push gesendet; der Sport-Zielkorridor ist offen.",
+    }[sport_status]
+    daily_label = (
+        f"{sent} von mindestens {min_target} und maximal {max_target} Pushes gesendet"
+        if sent_known
+        else f"Push-Bestand unbekannt (Ziel: {min_target} bis {max_target} Pushes)"
+    )
+    sport_label = (
+        f"{sport} von aktuell {sent} Pushes sind Sport, Sportanteil {share_percent} Prozent"
+        if sent > 0
+        else "Noch kein Push heute, Sportanteil 0 Prozent"
+    )
+    if remaining_max <= 0:
+        impact_label = (
+            f"Tagesmaximum von {max_target} Pushes erreicht; "
+            "keine weiteren regulären Pushes heute"
+        )
+    else:
+        impact_label = (
+            f"Noch mindestens {remaining_min} und maximal {remaining_max} Pushes möglich"
+        )
+    return {
+        "known": sent_known,
+        "sent": sent,
+        "sport": sport,
+        "minTarget": min_target,
+        "maxTarget": max_target,
+        "remainingMin": remaining_min,
+        "remainingMax": remaining_max,
+        "sportSharePercent": share_percent if sent > 0 else None,
+        "sportTargetMin": sport_min,
+        "sportTargetMax": sport_max,
+        "sportStatus": sport_status,
+        "sportStatusSentence": sport_status_sentence,
+        "dailyLabel": daily_label,
+        "sportLabel": sport_label,
+        "impactLabel": impact_label,
+    }
+
+
+def _sport_balance_review(
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> dict[str, Any]:
+    """Weicher Sport-Zielkorridor (~1/3): kleine Auswahl-Praeferenz, nie ein Gate.
+
+    Bei Unterdeckung darf ein Sport-Kandidat innerhalb der Praeferenz-Bandbreite
+    den Vorzug bekommen; ein deutlich staerkerer News-Push wird nie verdraengt.
+    Bei Ueberdeckung gilt dasselbe zugunsten von Nicht-Sport-Kandidaten.
+    """
+    summary = _day_volume_summary(context, config)
+    status = summary["sportStatus"]
+    sent = _safe_int(summary.get("sent"))
+    sport = _safe_int(summary.get("sport"))
+    if status == "unter":
+        preference = "sport"
+    elif status == "ueber":
+        preference = "news"
+    elif sent > 0:
+        # Praediktiver 1/3-Ausgleich innerhalb des Korridors: bevorzuge das
+        # Ressort, das den Sportanteil am naechsten an ~1/3 haelt. Das verhindert
+        # Sport-Cluster (mehrere Sport-Pushes hintereinander), auch wenn der
+        # Tagesanteil gerade formal im Zielbereich liegt. Wirkt nur innerhalb der
+        # engen Score-Bandbreite (sport_preference_band) — ein deutlich staerkerer
+        # Push des anderen Ressorts wird nie verdraengt (Top-1-Garantie bleibt).
+        target = 1.0 / 3.0
+        dist_if_sport = abs((sport + 1) / (sent + 1) - target)
+        dist_if_news = abs(sport / (sent + 1) - target)
+        if dist_if_news + 1e-9 < dist_if_sport:
+            preference = "news"
+        elif dist_if_sport + 1e-9 < dist_if_news:
+            preference = "sport"
+        else:
+            preference = None
+    else:
+        preference = None
+    return {
+        **summary,
+        "selectionPreference": preference,
+        "preferenceBand": max(0.0, float(config.sport_preference_band or 0.0)),
+    }
+
+
+def _mandatory_sport_quota_review(
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+    mandatory_slot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Make the one-third Teams mix binding only at the latest safe point."""
+    result: dict[str, Any] = {
+        "available": False,
+        "sent": 0,
+        "sportSent": 0,
+        "remainingSlots": 0,
+        "projectedTotal": 0,
+        "targetSport": 0,
+        "sportNeeded": 0,
+        "required": False,
+        "applied": False,
+    }
+    if mandatory_slot is None:
+        return result
+    mix = context.get("teamsRecommendationMixToday")
+    if not isinstance(mix, dict) or not mix.get("available"):
+        return result
+
+    slot_ts = _safe_int(mandatory_slot.get("ts"))
+    if slot_ts <= 0:
+        return result
+    berlin = ZoneInfo("Europe/Berlin")
+    target_date = dt.datetime.fromtimestamp(slot_ts, berlin).date()
+    remaining_slots = sum(
+        1
+        for slot in _daily_runtime_opportunities(target_date, config)
+        if _safe_int(slot.get("ts")) >= slot_ts
+    )
+    sent = max(0, _safe_int(mix.get("sent")))
+    sport_sent = max(0, min(sent, _safe_int(mix.get("sport"))))
+    projected_total = sent + remaining_slots
+    target_sport = (projected_total + 1) // 3
+    sport_needed = max(0, target_sport - sport_sent)
+    result.update(
+        {
+            "available": True,
+            "sent": sent,
+            "sportSent": sport_sent,
+            "remainingSlots": remaining_slots,
+            "projectedTotal": projected_total,
+            "targetSport": target_sport,
+            "sportNeeded": sport_needed,
+            "required": bool(remaining_slots > 0 and sport_needed >= remaining_slots),
+        }
+    )
+    return result
+
+
+def _last_push_label(context: dict[str, Any]) -> str:
+    info = context.get("lastPushInfo")
+    if not isinstance(info, dict) or not _safe_int(info.get("ts")):
+        return "Heute noch kein Push gesendet"
+    ts = _safe_int(info.get("ts"))
+    title = _compact_text(str(info.get("title") or "").strip() or "ohne Titel", 90)
+    section = _format_section(str(info.get("category") or "news"))
+    return f"{_format_time(ts)} Uhr, {title}, {section}"
 
 
 def should_notify_teams(
@@ -825,6 +1357,9 @@ def should_notify_teams(
     non_article_reason = _daily_plan_non_article_reason(candidate)
     if non_article_reason:
         blockers.append(non_article_reason)
+    promotional_reason = _promotional_article_reason(candidate)
+    if promotional_reason:
+        blockers.append(promotional_reason)
 
     if (
         bool(candidate.get("isCorporateAnnouncement") or candidate.get("is_corporate_announcement"))
@@ -1066,6 +1601,7 @@ def should_notify_teams(
         breaking=breaking,
         now_ts=now_ts,
         config=config,
+        sport_pushes_today=_safe_int(context.get("sportPushesToday")),
     )
     positive.extend(slot_gate["reasons"])
     blockers.extend(slot_gate["blockers"])
@@ -1123,7 +1659,11 @@ def should_notify_teams(
         else:
             blockers.append(dashboard_rank_blocker)
 
-    allow_unknown_last_push_for_minimum = independent_pacing
+    # Live-Pushes steuern das Pacing. Fehlt der letzte Push-Zeitstempel, bleibt
+    # der Kanal fail-closed - nur verifiziertes Breaking darf trotzdem raus.
+    allow_unknown_last_push_for_minimum = independent_pacing or (
+        breaking and config.breaking_override
+    )
     if config.score_only_mode:
         positive.append("Score-Modus aktiv: Teams Alert Score entscheidet final")
     else:
@@ -1213,13 +1753,9 @@ def should_notify_teams(
         (context.get("contextAvailable") or {}).get("history")
         and context.get("historyAuthoritative")
     )
-    # Fail-open statt fail-closed: Der Live-Vergleich nutzt die (per Sync-Daemon
-    # gefuellte) DB-Historie. Ist die Quelle nicht garantiert frisch
-    # (historyAuthoritative=false), blockieren wir NICHT mehr pauschal – das legte
-    # zuvor den kompletten Kanal lahm (kein einziger Push kam an). Stattdessen
-    # senden wir mit Warnhinweis. Echte Artikel-Dubletten aus der vorhandenen
-    # Historie werden weiterhin hart abgefangen; die Teams-interne Dublettensperre
-    # ("Bereits per Teams gemeldet") ist davon unabhaengig und bleibt aktiv.
+    # Fail-closed: Ohne frische autoritative Live-Historie kann nicht garantiert
+    # werden, dass der Artikel noch ungepusht ist. Dann wird keine Empfehlung
+    # gesendet. Echte Artikel-Dubletten werden anhand URL oder CMS-ID gesperrt.
     live_push_match_type = _live_push_match_type(live_push_match_reason)
     live_push_comparison = {
         "available": live_comparison_available,
@@ -1234,10 +1770,9 @@ def should_notify_teams(
             "der Artikel darf nicht erneut per Teams vorgeschlagen werden"
         )
     elif not live_comparison_available:
-        positive.append(
-            "Live-Push-Dublettencheck nicht garantiert aktuell (Quelle nicht belastbar); "
-            "Empfehlung wird mit Warnhinweis gesendet – bitte vor dem Push kurz "
-            "gegen Live-Pushes pruefen"
+        blockers.append(
+            "Live-Push-Dublettenpruefung nicht belastbar verfuegbar; "
+            "Empfehlung wird sicherheitshalber gestoppt"
         )
     elif live_push_match_reason:
         positive.append(
@@ -1271,23 +1806,12 @@ def should_notify_teams(
         effective_global_cooldown > 0
         and minutes_since_last_teams_alert is not None
         and minutes_since_last_teams_alert < effective_global_cooldown
-        and not (breaking and config.breaking_override)
     ):
         blockers.append(
             "Teams-Cooldown aktiv: letzter Hinweis vor "
             f"{minutes_since_last_teams_alert:.0f} < {effective_global_cooldown} Minuten"
         )
         status = "observe"
-    elif (
-        breaking
-        and config.breaking_override
-        and minutes_since_last_teams_alert is not None
-        and minutes_since_last_teams_alert < effective_global_cooldown
-    ):
-        positive.append(
-            "Breaking-News: eigener Teams-Cooldown wird für die Sofortprüfung übergangen"
-        )
-
     if (
         config.max_alerts_per_day > 0
         and teams_alerts_today >= config.max_alerts_per_day
@@ -1296,6 +1820,20 @@ def should_notify_teams(
         blockers.append(
             f"Tageslimit fuer Teams-Hinweise erreicht: {teams_alerts_today} von "
             f"{config.max_alerts_per_day}"
+        )
+
+    # Alle gesendeten Pushes zaehlen zum Tagesvolumen: Ist das Tagesmaximum an
+    # echten Live-Pushes erreicht, gibt es keine weitere regulaere Empfehlung.
+    if (
+        not independent_pacing
+        and pushes_today is not None
+        and config.max_alerts_per_day > 0
+        and int(pushes_today) >= config.max_alerts_per_day
+        and not (breaking and config.breaking_override)
+    ):
+        blockers.append(
+            f"Tagesmaximum erreicht: {int(pushes_today)} von {config.max_alerts_per_day} "
+            "Pushes heute gesendet"
         )
 
     stronger = context.get("strongerCandidate")
@@ -1476,6 +2014,112 @@ def should_notify_teams(
     }
 
 
+def _mandatory_slot_top1_binding_slot(
+    now_ts: int,
+    config: TeamsAlertConfig,
+) -> dict[str, Any] | None:
+    """Return the fixed slot that requires one fresh Balancer Top-1 recommendation."""
+    if not config.slot_gate_enabled:
+        return None
+    local_date = dt.datetime.fromtimestamp(
+        int(now_ts), ZoneInfo("Europe/Berlin")
+    ).date()
+    return _active_binding_slot(
+        _daily_runtime_opportunities(local_date, config),
+        int(now_ts),
+    )
+
+
+def _mandatory_slot_top1_technical_blockers(
+    candidate: dict[str, Any],
+    decision: dict[str, Any],
+    context: dict[str, Any],
+    config: TeamsAlertConfig,
+) -> list[str]:
+    """Keep only technical and exact-duplicate blockers for a mandatory slot."""
+    blockers: list[str] = []
+    if not config.enabled:
+        blockers.append("Teams Alerts deaktiviert")
+    if not _title(candidate).strip():
+        blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
+    if not _url(candidate).strip():
+        blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
+    elif not _article_identity_url(_url(candidate)):
+        blockers.append("Artikel-Link ist technisch nicht gueltig")
+
+    promotional_reason = _promotional_article_reason(candidate)
+    if promotional_reason:
+        blockers.append(promotional_reason)
+    fiction_reason = _fiction_tv_teaser_reason(candidate)
+    if fiction_reason:
+        blockers.append(fiction_reason)
+
+    raw_score = candidate.get("score")
+    try:
+        rankable_score = float(raw_score)
+    except (TypeError, ValueError):
+        rankable_score = float("nan")
+    if not math.isfinite(rankable_score):
+        blockers.append("Kanonischer Push-Balancer-Score ist nicht numerisch rankbar")
+
+    publication = decision.get("publicationReview")
+    publication = publication if isinstance(publication, dict) else {}
+    if publication.get("status") != "valid":
+        blockers.append("Veroeffentlichungszeit ist technisch nicht belastbar")
+
+    if (
+        config.require_internal_score_api
+        and str(decision.get("scoreSource") or "") != "internal_score_api"
+    ):
+        blockers.append("Kein frischer kanonischer Push-Balancer-Score fuer die Rangfolge")
+
+    live_comparison = decision.get("livePushComparison")
+    live_comparison = live_comparison if isinstance(live_comparison, dict) else {}
+    if not (
+        live_comparison.get("available")
+        and live_comparison.get("authoritative")
+    ):
+        blockers.append("Live-Push-Dublettenpruefung nicht belastbar verfuegbar")
+    elif live_comparison.get("matchType") == "exact_article":
+        blockers.append("Identische Artikel-URL oder CMS-ID wurde bereits live gepusht")
+
+    alert_state = (context.get("alertState") or {}).get(candidate_key(candidate))
+    if isinstance(alert_state, dict) and str(alert_state.get("status") or "") in {
+        "sent",
+        "sending",
+        "delivery_uncertain",
+    }:
+        blockers.append("Identischer Artikel wurde bereits per Teams empfohlen")
+
+    candidate_identity = _article_identity_url(_url(candidate))
+    candidate_cms_id = _article_identity_cms_id(candidate)
+    external_identities = {
+        identity
+        for configured_url in config.externally_recommended_urls
+        if (identity := _article_identity_url(str(configured_url)))
+    }
+    if candidate_identity and candidate_identity in external_identities:
+        blockers.append("Identischer Artikel wurde bereits extern per Teams empfohlen")
+    for recent in context.get("recentTeamsAlerts") or []:
+        recent_key = str(recent.get("key") or recent.get("url") or "")
+        recent_identity = _article_identity_url(recent_key)
+        recent_cms_id = str(recent.get("articleId") or "").strip().casefold()
+        if (
+            candidate_identity
+            and recent_identity
+            and candidate_identity == recent_identity
+        ) or (candidate_cms_id and recent_cms_id and candidate_cms_id == recent_cms_id):
+            blockers.append("Identischer Artikel wurde bereits per Teams empfohlen")
+            break
+
+    context_available = context.get("contextAvailable") or {}
+    if not context_available.get("alertState"):
+        blockers.append("Teams-Dublettenhistorie nicht belastbar verfuegbar")
+    if not context_available.get("recentTeamsAlerts"):
+        blockers.append("Teams-Dublettenhistorie nicht belastbar verfuegbar")
+    return _dedupe(blockers)
+
+
 def evaluate_teams_alert_candidates(
     candidates: list[dict[str, Any]],
     context: dict[str, Any] | None = None,
@@ -1494,14 +2138,108 @@ def evaluate_teams_alert_candidates(
         decision_context["dashboardRank"] = index
         decision_context["dashboardTopLimit"] = top_limit
         base_decisions.append((candidate, should_notify_teams(candidate, decision_context, config)))
+
+    mandatory_slot = (
+        _mandatory_slot_top1_binding_slot(
+            int(context.get("nowTs") or time.time()),
+            config,
+        )
+        if isinstance(context.get("contextAvailable"), dict)
+        else None
+    )
+    if mandatory_slot is not None:
+        mandatory_decisions: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for candidate, base_decision in base_decisions:
+            decision = dict(base_decision)
+            technical_blockers = _mandatory_slot_top1_technical_blockers(
+                candidate,
+                decision,
+                context,
+                config,
+            )
+            advisory_blockers = list(decision.get("blockingReasons") or [])
+            slot_gate = dict(decision.get("slotGate") or {})
+            slot_gate.update(
+                {
+                    "enabled": True,
+                    "approved": not technical_blockers,
+                    "mode": "mandatory_slot_top1",
+                    "slot": dict(mandatory_slot),
+                    "nextSlot": None,
+                    "reasons": [
+                        "Verbindlicher Slot: frischen Push-Balancer-Top-1 ohne "
+                        "Score- oder Ressortschwelle empfehlen"
+                    ],
+                    "blockers": list(technical_blockers),
+                }
+            )
+            decision.update(
+                {
+                    "shouldNotify": not technical_blockers,
+                    "status": "notify" if not technical_blockers else "observe",
+                    "recommendedAction": "Jetzt pushen" if not technical_blockers else "",
+                    "summary": (
+                        "Verbindlicher Push-Balancer-Top-1 im festen Slot"
+                        if not technical_blockers
+                        else technical_blockers[0]
+                    ),
+                    "blockingReasons": list(technical_blockers),
+                    "advisoryBlockingReasons": advisory_blockers,
+                    "mandatorySlotTop1": not technical_blockers,
+                    "mandatorySlotTop1Candidate": True,
+                    "mandatorySlot": dict(mandatory_slot),
+                    "slotGate": slot_gate,
+                    "reasons": [
+                        *list(decision.get("reasons") or []),
+                        "Pflichtauswahl: Score, Ressort, OR und Qualitätsmodelle "
+                        "sind nur noch Hinweise, keine Versandsperren.",
+                    ],
+                }
+            )
+            mandatory_decisions.append((candidate, decision))
+        base_decisions = mandatory_decisions
+
     eligible = [
         (candidate, decision)
         for candidate, decision in base_decisions
         if decision.get("shouldNotify")
     ]
-    breaking_eligible = [item for item in eligible if bool(item[1].get("isBreaking"))]
-    ranking_pool = breaking_eligible if breaking_eligible else eligible
-    canonical_api_selection = bool(config.require_internal_score_api and ranking_pool)
+    breaking_eligible = (
+        []
+        if mandatory_slot is not None
+        else [item for item in eligible if bool(item[1].get("isBreaking"))]
+    )
+    ranking_pool = eligible if mandatory_slot is not None else (
+        breaking_eligible if breaking_eligible else eligible
+    )
+    canonical_api_selection = bool(
+        ranking_pool and (config.require_internal_score_api or mandatory_slot is not None)
+    )
+
+    # Sport-Zielkorridor (~1/3): weiche Praeferenz innerhalb einer engen
+    # Score-Bandbreite. Der Push-Balancer-Score entscheidet weiterhin zuerst
+    # ueber die Pushwuerdigkeit; ein deutlich staerkerer Kandidat des jeweils
+    # anderen Ressorts wird nie verdraengt. Breaking bleibt unberuehrt.
+    sport_balance = _sport_balance_review(context, config)
+    mandatory_sport_quota = _mandatory_sport_quota_review(
+        context,
+        config,
+        mandatory_slot,
+    )
+    sport_preference = (
+        None
+        if breaking_eligible or mandatory_slot is not None
+        else sport_balance.get("selectionPreference")
+    )
+    sport_preference_band = float(sport_balance.get("preferenceBand") or 0.0)
+    sport_preference_applied = False
+
+    def _matches_sport_preference(candidate: dict[str, Any]) -> bool:
+        if not sport_preference:
+            return False
+        is_sport = _section_key(_section(candidate)) == "sport"
+        return is_sport if sport_preference == "sport" else not is_sport
+
     if canonical_api_selection:
         top_raw_score = max(float(item[1].get("score") or 0.0) for item in ranking_pool)
         # The API score is the ranking contract. Secondary models may only break
@@ -1511,14 +2249,42 @@ def evaluate_teams_alert_candidates(
             for item in ranking_pool
             if abs(float(item[1].get("score") or 0.0) - top_raw_score) < 0.001
         ]
+        if mandatory_slot is not None and mandatory_sport_quota.get("required"):
+            sport_pool = [item for item in ranking_pool if _is_sport_item(item[0])]
+            if sport_pool:
+                best_sport_score = max(
+                    float(item[1].get("score") or 0.0) for item in sport_pool
+                )
+                selection_pool = [
+                    item
+                    for item in sport_pool
+                    if abs(float(item[1].get("score") or 0.0) - best_sport_score) < 0.001
+                ]
+                mandatory_sport_quota["applied"] = True
+        elif mandatory_slot is None and sport_preference and sport_preference_band > 0:
+            preferred = [
+                item
+                for item in ranking_pool
+                if float(item[1].get("score") or 0.0) >= top_raw_score - sport_preference_band
+                and _matches_sport_preference(item[0])
+            ]
+            if preferred and not any(
+                _matches_sport_preference(candidate) for candidate, _ in selection_pool
+            ):
+                selection_pool = preferred
+                sport_preference_applied = True
     elif breaking_eligible:
         selection_pool = breaking_eligible
     elif eligible:
         top_raw_score = max(float(item[1].get("score") or 0.0) for item in eligible)
+        selection_band = max(
+            _PUSH_SCORE_SELECTION_BAND,
+            sport_preference_band if sport_preference else 0.0,
+        )
         selection_pool = [
             item
             for item in eligible
-            if float(item[1].get("score") or 0.0) >= top_raw_score - _PUSH_SCORE_SELECTION_BAND
+            if float(item[1].get("score") or 0.0) >= top_raw_score - selection_band
         ]
     else:
         selection_pool = []
@@ -1543,9 +2309,13 @@ def evaluate_teams_alert_candidates(
                     *_candidate_rank(candidate),
                     candidate_key(candidate),
                 )
+            # Top-1-Garantie: der rohe Push-Balancer-Score entscheidet zuerst.
+            # Nur der begrenzte Sport-Zielkorridor darf innerhalb der engen
+            # Auswahl-Bandbreite bevorzugen; Sekundaermodelle brechen Gleichstaende.
             return (
-                _selection_value(decision),
+                1 if _matches_sport_preference(candidate) else 0,
                 float(decision.get("score") or 0.0),
+                _selection_value(decision),
                 float(decision.get("editorialScore") or 0.0),
                 float(decision.get("teamsAlertScore") or 0.0),
                 float(decision.get("expectedOpens") or 0.0),
@@ -1559,6 +2329,7 @@ def evaluate_teams_alert_candidates(
         )
         selected_key = candidate_key(selected_candidate)
 
+    runner_up_candidate: dict[str, Any] | None = None
     runner_up_decision: dict[str, Any] | None = None
     selection_margin: float | None = None
     selection_margin_percent: float | None = None
@@ -1571,7 +2342,7 @@ def evaluate_teams_alert_candidates(
             default=None,
         )
         if runner_up_pair is not None:
-            runner_up_decision = runner_up_pair[1]
+            runner_up_candidate, runner_up_decision = runner_up_pair
             winner_value = (
                 float(selected_decision.get("score") or 0.0)
                 if canonical_api_selection
@@ -1656,6 +2427,31 @@ def evaluate_teams_alert_candidates(
         else:
             decision = dict(base_decision)
             if selected_key and key == selected_key:
+                decision["sportBalance"] = {
+                    "status": sport_balance.get("sportStatus"),
+                    "sharePercent": sport_balance.get("sportSharePercent"),
+                    "preference": sport_preference,
+                    "applied": sport_preference_applied,
+                }
+                decision["mandatorySportQuota"] = dict(mandatory_sport_quota)
+                if mandatory_sport_quota.get("applied"):
+                    decision["reasons"] = [
+                        *decision.get("reasons", []),
+                        (
+                            "Sportquote verbindlich: bester technisch gültiger "
+                            "Sport-Kandidat, weil rund ein Drittel sonst mit den "
+                            "verbleibenden Slots nicht mehr erreichbar wäre."
+                        ),
+                    ]
+                if sport_preference_applied:
+                    decision["reasons"] = [
+                        *decision.get("reasons", []),
+                        (
+                            "Sport-Zielkorridor: nahezu gleich starker "
+                            f"{'Sport' if sport_preference == 'sport' else 'News'}-Kandidat "
+                            f"innerhalb von {sport_preference_band:.1f} Score-Punkten bevorzugt"
+                        ),
+                    ]
                 competitors = max(0, len(ranking_pool) - 1)
                 decision["competition"] = {
                     "eligibleCompetitors": competitors,
@@ -1668,7 +2464,9 @@ def evaluate_teams_alert_candidates(
                         else None
                     ),
                     "selectionMetric": (
-                        "internal_push_balancer_score"
+                        "mandatory_sport_quota_then_internal_score"
+                        if mandatory_sport_quota.get("applied")
+                        else "internal_push_balancer_score"
                         if canonical_api_selection
                         else (
                             "push_score_weighted_selection"
@@ -1681,6 +2479,18 @@ def evaluate_teams_alert_candidates(
                         float(runner_up_decision.get("score") or 0.0)
                         if runner_up_decision is not None
                         else None
+                    ),
+                    "runnerUp": (
+                        {
+                            "articleTitle": _title(runner_up_candidate),
+                            "articleUrl": _url(runner_up_candidate),
+                            "category": _section(runner_up_candidate),
+                            "pushScore": float(runner_up_decision.get("score") or 0.0),
+                            "rankingPosition": 2,
+                        }
+                        if runner_up_candidate is not None
+                        and runner_up_decision is not None
+                        else {}
                     ),
                     "scoreDelta": (
                         round(selection_margin, 2)
@@ -1696,7 +2506,9 @@ def evaluate_teams_alert_candidates(
                 }
                 if competitors:
                     selection_reason = (
-                        "Top 1 nach kanonischem API-Push-Score; Sekundaermodelle duerfen nur exakte Gleichstaende entscheiden"
+                        "Bester gültiger Sport-Kandidat nach kanonischem API-Push-Score; verbindliche Ein-Drittel-Quote"
+                        if mandatory_sport_quota.get("applied")
+                        else "Top 1 nach kanonischem API-Push-Score; Sekundaermodelle duerfen nur exakte Gleichstaende entscheiden"
                         if canonical_api_selection
                         else (
                             "Staerkster Push-Score-gewichteter Kandidat; Response-Potenzial entscheidet nur mit"
@@ -1717,6 +2529,11 @@ def evaluate_teams_alert_candidates(
         "fieldUncertain": bool(uncertainty_reason),
         "uncertaintyReason": uncertainty_reason,
         "canonicalApiTop1": canonical_api_selection,
+        "mandatorySlotTop1": mandatory_slot is not None,
+        "mandatorySlot": dict(mandatory_slot) if mandatory_slot is not None else None,
+        "sportBalance": sport_balance,
+        "mandatorySportQuota": mandatory_sport_quota,
+        "sportPreferenceApplied": sport_preference_applied,
         "evaluatedAt": _iso_from_ts(int(context.get("nowTs") or time.time())),
     }
 
@@ -1744,6 +2561,30 @@ def annotate_candidates_with_teams_decisions(
     return annotated
 
 
+def _spec_fields_html(
+    header: str,
+    fields: list[tuple[str, str]],
+    *,
+    url: str = "",
+    warning: str = "",
+) -> str:
+    """Render the fixed label/value message format as simple Teams-safe HTML."""
+    parts = [f"<h2>{html.escape(header)}</h2>"]
+    if str(warning or "").strip():
+        parts.append(f"<p><strong>ACHTUNG:</strong> {html.escape(str(warning))}</p>")
+    for label, value in fields:
+        if not str(value).strip():
+            continue
+        rendered_value = html.escape(str(value)).replace("\n", "<br>")
+        parts.append(
+            f"<p><strong>{html.escape(str(label))}:</strong><br>{rendered_value}</p>"
+        )
+    if str(url or "").strip():
+        safe_url = html.escape(str(url), quote=True)
+        parts.append(f'<p><a href="{safe_url}">{safe_url}</a></p>')
+    return "".join(parts)
+
+
 def build_teams_push_recommendation(
     candidate: dict[str, Any],
     context: dict[str, Any] | None = None,
@@ -1758,7 +2599,6 @@ def build_teams_push_recommendation(
     title = _title(candidate)
     url = _url(candidate)
     section = _section(candidate)
-    section_label = _format_section(section)
     score = _score(candidate)
     score_source = str(
         decision.get("scoreSource")
@@ -1785,11 +2625,18 @@ def build_teams_push_recommendation(
         or config.independent_pacing_enabled
     )
     score_only_mode = bool(decision.get("scoreOnlyMode") or config.score_only_mode)
+    mandatory_slot_top1 = bool(decision.get("mandatorySlotTop1"))
     score_threshold = float(decision.get("minScore", config.min_score) or config.min_score)
     is_breaking = bool(decision.get("isBreaking"))
-    mandatory_score_threshold = max(
-        score_threshold,
-        _HARD_BREAKING_PUSH_SCORE_FLOOR if is_breaking else _HARD_NORMAL_PUSH_SCORE_FLOOR,
+    mandatory_score_threshold = (
+        0.0
+        if mandatory_slot_top1
+        else max(
+            score_threshold,
+            _HARD_BREAKING_PUSH_SCORE_FLOOR
+            if is_breaking
+            else _HARD_NORMAL_PUSH_SCORE_FLOOR,
+        )
     )
     alert_score = float(decision.get("teamsAlertScore") or 0.0)
     alert_threshold = float(decision.get("teamsAlertScoreThreshold") or config.min_alert_score)
@@ -1844,6 +2691,15 @@ def build_teams_push_recommendation(
         url,
         config,
     )
+    if mandatory_slot_top1 and not push_title_review.get("approved"):
+        push_text = title
+        push_title_source = "mandatory_original_headline"
+        push_title_review = {
+            **push_title_review,
+            "fallbackApplied": True,
+            "clickReason": "Original-Headline als belastbarer Pflichtslot-Fallback",
+            "risks": list(push_title_review.get("risks") or []),
+        }
     push_text_matches_title = _same_editorial_text(push_text, title)
     push_title_click_reason = str(push_title_review.get("clickReason") or "").strip()
     push_title_display_reason = (
@@ -1876,23 +2732,32 @@ def build_teams_push_recommendation(
         if isinstance(decision.get("livePushComparison"), dict)
         else {}
     )
-    agent_approved = bool(not config.agent_review_enabled or agent_review.get("approved"))
+    agent_approved = bool(
+        mandatory_slot_top1
+        or not config.agent_review_enabled
+        or agent_review.get("approved")
+    )
     context_available = context.get("contextAvailable") or {}
     teams_dedup_approved = bool(
-        context_available.get("alertState") and context_available.get("recentTeamsAlerts")
+        context_available.get("alertState")
+        and (mandatory_slot_top1 or context_available.get("recentTeamsAlerts"))
     )
-    # Fail-open: Nur ein echter Artikel-Dublettentreffer verhindert die Freigabe.
-    # Fehlende/nicht belastbare Live-Historie blockiert den Versand NICHT mehr –
-    # das legte zuvor den ganzen Kanal lahm; der Warnhinweis (livePushDedupWarning)
-    # uebernimmt die Absicherung, damit die CvD vor dem Push gegenpruefen kann.
     live_push_dedup_approved = bool(
-        live_push_comparison.get("matchType") != "exact_article"
+        live_push_comparison.get("available")
+        and live_push_comparison.get("authoritative")
+        and live_push_comparison.get("matchType") != "exact_article"
+    )
+    quality_approved = bool(
+        mandatory_slot_top1
+        or (
+            push_title_review.get("approved")
+            and recommendation_review.get("approved")
+            and agent_approved
+        )
     )
     dispatch_approved = bool(
         decision.get("shouldNotify")
-        and push_title_review.get("approved")
-        and recommendation_review.get("approved")
-        and agent_approved
+        and quality_approved
         and teams_dedup_approved
         and live_push_dedup_approved
     )
@@ -1927,7 +2792,26 @@ def build_teams_push_recommendation(
         if dispatch_blockers
         else "Die vollständige lokale Versandfreigabe fehlt."
     )
-    competition_meta = decision.get("competition") or {}
+    competition_meta = (
+        decision.get("competition") if isinstance(decision.get("competition"), dict) else {}
+    )
+    runner_up_meta = (
+        competition_meta.get("runnerUp")
+        if isinstance(competition_meta.get("runnerUp"), dict)
+        else {}
+    )
+    alternative_recommendation = {
+        "articleTitle": _compact_text(str(runner_up_meta.get("articleTitle") or ""), 120),
+        "articleUrl": str(runner_up_meta.get("articleUrl") or "").strip(),
+        "category": str(runner_up_meta.get("category") or "").strip(),
+        "pushScore": float(runner_up_meta.get("pushScore") or 0.0),
+        "rankingPosition": 2,
+    }
+    if not (
+        alternative_recommendation["articleTitle"]
+        and alternative_recommendation["articleUrl"]
+    ):
+        alternative_recommendation = {}
     competitors = int(competition_meta.get("eligibleCompetitors") or 0)
     competition = (
         (
@@ -1948,12 +2832,21 @@ def build_teams_push_recommendation(
     candidate_breakdown_lines = _score_breakdown_lines(candidate)
 
     threshold_reason = (
-        f"Das Teams-Alert-Modell bewertet den Artikel mit {_format_number(alert_score)} "
-        f"von 100 Punkten (Schwelle: {_format_number(alert_threshold, 0)})."
+        "Verbindlicher Slot: Der Teams-Alert-Score ist nur ein Diagnosewert."
+        if mandatory_slot_top1
+        else (
+            f"Das Teams-Alert-Modell bewertet den Artikel mit {_format_number(alert_score)} "
+            f"von 100 Punkten (Schwelle: {_format_number(alert_threshold, 0)})."
+        )
     )
     score_reason = (
-        f"Der redaktionelle Push-Score liegt bei {_format_number(score)} und damit über "
-        f"dem Mindestwert von {_format_number(score_threshold, 0)}."
+        "Verbindlicher Slot: Der Push-Balancer-Score bestimmt nur Rang 1; "
+        "eine Mindestschwelle gilt nicht."
+        if mandatory_slot_top1
+        else (
+            f"Der redaktionelle Push-Score liegt bei {_format_number(score)} und damit über "
+            f"dem Mindestwert von {_format_number(score_threshold, 0)}."
+        )
     )
     forecast_reason = _forecast_sentence(forecast)
     if not live_push_comparison.get("available"):
@@ -2057,96 +2950,194 @@ def build_teams_push_recommendation(
             timing_reason,
         ]
     )[:5]
-    subject_prefix = "🚨 Jetzt pushen" if dispatch_approved else "Nicht senden"
+    # Keep the detailed context in the structured payload, while the human-facing
+    # Teams message stays short enough to scan in the channel.
+    day_summary = _day_volume_summary(context, config)
+    competitors = int(competition_meta.get("eligibleCompetitors") or 0)
+    ranking_label = f"Platz 1 von {max(1, competitors + 1)} Kandidaten"
+
+    local_now = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
+    recommended_send_label = local_now.strftime("%H:%M")
+    # Rastertreue Anzeige: faellt die Entscheidung im 5-Minuten-Fenster nach
+    # einer geplanten Raster-Zeit, traegt die Empfehlung exakt die Slotzeit.
+    gate_slot = decision.get("slotGate") if isinstance(decision.get("slotGate"), dict) else {}
+    gate_slot = gate_slot.get("slot") if isinstance(gate_slot.get("slot"), dict) else {}
+    slot_ts = _safe_int(gate_slot.get("ts"))
+    if slot_ts and 0 <= now_ts - slot_ts < _BINDING_SLOT_DISPATCH_GRACE_SECONDS:
+        recommended_send_label = str(gate_slot.get("label") or recommended_send_label)
+
+    hot_slots = _remaining_hot_slots(now_ts, limit=1)
+    if hot_slots:
+        alt = hot_slots[0]
+        alternative_window_label = (
+            f"{int(alt['hour']):02d}:00–{int(alt['hour']):02d}:59 Uhr "
+            f"(historisch {_format_number(float(alt['avgOR']), 1)} % OR)"
+        )
+    else:
+        alternative_window_label = "Kein stärkeres Zeitfenster mehr heute"
+
+    quiet_start_dt = local_now.replace(
+        hour=_MANDATORY_QUIET_HOURS_START_MINUTE // 60,
+        minute=_MANDATORY_QUIET_HOURS_START_MINUTE % 60,
+        second=0,
+        microsecond=0,
+    )
+    latest_send_dt = quiet_start_dt - dt.timedelta(minutes=1)
+    publication = decision.get("publicationReview")
+    publication = publication if isinstance(publication, dict) else {}
+    age_hours = _safe_float(publication.get("ageHours"))
+    if age_hours is not None:
+        age_budget_dt = local_now + dt.timedelta(
+            hours=max(0.0, float(config.max_article_age_hours) - age_hours)
+        )
+        latest_send_dt = min(latest_send_dt, age_budget_dt)
+    if latest_send_dt < local_now:
+        latest_send_dt = local_now + dt.timedelta(minutes=timing_brief["windowMinutes"])
+    latest_send_label = latest_send_dt.strftime("%H:%M")
+
+    last_push_ts = _safe_int(context.get("lastPushTs"))
+    last_teams_ts = _safe_int(context.get("lastTeamsAlertTs"))
+    # "Nach Live-Push neu terminiert" nur, wenn der Live-Push die Empfehlung
+    # plausibel verzoegert hat: er kam nach dem letzten Teams-Hinweis und der
+    # Mindestabstand ist gerade erst wieder frei.
+    reschedule_window_minutes = max(1, int(config.min_minutes_since_last_push or 30)) + 15
+    rescheduled_after_live_push = bool(
+        not independent_pacing
+        and last_push_ts > 0
+        and last_push_ts > last_teams_ts
+        and 0 <= (now_ts - last_push_ts) <= reschedule_window_minutes * 60
+    )
+    if not dispatch_approved:
+        status_label = f"Nicht senden – {dispatch_blocking_reason}"
+    elif rescheduled_after_live_push:
+        status_label = "Nach Live-Push neu terminiert"
+    else:
+        status_label = "Sofort senden"
+
+    why_recommended_parts = [
+        f"Push-Balancer-Score {_format_number(score, 1)}/100"
+        + (f" ({score_source_label})" if score_source_label else "")
+        + (f": {candidate_score_reason}" if candidate_score_reason else ".")
+    ]
+    first_driver = next(
+        (item for item in (germany_relevance_reason, *candidate_drivers) if str(item).strip()),
+        "",
+    )
+    if first_driver:
+        why_recommended_parts.append(str(first_driver).rstrip(".") + ".")
+    why_recommended_text = " ".join(why_recommended_parts)
+
+    slot_avg_for_reason = timing_brief.get("slotAvgOR")
+    why_timing_parts = []
+    if slot_avg_for_reason is not None:
+        why_timing_parts.append(
+            f"Heatmap: {_weekday_name_de(local_now.weekday())} um "
+            f"{int(timing_brief.get('slotHour') or local_now.hour):02d} Uhr erreicht historisch "
+            f"{_format_number(float(slot_avg_for_reason), 2)} % OR"
+        )
+    if minutes_known:
+        why_timing_parts.append(f"Abstand zum letzten Push {float(minutes):.0f} Minuten")
+    why_timing_parts.append(
+        f"Tagesvolumen {day_summary['sent']}/{day_summary['maxTarget']}"
+        + (
+            f", {competitors} weitere Kandidaten geprüft"
+            if competitors
+            else ", kein stärkerer Kandidat im Feld"
+        )
+    )
+    why_timing_text = "; ".join(why_timing_parts) + "."
+
+    last_push_label = _last_push_label(context)
+
+    subject_prefix = "🔵 PUSH-EMPFEHLUNG" if dispatch_approved else "Nicht senden"
     subject = f"{subject_prefix}: {_compact_text(push_text or title, 120)}"
 
     dedup_warning = str(decision.get("livePushDedupWarning") or "").strip()
-    text_lines = [subject]
-    if dedup_warning:
-        text_lines.extend(["", f"ACHTUNG: {dedup_warning}"])
-    text_lines.extend(["", "Empfohlener Push-Titel:", push_text])
-    if not push_text_matches_title:
-        text_lines.extend(["", "Artikel:", title])
+    header_line = (
+        "🔵 PUSH-EMPFEHLUNG" if dispatch_approved else "🔵 PUSH-EMPFEHLUNG (nicht freigegeben)"
+    )
+    primary_display_title = _compact_text(push_text or title, 120)
+    compact_reason = _compact_text(
+        next(
+            (
+                str(item).strip()
+                for item in (*candidate_drivers, candidate_score_reason, competition)
+                if str(item).strip()
+            ),
+            "Aktuell stärkster Kandidat im Push Balancer.",
+        ),
+        140,
+    )
+    score_label = f"{_format_number(score, 1)}/100"
+    text_lines = [header_line, "", f"Top 1: {primary_display_title}", f"Score: {score_label}"]
+    if compact_reason:
+        text_lines.append(f"Warum: {compact_reason}")
     if url:
         text_lines.append(url)
-    text_lines.extend(
-        [
-            "",
-            f"Versandfenster: {timing_brief['windowLabel']}",
-            (
-                f"Push-Score: {_format_number(score, 1)}/100 "
-                f"(harte Schwelle {_format_number(score_threshold, 0)}) | "
-                f"Quelle: {score_source_label}"
-            ),
-            *([f"Score-Stand: {score_scored_at}"] if score_scored_at else []),
-            (
-                f"Qualitätsurteil: {_format_number(recommendation_score, 0)}/100 | "
-                f"Empfehlungsstärke {recommendation_confidence}"
-            ),
-            f"Entscheidungsbasis: {decision_basis}",
-            live_comparison_label,
-            "",
-            (
-                f"{section_label} | OR-Prognose {_format_or(predicted_or)} | "
-                f"{opening_estimate or 'Öffnungspotenzial nicht belastbar'} | "
-                + (
-                    f"letzter Teams-Hinweis {_format_teams_alert_minutes(teams_minutes)}"
-                    if independent_pacing
-                    else f"letzter Push {_format_minutes(minutes)}"
-                )
-            ),
-            *([f"Prüfstatus: {agent_summary}"] if agent_summary else []),
-            *([push_title_review_line] if push_title_review_line else []),
-            "",
-            "Warum dieser Push?",
-            *[f"- {reason}" for reason in why_article],
-            "",
-            "Warum jetzt?",
-            *[f"- {reason}" for reason in compact_reasons],
-            "",
-            "Gegencheck:",
-            f"- {what_speaks_against[0]}",
-            "",
-            (
-                f"Empfehlung: Jetzt pushen. (Stand {_format_time(now_ts)} Uhr)"
-                if dispatch_approved
-                else f"Empfehlung: Nicht senden. {dispatch_blocking_reason}"
-            ),
-        ]
-    )
+    if dedup_warning:
+        text_lines.extend(["", f"ACHTUNG: {dedup_warning}"])
+    text_lines.extend(["", "Alternative (Platz 2):"])
+    if alternative_recommendation:
+        text_lines.extend(
+            [
+                alternative_recommendation["articleTitle"],
+                f"Score: {_format_number(alternative_recommendation['pushScore'], 1)}/100",
+                alternative_recommendation["articleUrl"],
+            ]
+        )
+    else:
+        text_lines.append("Keine weitere gültige Alternative verfügbar.")
     text = "\n".join(text_lines)
-    message_html = _build_power_automate_message_html(
-        title=title,
-        url=url,
-        section=section_label,
-        score=score,
-        predicted_or=predicted_or,
-        forecast=forecast,
-        recommended_text=push_text,
-        now_ts=now_ts,
-        minutes_since_last_push=minutes,
-        minutes_since_last_teams_alert=teams_minutes,
-        independent_pacing=independent_pacing,
-        score_threshold=score_threshold,
-        score_source_label=score_source_label,
-        alert_score=alert_score,
-        alert_threshold=alert_threshold,
-        editorial_score=editorial_score,
-        why_now=compact_reasons,
-        why_pushworthy=why_article,
-        subject=subject,
-        push_text_matches_title=push_text_matches_title,
-        score_reason=candidate_score_reason,
-        performance_drivers=candidate_drivers,
-        risks=what_speaks_against,
-        score_breakdown_lines=candidate_breakdown_lines,
-        agent_review=agent_review,
-        push_title_review=push_title_review,
-        recommendation_review=recommendation_review,
-        live_push_comparison=live_push_comparison,
-        dispatch_approved=dispatch_approved,
-        decision_basis=decision_basis,
-        dispatch_blocking_reason=dispatch_blocking_reason,
+    html_parts = [f"<h2>{html.escape(header_line)}</h2>"]
+    if dedup_warning:
+        html_parts.append(
+            f"<p><strong>ACHTUNG:</strong> {html.escape(dedup_warning)}</p>"
+        )
+    primary_lines = [
+        f"<strong>Top 1:</strong> {html.escape(primary_display_title)}",
+        f"<strong>Score:</strong> {html.escape(score_label)}",
+    ]
+    if compact_reason:
+        primary_lines.append(f"<strong>Warum:</strong> {html.escape(compact_reason)}")
+    if url:
+        safe_url = html.escape(url, quote=True)
+        primary_lines.append(f'<a href="{safe_url}">Artikel öffnen</a>')
+    html_parts.append(f"<p>{'<br>'.join(primary_lines)}</p>")
+    if alternative_recommendation:
+        alternative_url = html.escape(
+            alternative_recommendation["articleUrl"], quote=True
+        )
+        alternative_lines = [
+            "<strong>Alternative (Platz 2):</strong> "
+            + html.escape(alternative_recommendation["articleTitle"]),
+            "<strong>Score:</strong> "
+            + html.escape(
+                f"{_format_number(alternative_recommendation['pushScore'], 1)}/100"
+            ),
+            f'<a href="{alternative_url}">Artikel öffnen</a>',
+        ]
+    else:
+        alternative_lines = [
+            "<strong>Alternative (Platz 2):</strong> Keine weitere gültige Alternative verfügbar."
+        ]
+    html_parts.append(f"<p>{'<br>'.join(alternative_lines)}</p>")
+    message_html = "".join(html_parts)
+    slot_gate_decision = (
+        decision.get("slotGate")
+        if isinstance(decision.get("slotGate"), dict)
+        else {}
+    )
+    binding_slot = (
+        slot_gate_decision.get("slot")
+        if isinstance(slot_gate_decision.get("slot"), dict)
+        else {}
+    )
+    binding_slot_ts = _safe_int(binding_slot.get("ts"))
+    slot_gate_approved = bool(
+        dispatch_approved
+        and slot_gate_decision.get("enabled")
+        and slot_gate_decision.get("approved")
+        and binding_slot_ts > 0
     )
     return {
         "text": text,
@@ -2157,6 +3148,12 @@ def build_teams_push_recommendation(
             "dispatchApproved": dispatch_approved,
             "recommendationPolicyVersion": _TEAMS_RECOMMENDATION_POLICY_VERSION,
             "minimumPushScore": mandatory_score_threshold,
+            "mandatorySlotTop1": mandatory_slot_top1,
+            "slotId": (
+                f"teams-recommendation-{binding_slot_ts}"
+                if mandatory_slot_top1 and binding_slot_ts > 0
+                else ""
+            ),
             "isBreaking": is_breaking,
             "decisionBasis": decision_basis,
             "dispatchBlockingReason": ("" if dispatch_approved else dispatch_blocking_reason),
@@ -2205,12 +3202,42 @@ def build_teams_push_recommendation(
             "predictedORConfidence": forecast["confidence"],
             "predictedORExplanation": forecast["explanation"],
             "recommendedPushText": push_text,
+            "pushTextMatchesTitle": push_text_matches_title,
             "alternativePushTitle": push_text,
             "pushTitleSource": push_title_source,
             "pushTitleReview": _public_push_title_review(push_title_review),
             "recommendationQuality": _public_recommendation_review(recommendation_review),
             "recommendedSendWindow": timing_brief["windowLabel"],
             "recommendedSendBy": timing_brief["sendBy"],
+            "recommendedSendAt": recommended_send_label,
+            "alternativeSendWindow": alternative_window_label,
+            "latestSendAt": latest_send_label,
+            "statusLabel": status_label,
+            "ranking": ranking_label,
+            "rankingPosition": 1,
+            "rankingFieldSize": max(1, competitors + 1),
+            "alternativeRecommendation": alternative_recommendation,
+            "whyRecommended": why_recommended_text,
+            "whyThisTime": why_timing_text,
+            "dailyStatusLabel": day_summary["dailyLabel"],
+            "sportStatusLabel": day_summary["sportLabel"],
+            "sportStatus": day_summary["sportStatus"],
+            "lastLivePushLabel": last_push_label,
+            "planImpactLabel": day_summary["impactLabel"],
+            "pushesSentToday": day_summary["sent"],
+            "sportPushesSentToday": day_summary["sport"],
+            "remainingMinPushes": day_summary["remainingMin"],
+            "remainingMaxPushes": day_summary["remainingMax"],
+            "livePushVolumeConsidered": bool(
+                not independent_pacing
+                and day_summary["known"]
+                and context_available.get("history", True)
+            ),
+            "rescheduledAfterLivePush": rescheduled_after_live_push,
+            "agentSummary": agent_summary,
+            "pushTitleReviewLine": push_title_review_line,
+            "recommendationScore": recommendation_score,
+            "recommendationConfidence": recommendation_confidence,
             "recommendedAt": _format_dt(now_ts),
             "minutesSinceLastPush": round(float(minutes), 1) if minutes_known else 0.0,
             "lastPushKnown": minutes_known,
@@ -2240,10 +3267,33 @@ def build_teams_push_recommendation(
         "_pushTitleReview": push_title_review,
         "_recommendationReview": recommendation_review,
         "_dispatchApproved": dispatch_approved,
+        "_mandatorySlotTop1": mandatory_slot_top1,
         "_teamsDedupApproved": teams_dedup_approved,
         "_livePushDedupApproved": live_push_dedup_approved,
+        "_slotGateApproved": slot_gate_approved,
+        "_bindingSlotTs": binding_slot_ts,
         "summary": subject,
     }
+
+
+_WEBHOOK_SSL_CONTEXT = None
+
+
+def _webhook_ssl_context():
+    """SSL-Kontext fuer den Teams-Webhook — nutzt das certifi-CA-Bundle, damit
+    die Zustellung unabhaengig vom System-CA-Store jeder Umgebung klappt
+    (macOS-Python ohne installierte Root-Zertifikate, schlanke Container ohne
+    ca-certificates etc.). Faellt bei fehlendem certifi auf den Default zurueck.
+    """
+    global _WEBHOOK_SSL_CONTEXT
+    if _WEBHOOK_SSL_CONTEXT is None:
+        import ssl as _ssl
+        try:
+            import certifi as _certifi
+            _WEBHOOK_SSL_CONTEXT = _ssl.create_default_context(cafile=_certifi.where())
+        except Exception:
+            _WEBHOOK_SSL_CONTEXT = _ssl.create_default_context()
+    return _WEBHOOK_SSL_CONTEXT
 
 
 def send_teams_notification(
@@ -2268,6 +3318,14 @@ def send_teams_notification(
 
     payload = message.get("payload") or {"text": str(message.get("text") or "")}
     payload_type = str(payload.get("type") or "")
+    if payload_type == "teams_heartbeat":
+        log.warning("[TeamsAlert] heartbeat dispatch blocked by schedule-only policy")
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "outside_schedule_blocked",
+            "error": "Off-schedule heartbeat recommendations are disabled",
+        }
     if payload_type == "push_recommendation_preview":
         log.warning("[TeamsAlert] push dispatch blocked: preview is not sendable")
         return {
@@ -2275,7 +3333,45 @@ def send_teams_notification(
             "blocked": True,
             "error": "Push recommendation is not fully approved",
         }
+    allowed_payload_types = {
+        "push_recommendation",
+        "push_recommendation_test",
+        "push_daily_schedule",
+        "live_push_sent",
+    }
+    if payload_type not in allowed_payload_types:
+        log.warning(
+            "[TeamsAlert] dispatch blocked: unsupported payload type %r",
+            payload_type,
+        )
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "unsupported_payload_type",
+            "error": "Unsupported Teams payload type",
+        }
+    if payload_type == "push_recommendation_test" and payload.get("isTest") is not True:
+        log.warning("[TeamsAlert] test dispatch blocked: explicit test marker missing")
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "test_marker_missing",
+            "error": "Explicit Teams test marker missing",
+        }
     if payload_type == "push_recommendation":
+        mandatory_slot_top1 = bool(
+            message.get("_mandatorySlotTop1") is True
+            and payload.get("mandatorySlotTop1") is True
+        )
+        if bool(message.get("_mandatorySlotTop1")) != bool(
+            payload.get("mandatorySlotTop1")
+        ):
+            log.warning("[TeamsAlert] push dispatch blocked: mandatory-slot marker mismatch")
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "Mandatory-slot Top-1 marker mismatch",
+            }
         if not message.get("_dispatchApproved") or not payload.get("dispatchApproved"):
             log.warning("[TeamsAlert] push dispatch blocked: dispatch approval missing")
             return {
@@ -2290,12 +3386,14 @@ def send_teams_notification(
                 "blocked": True,
                 "error": "Current recommendation policy approval missing",
             }
-        if payload.get("recommendationsIndependentFromLivePushes") is not True:
-            log.warning("[TeamsAlert] push dispatch blocked: live-push-independent pacing missing")
+        if not mandatory_slot_top1 and payload.get("livePushVolumeConsidered") is not True:
+            log.warning(
+                "[TeamsAlert] push dispatch blocked: live push volume context missing"
+            )
             return {
                 "ok": False,
                 "blocked": True,
-                "error": "Independent Teams pacing approval missing",
+                "error": "Live push volume context approval missing",
             }
         if (
             not message.get("_livePushDedupApproved")
@@ -2317,40 +3415,54 @@ def send_teams_notification(
                 "blocked": True,
                 "error": "Canonical internal Push Balancer score is missing",
             }
-        push_score = _safe_float(payload.get("pushScore"))
-        payload_floor = _safe_float(payload.get("minimumPushScore"))
-        is_breaking = bool(payload.get("isBreaking"))
-        high_score_override = payload.get("highScoreOverride")
-        high_score_override = (
-            high_score_override if isinstance(high_score_override, dict) else {}
-        )
-        high_score_override_active = bool(
-            high_score_override.get("approved")
-            and push_score is not None
-            and push_score > float(config.high_score_always_threshold or 80.0)
-        )
-        configured_floor = (
-            float(config.high_score_always_threshold or 80.0)
-            if high_score_override_active
-            else float(config.breaking_min_score)
-            if is_breaking
-            else float(config.min_score)
-        )
-        policy_floor = (
-            _HARD_BREAKING_PUSH_SCORE_FLOOR if is_breaking else _HARD_NORMAL_PUSH_SCORE_FLOOR
-        )
-        required_score = max(policy_floor, configured_floor, float(payload_floor or 0.0))
-        if push_score is None or push_score < required_score:
-            log.warning(
-                "[TeamsAlert] push dispatch blocked: raw score %.1f below %.1f",
-                float(push_score or 0.0),
-                required_score,
-            )
+        if mandatory_slot_top1 and int(payload.get("rankingPosition") or 0) != 1:
+            log.warning("[TeamsAlert] push dispatch blocked: mandatory candidate is not Top 1")
             return {
                 "ok": False,
                 "blocked": True,
-                "error": "Raw Push Score is below the mandatory dispatch floor",
+                "error": "Mandatory-slot recommendation is not ranked Top 1",
             }
+        if not mandatory_slot_top1:
+            push_score = _safe_float(payload.get("pushScore"))
+            payload_floor = _safe_float(payload.get("minimumPushScore"))
+            is_breaking = bool(payload.get("isBreaking"))
+            high_score_override = payload.get("highScoreOverride")
+            high_score_override = (
+                high_score_override if isinstance(high_score_override, dict) else {}
+            )
+            high_score_override_active = bool(
+                high_score_override.get("approved")
+                and push_score is not None
+                and push_score > float(config.high_score_always_threshold or 80.0)
+            )
+            configured_floor = (
+                float(config.high_score_always_threshold or 80.0)
+                if high_score_override_active
+                else float(config.breaking_min_score)
+                if is_breaking
+                else float(config.min_score)
+            )
+            policy_floor = (
+                _HARD_BREAKING_PUSH_SCORE_FLOOR
+                if is_breaking
+                else _HARD_NORMAL_PUSH_SCORE_FLOOR
+            )
+            required_score = max(
+                policy_floor,
+                configured_floor,
+                float(payload_floor or 0.0),
+            )
+            if push_score is None or push_score < required_score:
+                log.warning(
+                    "[TeamsAlert] push dispatch blocked: raw score %.1f below %.1f",
+                    float(push_score or 0.0),
+                    required_score,
+                )
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "error": "Raw Push Score is below the mandatory dispatch floor",
+                }
         if not message.get("_teamsDedupApproved"):
             log.warning("[TeamsAlert] push dispatch blocked: Teams duplicate context missing")
             return {
@@ -2359,7 +3471,9 @@ def send_teams_notification(
                 "error": "Teams duplicate protection approval missing",
             }
         title_review = message.get("_pushTitleReview")
-        if not isinstance(title_review, dict) or not title_review.get("approved"):
+        if not mandatory_slot_top1 and (
+            not isinstance(title_review, dict) or not title_review.get("approved")
+        ):
             log.warning("[TeamsAlert] push dispatch blocked: grounded title approval missing")
             return {
                 "ok": False,
@@ -2367,7 +3481,7 @@ def send_teams_notification(
                 "error": "Grounded title approval missing",
             }
         recommendation_review = message.get("_recommendationReview")
-        if (
+        if not mandatory_slot_top1 and (
             not isinstance(recommendation_review, dict)
             or not recommendation_review.get("enforced")
             or not recommendation_review.get("approved")
@@ -2378,7 +3492,7 @@ def send_teams_notification(
                 "blocked": True,
                 "error": "Final recommendation quality approval missing",
             }
-        if config.agent_review_enabled:
+        if not mandatory_slot_top1 and config.agent_review_enabled:
             review = message.get("_agentReview")
             if not isinstance(review, dict) or not review.get("approved"):
                 log.warning("[TeamsAlert] push dispatch blocked: local agent approval missing")
@@ -2387,29 +3501,112 @@ def send_teams_notification(
                     "blocked": True,
                     "error": "Local agent approval missing",
                 }
-    try:
-        req = urllib.request.Request(
-            config.webhook_url,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json"},
+        dispatch_now = int(time.time())
+        active_slot = (
+            _binding_slot_for_dispatch(
+                dispatch_now,
+                config,
+                expected_slot_ts=_safe_int(message.get("_bindingSlotTs")),
+            )
+            if message.get("_slotGateApproved") is True
+            else None
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            response.read()
-            status = getattr(response, "status", 200)
-        return {"ok": True, "status": status}
-    except urllib.error.HTTPError as exc:
+        if active_slot is None:
+            log.warning(
+                "[TeamsAlert] push dispatch blocked: no binding slot window is open"
+            )
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "outside_schedule_blocked",
+                "error": "Push recommendations are only sent in a binding slot window",
+            }
+    body_bytes = json.dumps(payload).encode("utf-8")
+    # A mandatory recommendation uses one transport attempt. Repeating an
+    # ambiguous timed-out POST can create two Teams messages because incoming
+    # webhooks do not provide an acknowledgement-level idempotency contract.
+    attempts = (
+        1
+        if payload_type == "push_recommendation" and mandatory_slot_top1
+        else max(1, int(config.webhook_max_attempts or 1))
+    )
+    backoff = max(0.0, float(config.webhook_retry_backoff_seconds or 0.0))
+    last_error = ""
+    last_transient = False
+    last_delivery_uncertain = False
+    _ssl_ctx = _webhook_ssl_context()
+    for attempt in range(1, attempts + 1):
+        if payload_type == "push_recommendation" and _binding_slot_for_dispatch(
+            int(time.time()),
+            config,
+            expected_slot_ts=_safe_int(message.get("_bindingSlotTs")),
+        ) is None:
+            log.warning(
+                "[TeamsAlert] push retry blocked: binding slot window closed"
+            )
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "outside_schedule_blocked",
+                "error": "Binding slot window closed before Teams webhook attempt",
+                "transient": True,
+                "attempts": max(0, attempt - 1),
+            }
         try:
-            body = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            body = ""
-        error = f"HTTP {exc.code}: {body or exc.reason}"
-        log.warning("[TeamsAlert] Teams webhook send failed: %s", error)
-        return {"ok": False, "error": error}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        error = str(exc)
-        log.warning("[TeamsAlert] Teams webhook send failed: %s", error)
-        return {"ok": False, "error": error}
+            req = urllib.request.Request(
+                config.webhook_url,
+                data=body_bytes,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as response:
+                response.read()
+                status = getattr(response, "status", 200)
+            if attempt > 1:
+                log.info("[TeamsAlert] Teams webhook send ok after %d attempts", attempt)
+            _record_transport_result(ok=True)
+            return {"ok": True, "status": status, "attempts": attempt}
+        except urllib.error.HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                error_body = ""
+            last_error = f"HTTP {exc.code}: {error_body or exc.reason}"
+            last_delivery_uncertain = False
+            # 408/429 und 5xx sind vorruebergehend; 4xx sonst ist ein echter
+            # Vertragsfehler, den ein Retry nicht heilt.
+            last_transient = bool(exc.code in (408, 429) or 500 <= exc.code < 600)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = str(exc)
+            last_transient = True
+            last_delivery_uncertain = True
+
+        if not last_transient or attempt >= attempts:
+            break
+        sleep_seconds = backoff * (2 ** (attempt - 1))
+        log.warning(
+            "[TeamsAlert] Teams webhook attempt %d/%d failed (%s); retry in %.1fs",
+            attempt,
+            attempts,
+            last_error,
+            sleep_seconds,
+        )
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+    log.warning(
+        "[TeamsAlert] Teams webhook send failed after %d attempt(s): %s",
+        attempts if last_transient else 1,
+        last_error,
+    )
+    _record_transport_result(ok=False)
+    return {
+        "ok": False,
+        "error": last_error,
+        "transient": last_transient,
+        "deliveryUncertain": last_delivery_uncertain,
+        "attempts": attempts if last_transient else 1,
+    }
 
 
 def _remaining_hot_slots(
@@ -2423,7 +3620,9 @@ def _remaining_hot_slots(
     now_dt = dt.datetime.fromtimestamp(int(now_ts), berlin)
     weekday = now_dt.weekday()
     out: list[dict[str, Any]] = []
-    for hour in range(now_dt.hour + 1, min(24, now_dt.hour + 1 + max_hours)):
+    # Nur Stunden vor der verbindlichen Ruhezeit (22:00) vorschlagen.
+    last_regular_hour = _MANDATORY_QUIET_HOURS_START_MINUTE // 60
+    for hour in range(now_dt.hour + 1, min(last_regular_hour, now_dt.hour + 1 + max_hours)):
         base = _slot_baseline(hour, weekday) or {}
         avg = _safe_float(base.get("avg_or"))
         if avg is None or int(base.get("count") or 0) <= 0:
@@ -2530,23 +3729,36 @@ def evaluate_and_send_best_candidate(
     *,
     config: TeamsAlertConfig | None = None,
     now_ts: int | None = None,
+    history: list[dict[str, Any]] | None = None,
     history_authoritative: bool | None = None,
+    refresh_live_history_before_dispatch: bool = False,
 ) -> dict[str, Any]:
     """Evaluate a candidate batch, send the best recommendation, and persist state."""
     config = config or TeamsAlertConfig()
-    candidate_limit = max(
-        1,
-        min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT),
-    )
     decision_ts = int(now_ts or time.time())
+    mandatory_binding_slot = _mandatory_slot_top1_binding_slot(decision_ts, config)
+    candidate_limit = (
+        min(max(1, len(candidates)), _MANDATORY_TOP1_CANDIDATE_LIMIT)
+        if mandatory_binding_slot is not None
+        else max(
+            1,
+            min(
+                int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT),
+                PUSH_TEAMS_CANDIDATE_LIMIT,
+            ),
+        )
+    )
     memory_eligible, memory_guard = _memory_eligible_candidates(
         candidates,
         now_ts=decision_ts,
         config=config,
+        bypass_global_cooldown=mandatory_binding_slot is not None,
+        allow_related_topic=mandatory_binding_slot is not None,
     )
     limited = memory_eligible[:candidate_limit]
     context = build_teams_alert_context(
         limited,
+        **({"history": history} if history is not None else {}),
         history_authoritative=history_authoritative,
         now_ts=decision_ts,
         config=config,
@@ -2586,7 +3798,8 @@ def evaluate_and_send_best_candidate(
         }
 
     selected_review = selected_decision.get("agentReview")
-    if config.agent_review_enabled and (
+    mandatory_slot_top1 = bool(selected_decision.get("mandatorySlotTop1"))
+    if not mandatory_slot_top1 and config.agent_review_enabled and (
         not isinstance(selected_review, dict) or not selected_review.get("approved")
     ):
         _persist_teams_recommendation(
@@ -2610,30 +3823,27 @@ def evaluate_and_send_best_candidate(
     article_url = _url(selected)
     article_ref = hashlib.sha256(article_key.encode("utf-8")).hexdigest()[:12]
     decision_ts = int(context.get("nowTs") or decision_ts)
-    dispatch_comparison = _dispatch_live_push_comparison(
-        selected,
-        now_ts=decision_ts,
-        config=config,
-        comparison_authoritative=bool(context.get("historyAuthoritative")),
-    )
-    selected_decision = dict(selected_decision)
-    selected_decision["livePushComparison"] = dict(
-        dispatch_comparison.get("livePushComparison") or {}
-    )
-    dispatch_warning = str(dispatch_comparison.get("warning") or "").strip()
-    if dispatch_warning:
-        selected_decision["livePushDedupWarning"] = dispatch_warning
-    if dispatch_comparison.get("blocked"):
-        dispatch_code = str(dispatch_comparison.get("code") or "live_push_dedup_blocked")
+
+    def _blocked_dispatch_result(
+        comparison: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not comparison.get("blocked"):
+            return None
+        dispatch_code = str(comparison.get("code") or "live_push_dedup_blocked")
         dispatch_reason = str(
-            dispatch_comparison.get("blockingReason")
+            comparison.get("blockingReason")
             or "Live-Push-Dublettenpruefung hat den Versand gestoppt"
         )
-        selected_decision["shouldNotify"] = False
-        selected_decision["status"] = "observe"
-        selected_decision["recommendedAction"] = ""
-        selected_decision["blockingReasons"] = [
-            *list(selected_decision.get("blockingReasons") or []),
+        blocked_decision = dict(decision)
+        blocked_decision["livePushComparison"] = dict(
+            comparison.get("livePushComparison") or {}
+        )
+        blocked_decision["shouldNotify"] = False
+        blocked_decision["status"] = "observe"
+        blocked_decision["recommendedAction"] = ""
+        blocked_decision["blockingReasons"] = [
+            *list(blocked_decision.get("blockingReasons") or []),
             dispatch_reason,
         ]
         status = (
@@ -2648,24 +3858,52 @@ def evaluate_and_send_best_candidate(
         )
         _persist_teams_recommendation(
             selected,
-            selected_decision,
+            blocked_decision,
             context,
             config,
             status=status,
             send_status="blocked",
             send_error=dispatch_code,
         )
+        public_comparison = {
+            key: value
+            for key, value in comparison.items()
+            if not str(key).startswith("_")
+        }
         return {
             "ok": True,
             "sent": False,
             "reason": status,
-            "livePushDedup": dispatch_comparison,
+            "livePushDedup": public_comparison,
             "candidateId": article_key,
             "evaluation": evaluation,
         }
+
+    dispatch_comparison = _dispatch_live_push_comparison(
+        selected,
+        now_ts=decision_ts,
+        config=config,
+        comparison_authoritative=bool(context.get("historyAuthoritative")),
+        history=(
+            context.get("history") if isinstance(context.get("history"), list) else None
+        ),
+    )
+    selected_decision = dict(selected_decision)
+    selected_decision["livePushComparison"] = dict(
+        dispatch_comparison.get("livePushComparison") or {}
+    )
+    dispatch_warning = str(dispatch_comparison.get("warning") or "").strip()
+    if dispatch_warning:
+        selected_decision["livePushDedupWarning"] = dispatch_warning
+    blocked_dispatch = _blocked_dispatch_result(dispatch_comparison, selected_decision)
+    if blocked_dispatch is not None:
+        return blocked_dispatch
     message = build_teams_push_recommendation(selected, context, selected_decision, config)
     selected_title_review = message.get("_pushTitleReview")
-    if not isinstance(selected_title_review, dict) or not selected_title_review.get("approved"):
+    if not mandatory_slot_top1 and (
+        not isinstance(selected_title_review, dict)
+        or not selected_title_review.get("approved")
+    ):
         selected_decision = dict(selected_decision)
         selected_decision["pushTitleReview"] = selected_title_review or {}
         log.info(
@@ -2697,7 +3935,7 @@ def evaluate_and_send_best_candidate(
     selected_decision = dict(selected_decision)
     selected_decision["recommendationQuality"] = public_recommendation_review
     recommendation_enforced = True
-    if recommendation_enforced and (
+    if not mandatory_slot_top1 and recommendation_enforced and (
         not isinstance(selected_recommendation_review, dict)
         or not selected_recommendation_review.get("enforced")
         or not selected_recommendation_review.get("approved")
@@ -2756,7 +3994,12 @@ def evaluate_and_send_best_candidate(
     slot_fit = _llm_slot_fit_review(selected, now_ts=decision_ts, config=config)
     selected_decision = dict(selected_decision)
     selected_decision["slotFitReview"] = slot_fit
-    if slot_fit.get("available") and not slot_fit.get("fitsNow") and not _is_breaking(selected):
+    if (
+        not mandatory_slot_top1
+        and slot_fit.get("available")
+        and not slot_fit.get("fitsNow")
+        and not _is_breaking(selected)
+    ):
         better_hour = slot_fit.get("betterSlotHour")
         age_hours = _freshness_hours(selected, decision_ts)
         now_hour = dt.datetime.fromtimestamp(decision_ts, ZoneInfo("Europe/Berlin")).hour
@@ -2776,11 +4019,18 @@ def evaluate_and_send_best_candidate(
             or hours_ahead is None
             or (age_hours + float(hours_ahead)) <= float(config.max_article_age_hours)
         )
+        # Nie in die Ruhezeit hinein verschieben - dort waere der Push ein
+        # lautloser Drop statt einer spaeteren Empfehlung.
+        target_outside_quiet_hours = (
+            hours_ahead is None
+            or not _quiet_hours_reason(int(decision_ts + hours_ahead * 3600), config)
+        )
         if (
             hours_ahead is not None
             and 0 < hours_ahead <= int(config.slot_fit_max_defer_hours)
             and fresh_enough
             and sendable_at_target
+            and target_outside_quiet_hours
         ):
             target_ts = int(decision_ts + hours_ahead * 3600)
             log.info(
@@ -2819,14 +4069,122 @@ def evaluate_and_send_best_candidate(
         ).strip()
         message["payload"] = _sf_payload
 
+    # Letzter Direktabgleich nach allen potenziell langsamen Titel-/Qualitaets-
+    # und Slot-Reviews, unmittelbar vor Claim und Webhook. Ein Cache-Fallback
+    # ist hier nicht autoritativ; so bleibt kein Mehrsekunden-Race-Fenster offen.
+    if refresh_live_history_before_dispatch:
+        final_dispatch_comparison = _dispatch_live_push_comparison(
+            selected,
+            now_ts=int(time.time()),
+            config=config,
+            comparison_authoritative=True,
+            refresh_live_history=True,
+        )
+        selected_decision["livePushComparison"] = dict(
+            final_dispatch_comparison.get("livePushComparison") or {}
+        )
+        blocked_dispatch = _blocked_dispatch_result(
+            final_dispatch_comparison,
+            selected_decision,
+        )
+        if blocked_dispatch is not None:
+            if (
+                mandatory_slot_top1
+                and str(final_dispatch_comparison.get("code") or "")
+                == "live_push_exact_article_duplicate"
+            ):
+                remaining_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate_key(candidate) != article_key
+                ]
+                refreshed_history = final_dispatch_comparison.get("_historySnapshot")
+                if remaining_candidates and isinstance(refreshed_history, list):
+                    retry_result = evaluate_and_send_best_candidate(
+                        remaining_candidates,
+                        config=config,
+                        now_ts=int(time.time()),
+                        history=refreshed_history,
+                        history_authoritative=True,
+                        refresh_live_history_before_dispatch=True,
+                    )
+                    retry_result["raceFallbackFromCandidateId"] = article_key
+                    return retry_result
+            return blocked_dispatch
+
+    # Wall-Clock-Recheck nach allen potenziell langsamen Reviews und Live-
+    # Abgleichen, aber noch VOR Memory-Reservierung und durablem Send-Claim.
+    # Laeuft das enge Slotfenster aus, wird der Artikel nicht als Fehlversand
+    # verbrannt und kann an einem spaeteren Raster-Slot frisch bewertet werden.
+    preclaim_now = int(time.time())
+    preclaim_slot = (
+        _binding_slot_for_dispatch(
+            preclaim_now,
+            config,
+            expected_slot_ts=_safe_int(message.get("_bindingSlotTs")),
+        )
+        if message.get("_slotGateApproved") is True
+        else None
+    )
+    if preclaim_slot is None:
+        log.info(
+            "[TeamsAlert] dispatch stopped before claim: binding slot window closed "
+            "article_ref=%s",
+            article_ref,
+        )
+        _persist_teams_recommendation(
+            selected,
+            selected_decision,
+            context,
+            config,
+            status="outside_schedule_blocked",
+            send_status="blocked",
+            send_error="Binding slot window closed before send claim",
+        )
+        return {
+            "ok": True,
+            "sent": False,
+            "reason": "outside_schedule_blocked",
+            "candidateId": article_key,
+            "evaluation": evaluation,
+        }
+
+    binding_slot_ts = _safe_int(message.get("_bindingSlotTs"))
+    slot_claim: dict[str, Any] | None = None
+    if mandatory_slot_top1:
+        slot_claim = teams_recommendation_slot_try_claim(
+            binding_slot_ts,
+            article_key=article_key,
+            now_ts=preclaim_now,
+            lease_seconds=_BINDING_SLOT_DISPATCH_GRACE_SECONDS,
+        )
+        if not slot_claim.get("claimed"):
+            return {
+                "ok": True,
+                "sent": False,
+                "reason": str(slot_claim.get("reason") or "slot_claim_blocked"),
+                "slotClaim": slot_claim,
+                "candidateId": article_key,
+                "evaluation": evaluation,
+            }
+
     memory_claim = _memory_send_blocker_or_reserve(
         article_key=article_key,
         title=_title(selected),
         now_ts=decision_ts,
         config=config,
-        bypass_global_cooldown=bool(_is_breaking(selected) and config.breaking_override),
+        bypass_global_cooldown=mandatory_slot_top1,
+        allow_related_topic=mandatory_slot_top1,
     )
     if memory_claim.get("blocked"):
+        if slot_claim is not None:
+            teams_recommendation_slot_record(
+                binding_slot_ts,
+                article_key=article_key,
+                status="failed",
+                error=str(memory_claim.get("reason") or "memory_claim_blocked"),
+                now_ts=preclaim_now,
+            )
         log.info(
             "[TeamsAlert] send skipped by memory guard article_ref=%s reason=%s",
             article_ref,
@@ -2868,17 +4226,33 @@ def evaluate_and_send_best_candidate(
         decision_ts=decision_ts,
         alert_cooldown_minutes=config.alert_cooldown_minutes,
         global_cooldown_minutes=(
-            0
-            if _is_breaking(selected) and config.breaking_override
-            else _effective_global_cooldown_minutes(config)
+            0 if mandatory_slot_top1 else _effective_global_cooldown_minutes(config)
         ),
-        failed_cooldown_minutes=max(
-            config.alert_cooldown_minutes,
-            config.repeat_suppression_hours * 60,
+        failed_cooldown_minutes=(
+            0
+            if mandatory_slot_top1
+            else max(
+                config.alert_cooldown_minutes,
+                config.repeat_suppression_hours * 60,
+            )
+        ),
+        transport_failure_cooldown_minutes=max(
+            0 if mandatory_slot_top1 else 1,
+            0
+            if mandatory_slot_top1
+            else int(config.transport_failure_cooldown_minutes or 20),
         ),
     )
     if not claim.get("claimed"):
         _memory_release_reservation(article_key)
+        if slot_claim is not None:
+            teams_recommendation_slot_record(
+                binding_slot_ts,
+                article_key=article_key,
+                status="failed",
+                error=str(claim.get("reason") or "article_claim_blocked"),
+                now_ts=preclaim_now,
+            )
         log.info(
             "[TeamsAlert] send skipped by claim article_ref=%s reason=%s",
             article_ref,
@@ -2902,9 +4276,51 @@ def evaluate_and_send_best_candidate(
             "evaluation": evaluation,
         }
 
-    send_result = send_teams_notification(message, config)
+    try:
+        send_result = send_teams_notification(message, config)
+    except Exception as exc:
+        # A transport helper must never strand the durable slot in ``sending``.
+        # Convert unexpected failures into the normal retryable result path so
+        # the claim is released while the five-minute window is still open.
+        log.exception("[TeamsAlert] unexpected transport exception")
+        send_result = {
+            "ok": False,
+            "transient": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     _memory_record_send_result(article_key, ok=bool(send_result.get("ok")), now_ts=decision_ts)
-    status = "sent" if send_result.get("ok") else "failed"
+    send_ok = bool(send_result.get("ok"))
+    delivery_uncertain = bool(not send_ok and send_result.get("deliveryUncertain"))
+    # Ein vorruebergehender Transportfehler (Timeout, 5xx) darf die Story nicht
+    # fuer den Rest des Tages verbrennen: sie wird als "transport_failed"
+    # vermerkt und nach einer kurzen Sperre erneut geprueft. Nur echte
+    # Ablehnungen behalten die lange Wiederholungssperre.
+    transient_failure = bool(
+        not send_ok and not delivery_uncertain and send_result.get("transient")
+    )
+    status = (
+        "sent"
+        if send_ok
+        else "delivery_uncertain"
+        if delivery_uncertain
+        else "transport_failed"
+        if transient_failure
+        else "failed"
+    )
+    if slot_claim is not None:
+        teams_recommendation_slot_record(
+            binding_slot_ts,
+            article_key=article_key,
+            status=(
+                "sent"
+                if send_ok
+                else "delivery_uncertain"
+                if delivery_uncertain
+                else "failed"
+            ),
+            error=str(send_result.get("error") or ""),
+            now_ts=int(time.time()),
+        )
     reason = selected_decision.get("summary") or "Push empfohlen"
     teams_alert_record(
         article_key=article_key,
@@ -3044,40 +4460,36 @@ def _dispatch_live_push_comparison(
     now_ts: int,
     config: TeamsAlertConfig,
     comparison_authoritative: bool = True,
+    history: list[dict[str, Any]] | None = None,
+    refresh_live_history: bool = False,
 ) -> dict[str, Any]:
     """Refresh exact live-push deduplication immediately before delivery.
 
-    Fail-open: Ist die Quelle nicht garantiert frisch oder die Historie nicht
-    ladbar, blockieren wir NICHT (das legte zuvor den ganzen Kanal lahm), sondern
-    liefern einen Warnhinweis zurueck und senden trotzdem. Echte Artikel-Dubletten
-    aus der vorhandenen DB-Historie werden weiterhin hart abgefangen.
+    Der produktive Worker aktualisiert die Live-API hier ein zweites Mal. Ist
+    diese Quelle nicht autoritativ oder die Historie nicht ladbar, stoppt der
+    Versand. So kann ein Live-Push zwischen Auswahl und Webhook nicht unbemerkt
+    als Teams-Empfehlung wiederholt werden.
     """
-    _FAILOPEN_WARNING = (
-        "Live-Push-Dublettencheck war nicht belastbar – bitte vor dem Push kurz "
-        "prüfen, ob der Artikel nicht bereits live gepusht wurde."
-    )
-    try:
-        history = push_db_load_all(max_days=90, max_rows=3000)
-    except Exception as exc:
+    if refresh_live_history:
+        refresh_result = _refresh_push_history_for_dedup()
+        comparison_authoritative = bool(refresh_result.get("history_authoritative"))
+        if "history" in refresh_result:
+            refreshed_history = refresh_result.get("history")
+            if isinstance(refreshed_history, list) and all(
+                isinstance(item, dict) for item in refreshed_history
+            ):
+                history = refreshed_history
+            else:
+                comparison_authoritative = False
+    if not comparison_authoritative:
         return {
-            "blocked": False,
-            "code": "live_push_dedup_unavailable_failopen",
-            "blockingReason": "",
-            "warning": _FAILOPEN_WARNING,
-            "livePushComparison": {
-                "available": False,
-                "authoritative": False,
-                "matched": False,
-                "matchType": "",
-            },
-            "errorType": type(exc).__name__,
-        }
-    if not history:
-        return {
-            "blocked": False,
-            "code": "live_push_dedup_empty_failopen",
-            "blockingReason": "",
-            "warning": _FAILOPEN_WARNING,
+            "blocked": True,
+            "code": "live_push_dedup_unavailable_failclosed",
+            "blockingReason": (
+                "Live-Push-Dublettenpruefung nicht autoritativ verfuegbar; "
+                "Teams-Vorschlag gestoppt"
+            ),
+            "warning": "",
             "livePushComparison": {
                 "available": False,
                 "authoritative": False,
@@ -3085,6 +4497,25 @@ def _dispatch_live_push_comparison(
                 "matchType": "",
             },
         }
+    if history is None:
+        try:
+            history = push_db_load_all(max_days=90, max_rows=3000)
+        except Exception as exc:
+            return {
+                "blocked": True,
+                "code": "live_push_dedup_unavailable_failclosed",
+                "blockingReason": (
+                    "Live-Push-Dublettenpruefung nicht ladbar; Teams-Vorschlag gestoppt"
+                ),
+                "warning": "",
+                "livePushComparison": {
+                    "available": False,
+                    "authoritative": False,
+                    "matched": False,
+                    "matchType": "",
+                },
+                "errorType": type(exc).__name__,
+            }
 
     history_index = _push_history_review_index(history, now_ts, config)
     live_push_match_reason = _live_push_comparison_reason(
@@ -3103,7 +4534,7 @@ def _dispatch_live_push_comparison(
     else:
         comparison_code = "no_live_push_match"
 
-    return {
+    result = {
         "blocked": exact_article_duplicate,
         "code": comparison_code,
         "blockingReason": (
@@ -3112,9 +4543,7 @@ def _dispatch_live_push_comparison(
             if exact_article_duplicate
             else ""
         ),
-        # Historie vorhanden und geprueft, aber Snapshot evtl. nicht garantiert
-        # frisch -> Warnhinweis, damit die CvD gegenpruefen kann.
-        "warning": "" if comparison_authoritative else _FAILOPEN_WARNING,
+        "warning": "",
         "historyRows": len(history),
         "livePushCadenceIgnored": True,
         "livePushComparison": {
@@ -3125,6 +4554,9 @@ def _dispatch_live_push_comparison(
             "reason": live_push_match_reason,
         },
     }
+    if refresh_live_history:
+        result["_historySnapshot"] = history
+    return result
 
 
 def _persist_teams_recommendation(
@@ -3282,9 +4714,25 @@ def send_teams_test_notification(
     }
     context = build_teams_alert_context([sample], now_ts=now, config=config)
     decision = should_notify_teams(sample, context, config)
+    decision["competition"] = {
+        **(
+            decision.get("competition")
+            if isinstance(decision.get("competition"), dict)
+            else {}
+        ),
+        "eligibleCompetitors": 1,
+        "runnerUpScore": 81.0,
+        "runnerUp": {
+            "articleTitle": "TEST: Alternative zu Top 1 (bitte ignorieren)",
+            "articleUrl": "https://www.bild.de/sport/",
+            "category": "sport",
+            "pushScore": 81.0,
+            "rankingPosition": 2,
+        },
+    }
     message = build_teams_push_recommendation(sample, context, decision, config)
 
-    banner = "TESTNACHRICHT – keine echte Push-Empfehlung (Integrationstest Push Balancer)"
+    banner = "TESTNACHRICHT – bitte ignorieren"
     text = f"{banner}\n\n{message['text']}"
     message["text"] = text
     message["summary"] = banner
@@ -3392,8 +4840,8 @@ def build_teams_heartbeat_message(
     url = str(payload.get("articleUrl") or _url(candidate)).strip()
     why = [str(r) for r in (payload.get("whyPushworthy") or []) if str(r).strip()][:3]
 
-    subject = "Push-Empfehlung"
-    header = "PUSH-EMPFEHLUNG"
+    subject = "🔵 PUSH-EMPFEHLUNG"
+    header = "🔵 PUSH-EMPFEHLUNG"
     context_line = "Aktuell stärkster Push-Kandidat im Feld."
     lines = [header, "", "Empfohlener Push-Titel:", push_text]
     if title and not _same_editorial_text(push_text, title):
@@ -3448,160 +4896,490 @@ def _maybe_send_heartbeat(
     *,
     config: TeamsAlertConfig,
     now_ts: int,
+    history: list[dict[str, Any]] | None = None,
     history_authoritative: bool | None = None,
+    refresh_live_history_before_dispatch: bool = False,
 ) -> dict[str, Any]:
-    """Stelle sicher, dass der Channel nie laenger als die Heartbeat-Frist still ist.
+    """Legacy compatibility hook; article heartbeats may never dispatch.
 
-    Feuert nur, wenn seit ``heartbeat_max_silence_minutes`` kein Post rausging und
-    (ausserhalb der Quiet Hours) ein zulaessiger Kandidat existiert. Postet dann den
-    besten aktuell zulaessigen Kandidaten als klar markierten Fallback – auch unter
-    der Alarm-Schwelle. Harte Ausschluesse (Fiktion/TV, echte Live-Dubletten,
-    bereits per Teams gemeldet, Faktenrisiko, ausgeschlossene Ressorts) greifen weiter.
+    Teams recommendations are schedule-only.  Keeping this function as a
+    fail-closed hook prevents a stale environment override from restoring the
+    former 90-minute off-raster fallback.
     """
     if not config.heartbeat_enabled:
         return {"fired": False, "reason": "disabled"}
-    if _quiet_hours_reason(now_ts, config):
-        return {"fired": False, "reason": "quiet_hours"}
-    try:
-        last_sent = int(teams_alert_last_sent_ts() or 0)
-    except Exception:
-        last_sent = 0
-    max_silence = max(15, int(config.heartbeat_max_silence_minutes or 90))
-    silence_min = (now_ts - last_sent) / 60.0 if last_sent else float(max_silence + 1)
-    if last_sent and silence_min < max_silence:
-        return {"fired": False, "reason": "recent_post", "silenceMinutes": round(silence_min, 1)}
-
-    candidate_limit = max(
-        1,
-        min(int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT), PUSH_TEAMS_CANDIDATE_LIMIT),
-    )
-    limited = list(candidates or [])[:candidate_limit]
-    if not limited:
-        return {"fired": False, "reason": "no_candidates"}
-    context = build_teams_alert_context(
-        limited,
-        history_authoritative=history_authoritative,
-        now_ts=now_ts,
-        config=config,
-    )
-    best: dict[str, Any] | None = None
-    best_decision: dict[str, Any] | None = None
-    best_score = float("-inf")
-    for cand in limited:
-        try:
-            decision = should_notify_teams(cand, context, config)
-        except Exception:
-            continue
-        if _daily_plan_hard_blockers(cand, decision, config):
-            continue
-        sc = _score(cand)
-        if sc > best_score:
-            best, best_decision, best_score = cand, decision, sc
-    if best is None or best_decision is None:
-        return {"fired": False, "reason": "no_eligible_candidate"}
-
-    message = build_teams_heartbeat_message(
-        best, context, best_decision, config, silence_minutes=silence_min
-    )
-    article_key = candidate_key(best)
-    send_result = send_teams_notification(message, config)
-    ok = bool(send_result.get("ok"))
-    status = "sent" if ok else "failed"
-    try:
-        teams_alert_record(
-            article_key=article_key,
-            article_id=str(best.get("id") or article_key),
-            article_url=_url(best),
-            title_hash=title_hash(best),
-            article_title=_title(best),
-            score=_score(best),
-            predicted_or=_safe_float(best.get("predictedOR")) or 0.0,
-            candidate_updated_at=_candidate_updated_ts(best),
-            is_breaking=_is_breaking(best),
-            reason=_HEARTBEAT_ALERT_REASON,
-            status=status,
-            error=str(send_result.get("error") or ""),
-            decision_ts=now_ts,
-        )
-    except Exception as exc:
-        log.warning("[TeamsAlert] heartbeat record failed: %s", exc)
-    try:
-        hb_decision = dict(best_decision)
-        hb_decision["summary"] = _HEARTBEAT_ALERT_REASON
-        _persist_teams_recommendation(
-            best,
-            hb_decision,
-            context,
-            config,
-            status="heartbeat",
-            send_status=status,
-            send_error=str(send_result.get("error") or ""),
-            sent_at_ts=now_ts if ok else 0,
-        )
-    except Exception as exc:
-        log.warning("[TeamsAlert] heartbeat persist failed: %s", exc)
-    log.info(
-        "[TeamsAlert] Heartbeat %s: %s (score %.1f, seit %d Min still)",
-        status,
-        article_key,
-        _score(best),
-        int(silence_min),
-    )
     return {
-        "fired": ok,
-        "reason": status,
-        "candidateId": article_key,
-        "score": _score(best),
-        "silenceMinutes": round(silence_min, 1),
-        "sendResult": send_result,
+        "fired": False,
+        "reason": "outside_schedule_blocked",
+        "detail": "Teams recommendations are only allowed through the regular slot gate",
     }
 
 
+def _live_push_score_lookup(link: str) -> tuple[float | None, str]:
+    """Best-effort Score fuer einen echten Live-Push (sonst 'nicht bewertet')."""
+    normalized = _normalize_url(str(link or ""))
+    if normalized:
+        try:
+            state = teams_alert_load_for_keys([normalized]) or {}
+            row = state.get(normalized)
+            if row:
+                score = _safe_float(row.get("last_score"))
+                if score is not None and score > 0:
+                    return float(score), "teams_recommendation"
+        except Exception:
+            pass
+    if str(link or "").strip():
+        try:
+            from app.routers.score_capture import get_score_for_url
+
+            captured = get_score_for_url(str(link))
+            if captured is not None and float(captured) > 0:
+                return float(captured), "captured_push_balancer"
+        except Exception:
+            pass
+    return None, ""
+
+
+def build_teams_live_push_message(
+    push: dict[str, Any],
+    *,
+    context: dict[str, Any],
+    config: TeamsAlertConfig | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Nachrichtentyp 2: 🔴 LIVE-PUSH GESENDET - genau ein Push pro Nachricht."""
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    ts = _safe_int(push.get("ts_num", push.get("ts", 0)))
+    title = str(push.get("title") or push.get("headline") or "").strip() or "ohne Titel"
+    link = str(push.get("link") or "").strip()
+    category = str(push.get("cat") or "news")
+    section_label = _format_section(category)
+    is_sport = _is_sport_item(push)
+    is_breaking = bool(push.get("is_eilmeldung"))
+    source_label = (
+        "Breaking News (Eilmeldung)"
+        if is_breaking
+        else ("Sportredaktion" if is_sport else "Redaktion")
+    )
+    score, score_source = _live_push_score_lookup(link)
+    if score is not None:
+        score_label = f"{_format_number(score, 1)}/100"
+        if score_source == "captured_push_balancer":
+            score_label += " (erfasstes Push-Balancer-Rating)"
+    else:
+        score_label = "nicht bewertet"
+
+    day_summary = _day_volume_summary(context, config)
+    local_push_dt = dt.datetime.fromtimestamp(ts or now, ZoneInfo("Europe/Berlin"))
+
+    impact_sentences: list[str] = []
+    if day_summary["remainingMax"] <= 0:
+        impact_sentences.append(
+            f"Das Tagesmaximum von {day_summary['maxTarget']} Pushes ist erreicht; "
+            "keine weiteren regulären Empfehlungen heute."
+        )
+    else:
+        impact_sentences.append(
+            f"Noch mindestens {day_summary['remainingMin']} und maximal "
+            f"{day_summary['remainingMax']} Pushes möglich."
+        )
+        min_pause = max(1, int(config.min_minutes_since_last_push or 30))
+        next_reco_ts = (ts or now) + min_pause * 60
+        impact_sentences.append(
+            f"Die nächste Empfehlung kommt frühestens um {_format_time(next_reco_ts)} Uhr "
+            f"(Mindestabstand {min_pause} Minuten)."
+        )
+
+    push_tokens = _tokens(title)
+    topic_threshold = float(config.topic_dedup_similarity or 0.5)
+    same_topic_hit = ""
+    for entry in context.get("recentTeamsAlerts") or []:
+        other_title = str(entry.get("title") or "")
+        if other_title and _same_topic(push_tokens, _tokens(other_title), topic_threshold):
+            same_topic_hit = other_title
+            break
+    if same_topic_hit:
+        impact_sentences.append(
+            "Die bestehende Empfehlung zum gleichen Thema entfällt; "
+            "es wird keine doppelte Empfehlung gesendet."
+        )
+
+    baseline = _slot_baseline(local_push_dt.hour, local_push_dt.weekday()) or {}
+    slot_avg = _safe_float(baseline.get("avg_or"))
+    if slot_avg is not None and slot_avg >= 6.4:
+        impact_sentences.append(
+            f"Der Hot-Hour-Slot {local_push_dt.hour:02d}:00 Uhr ist belegt; "
+            "ein zweiter Push in diesem Fenster wird möglichst weit hinten platziert."
+        )
+    impact_sentences.append(day_summary["sportStatusSentence"])
+    impact_text = "\n".join(impact_sentences)
+
+    next_recommendation_label = (
+        "Wird auf Basis des aktualisierten Tagesplans im nächsten Bewertungszyklus "
+        "neu berechnet."
+    )
+
+    header_line = "🔴 LIVE-PUSH GESENDET"
+    subject = f"{header_line}: {_compact_text(title, 120)}"
+    spec_fields: list[tuple[str, str]] = [
+        ("Versendet um", f"{_format_time(ts or now)} Uhr"),
+        ("Thema", title),
+        ("Ressort", section_label),
+        ("Quelle", source_label),
+        ("Push-Balancer-Score", score_label),
+        ("Tagesstand", day_summary["dailyLabel"]),
+        ("Sportstand", day_summary["sportLabel"]),
+        ("Auswirkung auf den Plan", impact_text),
+        ("Nächste Empfehlung", next_recommendation_label),
+    ]
+    text_lines = [header_line]
+    for field_label, field_value in spec_fields:
+        if not str(field_value).strip():
+            continue
+        text_lines.extend(["", f"{field_label}:", str(field_value)])
+    if link:
+        text_lines.extend(["", link])
+    text = "\n".join(text_lines)
+    message_html = _spec_fields_html(header_line, spec_fields, url=link)
+
+    payload = {
+        "type": "live_push_sent",
+        "subject": subject,
+        "messageId": str(push.get("message_id") or ""),
+        "sentAt": _format_time(ts or now),
+        "sentAtTs": int(ts or now),
+        "articleTitle": title,
+        "articleUrl": link,
+        "category": category,
+        "sectionLabel": section_label,
+        "isSport": is_sport,
+        "isBreaking": is_breaking,
+        "sourceLabel": source_label,
+        "pushScore": score,
+        "pushScoreLabel": score_label,
+        "pushScoreAvailable": score is not None,
+        "dailyStatusLabel": day_summary["dailyLabel"],
+        "sportStatusLabel": day_summary["sportLabel"],
+        "sportStatus": day_summary["sportStatus"],
+        "planImpact": impact_sentences,
+        "planImpactLabel": impact_text,
+        "sameTopicRecommendationDropped": bool(same_topic_hit),
+        "nextRecommendationLabel": next_recommendation_label,
+        "pushesSentToday": day_summary["sent"],
+        "sportPushesSentToday": day_summary["sport"],
+        "remainingMinPushes": day_summary["remainingMin"],
+        "remainingMaxPushes": day_summary["remainingMax"],
+        "text": text,
+        "messageText": text,
+        "messageHtml": message_html,
+    }
+    return {"text": text, "payload": payload, "summary": subject}
+
+
+def announce_new_live_pushes(
+    config: TeamsAlertConfig | None = None,
+    *,
+    now_ts: int | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Spiegle jeden neuen echten Live-Push als eigene Teams-Nachricht.
+
+    Restart-sicher ueber einen persistenten Claim pro message_id. Pushes, die
+    aelter als das Lookback-Fenster sind, werden nur als erledigt markiert
+    (sie zaehlen weiterhin zum Tagesvolumen), damit nach einem Neustart keine
+    Flut historischer Posts entsteht.
+    """
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    if not config.enabled or not config.live_push_posts_enabled or not config.webhook_url:
+        return {"ok": True, "posted": 0, "reason": "disabled"}
+    if history is None:
+        try:
+            history = push_db_load_all(max_days=1, max_rows=400)
+        except Exception as exc:
+            log.warning("[TeamsAlert] live push post history unavailable: %s", exc)
+            return {"ok": False, "posted": 0, "reason": "history_unavailable"}
+
+    day_start = _local_day_start_ts(now)
+    lookback_seconds = max(5, int(config.live_push_post_lookback_minutes or 90)) * 60
+    max_posts = max(1, int(config.live_push_posts_per_cycle or 3))
+    todays = sorted(
+        (
+            item
+            for item in history
+            if _safe_int(item.get("ts_num", item.get("ts", 0))) >= day_start
+        ),
+        key=lambda item: _safe_int(item.get("ts_num", item.get("ts", 0))),
+    )
+    posted = 0
+    results: list[dict[str, Any]] = []
+    context: dict[str, Any] | None = None
+    for push in todays:
+        message_id = str(push.get("message_id") or "").strip()
+        ts = _safe_int(push.get("ts_num", push.get("ts", 0)))
+        if not message_id or ts <= 0:
+            continue
+        if posted >= max_posts:
+            break
+        try:
+            claim = teams_live_push_post_try_claim(message_id, push_ts=ts, now_ts=now)
+        except Exception as exc:
+            log.warning("[TeamsAlert] live push post claim failed: %s", exc)
+            continue
+        if not claim.get("claimed"):
+            continue
+        outcome = {"messageId": message_id, "pushTs": ts}
+        try:
+            if now - ts > lookback_seconds:
+                teams_live_push_post_record(
+                    message_id, push_ts=ts, status="skipped_stale", now_ts=now
+                )
+                outcome["status"] = "skipped_stale"
+                results.append(outcome)
+                continue
+            quiet_reason = _quiet_hours_reason(now, config)
+            if quiet_reason:
+                teams_live_push_post_record(
+                    message_id,
+                    push_ts=ts,
+                    status="skipped_quiet_hours",
+                    error=quiet_reason,
+                    now_ts=now,
+                )
+                outcome["status"] = "skipped_quiet_hours"
+                results.append(outcome)
+                continue
+            if context is None:
+                context = build_teams_alert_context(
+                    [], history=history, now_ts=now, config=config
+                )
+            message = build_teams_live_push_message(
+                push, context=context, config=config, now_ts=now
+            )
+            send_result = send_teams_notification(message, config)
+            status = "sent" if send_result.get("ok") else "failed"
+            teams_live_push_post_record(
+                message_id,
+                push_ts=ts,
+                status=status,
+                error=str(send_result.get("error") or ""),
+                now_ts=now,
+            )
+            outcome["status"] = status
+            if send_result.get("ok"):
+                posted += 1
+            results.append(outcome)
+            log.info(
+                "[TeamsAlert] live push post message_id=%s status=%s",
+                message_id,
+                status,
+            )
+        except Exception as exc:
+            log.warning("[TeamsAlert] live push post failed: %s", exc)
+            try:
+                teams_live_push_post_record(
+                    message_id,
+                    push_ts=ts,
+                    status="failed",
+                    error=str(exc),
+                    now_ts=now,
+                )
+            except Exception:
+                pass
+            outcome["status"] = "error"
+            results.append(outcome)
+    return {"ok": True, "posted": posted, "results": results}
+
+
+def seconds_until_next_binding_slot(
+    now_ts: float | None = None,
+    config: TeamsAlertConfig | None = None,
+) -> float:
+    """Sekunden bis zur naechsten verbindlichen Raster-Entscheidung (Berlin).
+
+    Der Worker richtet damit seine Weckzeit exakt auf die Slotzeiten aus,
+    statt bis zu eine Minute nach dem Slot aufzuwachen.
+    """
+    config = config or TeamsAlertConfig()
+    now = float(now_ts or time.time())
+    berlin = ZoneInfo("Europe/Berlin")
+    today = dt.datetime.fromtimestamp(int(now), berlin).date()
+    for target_date in (today, today + dt.timedelta(days=1)):
+        try:
+            slots = _daily_runtime_opportunities(target_date, config)
+        except Exception:
+            return 60.0
+        upcoming = [int(slot.get("ts") or 0) for slot in slots if int(slot.get("ts") or 0) > now]
+        if upcoming:
+            return max(0.5, min(upcoming) - now)
+    return 60.0
+
+
+def binding_slot_window_open(
+    now_ts: float | None = None,
+    config: TeamsAlertConfig | None = None,
+) -> bool:
+    """Return whether a mandatory slot can still dispatch right now."""
+    config = config or TeamsAlertConfig()
+    now = int(now_ts or time.time())
+    return _mandatory_slot_top1_binding_slot(now, config) is not None
+
+
+def seconds_to_defer_cycle_for_binding_slot(
+    now_ts: float | None = None,
+    config: TeamsAlertConfig | None = None,
+    *,
+    guard_seconds: float = 180.0,
+) -> float:
+    """Keep a slow collection cycle from crossing a mandatory slot start.
+
+    Candidate collection can legitimately take more than a minute when the
+    score or live-push APIs are slow.  Starting that work immediately before a
+    slot used to let the cycle finish after the slot start; the scheduler then
+    slept until the following slot and skipped the still-open five-minute
+    dispatch window.  Defer that pre-slot cycle and wake just after the exact
+    slot instead.
+    """
+    config = config or TeamsAlertConfig()
+    now = float(now_ts or time.time())
+    if binding_slot_window_open(now, config):
+        return 0.0
+    until_slot = seconds_until_next_binding_slot(now, config)
+    if 0.0 < until_slot <= max(30.0, float(guard_seconds or 0.0)):
+        return until_slot + 0.5
+    return 0.0
+
+
 def run_teams_alert_cycle() -> dict[str, Any]:
+    """Einen Zyklus fahren und dabei den Kanal-Herzschlag aktualisieren."""
+    try:
+        result = _run_teams_alert_cycle_inner()
+    except Exception as exc:
+        record_worker_cycle(ok=False, error=f"{type(exc).__name__}: {exc}")
+        raise
+    record_worker_cycle(
+        ok=bool(result.get("ok", True)),
+        sent=bool(result.get("sent")),
+        error=str(result.get("error") or ""),
+    )
+    return result
+
+
+def _run_teams_alert_cycle_inner() -> dict[str, Any]:
     """Fetch current article candidates and run one Teams alert cycle."""
     try:
         refresh_result = _refresh_push_history_for_dedup()
         from app.routers.feed import build_articles_payload
 
         config = TeamsAlertConfig()
-        schedule_result = send_teams_daily_schedule_if_due(config)
-        candidate_limit = max(
-            1,
-            min(
-                int(config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT),
-                PUSH_TEAMS_CANDIDATE_LIMIT,
-            ),
+        decision_now = int(time.time())
+        mandatory_binding_slot = _mandatory_slot_top1_binding_slot(decision_now, config)
+        dispatch_config = (
+            replace(config, require_internal_score_api=True)
+            if mandatory_binding_slot is not None and not config.require_internal_score_api
+            else config
+        )
+        candidate_limit = (
+            _MANDATORY_TOP1_CANDIDATE_LIMIT
+            if mandatory_binding_slot is not None
+            else max(
+                1,
+                min(
+                int(dispatch_config.candidate_limit or PUSH_TEAMS_CANDIDATE_LIMIT),
+                    PUSH_TEAMS_CANDIDATE_LIMIT,
+                ),
+            )
         )
         payload = build_articles_payload(
             offset=0,
             limit=candidate_limit,
             include_teams_decisions=False,
-            use_internal_score_api=config.require_internal_score_api,
+            use_internal_score_api=(
+                dispatch_config.require_internal_score_api
+            ),
         )
         candidates = payload.get("articles") or []
         result = evaluate_and_send_best_candidate(
             candidates,
-            config=config,
+            config=dispatch_config,
+            history=refresh_result.get("history"),
             history_authoritative=bool(refresh_result.get("history_authoritative")),
+            refresh_live_history_before_dispatch=True,
         )
+        # Die Pflicht-Empfehlung hat im engen Slotfenster Vorrang. Live-Push-
+        # Spiegel und der Tagesplan laufen erst danach und koennen den Slot so
+        # auch bei langsamen Webhook-Retries nicht verbrauchen.
+        live_push_posts = announce_new_live_pushes(config, now_ts=int(time.time()))
+        schedule_result = send_teams_daily_schedule_if_due(config)
         result["dailySchedule"] = schedule_result
+        result["livePushPosts"] = live_push_posts
         # Heartbeat/Mindest-Kadenz: Wenn kein regulaerer Alert rausging, sicherstellen,
         # dass der Channel nicht laenger als die Heartbeat-Frist still bleibt.
-        if not result.get("sent"):
+        dedup_stop_reasons = {
+            "live_push_dedup_unavailable",
+            "live_push_duplicate_blocked",
+        }
+        if not result.get("sent") and result.get("reason") not in dedup_stop_reasons:
             try:
                 result["heartbeat"] = _maybe_send_heartbeat(
                     candidates,
                     config=config,
                     now_ts=int(time.time()),
+                    history=refresh_result.get("history"),
                     history_authoritative=bool(refresh_result.get("history_authoritative")),
+                    refresh_live_history_before_dispatch=True,
                 )
             except Exception as exc:
                 log.warning("[TeamsAlert] heartbeat skipped: %s", exc)
                 result["heartbeat"] = {"fired": False, "reason": "error", "error": str(exc)}
+        elif not result.get("sent"):
+            result["heartbeat"] = {
+                "fired": False,
+                "reason": str(result.get("reason") or "live_push_dedup_blocked"),
+            }
         return result
     except Exception as exc:
         log.exception("[TeamsAlert] Cycle failed")
         return {"ok": False, "sent": False, "error": str(exc)}
+
+
+def _live_push_history_identity(item: dict[str, Any]) -> tuple[str, ...]:
+    """Stable identity for merging persisted history with a fresh API snapshot."""
+    message_id = str(item.get("message_id") or item.get("messageId") or "").strip()
+    if message_id:
+        return ("message_id", message_id)
+    return (
+        "fallback",
+        str(_safe_int(item.get("ts_num", item.get("ts", 0)))),
+        _normalize_url(str(item.get("link") or item.get("url") or "")),
+        _normalize_title(str(item.get("title") or item.get("headline") or "")),
+    )
+
+
+def _merge_live_push_history(
+    persisted: list[dict[str, Any]],
+    snapshot: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge history with fresh rows taking precedence for equal push IDs."""
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for item in persisted:
+        if isinstance(item, dict) and _is_primary_bild_push(item):
+            merged[_live_push_history_identity(item)] = item
+    for item in snapshot:
+        if isinstance(item, dict) and _is_primary_bild_push(item):
+            merged[_live_push_history_identity(item)] = item
+    return sorted(
+        merged.values(),
+        key=lambda item: _safe_int(item.get("ts_num", item.get("ts", 0))),
+        reverse=True,
+    )
+
+
+def _is_primary_bild_push(item: dict[str, Any]) -> bool:
+    """Mirror the persistent history's AutoBILD/SportBILD exclusion in snapshots."""
+    link = str(item.get("link") or item.get("url") or "").casefold()
+    return "sportbild." not in link and "autobild." not in link
 
 
 def _refresh_push_history_for_dedup() -> dict[str, Any]:
@@ -3609,12 +5387,42 @@ def _refresh_push_history_for_dedup() -> dict[str, Any]:
     try:
         from app.routers.push import _build_refresh_response
 
-        result = _build_refresh_response()
+        result = _build_refresh_response(include_history=True)
+        raw_snapshot = result.pop("_parsed_history", [])
+        snapshot_authoritative = bool(result.pop("_snapshot_authoritative", False))
+        snapshot = (
+            raw_snapshot
+            if isinstance(raw_snapshot, list)
+            and all(isinstance(item, dict) for item in raw_snapshot)
+            else []
+        )
+        if not isinstance(raw_snapshot, list) or len(snapshot) != len(raw_snapshot):
+            snapshot_authoritative = False
+        try:
+            persisted = push_db_load_all(max_days=90, max_rows=3000)
+            persistence_read_ok = True
+        except Exception as db_exc:
+            log.warning(
+                "[TeamsAlert] persisted push history unavailable after refresh: %s",
+                type(db_exc).__name__,
+            )
+            persisted = []
+            persistence_read_ok = False
+        result["history"] = _merge_live_push_history(persisted, snapshot)
+        direct_live_snapshot = (
+            result.get("source") == "live"
+            and _safe_float(result.get("snapshot_age_seconds")) == 0.0
+        )
+        result["history_authoritative"] = bool(
+            snapshot_authoritative and persistence_read_ok and direct_live_snapshot
+        )
         log.info(
-            "[TeamsAlert] push history refresh source=%s synced=%s db_written=%s authoritative=%s age=%s",
+            "[TeamsAlert] push history refresh source=%s synced=%s db_written=%s "
+            "history_rows=%s authoritative=%s age=%s",
             result.get("source"),
             result.get("synced"),
             result.get("db_written"),
+            len(result["history"]),
             result.get("history_authoritative"),
             result.get("snapshot_age_seconds"),
         )
@@ -3625,6 +5433,7 @@ def _refresh_push_history_for_dedup() -> dict[str, Any]:
             "ok": False,
             "source": "refresh-error",
             "history_authoritative": False,
+            "history": [],
             "snapshot_age_seconds": None,
             "error": type(exc).__name__,
         }
@@ -3933,7 +5742,7 @@ def build_teams_daily_push_plan_message(plan: dict[str, Any]) -> dict[str, str]:
                 f"sonst bis {slot.get('deadline')} sammeln"
             )
     else:
-        lines.append("- Heute keine belastbare Doppel-Chance ausserhalb von Breaking News.")
+        lines.append("- Heute keine belastbare zusaetzliche Raster-Chance.")
 
     lines.extend(["", "Themen beobachten:"])
     watch = plan.get("watchTopics") or []
@@ -3993,7 +5802,7 @@ def build_teams_daily_schedule(
         {
             "time": slot["label"],
             "avgOR": slot.get("avgOR"),
-            "reason": "historisch schwaecher; nur Breaking oder aussergewoehnlicher Kandidat",
+            "reason": "historisch schwaecher; keine verbindliche Raster-Entscheidung",
         }
         for slot in all_slots
         if int(slot.get("ts") or 0) not in selected_timestamps
@@ -4016,7 +5825,8 @@ def build_teams_daily_schedule(
         "Shortfall-Recovery: Reichen die verbleibenden Pflichtfenster rechnerisch "
         "nicht mehr für 15, wird am nächsten 30-Minuten-Cool-down-Rand geprüft.",
         "Der höchste gültige API-Score ab 75 gewinnt nach Fakten-, Aktualitäts-, "
-        "Dubletten-, Titel- und Ruhezeitprüfung. Kein lokaler Fake-Score; Breaking darf sofort.",
+        "Dubletten-, Titel- und Ruhezeitprüfung. Kein lokaler Fake-Score; auch "
+        "Breaking, Sport und Hot/Fresh bleiben rastergebunden.",
         "",
         "Verbindliche Entscheidungsfenster:",
     ]
@@ -4050,7 +5860,7 @@ def build_teams_daily_schedule(
             "Push-Score. Um :45 werden Scores neu geladen, Teams-Dubletten entfernt "
             "und Top 1 erneut bestimmt. Der höchste gültige API-Score ab 75 gewinnt "
             "nach allen harten Schutzprüfungen; ein lokaler Score-Fallback ist "
-            "gesperrt. Breaking darf sofort.</p>"
+            "gesperrt. Auch Breaking, Sport und Hot/Fresh bleiben rastergebunden.</p>"
         ),
         "<p><strong>Verbindliche Entscheidungsfenster</strong></p><ul>",
     ]
@@ -4490,6 +6300,9 @@ def _daily_plan_hard_blockers(
     non_article_reason = _daily_plan_non_article_reason(candidate)
     if non_article_reason:
         hard.append(non_article_reason)
+    promotional_reason = _promotional_article_reason(candidate)
+    if promotional_reason:
+        hard.append(promotional_reason)
     if not _title(candidate):
         hard.append("Keine Headline")
     if not _url(candidate):
@@ -4498,15 +6311,16 @@ def _daily_plan_hard_blockers(
         hard.append(f"Ressort {_format_section(section)} ist ausgeschlossen")
     # Nur strukturell unbrauchbare / sicherheitskritische Gruende schliessen einen
     # Kandidaten HART aus dem Tagesplan aus (auch aus der Mindestmengen-Auffuellung).
-    # Weichere Gruende (Ausland-Unterschreitung, Service/Teaser, nicht belastbare
-    # Live-Dubletten-Pruefung) werden ueber _daily_plan_rank_score nur abgewertet,
+    # Weichere Gruende (Ausland-Unterschreitung, Service/Teaser) werden ueber
+    # _daily_plan_rank_score nur abgewertet,
     # damit der Plan an ausland- oder servicelastigen Tagen nicht leer bleibt.
-    # - "Bereits live gepusht" faengt echte Live-Dubletten weiterhin hart ab
-    #   (die blosse Nichtverfuegbarkeit der Pruefung tut das bewusst nicht mehr).
+    # - Live-Dubletten und eine nicht belastbare Dublettenquelle sind hart:
+    #   Ohne autoritative Historie darf keine Empfehlung versendet werden.
     # - "rein US-inlaendische" haelt usa_domestic hart; die reine
     #   Score-Unterschreitung internationaler Lagen wird nur abgewertet.
     hard_markers = (
         "Bereits live gepusht",
+        "Live-Push-Dublettenpruefung",
         "Bereits per Teams gemeldet",
         "Thema bereits per Teams gemeldet",
         "Teams-Hinweis wird bereits versendet",
@@ -4723,11 +6537,14 @@ def _daily_plan_slots(
     count: int,
     config: TeamsAlertConfig,
 ) -> list[dict[str, Any]]:
-    """Build 15-18 binding slots from the weekday matrix.
+    """Build 11-15 binding slots from the deterministic Berlin-time layout.
 
-    06:15/06:45 are always present. Every red/yellow hour contributes both a
-    :15 Top-1 decision and a :45 re-ranking. Strong :45 reserve slots fill the
-    day to at least 15; the 10/11 o'clock dead zone is used only as a last resort.
+    Pflicht: Morgen-Doppel 06/07/08 (6 gleichverteilte Slots 06:00-08:59, zwei
+    je Stunde mit mathematisch maximalem Abstand), Mittagsslot 12:30 und die
+    Abend-Hot-Hours (rote/gelbe Heatmap-Stunden 18-21, zwei Slots je Hot-Stunde
+    gleichverteilt ueber den Block; montags mit 17:30-Lead-in). Reserve-
+    Entscheidungen fuellen den Tag auf das Tagesminimum; die 10/11-Uhr-Totzone
+    bleibt letzte Reserve.
     """
     requested = max(1, int(count or config.target_pushes_per_day or 15))
     maximum = max(
@@ -4804,37 +6621,149 @@ def _daily_plan_slots(
     return selected
 
 
+# Verbindliches Tageslayout (Berliner Zeit):
+# - 06/07/08 Uhr: je zwei Entscheidungen, mathematisch maximal gespreizt
+#   (6 Slots gleichverteilt ueber 06:00-08:59 -> Mindestabstand 35 Minuten)
+# - 12 Uhr: eine Mittagspausen-Entscheidung
+# - Abend: rote/gelbe Heatmap-Stunden 18-21 werden dynamisch gleichverteilt;
+#   montags beginnt das Abendfenster bereits um 17:30
+_MORNING_DOUBLE_HOURS = (6, 7, 8)
+_MIDDAY_HOUR = 12
+_EVENING_HOT_HOURS = (18, 19, 20, 21)
+_MONDAY_EVENING_START_MINUTE = 17 * 60 + 30
+
+
+def _evenly_spaced_minutes(start_minute: int, end_minute: int, count: int) -> list[int]:
+    """Gleichverteilte Minuten inkl. Endpunkte: maximiert den minimalen Abstand."""
+    if count <= 0:
+        return []
+    if count == 1:
+        return [int(round((start_minute + end_minute) / 2))]
+    span = end_minute - start_minute
+    return [
+        start_minute + int(round(index * span / (count - 1)))
+        for index in range(count)
+    ]
+
+
+def _morning_double_minutes() -> list[int]:
+    """6 Slots gleichverteilt ueber 06:00-08:59 -> genau zwei je Stunde."""
+    return _evenly_spaced_minutes(6 * 60, 8 * 60 + 59, len(_MORNING_DOUBLE_HOURS) * 2)
+
+
+def _evening_hot_layout(target_date: dt.date, config: TeamsAlertConfig) -> list[int]:
+    """Abend-Hot-Hours maximal ausschoepfen: 2 Slots je roter/gelber Stunde.
+
+    Die Heatmap-Verteilung bleibt unveraendert. Montags wird nur der erste Slot
+    auf 17:30 vorgezogen; die folgenden dynamischen Slots behalten ihre Zeiten.
+    """
+    weekday = target_date.weekday()
+    hot_hours = [
+        hour
+        for hour in _EVENING_HOT_HOURS
+        if _daily_plan_slot(target_date, hour, 0, weekday, config).get("tier")
+        in {"rot", "gelb"}
+    ]
+    if not hot_hours:
+        # Fallback: 21 Uhr ist historisch die staerkste Stunde des Tages.
+        hot_hours = [21]
+    first, last = min(hot_hours), max(hot_hours)
+    layout = _evenly_spaced_minutes(
+        first * 60,
+        last * 60 + 59,
+        len(hot_hours) * 2,
+    )
+    if weekday == 0 and layout:
+        layout[0] = min(layout[0], _MONDAY_EVENING_START_MINUTE)
+    return layout
+
+
 def _daily_plan_slot_candidates(
     target_date: dt.date,
     config: TeamsAlertConfig,
 ) -> list[dict[str, Any]]:
+    """Slot-Kandidaten fuer das verbindliche deterministische Tageslayout.
+
+    Pflichtslots (mustUse): Morgen-Doppel 06-08, Mittagsslot 12 Uhr und die
+    dynamischen Abend-Hot-Hour-Slots (montags ab 17:30). Alle uebrigen Stunden
+    liefern je eine :45-Reserve-Entscheidung, mit der der Tag auf das
+    Tagesminimum gefuellt wird (Totzone 10/11 nur als letzte Reserve).
+    """
     weekday = target_date.weekday()
     start = int(_clamp(config.active_hours_start, 0, 23))
     end = int(_clamp(config.active_hours_end, start, 23))
     deadline = int(_clamp(config.slot_deadline_minute, 0, 59))
+
     candidates: list[dict[str, Any]] = []
+    covered_hours: set[int] = set()
+
+    def _binding_slot(total_minute: int, role: str, reason_suffix: str) -> None:
+        hour, minute = divmod(int(total_minute), 60)
+        slot = _daily_plan_slot(target_date, hour, minute, weekday, config)
+        slot["mustUse"] = True
+        slot["pairRequired"] = True
+        slot["morningBase"] = role == "morning_double"
+        slot["goldenHour"] = slot.get("tier") in {"rot", "gelb"}
+        slot["slotRole"] = role
+        slot["pairSequence"] = role
+        if role == "morning_double" and slot.get("tier") not in {"rot", "gelb"}:
+            slot["tier"] = "basis"
+        slot["reason"] = f"{slot['reason']}, {reason_suffix}"
+        covered_hours.add(hour)
+        candidates.append(slot)
+
+    for total_minute in _morning_double_minutes():
+        _binding_slot(
+            total_minute,
+            "morning_double",
+            "verbindliches Morgen-Doppel (zwei Entscheidungen je Stunde, "
+            "mathematisch maximal gespreizt)",
+        )
+
+    _binding_slot(
+        _MIDDAY_HOUR * 60 + 30,
+        "midday",
+        "verbindliche Mittagspausen-Entscheidung",
+    )
+
+    for total_minute in _evening_hot_layout(target_date, config):
+        _binding_slot(
+            total_minute,
+            "evening_hot",
+            "verbindlicher Abend-Hot-Hour-Slot (Heatmap maximal ausgeschoepft, "
+            "gleichverteilt ueber den Hot-Block)",
+        )
+
+    # Das montags vorgezogene 17:30-Fenster ist ein einzelner Lead-in und darf
+    # nicht als Doppelchance derselben Stunde beworben oder bewertet werden.
+    evening_hour_counts: dict[int, int] = {}
+    for slot in candidates:
+        if slot.get("slotRole") == "evening_hot":
+            hour = int(slot.get("hour") or -1)
+            evening_hour_counts[hour] = evening_hour_counts.get(hour, 0) + 1
+    for slot in candidates:
+        if slot.get("slotRole") == "evening_hot":
+            slot["pairRequired"] = evening_hour_counts.get(int(slot.get("hour") or -1), 0) >= 2
+
+    evening_first_hour = min(
+        (int(slot.get("hour") or 24) for slot in candidates if slot.get("slotRole") == "evening_hot"),
+        default=24,
+    )
     for hour in range(start, end + 1):
-        deadline_slot = _daily_plan_slot(target_date, hour, deadline, weekday, config)
-        is_golden = bool(deadline_slot.get("mustUse"))
-        is_morning_base = hour == 6
-        minutes = sorted({15, deadline}) if (is_golden or is_morning_base) else [deadline]
-        for minute in minutes:
-            slot = _daily_plan_slot(target_date, hour, minute, weekday, config)
-            pair_required = is_golden or is_morning_base
-            slot["goldenHour"] = is_golden
-            slot["morningBase"] = is_morning_base
-            slot["pairRequired"] = pair_required
-            slot["pairSequence"] = (
-                "first_top_1" if pair_required and minute == 15 else "fresh_rerank"
-            )
-            if pair_required:
-                slot["mustUse"] = True
-                if is_morning_base and not is_golden:
-                    slot["tier"] = "basis"
-                action = "erste Top-1-Entscheidung" if minute == 15 else "frisches Top-1-Re-Ranking"
-                slot["reason"] = f"{slot['reason']}, verbindliche {action}"
-            candidates.append(slot)
-    return candidates
+        if hour in covered_hours:
+            continue
+        # Die Reserve direkt vor dem Abend-Hot-Block rueckt auf :15, damit der
+        # 30-Minuten-Mindestabstand zur ersten Abendentscheidung gewahrt bleibt.
+        minute = 15 if hour == evening_first_hour - 1 else deadline
+        slot = _daily_plan_slot(target_date, hour, minute, weekday, config)
+        slot["mustUse"] = False
+        slot["pairRequired"] = False
+        slot["morningBase"] = False
+        slot["goldenHour"] = slot.get("tier") in {"rot", "gelb"}
+        slot["slotRole"] = "reserve"
+        slot["pairSequence"] = "fresh_rerank"
+        candidates.append(slot)
+    return sorted(candidates, key=lambda slot: int(slot.get("ts") or 0))
 
 
 def _daily_plan_slot(
@@ -4958,23 +6887,24 @@ def _daily_plan_double_opportunities(
     cooldown = _effective_global_cooldown_minutes(config)
     for hour in sorted(by_hour):
         pair = sorted(by_hour[hour], key=lambda item: int(item.get("minute") or 0))
-        labels = {str(item.get("label") or "") for item in pair}
-        if f"{hour:02d}:15" not in labels or f"{hour:02d}:45" not in labels:
+        if len(pair) < 2:
             continue
-        reference = pair[-1]
+        first, last = pair[0], pair[-1]
+        reference = last
         result.append(
             {
                 "hour": hour,
-                "label": f"{hour:02d}:15 + {hour:02d}:45",
-                "deadline": f"{hour:02d}:45",
+                "label": f"{first.get('label')} + {last.get('label')}",
+                "deadline": str(last.get("label") or f"{hour:02d}:59"),
                 "avgOR": reference.get("avgOR"),
                 "topCategory": reference.get("topCategory"),
                 "sportContext": reference.get("sportContext"),
                 "requiredForMinimum": True,
                 "cooldownCompatible": cooldown <= 30,
                 "condition": (
-                    "Top 1 um :15; um :45 Scores neu laden, Teams-Dubletten entfernen "
-                    "und die dann hoechste gueltige API-Score-Meldung empfehlen"
+                    "Top 1 zur ersten Entscheidung; zur zweiten Scores neu laden, "
+                    "Teams-Dubletten entfernen und die dann hoechste gueltige "
+                    "API-Score-Meldung empfehlen"
                 ),
             }
         )
@@ -5028,9 +6958,16 @@ def _daily_plan_assignment_slots(
 def _daily_runtime_opportunities(
     target_date: dt.date,
     config: TeamsAlertConfig,
+    *,
+    count: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Return all binding :15/:45 decisions for the Berlin calendar day."""
-    target = max(1, int(config.target_pushes_per_day or 15))
+    """Return all binding raster decisions for the Berlin calendar day.
+
+    ``count`` verdichtet den Plan (bis zum Tagesmaximum) mit zusaetzlichen
+    Reserve-Entscheidungen AUF dem Raster - fuer die Shortfall-Aufholung,
+    die nie ausserhalb der berechneten Slotzeiten senden darf.
+    """
+    target = max(1, int(count or config.target_pushes_per_day or 15))
     selected = _daily_plan_slots(target_date, target, config)
     opportunities: list[dict[str, Any]] = []
     for slot in selected:
@@ -5047,7 +6984,88 @@ def _daily_runtime_opportunities(
             item["slotKind"] = "regular"
         item["deadlineMinute"] = int(item.get("minute") or 45)
         opportunities.append(item)
-    return sorted(opportunities, key=lambda item: int(item.get("ts") or 0))
+    return _apply_date_scoped_slot_delay(opportunities, target_date, config)
+
+
+def _apply_date_scoped_slot_delay(
+    opportunities: list[dict[str, Any]],
+    target_date: dt.date,
+    config: TeamsAlertConfig,
+) -> list[dict[str, Any]]:
+    """Delay only the configured remainder of one Berlin calendar day.
+
+    This is intentionally date-scoped: an operational late-send recovery must
+    never move tomorrow's deterministic plan. Invalid or unsafe configuration
+    fails closed to the original schedule.
+    """
+    delay_minutes = max(0, int(config.slot_delay_minutes or 0))
+    if delay_minutes <= 0 or str(config.slot_delay_date or "").strip() != target_date.isoformat():
+        return sorted(opportunities, key=lambda item: int(item.get("ts") or 0))
+
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(config.slot_delay_from or "").strip())
+    if not match:
+        return sorted(opportunities, key=lambda item: int(item.get("ts") or 0))
+    start_hour, start_minute = (int(match.group(1)), int(match.group(2)))
+    if not (0 <= start_hour <= 23 and 0 <= start_minute <= 59):
+        return sorted(opportunities, key=lambda item: int(item.get("ts") or 0))
+
+    berlin = ZoneInfo("Europe/Berlin")
+    delay_from_minute = start_hour * 60 + start_minute
+    shifted: list[dict[str, Any]] = []
+    for opportunity in opportunities:
+        item = dict(opportunity)
+        wall = dt.datetime.fromtimestamp(int(item.get("ts") or 0), berlin)
+        wall_minute = wall.hour * 60 + wall.minute
+        if wall_minute >= delay_from_minute:
+            delayed_wall = wall + dt.timedelta(minutes=delay_minutes)
+            delayed_minute = delayed_wall.hour * 60 + delayed_wall.minute
+            if (
+                delayed_wall.date() != target_date
+                or delayed_minute >= _MANDATORY_QUIET_HOURS_START_MINUTE
+            ):
+                return sorted(opportunities, key=lambda row: int(row.get("ts") or 0))
+            item.update(
+                {
+                    "ts": int(delayed_wall.timestamp()),
+                    "label": delayed_wall.strftime("%H:%M"),
+                    "hour": delayed_wall.hour,
+                    "minute": delayed_wall.minute,
+                    "deadlineMinute": delayed_wall.minute,
+                    "slotDelayMinutes": delay_minutes,
+                    "slotDelayDate": target_date.isoformat(),
+                }
+            )
+        shifted.append(item)
+
+    timestamps = [int(item.get("ts") or 0) for item in shifted]
+    if len(timestamps) != len(set(timestamps)):
+        return sorted(opportunities, key=lambda item: int(item.get("ts") or 0))
+    return sorted(shifted, key=lambda item: int(item.get("ts") or 0))
+
+
+def _binding_slot_for_dispatch(
+    now_ts: int,
+    config: TeamsAlertConfig,
+    *,
+    expected_slot_ts: int,
+) -> dict[str, Any] | None:
+    """Revalidate the approved slot identity and wall clock before transport."""
+    if expected_slot_ts <= 0:
+        return None
+    if not (0 <= int(now_ts) - expected_slot_ts < _BINDING_SLOT_DISPATCH_GRACE_SECONDS):
+        return None
+    local_date = dt.datetime.fromtimestamp(
+        int(now_ts), ZoneInfo("Europe/Berlin")
+    ).date()
+    candidates = _daily_runtime_opportunities(local_date, config)
+    return next(
+        (
+            slot
+            for slot in candidates
+            if int(slot.get("ts") or 0) == expected_slot_ts
+        ),
+        None,
+    )
 
 
 def _daily_plan_watch_topics(
@@ -5380,6 +7398,10 @@ def _section_key(value: Any) -> str:
     if not raw:
         return "news"
     aliases = {
+        "sports": "sport",
+        "fussball": "sport",
+        "fußball": "sport",
+        "bundesliga": "sport",
         "geld": "wirtschaft",
         "business": "wirtschaft",
         "inland": "news",
@@ -5391,6 +7413,31 @@ def _section_key(value: Any) -> str:
         "service": "leben-wissen",
     }
     return aliases.get(raw, raw)
+
+
+def _is_sport_item(item: dict[str, Any]) -> bool:
+    """Classify candidates and live pushes from taxonomy and canonical URL.
+
+    The live API occasionally exposes only a generic/missing category while
+    the BILD URL still carries the authoritative sport path. Checking both
+    prevents those pushes from being counted as news and keeps the 1/3 sport
+    corridor based on what was actually sent.
+    """
+    raw_section = str(item.get("category") or item.get("cat") or "").strip()
+    if _section_key(raw_section) == "sport":
+        return True
+
+    from urllib.parse import unquote, urlsplit
+
+    raw_url = str(item.get("url") or item.get("link") or "").strip()
+    if not raw_url:
+        return False
+    path_segments = {
+        segment.casefold()
+        for segment in unquote(urlsplit(raw_url).path).split("/")
+        if segment
+    }
+    return bool(path_segments & {"sport", "sports", "fussball", "fußball", "bundesliga"})
 
 
 def _history_reach(item: dict[str, Any]) -> int:
@@ -6792,8 +8839,17 @@ def _time_fit_review(
 def _quiet_hours_reason(now_ts: int, config: TeamsAlertConfig) -> str:
     local_dt = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
     current = local_dt.hour * 60 + local_dt.minute
-    if _MANDATORY_QUIET_HOURS_START_MINUTE <= current < _MANDATORY_QUIET_HOURS_END_MINUTE:
-        return "Teams-Ruhezeit aktiv: 00:00 bis 06:00 Uhr"
+    mandatory_start = _MANDATORY_QUIET_HOURS_START_MINUTE
+    mandatory_end = _MANDATORY_QUIET_HOURS_END_MINUTE
+    if mandatory_start <= mandatory_end:
+        in_mandatory = mandatory_start <= current < mandatory_end
+    else:
+        in_mandatory = current >= mandatory_start or current < mandatory_end
+    if in_mandatory:
+        return (
+            f"Teams-Ruhezeit aktiv: {_format_hhmm(mandatory_start)} bis "
+            f"{_format_hhmm(mandatory_end)} Uhr"
+        )
 
     start = _parse_hhmm_to_minutes(config.quiet_hours_start)
     end = _parse_hhmm_to_minutes(config.quiet_hours_end)
@@ -7306,6 +9362,7 @@ def _daily_slot_gate_review(
     breaking: bool,
     now_ts: int,
     config: TeamsAlertConfig,
+    sport_pushes_today: int | None = None,
 ) -> dict[str, Any]:
     """Decide whether the live worker should act now or keep collecting to :45."""
     if not config.slot_gate_enabled:
@@ -7344,13 +9401,124 @@ def _daily_slot_gate_review(
         int(current_count or 0) + len(upcoming) + int(available_overdue_decision),
     )
     projected_shortfall = max(0, target_count - projected_maximum_from_plan)
+    recovery_boosted = False
+    if projected_shortfall > 0:
+        # Raster-Treue: Die Aufholung sendet nie zwischen den Slotzeiten.
+        # Stattdessen wird der Tagesplan mit zusaetzlichen Reserve-
+        # Entscheidungen AUF dem Raster verdichtet (bis zum Tagesmaximum).
+        # Verdichtung nach Restkapazitaet: so viele Raster-Entscheidungen,
+        # dass die verbleibenden Slots das Tagesminimum noch tragen koennen
+        # (vergangene Slots zaehlen mit, gesendet wird nur an kuenftigen).
+        boosted_count = min(
+            due_count + max(0, target_count - int(current_count or 0)),
+            due_count + max(1, int(config.max_alerts_per_day or target_count)),
+        )
+        boosted = _daily_runtime_opportunities(
+            local_dt.date(), config, count=boosted_count
+        )
+        if len(boosted) > len(planned_slots):
+            recovery_boosted = True
+            planned_slots = boosted
+            due_slots = [
+                slot for slot in planned_slots if int(slot.get("ts") or 0) <= int(now_ts)
+            ]
+            due_count = len(due_slots)
+            deficit = max(0, due_count - int(current_count or 0))
+            upcoming = [
+                slot for slot in planned_slots if int(slot.get("ts") or 0) > int(now_ts)
+            ]
+            next_slot = (
+                min(upcoming, key=lambda slot: int(slot.get("ts") or 0)) if upcoming else None
+            )
+            hour_slots = [
+                slot
+                for slot in planned_slots
+                if int(slot.get("hour") or -1) == local_dt.hour
+            ]
+            overdue_hour_slots = [
+                slot for slot in hour_slots if int(slot.get("ts") or 0) <= int(now_ts)
+            ]
+            upcoming_hour_slots = [
+                slot for slot in hour_slots if int(slot.get("ts") or 0) > int(now_ts)
+            ]
+            if deficit > 0 and overdue_hour_slots:
+                current_slot = max(
+                    overdue_hour_slots, key=lambda slot: int(slot.get("ts") or 0)
+                )
+            elif upcoming_hour_slots:
+                current_slot = min(
+                    upcoming_hour_slots, key=lambda slot: int(slot.get("ts") or 0)
+                )
+            else:
+                current_slot = None
+            available_overdue_decision = bool(deficit > 0 and overdue_hour_slots)
+            projected_maximum_from_plan = min(
+                max(target_count, len(planned_slots)),
+                int(current_count or 0) + len(upcoming) + int(available_overdue_decision),
+            )
+            projected_shortfall = max(
+                0, max(target_count, 0) - projected_maximum_from_plan
+            )
+
+    # Push-Empfehlungen sind strikt rastergebunden. Auch Breaking-, Sport- und
+    # Hot/Fresh-Kandidaten duerfen die redaktionell vereinbarten Zeiten nicht
+    # mehr umgehen. Ein enges Nachlauf-Fenster faengt nur Worker-Latenz und
+    # Webhook-Vorbereitung ab; verpasste Slots werden nicht spaeter nachgeholt.
+    active_binding_slot = _active_binding_slot(planned_slots, int(now_ts))
+    if active_binding_slot is None:
+        next_label = str((next_slot or {}).get("label") or "naechsten Raster-Slot")
+        return {
+            "enabled": True,
+            "approved": False,
+            "mode": "wait",
+            "dueCount": due_count,
+            "currentCount": current_count,
+            "targetCount": target_count,
+            "plannedOpportunityCount": len(planned_slots),
+            "projectedMaximumFromPlan": projected_maximum_from_plan,
+            "projectedShortfall": projected_shortfall,
+            "countBasis": count_basis,
+            "deficit": deficit,
+            "slot": current_slot,
+            "nextSlot": next_slot,
+            "recoveryBoosted": recovery_boosted,
+            "reasons": [],
+            "blockers": [
+                "Tagesplan: Push-Empfehlungen nur im 5-Minuten-Fenster ab einer "
+                f"verbindlichen Raster-Zeit; bis zur Raster-Entscheidung "
+                f"{next_label} sammeln"
+            ],
+            "exceptional": False,
+            "doubleOpportunity": bool(
+                current_slot and current_slot.get("minimumDouble")
+            ),
+            "minimumDouble": bool(
+                (current_slot or {}).get("minimumDouble")
+            ),
+            "minimumCommitment": False,
+        }
+    current_slot = active_binding_slot
 
     sport_review = (
         _sport_candidate_review(_title(candidate), now_ts, candidate)
         if _section_key(_section(candidate)) == "sport"
         else {}
     )
-    if sport_review.get("bypassSlotWait"):
+    # Weicher Korridor-Oberrand: Liegt Sport heute bereits UEBER dem Zielbereich,
+    # entfaellt die Priorisierung im gerade offenen Raster-Slot. So bleibt Sport
+    # timely unter/am Ziel, dominiert das Feld aber nicht, wenn es schon
+    # ueberrepraesentiert ist.
+    sport_count = int(sport_pushes_today or 0)
+    volume_today = (
+        int(pushes_today)
+        if not independent and pushes_today is not None
+        else int(current_count or 0)
+    )
+    sport_status = _day_volume_summary(
+        {"pushesToday": volume_today, "sportPushesToday": sport_count}, config
+    ).get("sportStatus")
+    sport_over_corridor = sport_status == "ueber"
+    if sport_review.get("bypassSlotWait") and not sport_over_corridor:
         return {
             "enabled": True,
             "approved": True,
@@ -7367,7 +9535,8 @@ def _daily_slot_gate_review(
             "nextSlot": next_slot,
             "sportState": sport_review.get("state"),
             "reasons": [
-                "Slot-Logik: frischer materieller Sportzustand darf sofort geprueft werden"
+                "Slot-Logik: frischer materieller Sportzustand wird im offenen "
+                "Raster-Slot priorisiert"
             ],
             "blockers": [],
         }
@@ -7387,9 +9556,54 @@ def _daily_slot_gate_review(
             "deficit": deficit,
             "slot": current_slot,
             "nextSlot": next_slot,
-            "reasons": ["Slot-Logik: Breaking darf sofort"],
+            "reasons": ["Slot-Logik: Breaking wird im offenen Raster-Slot priorisiert"],
             "blockers": [],
         }
+
+    # Timeliness-Priorisierung ("heiss & frisch"): Im gerade offenen Raster-Slot
+    # darf eine brandaktuelle Top-Story die Timing-Prioritaet erhalten. Zwischen
+    # Rasterzeiten bleibt der Versand durch den Guard oben ausnahmslos gesperrt.
+    if config.hot_fresh_enabled:
+        age_hours = _freshness_hours(candidate, now_ts)
+        age_minutes = age_hours * 60.0 if age_hours is not None else None
+        base_upcoming = [
+            int(slot.get("ts") or 0)
+            for slot in regular_slots
+            if int(slot.get("ts") or 0) > int(now_ts)
+        ]
+        gap_minutes = (
+            (min(base_upcoming) - int(now_ts)) / 60.0 if base_upcoming else float("inf")
+        )
+        hot_fresh = bool(
+            score >= float(config.hot_fresh_min_score or 85.0)
+            and age_minutes is not None
+            and age_minutes <= float(config.hot_fresh_max_age_minutes or 20.0)
+            and gap_minutes > float(config.hot_fresh_min_gap_minutes or 180.0)
+        )
+        if hot_fresh:
+            return {
+                "enabled": True,
+                "approved": True,
+                "mode": "hot_fresh_override",
+                "dueCount": due_count,
+                "currentCount": current_count,
+                "targetCount": target_count,
+                "plannedOpportunityCount": len(planned_slots),
+                "projectedMaximumFromPlan": projected_maximum_from_plan,
+                "projectedShortfall": projected_shortfall,
+                "countBasis": count_basis,
+                "deficit": deficit,
+                "slot": current_slot,
+                "nextSlot": next_slot,
+                "hotFreshAgeMinutes": round(age_minutes, 1),
+                "hotFreshGapMinutes": round(gap_minutes, 1),
+                "reasons": [
+                    "Slot-Logik: brandaktuelle Top-Story "
+                    f"(Score {score:.0f}, {age_minutes:.0f} Min alt) wird im "
+                    f"offenen Raster-Slot priorisiert"
+                ],
+                "blockers": [],
+            }
 
     slot_avg = float((current_slot or {}).get("avgOR") or 0.0)
     peak = bool(current_slot and slot_avg >= float(config.peak_slot_min_or or 6.0))
@@ -7405,9 +9619,6 @@ def _daily_slot_gate_review(
             ),
         )
     }
-    projected_shortfall_catchup = bool(
-        current_slot and int(current_slot.get("ts") or 0) > int(now_ts) and projected_shortfall > 0
-    )
     double_slot = bool(
         current_slot
         and (current_slot.get("minimumDouble") or local_dt.hour in advertised_double_hours)
@@ -7443,53 +9654,30 @@ def _daily_slot_gate_review(
         "minimumDouble": bool((current_slot or {}).get("minimumDouble")),
         "minimumCommitment": False,
     }
+    result["recoveryBoosted"] = recovery_boosted
     if current_slot is None:
-        if projected_shortfall > 0:
-            result["approved"] = True
-            result["mode"] = "projected_shortfall_catchup"
-            result["minimumCommitment"] = True
-            result["reasons"].append(
-                f"Shortfall-Recovery: Der verbindliche Restplan erreicht nur "
-                f"{projected_maximum_from_plan}/{target_count} {count_label}; "
-                "am freien Cool-down-Rand jetzt den besten Kandidaten ab Push-Score 75 waehlen"
-            )
-            return result
         next_label = str((next_slot or {}).get("label") or "naechsten starken Slot")
-        result["blockers"].append(
-            f"Tagesplan: aktuelles Stundenfenster bewusst nachrangig; bis {next_label} sammeln"
-        )
+        if recovery_boosted:
+            result["blockers"].append(
+                f"Tagesplan: Rueckstand wird AUF dem Raster aufgeholt "
+                f"(verdichteter Plan, {len(planned_slots)} Entscheidungen); "
+                f"bis {next_label} sammeln"
+            )
+        else:
+            result["blockers"].append(
+                f"Tagesplan: aktuelles Stundenfenster bewusst nachrangig; bis {next_label} sammeln"
+            )
         return result
 
     current_deadline_ts = int(current_slot.get("ts") or 0)
     if int(now_ts) < current_deadline_ts:
-        catchup_double = bool(double_slot and deficit >= 2 and local_dt.minute <= 5)
-        result["catchupDouble"] = catchup_double
-        if projected_shortfall_catchup:
-            result["approved"] = True
-            result["mode"] = "projected_shortfall_catchup"
-            result["minimumCommitment"] = True
-            result["reasons"].append(
-                f"Shortfall-Recovery: Mit den verbleibenden Planfenstern sind nur "
-                f"{projected_maximum_from_plan}/{target_count} {count_label} erreichbar; "
-                "nach Cool-down jetzt den besten Kandidaten ab Push-Score 75 waehlen"
-            )
-        elif catchup_double:
-            result["approved"] = True
-            result["mode"] = "peak_catchup_first"
-            result["reasons"].append(
-                f"Roter/gelber Slot {current_slot['hour']:02d} Uhr: fruehe Aufholchance bei "
-                f"{deficit} fehlenden {count_label}; normale Qualitaetsgates bleiben aktiv"
-            )
-        elif exceptional:
-            result["approved"] = True
-            result["mode"] = "peak_early_exception"
-            result["reasons"].append(
-                f"Roter/gelber Slot {current_slot['hour']:02d} Uhr: aussergewoehnlicher Kandidat darf vor :45 raus"
-            )
-        else:
-            result["blockers"].append(
-                f"Tagesplan: bis {current_slot['label']} weitere Kandidaten sammeln; danach besten verfuegbaren waehlen"
-            )
+        # Exakte Raster-Zeiten sind verbindlich: vor der Slotzeit wird nie
+        # gesendet - auch nicht bei Rueckstand (der Plan ist dann bereits
+        # auf dem Raster verdichtet) oder aussergewoehnlichen Kandidaten.
+        result["blockers"].append(
+            f"Tagesplan: bis zur Raster-Entscheidung {current_slot['label']} sammeln; "
+            "dann besten verfuegbaren Kandidaten waehlen"
+        )
         return result
 
     if deficit > 0:
@@ -7497,7 +9685,7 @@ def _daily_slot_gate_review(
         result["mode"] = "deadline_fallback"
         result["minimumCommitment"] = True
         result["reasons"].append(
-            f"Plan-Entscheidung {current_slot['label']} faellig: {current_count} "
+            f"Raster-Entscheidung {current_slot['label']} faellig: {current_count} "
             f"{count_label} bei {due_count} faelligen Mindestfenstern; besten "
             "Kandidaten ab Push-Score 75 waehlen"
         )
@@ -7543,8 +9731,20 @@ def _high_score_override_review(
     if not active:
         return review
 
-    hard = [blocker for blocker in blockers if _is_hard_teams_blocker(blocker)]
-    soft = [blocker for blocker in blockers if not _is_hard_teams_blocker(blocker)]
+    def _waivable(blocker: str) -> bool:
+        if not _is_hard_teams_blocker(blocker):
+            return True
+        # Reine CvD-FORMAT-Einstufungen (Erklaerstueck/Service/kein konkretes
+        # Ereignis) duerfen von einem hohen kanonischen Push-Balancer-Score
+        # ueberstimmt werden: die Redaktion pusht solche Stuecke nachweislich
+        # selbst, wenn das Opening-Potenzial stimmt (z.B. Verbraucher-News).
+        # Sicherheits-Gates (Dubletten, Aktualitaet, Cooldown, Ressort-
+        # Ausschluss, Ruhezeit) bleiben davon unberuehrt hart.
+        normalized = str(blocker or "").casefold()
+        return any(marker in normalized for marker in _FORMAT_ONLY_BLOCKER_MARKERS)
+
+    hard = [blocker for blocker in blockers if not _waivable(blocker)]
+    soft = [blocker for blocker in blockers if _waivable(blocker)]
     review["waivedBlockers"] = soft
     review["hardBlockers"] = hard
     review["remainingBlockers"] = hard
@@ -7688,6 +9888,7 @@ def _agent_hard_blockers(blockers: list[str]) -> list[str]:
         "morgenfit:",
         "feld unsicher",
         "deutschland-relevanz",
+        "gewinnspiel/promo/advertorial",
     )
     return [
         blocker
@@ -7794,6 +9995,9 @@ def _final_agent_review(
         "independentTeamsPacing": bool(config.independent_pacing_enabled),
         "candidateRisks": list(candidate_risks),
         "minutesSinceLastPush": minutes_since_last_push,
+        # Der globale Teams-Cooldown ist fuer alle Empfehlungen verbindlich,
+        # auch fuer Breaking, damit innerhalb eines Raster-Slots nie mehrere
+        # Kandidaten in den Kanal laufen.
         "minPause": float(max(min_pause, _effective_global_cooldown_minutes(config))),
         "minutesSinceLastTeamsAlert": minutes_since_last_teams_alert,
         "globalCooldownMinutes": _effective_global_cooldown_minutes(config),
@@ -7990,6 +10194,21 @@ def _realert_blocker_or_reason(
     last_decision_ts = _safe_int(alert_state.get("last_decision_ts"))
     if alert_status == "sending" and now_ts - last_decision_ts < 15 * 60:
         return {"blocker": "Teams-Hinweis wird bereits versendet"}
+    if alert_status == "transport_failed":
+        cooldown_seconds = max(60, int(config.transport_failure_cooldown_minutes or 20) * 60)
+        if last_decision_ts and now_ts - last_decision_ts < cooldown_seconds:
+            return {
+                "blocker": (
+                    "Zustellung vorruebergehend fehlgeschlagen: kurze Sperre "
+                    f"{max(1, cooldown_seconds // 60)} Min, danach neuer Versuch"
+                )
+            }
+        return {
+            "positive": (
+                "Vorheriger Zustellversuch scheiterte nur am Transport - "
+                "erneuter Versuch ist freigegeben"
+            )
+        }
     if (
         alert_status == "failed"
         and last_decision_ts
@@ -8288,6 +10507,8 @@ def _url(candidate: dict[str, Any]) -> str:
 
 
 def _section(candidate: dict[str, Any]) -> str:
+    if _is_sport_item(candidate):
+        return "sport"
     return str(candidate.get("category") or candidate.get("cat") or "news").strip() or "news"
 
 
@@ -8314,6 +10535,47 @@ _TV_PROGRAM_MARKERS = (
     "im free tv", "tv-vorschau", "tv-tipp", "heute im tv", "heute auf", "heute bei",
     "heute im", "so geht es weiter", "in der vorschau", "vorschau",
 )
+
+_PROMOTIONAL_URL_MARKERS = (
+    "/bildplus-gewinnspiele-aktionen/",
+    "/gewinnspiele-aktionen/",
+    "/gewinnspiel/",
+    "/gewinnspiele/",
+    "/service/brandstory/",
+    "/brandstory/",
+    "/advertorial/",
+    "/sponsored/",
+)
+_PROMOTIONAL_TYPES = {
+    "advertorial",
+    "brandstory",
+    "giveaway",
+    "promo",
+    "promotion",
+    "sponsored",
+}
+_PROMOTIONAL_TITLE_RE = re.compile(
+    r"(?:^|\b)(?:anzeige|advertorial|sponsored|gewinnspiel|verlosung)(?:\b|:)"
+    r"|^\s*tech-highlight\s*:"
+    r"|\b(?:einen|eine|eins)\s+von\s+\d+\b.{0,120}\bgewinnen\b",
+    re.IGNORECASE,
+)
+
+
+def _promotional_article_reason(candidate: dict[str, Any]) -> str:
+    """Hard-exclude giveaways and commercial promo formats from recommendations."""
+    url = _url(candidate).casefold()
+    title = _title(candidate)
+    article_type = str(
+        candidate.get("type") or candidate.get("articleType") or ""
+    ).strip().casefold()
+    if (
+        article_type in _PROMOTIONAL_TYPES
+        or any(marker in url for marker in _PROMOTIONAL_URL_MARKERS)
+        or bool(_PROMOTIONAL_TITLE_RE.search(title))
+    ):
+        return "Gewinnspiel/Promo/Advertorial: nicht redaktionell pushwuerdig"
+    return ""
 
 
 def _fiction_tv_teaser_reason(candidate: dict[str, Any]) -> str:
@@ -9579,7 +11841,7 @@ def _recommendation_timing_brief(
     slot = slot if isinstance(slot, dict) else {}
     mode = str(slot_gate.get("mode") or "").strip()
     breaking = bool(decision.get("isBreaking") or _is_breaking(candidate))
-    fast_window = breaking or mode in {"breaking_override", "sport_event_override"}
+    fast_window = breaking or mode in {"breaking_override", "sport_event_override", "hot_fresh_override"}
     window_minutes = 3 if fast_window else 5
     send_by = local_dt + dt.timedelta(minutes=window_minutes)
 
@@ -9615,6 +11877,7 @@ def _recommendation_timing_brief(
         timing_score = min(timing_score, 35.0)
     mode_floors = {
         "breaking_override": 92.0,
+        "hot_fresh_override": 90.0,
         "sport_event_override": 90.0,
         "peak_early_exception": 88.0,
         "peak_double_opportunity": 84.0,
@@ -9629,6 +11892,10 @@ def _recommendation_timing_brief(
     reasons: list[str] = []
     mode_reason = {
         "breaking_override": "Breaking-Lage: Die Nachricht verliert bei weiterem Warten an Wert.",
+        "hot_fresh_override": (
+            "Brandaktuelle Top-Story: sie wuerde bis zum naechsten Raster-Slot altern "
+            "und geht deshalb sofort."
+        ),
         "sport_event_override": "Frische Sport-Lage: Das Ereignis ist jetzt materiell und pushwürdig.",
         "peak_early_exception": "Außergewöhnlich starker Kandidat im aktuellen Goldfenster.",
         "peak_double_opportunity": "Zusätzliche Qualitätschance in einem starken Doppel-Slot.",
@@ -9672,7 +11939,7 @@ def _recommendation_timing_brief(
 
     action = "Sofort senden" if fast_window else "Jetzt senden"
     return {
-        "approved": bool(not slot_gate.get("enabled") or slot_gate.get("approved") or breaking),
+        "approved": bool(not slot_gate.get("enabled") or slot_gate.get("approved")),
         "score": timing_score,
         "mode": mode or ("breaking" if breaking else "ungated"),
         "action": action,
@@ -9694,8 +11961,13 @@ def _recommendation_decision_basis(timing: dict[str, Any]) -> str:
     mode = str(timing.get("mode") or "").strip()
     return {
         "breaking_override": (
-            "Breaking-Vollfreigabe: Aktualität rechtfertigt den sofortigen Versand; "
-            "Dubletten- und Cooldown-Gates bleiben aktiv."
+            "Breaking-Priorisierung im offenen Raster-Slot: Aktualität rechtfertigt "
+            "die kurze Entscheidung; Dubletten- und Cooldown-Gates bleiben aktiv."
+        ),
+        "hot_fresh_override": (
+            "Timeliness-Priorisierung im offenen Raster-Slot: brandaktuelle Top-Story "
+            "mit hohem Push-Balancer-Score. Alle harten Fakten-, Dubletten-, Timing- "
+            "und Ruhezeit-Gates bleiben aktiv."
         ),
         "sport_event_override": (
             "Frische materielle Sportlage: Ereignis- und Aktualitätsgate sind erfüllt."

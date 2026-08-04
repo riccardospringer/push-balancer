@@ -53,7 +53,7 @@ def get_alarm_state() -> dict:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.get("/api/push-alarm")
+@router.get("/api/push-alarm", include_in_schema=False)
 def get_push_alarm() -> JSONResponse:
     """Gibt den aktuellen Alarm-State zurück."""
     state = get_alarm_state()
@@ -69,7 +69,7 @@ def get_push_alarm() -> JSONResponse:
     })
 
 
-@router.post("/api/push-alarm/dismiss")
+@router.post("/api/push-alarm/dismiss", include_in_schema=False)
 def dismiss_push_alarm() -> JSONResponse:
     """Unterdrückt den Alarm für 10 Minuten."""
     with _alarm_lock:

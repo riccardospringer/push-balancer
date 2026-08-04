@@ -1,10 +1,9 @@
 """app/routers/gbrt.py — GBRT-Modell-Endpunkte.
 
-GET  /api/gbrt/status           — GBRT-Modell-Status
-GET  /api/gbrt/model.json       — Serialisiertes GBRT-Modell (JSON)
 GET  /api/gbrt/predict          — GBRT-Prediction
-POST /api/gbrt/retrain          — Manuelles Retraining
-POST /api/gbrt/force-promote    — Challenger zu Champion promoten
+GET  /api/gbrt-model            — Stabiles GBRT-Statusobjekt
+POST /api/gbrt-model/retraining-jobs — Manuelles Retraining
+POST /api/gbrt-model/promotions — Challenger zu Champion promoten
 """
 import logging
 
@@ -30,7 +29,6 @@ def _as_ratio(value: float | int | None) -> float:
     return numeric / 100 if numeric > 1 else numeric
 
 
-@router.get("/api/gbrt/status")
 def get_gbrt_status() -> JSONResponse:
     """Liefert GBRT-Modell-Status (Metriken, Feature Importance, Fehleranalyse, letzte Predictions)."""
     import sqlite3
@@ -195,7 +193,6 @@ def get_gbrt_model_status() -> JSONResponse:
     return get_gbrt_status()
 
 
-@router.get("/api/gbrt/model.json")
 def get_gbrt_model_json() -> JSONResponse:
     """Exportiert das GBRT-Modell als JSON (identisch zum Legacy-Monolith).
 
@@ -298,7 +295,6 @@ def get_gbrt_predict(
     return JSONResponse(content=camel_result)
 
 
-@router.post("/api/gbrt/retrain", dependencies=[Depends(require_admin_key)])
 def post_gbrt_retrain() -> JSONResponse:
     """Löst manuelles GBRT-Retraining aus (asynchron via Thread)."""
     import threading
@@ -319,7 +315,6 @@ def post_gbrt_model_retraining_job() -> JSONResponse:
     return post_gbrt_retrain()
 
 
-@router.post("/api/gbrt/force-promote", dependencies=[Depends(require_admin_key)])
 def post_gbrt_force_promote() -> JSONResponse:
     """Promotet den GBRT-Challenger manuell zu Champion.
 

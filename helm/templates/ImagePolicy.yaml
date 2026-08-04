@@ -1,0 +1,17 @@
+{{ if .Values.flux.enabled }}
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: {{ .Release.Name | default .Chart.Name }}
+  namespace: {{ .Values.flux.namespace | default .Release.Namespace }}
+spec:
+  imageRepositoryRef:
+    name: {{ .Release.Name | default .Chart.Name }}
+    namespace: {{ .Values.systemNamespace | default .Release.Namespace }}
+  {{- if .Values.flux.imagepolicy.filterTags }}
+  filterTags:
+    {{- toYaml .Values.flux.imagepolicy.filterTags | nindent 4 }}
+  {{- end }}
+  policy:
+    {{- toYaml .Values.flux.imagepolicy.policy | nindent 4 }}
+{{ end }}

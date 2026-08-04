@@ -28,7 +28,7 @@ venv/
 env/
 
 # Snapshots & Caches
-# push-snapshot.json  -- wird benoetigt als Render-Fallback (nicht ignorieren)
+push-snapshot.json
 catboost_info/
 *.bak
 *.backup
@@ -45,6 +45,7 @@ catboost_info/
 # Trainierte ML-Modelle (lokal generiert)
 *.joblib
 *.pkl
+!app/ml/seed_model.pkl
 *.gbrt_model.json
 .tuning_state.json
 

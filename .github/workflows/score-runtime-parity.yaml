@@ -1,0 +1,222 @@
+name: Score Runtime Parity
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python tests and consumer contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.21.3
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest pyyaml httpx ruff
+
+      - name: Lint Python
+        run: ruff check .
+
+      - name: Run Python tests
+        run: pytest
+
+      - name: Run reference-client tests
+        run: node --test examples/server-side/score-client.test.mjs
+
+      - name: Lint and render Helm chart
+        run: |
+          helm lint helm
+          helm template push-balancer helm > rendered-chart.yaml
+          grep -q 'readOnlyRootFilesystem: true' rendered-chart.yaml
+          grep -q 'mountPath: /tmp' rendered-chart.yaml
+          DIGEST="sha256:$(printf '0%.0s' {1..64})"
+          helm template push-balancer helm --set "digest=$DIGEST" > rendered-digest-chart.yaml
+          grep -q "ghcr.io/spring-media/next-push.balancer@$DIGEST" rendered-digest-chart.yaml
+          helm template push-balancer helm \
+            -f tests/fixtures/egress-proxy-values.yaml \
+            > rendered-egress-proxy-chart.yaml
+          grep -q 'kind: NetworkPolicy' rendered-egress-proxy-chart.yaml
+          grep -q 'name: HTTPS_PROXY' rendered-egress-proxy-chart.yaml
+          grep -q 'api.stg.editorial.one,www.bild.de' rendered-egress-proxy-chart.yaml
+          helm template push-balancer helm \
+            -f tests/fixtures/internal-ingress-values.yaml \
+            > rendered-internal-ingress-chart.yaml
+          grep -q 'ingressClassName: skipper' rendered-internal-ingress-chart.yaml
+          grep -q 'zalando.org/aws-load-balancer-scheme: internal' rendered-internal-ingress-chart.yaml
+          if helm template push-balancer helm --set digest=invalid > /dev/null 2>&1; then
+            echo "Invalid image digest rendered successfully" >&2
+            exit 1
+          fi
+          if helm template push-balancer helm \
+            --set ingress.enabled=true \
+            > /dev/null 2>&1; then
+            echo "Ingress rendered without the required rollout gates" >&2
+            exit 1
+          fi
+          if helm template push-balancer helm \
+            --set egressProxy.enabled=true \
+            > /dev/null 2>&1; then
+            echo "Egress proxy rendered without the required rollout gates" >&2
+            exit 1
+          fi
+
+  proxy-address-policy:
+    name: Proxy address policy (Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Verify fail-closed address classification
+        run: |
+          python - <<'PY'
+          from app.egress_proxy import _address_is_forbidden, _FORBIDDEN_IPV4_NETWORKS
+
+          blocked = (
+              "10.0.0.1",
+              "192.0.0.9",
+              "64:ff9b:1::a00:1",
+              "2002:a00:1::",
+              "5f00::1",
+              "::ffff:10.0.0.1",
+          )
+          allowed = ("1.1.1.1", "8.8.8.8")
+
+          assert all(_address_is_forbidden(address) for address in blocked)
+          assert not any(_address_is_forbidden(address) for address in allowed)
+          for network in _FORBIDDEN_IPV4_NETWORKS:
+              assert _address_is_forbidden(str(network.network_address))
+              assert _address_is_forbidden(str(network.broadcast_address))
+          PY
+
+  container-parity:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build release container
+        run: >-
+          docker build
+          --platform "${{ matrix.platform }}"
+          --tag push-balancer-score-parity:${{ matrix.name }}
+          .
+
+      - name: Run synthetic score fixture
+        run: >-
+          docker run --rm -i
+          --cap-drop ALL
+          --network none
+          --read-only
+          --security-opt no-new-privileges
+          --tmpfs /tmp:rw,noexec,nosuid,size=64m
+          --env SCORE_PARITY_COMMIT=${{ github.sha }}
+          push-balancer-score-parity:${{ matrix.name }}
+          python -
+          < scripts/score-parity-fixture.py
+          | tee score-parity-${{ matrix.name }}.json
+
+      - name: Run synthetic HTTP contract fixture
+        run: >-
+          docker run --rm -i
+          --cap-drop ALL
+          --network none
+          --read-only
+          --security-opt no-new-privileges
+          --tmpfs /tmp:rw,noexec,nosuid,size=64m
+          --env SCORE_API_KEY=synthetic-contract-key
+          --env INTERNAL_ACCESS_ENABLED=false
+          --env ARTICLE_PREDICTION_ENRICHMENT_ENABLED=false
+          push-balancer-score-parity:${{ matrix.name }}
+          python -
+          < scripts/score-contract-fixture.py
+
+      - name: Upload parity report
+        uses: actions/upload-artifact@v4
+        with:
+          name: score-parity-${{ matrix.name }}
+          path: score-parity-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  compare-parity:
+    name: Compare amd64 and ARM64
+    needs: container-parity
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download parity reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: score-parity-*
+          merge-multiple: true
+
+      - name: Require identical runtime inputs and result
+        run: |
+          python3 - <<'PY'
+          import glob
+          import json
+
+          paths = sorted(glob.glob("score-parity-*.json"))
+          if len(paths) != 2:
+              raise SystemExit(f"Expected two parity reports, got {paths}")
+          reports = [json.load(open(path, encoding="utf-8")) for path in paths]
+          for key in (
+              "commit",
+              "heuristicScore",
+              "packages",
+              "python",
+              "result",
+              "seedSha256",
+          ):
+              if reports[0][key] != reports[1][key]:
+                  raise SystemExit(
+                      f"amd64/ARM64 mismatch for {key}: "
+                      f"{reports[0][key]!r} != {reports[1][key]!r}"
+                  )
+          print("amd64/ARM64 score runtime parity verified")
+          PY

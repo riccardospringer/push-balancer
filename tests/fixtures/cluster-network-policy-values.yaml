@@ -1,0 +1,19 @@
+digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+egressProxy:
+  enabled: true
+  clusterNetworkPolicy:
+    enabled: true
+  allowedConnectHosts:
+    - api.stg.editorial.one
+    - www.bild.de
+  networkPolicy:
+    dns:
+      namespace: kube-system
+      podLabels:
+        k8s-app: kube-dns
+    upstreamCidrs:
+      - cidr: 0.0.0.0/0
+        except:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16

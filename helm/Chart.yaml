@@ -1,0 +1,6 @@
+apiVersion: v2
+name: next-push-balancer-chart
+description: A Helm chart for Push Balancer - FastAPI backend with static frontend for editorial push planning
+type: application
+version: 0.1.59
+appVersion: "0.1.59"

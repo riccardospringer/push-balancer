@@ -483,7 +483,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
   const [dachzeile, setDachzeile] = useState('')
   const { time, date, dateShort } = now()
   const { mutate, isPending, data, error } = useGenerateTitle()
-  const aiResult = data as GenerateTitleResponse | undefined
+  const suggestionResult = data as GenerateTitleResponse | undefined
 
   const handleGenerateTitle = useCallback(() => {
     mutate({
@@ -493,10 +493,10 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
     })
   }, [mutate, article])
 
-  // Apply AI title when generated
+  // Apply generated title when available
   useEffect(() => {
-    if (aiResult?.title) setTitle(aiResult.title)
-  }, [aiResult])
+    if (suggestionResult?.title) setTitle(suggestionResult.title)
+  }, [suggestionResult])
 
   const scoreVar = scoreVariant(article.score)
   const priorityVariant: 'green' | 'amber' | 'default' =
@@ -557,6 +557,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
           {article.predictedOR != null && (
             <Badge variant="default">XOR {fmtOR(article.predictedOR)}</Badge>
           )}
+          {article.isVideo && <Badge variant="purple">Video</Badge>}
         </div>
       </div>
 
@@ -787,7 +788,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
           <CharCount value={title} max={120} />
         </div>
 
-        {/* AI generate button */}
+        {/* Suggestion generate button */}
         <Button
           onClick={handleGenerateTitle}
           disabled={isPending}
@@ -799,7 +800,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
               <Spinner size={13} color="#fff" /> Generiere…
             </>
           ) : (
-            'KI-Titel generieren'
+            'Titelvorschlaege generieren'
           )}
         </Button>
 
@@ -815,14 +816,14 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
           >
             {getApiErrorMessage(
               error,
-              'KI-Titel-Generierung fehlgeschlagen.',
+              'Titelvorschlaege konnten nicht erzeugt werden.',
             )}
           </div>
         )}
 
         {/* Alternative titles */}
-        {aiResult?.alternativeTitles &&
-          aiResult.alternativeTitles.length > 0 && (
+        {suggestionResult?.alternativeTitles &&
+          suggestionResult.alternativeTitles.length > 0 && (
             <div>
               <div
                 style={{
@@ -837,7 +838,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
               <div
                 style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}
               >
-                {aiResult.alternativeTitles.map((t, i) => (
+                {suggestionResult.alternativeTitles.map((t, i) => (
                   <button
                     key={i}
                     onClick={() => setTitle(t)}
@@ -868,6 +869,78 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
               </div>
             </div>
           )}
+
+        {(suggestionResult?.title || suggestionResult?.alternativeTitles?.[0]) && (
+          <div
+            style={{
+              padding: '10px 12px',
+              background: 'var(--bg)',
+              borderRadius: 'var(--radius)',
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '10px',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                  marginBottom: '4px',
+                  fontWeight: 600,
+                }}
+              >
+                Variante A
+              </div>
+              <button
+                onClick={() => setTitle(suggestionResult?.title || title)}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                  fontSize: '12px',
+                  padding: '8px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--white)',
+                  cursor: 'pointer',
+                }}
+              >
+                {suggestionResult?.title || title}
+              </button>
+            </div>
+            <div>
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                  marginBottom: '4px',
+                  fontWeight: 600,
+                }}
+              >
+                Variante B
+              </div>
+              <button
+                onClick={() =>
+                  setTitle(suggestionResult?.alternativeTitles?.[0] || title)
+                }
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                  fontSize: '12px',
+                  padding: '8px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--white)',
+                  cursor: 'pointer',
+                }}
+              >
+                {suggestionResult?.alternativeTitles?.[0] || title}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Phone Previews */}

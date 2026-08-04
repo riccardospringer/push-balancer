@@ -495,13 +495,13 @@ def get_research_rules(
     })
 
 
-@router.get("/api/forschung")
+@router.get("/api/forschung", include_in_schema=False)
 def get_forschung_alias() -> JSONResponse:
     """Legacy-Alias für push-balancer.html."""
     return get_forschung()
 
 
-@router.get("/api/learnings")
+@router.get("/api/learnings", include_in_schema=False)
 def get_learnings_alias() -> JSONResponse:
     """Legacy-Alias für push-balancer.html."""
     return get_forschung()

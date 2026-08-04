@@ -1,0 +1,501 @@
+openapi: 3.1.0
+info:
+  title: Next Push Balancer Score API
+  version: 1.0.0
+  description: >-
+    Minimal backend-to-backend contract for reading the existing Push Balancer
+    score by CMS ID. This contract does not expose the full Push Balancer API.
+paths:
+  /api/v1/scores/batch:
+    post:
+      tags: [Score]
+      operationId: getScoresByCmsIds
+      summary: Get existing Push Balancer scores for up to 500 CMS IDs
+      description: >-
+        Returns one ordered result per requested CMS-ID position while making
+        exactly one deduplicated batch request to the Render score source.
+        Duplicate CMS IDs remain duplicated in the public result. The adapter
+        never fans out to single lookups and does not calculate a score itself.
+      security:
+        - scoreApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchScoreRequest"
+            example:
+              cmsIds:
+                - 0123456789abcdef01234567
+                - fedcba987654321001234567
+      responses:
+        "200":
+          description: Ordered existing-score projections and not-found results
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+            Vary:
+              $ref: "#/components/headers/Vary"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchScoreResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/scores/{cms_id}:
+    get:
+      tags: [Score]
+      operationId: getScoreByCmsId
+      summary: Get the existing Push Balancer score by CMS ID
+      description: >-
+        Returns the latest workday score exposed by the Render score source.
+        Fresh captured UI scores remain authoritative; the source may use its
+        server-side candidate fallback when no current capture exists.
+        Allowlisted numeric explanation fields are included when available.
+      security:
+        - scoreApiKey: []
+      parameters:
+        - name: cms_id
+          in: path
+          required: true
+          description: CMS document identifier
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: "^[A-Za-z0-9_-]+$"
+          example: 0123456789abcdef01234567
+      responses:
+        "200":
+          description: Existing score projection
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+            Vary:
+              $ref: "#/components/headers/Vary"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArticleScoreResponse"
+              example:
+                cmsId: 0123456789abcdef01234567
+                score: 58.3
+                scoredAt: "2026-07-15T12:00:00Z"
+                scoreBreakdown:
+                  kind: engagement
+                  relevance: 30
+                  urgency: 0
+                  curiosity: 7.6
+                  freshness: 11.7
+                  timing: 6
+                  titleBoost: 3
+                  breaking: 0
+                  research: 0
+                  pushHistory: 0
+                  topicSaturation: 0
+                orFactor: 1.06
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableContent"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    scoreApiKey:
+      type: apiKey
+      in: header
+      name: X-Score-Key
+      description: >-
+        Dedicated server-side credential. It must come from the approved secret
+        manager and must never be embedded in browser code or a URL.
+  headers:
+    CacheControl:
+      description: Prevents storage of the CMS-ID lookup response.
+      schema:
+        type: string
+        const: no-store
+    Vary:
+      description: Separates responses by the score-only credential.
+      schema:
+        type: string
+        const: X-Score-Key
+  responses:
+    Unauthorized:
+      description: Invalid or missing score API key
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    NotFound:
+      description: No current score is available
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    UnprocessableContent:
+      description: Invalid CMS ID
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    InternalServerError:
+      description: Unexpected score runtime failure
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    BadGateway:
+      description: An upstream source is unavailable
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    TooManyRequests:
+      description: At most two batch lookups may run per worker
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+        Retry-After:
+          description: Seconds before another bounded batch attempt.
+          schema:
+            type: string
+            const: "1"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+    ServiceUnavailable:
+      description: Score lookup is not configured or unavailable
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+        Vary:
+          $ref: "#/components/headers/Vary"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemResponse"
+  schemas:
+    BatchScoreRequest:
+      type: object
+      additionalProperties: false
+      required: [cmsIds]
+      properties:
+        cmsIds:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            pattern: "^[0-9a-fA-F]{24}$"
+
+    BatchScoreResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - requestedCount
+        - uniqueCount
+        - foundCount
+        - notFoundCount
+        - results
+      properties:
+        requestedCount:
+          type: integer
+          minimum: 1
+          maximum: 500
+        uniqueCount:
+          type: integer
+          minimum: 1
+          maximum: 500
+        foundCount:
+          type: integer
+          minimum: 0
+          maximum: 500
+        notFoundCount:
+          type: integer
+          minimum: 0
+          maximum: 500
+        results:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/BatchFoundScoreResponse"
+              - $ref: "#/components/schemas/BatchNotFoundScoreResponse"
+            discriminator:
+              propertyName: status
+              mapping:
+                found: "#/components/schemas/BatchFoundScoreResponse"
+                notFound: "#/components/schemas/BatchNotFoundScoreResponse"
+
+    BatchFoundScoreResponse:
+      type: object
+      additionalProperties: false
+      oneOf:
+        - properties:
+            scoreBreakdown:
+              type: "null"
+            orFactor:
+              type: "null"
+        - properties:
+            scoreBreakdown:
+              not:
+                type: "null"
+            orFactor:
+              not:
+                type: "null"
+      required:
+        - status
+        - cmsId
+        - score
+        - scoredAt
+        - scoreBreakdown
+        - orFactor
+      properties:
+        status:
+          type: string
+          const: found
+        cmsId:
+          type: string
+          pattern: "^[0-9a-fA-F]{24}$"
+        score:
+          type: number
+          minimum: 0
+          maximum: 100
+        scoredAt:
+          type: string
+          minLength: 1
+        scoreBreakdown:
+          anyOf:
+            - oneOf:
+                - $ref: "#/components/schemas/EngagementScoreBreakdownResponse"
+                - $ref: "#/components/schemas/SportScoreBreakdownResponse"
+              discriminator:
+                propertyName: kind
+                mapping:
+                  engagement: "#/components/schemas/EngagementScoreBreakdownResponse"
+                  sport: "#/components/schemas/SportScoreBreakdownResponse"
+            - type: "null"
+        orFactor:
+          anyOf:
+            - type: number
+              minimum: 0.6
+              maximum: 1.5
+            - type: "null"
+
+    BatchNotFoundScoreResponse:
+      type: object
+      additionalProperties: false
+      required: [status, cmsId]
+      properties:
+        status:
+          type: string
+          const: notFound
+        cmsId:
+          type: string
+          pattern: "^[0-9a-fA-F]{24}$"
+
+    ArticleScoreResponse:
+      type: object
+      additionalProperties: true
+      oneOf:
+        - not:
+            anyOf:
+              - required: [scoreBreakdown]
+              - required: [orFactor]
+        - required: [scoreBreakdown, orFactor]
+          properties:
+            scoreBreakdown:
+              type: "null"
+            orFactor:
+              type: "null"
+        - required: [scoreBreakdown, orFactor]
+          properties:
+            scoreBreakdown:
+              not:
+                type: "null"
+            orFactor:
+              not:
+                type: "null"
+      required: [cmsId, score, scoredAt]
+      properties:
+        cmsId:
+          type: string
+          description: CMS document identifier supplied by the caller.
+        score:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Authoritative existing final Push Balancer score.
+        scoredAt:
+          type: string
+          minLength: 1
+          description: >-
+            UTC timestamp of the existing browser-generated score snapshot.
+        scoreBreakdown:
+          description: >-
+            Allowlisted captured numeric explanation values. Existing score
+            caps, age multipliers, and TV adjustments mean these values are not
+            guaranteed to sum to score. Null when the current snapshot was
+            produced by the legacy two-field source contract.
+          anyOf:
+            - oneOf:
+                - $ref: "#/components/schemas/EngagementScoreBreakdownResponse"
+                - $ref: "#/components/schemas/SportScoreBreakdownResponse"
+              discriminator:
+                propertyName: kind
+                mapping:
+                  engagement: "#/components/schemas/EngagementScoreBreakdownResponse"
+                  sport: "#/components/schemas/SportScoreBreakdownResponse"
+            - type: "null"
+        orFactor:
+          description: >-
+            Captured opening-rate factor used for sorting; it is not added to
+            score. Null for a legacy snapshot.
+          anyOf:
+            - type: number
+              minimum: 0.6
+              maximum: 1.5
+            - type: "null"
+    EngagementScoreBreakdownResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - relevance
+        - urgency
+        - curiosity
+        - freshness
+        - timing
+        - titleBoost
+        - breaking
+        - research
+        - pushHistory
+        - topicSaturation
+      properties:
+        kind:
+          type: string
+          const: engagement
+        relevance:
+          type: number
+          minimum: 0
+          maximum: 30
+        urgency:
+          type: number
+          minimum: 0
+          maximum: 25
+        curiosity:
+          type: number
+          minimum: 0
+          maximum: 25
+        freshness:
+          type: number
+          minimum: 0
+          maximum: 20
+        timing:
+          type: number
+          minimum: 0
+          maximum: 15
+        titleBoost:
+          type: number
+          minimum: 0
+          maximum: 15
+        breaking:
+          type: number
+          minimum: 0
+          maximum: 15
+        research:
+          type: number
+          minimum: 0
+          maximum: 12
+        pushHistory:
+          type: number
+          minimum: -4
+          maximum: 8
+        topicSaturation:
+          type: number
+          minimum: -30
+          maximum: 0
+    SportScoreBreakdownResponse:
+      type: object
+      additionalProperties: false
+      required: [kind, sportRelevance, timing, drama, freshness]
+      properties:
+        kind:
+          type: string
+          const: sport
+        sportRelevance:
+          type: number
+          minimum: 0
+          maximum: 35
+        timing:
+          type: number
+          minimum: 0
+          maximum: 30
+        drama:
+          type: number
+          minimum: 0
+          maximum: 25
+        freshness:
+          type: number
+          minimum: 0
+          maximum: 10
+    ProblemResponse:
+      type: object
+      required: [type, title, status, detail, instance]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          description: Redacted route template without the supplied CMS ID.
