@@ -122,10 +122,19 @@ Transport = Callable[[str, dict[str, str], float], tuple[int, bytes]]
 BatchTransport = Callable[[str, dict[str, str], bytes, float], tuple[int, bytes]]
 
 
+# Selbstkonsum (Render): die eigene /api/v1/scores-Route wird per Loopback
+# aufgerufen. Nur dort darf der Key ueber Klartext-HTTP reisen - er verlaesst
+# den Host nicht. Jede andere Basis-URL bleibt strikt HTTPS-pflichtig.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
 def _validated_base_url(raw: str) -> str:
     parsed = urllib.parse.urlsplit((raw or "").strip())
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    scheme_ok = scheme == "https" or (scheme == "http" and host in _LOOPBACK_HOSTS)
     if (
-        parsed.scheme.lower() != "https"
+        not scheme_ok
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
@@ -134,7 +143,7 @@ def _validated_base_url(raw: str) -> str:
     ):
         raise ScoreApiConfigurationError("Score API base URL is invalid")
     path = parsed.path.rstrip("/")
-    return urllib.parse.urlunsplit(("https", parsed.netloc, path, "", ""))
+    return urllib.parse.urlunsplit((scheme, parsed.netloc, path, "", ""))
 
 
 def _parse_scored_at(raw: object) -> datetime:
