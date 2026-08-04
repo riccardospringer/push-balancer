@@ -498,7 +498,19 @@ if PUSH_BALANCER_SCORE_API_SELF_CONSUME:
         SCORE_API_KEY = _secrets.token_urlsafe(32)
         os.environ.setdefault("SCORE_API_KEY", SCORE_API_KEY)
     PUSH_BALANCER_SCORE_API_ENABLED = True
-    PUSH_BALANCER_SCORE_API_BASE_URL = f"http://127.0.0.1:{PORT}"
+    # Loopback-Port = der Port, auf den uvicorn tatsaechlich gebunden ist.
+    # NICHT config.PORT verwenden: Render injiziert PORT=10000, waehrend das
+    # Dockerfile uvicorn fest auf 8050 startet — mit PORT waere der
+    # Selbstkonsum ein Connection-refused auf 127.0.0.1:10000 (alle Scores
+    # 'unavailable'). 8050 ist der Dockerfile-/Dev-Standard; abweichende
+    # Setups uebersteuern per PUSH_BALANCER_SELF_CONSUME_PORT.
+    PUSH_BALANCER_SELF_CONSUME_PORT: int = _env_int(
+        "PUSH_BALANCER_SELF_CONSUME_PORT",
+        8050,
+    )
+    PUSH_BALANCER_SCORE_API_BASE_URL = (
+        f"http://127.0.0.1:{PUSH_BALANCER_SELF_CONSUME_PORT}"
+    )
     PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
 PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS: float = _env_float(
     "PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS",
