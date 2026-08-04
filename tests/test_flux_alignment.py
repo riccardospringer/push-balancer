@@ -36,13 +36,24 @@ def test_docker_workflow_matches_flux_release_expectations():
 
 
 def test_container_starts_the_configured_score_app_without_path_access_logs():
+    """Render-Fork-Realitaet: ./Dockerfile IST hier das Render-Deployment.
+
+    Der Render-Service ist nicht blueprint-synchronisiert (Env-Sync tot,
+    dockerfilePath im Dashboard fest auf ./Dockerfile). Ein kanonisches
+    Score-Runtime-Dockerfile an der Wurzel wuerde beim naechsten Deploy
+    app.score_main:app OHNE Teams-Worker starten und den Kanal stilllegen.
+    Deshalb prueft dieser Fork: Root-Dockerfile startet den vollen Balancer
+    (app.main:app) als appuser mit /data-Reparatur; das kontraktgebundene
+    ${ASGI_APP:-app.score_main:app}-Image lebt im canonical-next-Repo."""
     dockerfile = _read("Dockerfile")
 
-    assert "${ASGI_APP:-app.score_main:app}" in dockerfile
-    assert "USER appuser" in dockerfile
-    assert "exec su" not in dockerfile
+    assert "uvicorn app.main:app" in dockerfile
+    assert "appuser" in dockerfile
     assert "--no-access-log" in dockerfile
     assert "--no-proxy-headers" in dockerfile
+
+    render_dockerfile = _read("Dockerfile.render")
+    assert "uvicorn app.main:app" in render_dockerfile
 
 
 def test_release_workflow_publishes_matching_image_and_chart():
