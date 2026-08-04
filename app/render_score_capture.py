@@ -349,12 +349,56 @@ def _parse_score_breakdown(value: Any) -> ScoreBreakdown:
     raise RenderScoreUnavailable("Render score source returned an invalid response")
 
 
+def _self_hosted() -> bool:
+    """True auf der Instanz, die den Capture-Store selbst beherbergt (Render).
+
+    Dort waere der HTTPS-Umweg ueber die eigene oeffentliche URL ein Aufruf
+    uebers Internet zurueck zu sich selbst: langsam, timeout-anfaellig und vom
+    internen CIDR-Gate der Zugriffskontrolle blockierbar (die Render-Egress-IP
+    steht nicht in den erlaubten Netzen). Der Store wird deshalb in-process
+    gelesen; der HTTP-Pfad bleibt der Vertrag fuer externe Konsumenten (Next).
+    """
+    from app import config
+
+    return bool(config.PUSH_BALANCER_SCORE_API_SELF_CONSUME)
+
+
+def _self_hosted_payload(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Map an in-process snapshot onto the documented HTTP response payload."""
+    if snapshot is None:
+        return None
+    payload: dict[str, Any] = {
+        "score": snapshot.get("score"),
+        "capturedAt": int(snapshot.get("capturedAt") or 0),
+    }
+    if snapshot.get("scoreBreakdown") is not None and snapshot.get("orFactor") is not None:
+        payload["scoreBreakdown"] = snapshot["scoreBreakdown"]
+        payload["orFactor"] = snapshot["orFactor"]
+    return payload
+
+
+def _read_capture_self_hosted(cms_id: str) -> dict[str, Any] | None:
+    from app.routers.score_capture import (
+        ScoreCaptureReadError,
+        get_score_snapshot_for_cms_id,
+    )
+
+    try:
+        snapshot = get_score_snapshot_for_cms_id(cms_id.lower())
+    except ScoreCaptureReadError as exc:
+        raise RenderScoreUnavailable("Render score source request failed") from exc
+    return _self_hosted_payload(snapshot)
+
+
 def get_captured_score(cms_id: str, *, now: float | None = None) -> CapturedScore | None:
     """Return the latest workday UI snapshot for one CMS ID."""
     if not _CMS_ID_RE.fullmatch(cms_id):
         return None
 
-    payload = _read_capture(cms_id)
+    if _self_hosted():
+        payload = _read_capture_self_hosted(cms_id)
+    else:
+        payload = _read_capture(cms_id)
     if payload is None:
         return None
     reference_time = time.time() if now is None else now
@@ -379,6 +423,26 @@ def get_captured_scores_batch(
         if normalized not in seen:
             normalized_cms_ids.append(normalized)
             seen.add(normalized)
+
+    if _self_hosted():
+        from app.routers.score_capture import (
+            ScoreCaptureReadError,
+            get_score_snapshots_for_cms_ids,
+        )
+
+        try:
+            snapshots = get_score_snapshots_for_cms_ids(normalized_cms_ids)
+        except ScoreCaptureReadError as exc:
+            raise RenderScoreUnavailable("Render score source request failed") from exc
+        reference_time = time.time() if now is None else now
+        return normalized_cms_ids, [
+            (
+                _parse_capture(payload, reference_time)
+                if (payload := _self_hosted_payload(snapshots.get(cms_id))) is not None
+                else None
+            )
+            for cms_id in normalized_cms_ids
+        ]
 
     payload = _read_capture_batch(normalized_cms_ids)
     if set(payload) != {"results"} or not isinstance(payload["results"], list):

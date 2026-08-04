@@ -101,3 +101,36 @@ def test_render_defaults_enable_self_consume_and_disable_live_push_posts():
     assert parts[0] == "1", "Selbstkonsum muss auf Render aktiv sein"
     assert parts[1] == "0", "Live-Push-Posts muessen aus sein"
     assert parts[2] == "http://127.0.0.1:8050"
+
+
+def test_self_consume_ignores_render_injected_port():
+    """Render injiziert PORT=10000, uvicorn ist im Dockerfile aber fest auf
+    8050 gebunden. Der Loopback-Selbstkonsum muss auf dem tatsaechlich
+    gebundenen Port sprechen — sonst laufen alle Score-Lookups in ein
+    Connection-refused ('internal_score_api_unavailable')."""
+    code = "import app.config as c; print(c.PUSH_BALANCER_SCORE_API_BASE_URL)"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _base_url(env):
+        full = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root}
+        full.update(env)
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, env=full, cwd=root, timeout=60,
+        )
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    assert _base_url({
+        "PUSH_BALANCER_SCORE_API_SELF_CONSUME": "true",
+        "SCORE_API_KEY": "serverkey",
+        "PORT": "10000",
+    }) == "http://127.0.0.1:8050"
+
+    # Abweichende Setups koennen den Loopback-Port explizit setzen.
+    assert _base_url({
+        "PUSH_BALANCER_SCORE_API_SELF_CONSUME": "true",
+        "SCORE_API_KEY": "serverkey",
+        "PORT": "10000",
+        "PUSH_BALANCER_SELF_CONSUME_PORT": "9090",
+    }) == "http://127.0.0.1:9090"
