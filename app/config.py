@@ -919,3 +919,5 @@ TRUSTED_PROXY_CIDRS: list[str] = _csv_env(
     "TRUSTED_PROXY_CIDRS",
     "127.0.0.1/32,::1/128",
 )
+
+# Build-Nudge 2026-08-04 11:07: Deploys #22-#24 kamen nie zum Swap (Render-Queue).
