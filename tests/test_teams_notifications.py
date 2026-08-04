@@ -7215,7 +7215,11 @@ def test_mandatory_slot_forces_best_sport_only_when_daily_quota_requires_it():
     assert unavailable["mandatorySportQuota"]["applied"] is False
 
 
-def test_mandatory_slot_shows_only_true_api_rank2_as_alternative():
+def test_mandatory_slot_shows_best_opposite_ressort_as_alternative():
+    """User-Vorgabe: Top Nicht-Sport -> Alternative Sport (und umgekehrt).
+
+    Der echte Platz 2 (Unterhaltung) bleibt Margin-Basis, aber als Alternative
+    erscheint der beste gegenlaeufige Kandidat (Sport, Rang 3)."""
     config = _smart_config(require_internal_score_api=True)
     now_ts = int(
         _daily_runtime_opportunities(dt.date(2026, 6, 19), config)[-1]["ts"]
@@ -7267,12 +7271,79 @@ def test_mandatory_slot_shows_only_true_api_rank2_as_alternative():
     message = buildTeamsPushRecommendation(top1, context, selected, config)
 
     assert result["selectedCandidateId"] == top1["url"]
-    assert selected["competition"]["runnerUp"]["articleUrl"] == runner_up["url"]
-    assert runner_up["url"] in message["text"]
-    assert third["url"] not in message["text"]
-    assert runner_up["title"] in message["payload"]["messageHtml"]
-    assert third["title"] not in message["payload"]["messageHtml"]
+    # Alternative = bester Sport-Kandidat, weil die Top-Meldung Nicht-Sport ist.
+    assert selected["competition"]["runnerUp"]["articleUrl"] == third["url"]
+    # Margin-Basis bleibt der echte Platz 2.
+    assert selected["competition"]["runnerUpScore"] == runner_up["score"]
+    assert third["url"] in message["text"]
+    assert runner_up["url"] not in message["text"]
+    assert third["title"] in message["payload"]["messageHtml"]
+    assert runner_up["title"] not in message["payload"]["messageHtml"]
     assert message["text"].count("Alternative (Platz 2):") == 1
+
+
+def test_sport_top_gets_non_sport_alternative_and_vice_versa():
+    """Sport-Top -> Nicht-Sport-Alternative; ohne gegenlaeufigen Kandidaten
+    bleibt die Alternative leer statt die Ressort-Vorgabe zu verletzen."""
+    config = _smart_config(require_internal_score_api=True)
+    now_ts = int(
+        _daily_runtime_opportunities(dt.date(2026, 6, 19), config)[-1]["ts"]
+    )
+
+    def _mk(id_, section, score):
+        return _candidate(
+            id=id_,
+            url=f"https://www.bild.de/{section}/{id_}",
+            title=f"Kandidat {id_}",
+            category=section,
+            score=score,
+            scoreSource="internal_score_api",
+            pubDate=_iso(now_ts - 5 * 60),
+        )
+
+    def _context(candidates):
+        return build_teams_alert_context(
+            candidates,
+            history=_history(now_ts=now_ts),
+            history_authoritative=True,
+            alert_state={},
+            last_teams_alert_ts=now_ts - 60,
+            teams_alerts_today=10,
+            recent_alerts=[],
+            now_ts=now_ts,
+            config=config,
+        )
+
+    def _evaluate(candidates):
+        result = evaluate_teams_alert_candidates(
+            candidates, _context(candidates), config
+        )
+        selected = next(
+            item["decision"]
+            for item in result["decisions"]
+            if item["decision"].get("shouldNotify")
+        )
+        return result, selected
+
+    # Sport-Top: die Alternative muss Nicht-Sport sein (Rang 3 statt Rang 2).
+    sport_top = _mk("opp-sport-top", "sport", 93.0)
+    sport_second = _mk("opp-sport-2", "sport", 90.0)
+    news_third = _mk("opp-news-3", "politik", 87.0)
+    result, selected = _evaluate([news_third, sport_top, sport_second])
+    assert result["selectedCandidateId"] == sport_top["url"]
+    assert selected["competition"]["runnerUp"]["articleUrl"] == news_third["url"]
+
+    # Nur Sport-Kandidaten: keine gegenlaeufige Alternative verfuegbar -> leer.
+    result, selected = _evaluate([sport_top, sport_second])
+    assert result["selectedCandidateId"] == sport_top["url"]
+    assert selected["competition"]["runnerUp"] == {}
+    message = buildTeamsPushRecommendation(
+        sport_top, _context([sport_top, sport_second]), selected, config
+    )
+    assert (
+        "Keine weitere gültige Alternative verfügbar"
+        in message["payload"]["messageHtml"]
+    )
 
 
 def test_mandatory_slot_skips_exact_live_duplicate_and_promo_then_uses_next_rank():
