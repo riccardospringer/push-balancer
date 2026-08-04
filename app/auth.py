@@ -8,6 +8,11 @@ from app.config import ADMIN_API_KEY, SCORE_API_KEY
 
 _api_key_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 _consumer_key_header = APIKeyHeader(name="X-Consumer-Key", auto_error=False)
+_power_automate_key_header = APIKeyHeader(
+    name="X-Power-Automate-Key",
+    auto_error=False,
+    scheme_name="powerAutomateApiKey",
+)
 _authorization_header = APIKeyHeader(name="Authorization", auto_error=False)
 _score_api_key_header = APIKeyHeader(
     name="X-Score-Key",
@@ -58,6 +63,26 @@ async def require_consumer_key(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing consumer API key.",
+        )
+
+
+async def require_power_automate_key(
+    api_key: str | None = Security(_power_automate_key_header),
+) -> None:
+    """Protect the scheduled Teams hand-off with its own least-privilege key."""
+    configured_key = config.POWER_AUTOMATE_API_KEY
+    if not configured_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Power Automate integration is disabled.",
+        )
+    if not api_key or not hmac.compare_digest(
+        api_key.encode("utf-8"),
+        configured_key.encode("utf-8"),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing Power Automate API key.",
         )
 
 

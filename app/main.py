@@ -44,6 +44,7 @@ from app.config import (
     PORT,
     SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS,
     PUSH_TEAMS_ALERTS_ENABLED,
+    PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
     PUSH_TEAMS_CHECK_INTERVAL_SECONDS,
     SERVE_DIR,
     SNAPSHOT_PATH,
@@ -60,6 +61,7 @@ from app.routers import (
     health,
     misc,
     ml,
+    power_automate,
     push,
     push_schedule,
     score_capture,
@@ -207,8 +209,20 @@ def _problem_response(
 
 
 def _apply_cache_headers(path: str, response: Response) -> Response:
-    if path == "/api/score-capture" or path.startswith("/api/score-capture/"):
+    if (
+        path == "/api/score-capture"
+        or path.startswith("/api/score-capture/")
+        or path.startswith("/api/v1/power-automate/teams/")
+    ):
         response.headers["Cache-Control"] = "no-store"
+    if path.startswith("/api/v1/power-automate/teams/"):
+        vary = {
+            value.strip()
+            for value in response.headers.get("Vary", "").split(",")
+            if value.strip()
+        }
+        vary.add("X-Power-Automate-Key")
+        response.headers["Vary"] = ", ".join(sorted(vary))
     return response
 
 
@@ -486,7 +500,13 @@ def _seed_push_snapshot() -> None:
             from app.routers.push import _push_sync_cache, _push_sync_lock
             with _push_sync_lock:
                 _push_sync_cache["messages"] = snap.get("messages", [])
-                _push_sync_cache["ts"] = snap.get("_generated", time.time())
+                generated_at = snap.get("_generated")
+                _push_sync_cache["ts"] = (
+                    float(generated_at)
+                    if isinstance(generated_at, (int, float))
+                    else 0.0
+                )
+                _push_sync_cache["source"] = "seed"
             log.info("[Snapshot] %d Pushes aus Snapshot (Dict-Format) geladen",
                      len(_push_sync_cache["messages"]))
     except Exception as e:
@@ -815,6 +835,7 @@ def _start_background_workers() -> None:
                         _push_sync_cache["messages"] = all_msgs
                         _push_sync_cache["channels"] = channels
                         _push_sync_cache["ts"] = time.time()
+                        _push_sync_cache["source"] = "live"
                     log.info("[AutoFetch] OK: %d Push-Messages geladen", len(all_msgs))
                 except Exception as e:
                     log.warning("[AutoFetch] Fehler: %s", locals().get("last_error", e) or e)
@@ -841,10 +862,14 @@ def _start_background_workers() -> None:
                 with _push_sync_lock:
                     msgs = list(_push_sync_cache["messages"])
                     chs = list(_push_sync_cache["channels"])
+                    cache_source = str(_push_sync_cache.get("source") or "unknown")
+                    cache_ts = float(_push_sync_cache.get("ts") or 0.0)
                 sync_payload = json.dumps({
                     "secret": SYNC_SECRET,
                     "messages": msgs,
                     "channels": chs,
+                    "source": cache_source,
+                    "snapshotTs": cache_ts,
                 }).encode()
                 req = _ur2.Request(
                     f"{RENDER_SYNC_URL}/api/pushes/sync",
@@ -869,7 +894,7 @@ def _start_background_workers() -> None:
     # 14. Auto-Suggestion Worker — entfallen (Tagesplan-Suggestions abgeschafft)
 
     # 15. Microsoft Teams recommendation alert worker
-    if PUSH_TEAMS_ALERTS_ENABLED:
+    if PUSH_TEAMS_ALERTS_ENABLED and PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
         def _teams_alert_worker():
             from app.notifications.teams import (
                 TeamsAlertConfig,
@@ -1001,8 +1026,13 @@ def _start_background_workers() -> None:
             target=_teams_alert_supervisor, daemon=True, name="teams_alert_supervisor"
         ).start()
         log.info("[TeamsAlert] Aktiviert (mit Watchdog)")
-    else:
+    elif not PUSH_TEAMS_ALERTS_ENABLED:
         log.info("[TeamsAlert] Deaktiviert (PUSH_TEAMS_ALERTS_ENABLED=false)")
+    else:
+        log.info(
+            "[TeamsAlert] Hintergrund-Sender deaktiviert; "
+            "Power Automate besitzt Zeitplan und Transport"
+        )
 
     # 16. Memory-Cleanup Worker (alle 2 Minuten)
     if BACKGROUND_AUTOMATIONS_ENABLED:
@@ -1250,6 +1280,7 @@ app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(consumer.router, tags=["Consumer"])
+app.include_router(power_automate.router, tags=["PowerAutomate"])
 app.include_router(score_api.router, tags=["Score"])
 app.include_router(tagesplan.router, tags=["Tagesplan"])
 app.include_router(misc.router, tags=["Misc"])

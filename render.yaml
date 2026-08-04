@@ -63,6 +63,13 @@ services:
       # (Outbound gestoert). Sobald Next verifiziert laeuft, hier auf "false".
       - key: PUSH_TEAMS_ALERTS_ENABLED
         value: "true"
+      # Power Automate besitzt Zeitplan und Transport; der alte Worker bleibt aus.
+      # Render synchronisiert dieses Blueprint derzeit nicht, deshalb ist der
+      # Code-Default ebenfalls fail-safe auf "false" gesetzt.
+      - key: PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+        value: "false"
+      - key: POWER_AUTOMATE_API_KEY
+        sync: false
       # Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04):
       # 🔴 LIVE-PUSH-GESENDET-Posts sind abgeschaltet.
       - key: PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED

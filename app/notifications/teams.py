@@ -615,6 +615,7 @@ class TeamsAlertConfig:
     sport_share_low: float = PUSH_TEAMS_SPORT_SHARE_LOW
     sport_share_high: float = PUSH_TEAMS_SPORT_SHARE_HIGH
     sport_preference_band: float = PUSH_TEAMS_SPORT_PREFERENCE_BAND
+    mandatory_sport_quota_enabled: bool = True
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:
@@ -1221,7 +1222,7 @@ def _mandatory_sport_quota_review(
         "required": False,
         "applied": False,
     }
-    if mandatory_slot is None:
+    if mandatory_slot is None or not config.mandatory_sport_quota_enabled:
         return result
     mix = context.get("teamsRecommendationMixToday")
     if not isinstance(mix, dict) or not mix.get("available"):
@@ -2520,7 +2521,11 @@ def evaluate_teams_alert_candidates(
                             "articleUrl": _url(alternative_candidate),
                             "category": _section(alternative_candidate),
                             "pushScore": float(alternative_decision.get("score") or 0.0),
-                            "rankingPosition": 2,
+                            "alternativeType": (
+                                "sport"
+                                if _is_sport_item(alternative_candidate)
+                                else "non_sport"
+                            ),
                         }
                         if alternative_candidate is not None
                         and alternative_decision is not None
@@ -2839,7 +2844,7 @@ def build_teams_push_recommendation(
         "articleUrl": str(runner_up_meta.get("articleUrl") or "").strip(),
         "category": str(runner_up_meta.get("category") or "").strip(),
         "pushScore": float(runner_up_meta.get("pushScore") or 0.0),
-        "rankingPosition": 2,
+        "alternativeType": str(runner_up_meta.get("alternativeType") or "").strip(),
     }
     if not (
         alternative_recommendation["articleTitle"]
@@ -3091,6 +3096,9 @@ def build_teams_push_recommendation(
         "🔵 PUSH-EMPFEHLUNG" if dispatch_approved else "🔵 PUSH-EMPFEHLUNG (nicht freigegeben)"
     )
     primary_display_title = _compact_text(push_text or title, 120)
+    alternative_label = (
+        "Nicht-Sport-Alternative" if _is_sport_item(candidate) else "Sport-Alternative"
+    )
     compact_reason = _compact_text(
         next(
             (
@@ -3110,7 +3118,7 @@ def build_teams_push_recommendation(
         text_lines.append(url)
     if dedup_warning:
         text_lines.extend(["", f"ACHTUNG: {dedup_warning}"])
-    text_lines.extend(["", "Alternative (Platz 2):"])
+    text_lines.extend(["", f"{alternative_label}:"])
     if alternative_recommendation:
         text_lines.extend(
             [
@@ -3142,7 +3150,7 @@ def build_teams_push_recommendation(
             alternative_recommendation["articleUrl"], quote=True
         )
         alternative_lines = [
-            "<strong>Alternative (Platz 2):</strong> "
+            f"<strong>{html.escape(alternative_label)}:</strong> "
             + html.escape(alternative_recommendation["articleTitle"]),
             "<strong>Score:</strong> "
             + html.escape(
@@ -3152,7 +3160,8 @@ def build_teams_push_recommendation(
         ]
     else:
         alternative_lines = [
-            "<strong>Alternative (Platz 2):</strong> Keine weitere gültige Alternative verfügbar."
+            f"<strong>{html.escape(alternative_label)}:</strong> "
+            "Keine weitere gültige Alternative verfügbar."
         ]
     html_parts.append(f"<p>{'<br>'.join(alternative_lines)}</p>")
     message_html = "".join(html_parts)
@@ -4761,7 +4770,7 @@ def send_teams_test_notification(
             "articleUrl": "https://www.bild.de/sport/",
             "category": "sport",
             "pushScore": 81.0,
-            "rankingPosition": 2,
+            "alternativeType": "sport",
         },
     }
     message = build_teams_push_recommendation(sample, context, decision, config)
@@ -5421,7 +5430,10 @@ def _refresh_push_history_for_dedup() -> dict[str, Any]:
     try:
         from app.routers.push import _build_refresh_response
 
-        result = _build_refresh_response(include_history=True)
+        result = _build_refresh_response(
+            include_history=True,
+            prefer_fresh_relay=True,
+        )
         raw_snapshot = result.pop("_parsed_history", [])
         snapshot_authoritative = bool(result.pop("_snapshot_authoritative", False))
         snapshot = (
@@ -5443,12 +5455,22 @@ def _refresh_push_history_for_dedup() -> dict[str, Any]:
             persisted = []
             persistence_read_ok = False
         result["history"] = _merge_live_push_history(persisted, snapshot)
+        reported_authoritative = bool(result.get("history_authoritative"))
+        snapshot_age_seconds = _safe_float(result.get("snapshot_age_seconds"))
         direct_live_snapshot = (
             result.get("source") == "live"
-            and _safe_float(result.get("snapshot_age_seconds")) == 0.0
+            and snapshot_age_seconds == 0.0
+        )
+        fresh_persisted_relay_snapshot = (
+            result.get("source") == "cache->db"
+            and reported_authoritative
+            and snapshot_age_seconds is not None
+            and 0.0 <= snapshot_age_seconds <= 300.0
         )
         result["history_authoritative"] = bool(
-            snapshot_authoritative and persistence_read_ok and direct_live_snapshot
+            snapshot_authoritative
+            and persistence_read_ok
+            and (direct_live_snapshot or fresh_persisted_relay_snapshot)
         )
         log.info(
             "[TeamsAlert] push history refresh source=%s synced=%s db_written=%s "

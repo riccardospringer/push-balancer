@@ -416,6 +416,9 @@ ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 # Wenn nicht gesetzt, bleiben die Consumer-Endpunkte deaktiviert.
 CONSUMER_API_KEY: str = os.environ.get("CONSUMER_API_KEY", "")
 
+# Dedicated least-privilege credential for the scheduled Power Automate hand-off.
+POWER_AUTOMATE_API_KEY: str = os.environ.get("POWER_AUTOMATE_API_KEY", "")
+
 # Dedicated least-privilege credential for the CMS-ID score lookup.
 SCORE_API_KEY: str = os.environ.get("SCORE_API_KEY", "")
 
@@ -449,6 +452,12 @@ SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS: list[str] = _csv_env(
 # Disabled by default. Enabling this sends selected article metadata to the
 # configured Teams/Power Automate endpoint and requires editorial/privacy approval.
 PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
+# Keep the recommendation policy/API enabled while allowing Power Automate to
+# become the sole scheduler and transport owner during a reversible cutover.
+PUSH_TEAMS_BACKGROUND_SENDER_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED",
+    False,
+)
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
 # Kanonischer Push-Score fuer die Teams-Auswahl. In Produktion (render.yaml)
 # auf Anweisung des Product Owners aktiviert (2026-07-29); lokal default aus.

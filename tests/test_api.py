@@ -331,6 +331,38 @@ class TestStableFrontendContracts:
         data = resp.json()
         assert data["_synced"] is True
 
+    def test_push_proxy_cache_only_preserves_relay_provenance(self, monkeypatch):
+        import app.routers.push as push_router
+
+        monkeypatch.setattr(push_router, "PUSH_LIVE_FETCH_ENABLED", True)
+        monkeypatch.setattr(
+            push_router.urllib.request,
+            "urlopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("cache-only relay read must not call the direct API")
+            ),
+        )
+        snapshot_ts = time.time() - 30
+        with push_router._push_sync_lock:
+            push_router._push_sync_cache.update(
+                {
+                    "messages": [{"id": "cached-with-provenance"}],
+                    "channels": [],
+                    "ts": snapshot_ts,
+                    "source": "live",
+                }
+            )
+
+        resp = client.get(
+            "/api/push/statistics/message?relayCacheOnly=1",
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["_source"] == "live"
+        assert data["_snapshotTs"] == snapshot_ts
+        assert 29 <= data["_age_s"] <= 31
+
     def test_articles_skip_prediction_enrichment_when_disabled(self, monkeypatch):
         import app.routers.feed as feed_router
 
@@ -901,6 +933,27 @@ class TestPushApiBaseCandidates:
 class TestTeamsReadiness:
     def test_teams_readiness_reports_the_full_chain(self, monkeypatch):
         import app.routers.feed as feed_router
+        import app.routers.health as health_router
+        import app.notifications.teams as teams_module
+
+        monkeypatch.setattr(health_router, "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED", False)
+        monkeypatch.setattr(health_router, "POWER_AUTOMATE_API_KEY", "synthetic-pa-key")
+        monkeypatch.setattr(
+            teams_module,
+            "_refresh_push_history_for_dedup",
+            lambda: {
+                "history": [
+                    {
+                        "message_id": "synthetic-readiness-push",
+                        "ts_num": int(time.time()),
+                        "link": "https://www.bild.de/news/synthetic-readiness-push",
+                    }
+                ],
+                "history_authoritative": True,
+                "source": "cache->db",
+                "snapshot_age_seconds": 30.0,
+            },
+        )
 
         monkeypatch.setattr(
             feed_router,
@@ -924,6 +977,9 @@ class TestTeamsReadiness:
         assert isinstance(data["ready"], bool)
         assert set(data) >= {
             "teamsAlertsEnabled",
+            "transportMode",
+            "backgroundSenderEnabled",
+            "powerAutomateConfigured",
             "webhookConfigured",
             "quietHoursActive",
             "volume",
@@ -931,11 +987,26 @@ class TestTeamsReadiness:
             "pushHistory",
             "slots",
         }
-        # Der Tagesplan der laufenden Instanz muss dem 11-15-Layout entsprechen.
+        assert data["transportMode"] == "power_automate_scheduled"
+        assert data["backgroundSenderEnabled"] is False
+        assert data["powerAutomateConfigured"] is True
         assert data["slots"]["ok"] is True
-        assert 11 <= data["slots"]["plannedToday"] <= 15
-        assert data["volume"]["min"] == 11
-        assert data["volume"]["max"] == 15
+        assert data["slots"]["plannedToday"] == 12
+        assert data["slots"]["labels"] == [
+            "06:00",
+            "06:36",
+            "07:12",
+            "07:47",
+            "08:23",
+            "08:59",
+            "12:30",
+            "17:30",
+            "18:49",
+            "20:08",
+            "21:26",
+            "22:45",
+        ]
+        assert data["volume"]["min"] <= data["volume"]["max"]
 
 
 class TestTagesplanEndpoint:
