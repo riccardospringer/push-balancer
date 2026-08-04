@@ -58,8 +58,10 @@ services:
       # Render ist wieder aktiver Teams-Sender: der Next/K8s-Pod liefert nicht
       # (Outbound gestoert), und ohne Sender kommen keine Empfehlungen im Kanal
       # an. Sobald Next verifiziert laeuft, hier zurueck auf "false".
+      # KURZPAUSE nach Doppelpost-Korrektur (User-Wunsch): Sender bis ~09:20
+      # aus; Wiedereinschalten stellt den normalen Tagesrhythmus wieder her.
       - key: PUSH_TEAMS_ALERTS_ENABLED
-        value: "true"
+        value: "false"
       - key: PUSH_TEAMS_WEBHOOK_URL
         sync: false
       - key: PUSH_TEAMS_MIN_SCORE
