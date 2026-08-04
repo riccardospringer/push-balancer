@@ -486,9 +486,17 @@ elif not PUSH_BALANCER_SCORE_API_KEY:
 # /api/v1/scores-Route via Loopback mit dem eigenen SCORE_API_KEY).
 PUSH_BALANCER_SCORE_API_SELF_CONSUME: bool = _env_flag(
     "PUSH_BALANCER_SCORE_API_SELF_CONSUME",
-    False,
+    # Render-Blueprint legt neue env-Keys nicht zuverlaessig an (Env-Sync tot/
+    # manuell); auf Render ist der Code-Default daher der wirksame Schalter.
+    IS_RENDER,
 )
-if PUSH_BALANCER_SCORE_API_SELF_CONSUME and SCORE_API_KEY:
+if PUSH_BALANCER_SCORE_API_SELF_CONSUME:
+    if not SCORE_API_KEY:
+        # Ephemerer Prozess-Key genuegt: Server-Route und Consumer-Client leben
+        # in derselben Instanz und lesen beide diese Konfiguration.
+        import secrets as _secrets
+        SCORE_API_KEY = _secrets.token_urlsafe(32)
+        os.environ.setdefault("SCORE_API_KEY", SCORE_API_KEY)
     PUSH_BALANCER_SCORE_API_ENABLED = True
     PUSH_BALANCER_SCORE_API_BASE_URL = f"http://127.0.0.1:{PORT}"
     PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
@@ -701,9 +709,12 @@ PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN: float = float(
 )
 # Nachrichtentyp 2: Jeder tatsaechlich versendete Live-Push der Redaktion wird
 # als eigene Teams-Nachricht gespiegelt und fliesst sofort in die weitere Planung.
+# Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04). Default False,
+# weil Render-Blueprint-Env-Sync neue Keys nicht zuverlaessig anlegt — der
+# Code-Default ist der einzige garantiert wirksame Schalter.
 PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED",
-    True,
+    False,
 )
 # Nur Live-Pushes, die juenger als dieses Fenster sind, werden noch als Nachricht
 # gepostet (aeltere zaehlen trotzdem zum Tagesvolumen). Verhindert eine Flut

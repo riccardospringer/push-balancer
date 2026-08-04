@@ -64,15 +64,40 @@ def test_self_consume_flag_overrides_shadowed_dashboard_values():
     }) == "serverkey"
 
 
-def test_self_consume_without_server_key_stays_disabled():
+def test_self_consume_without_server_key_generates_ephemeral_key():
+    """Ohne gesetzten SCORE_API_KEY erzeugt der Selbstkonsum einen ephemeren
+    Prozess-Key — Server-Route und Consumer-Client leben in derselben Instanz,
+    daher genuegt das fuer das Loopback-Selbstgespraech (Render ohne Env-Sync)."""
     import os, subprocess, sys
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out = subprocess.run(
-        [sys.executable, "-c", "import app.config as c; print(int(c.PUSH_BALANCER_SCORE_API_ENABLED))"],
+        [sys.executable, "-c",
+         "import app.config as c; print(int(c.PUSH_BALANCER_SCORE_API_ENABLED),"
+         " int(bool(c.SCORE_API_KEY)), int(c.SCORE_API_KEY==c.PUSH_BALANCER_SCORE_API_KEY))"],
         capture_output=True, text=True, cwd=root, timeout=60,
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root,
              "PUSH_BALANCER_SCORE_API_SELF_CONSUME": "true",
              "PUSH_BALANCER_SCORE_API_ENABLED": "false"},
     )
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "0"
+    assert out.stdout.split() == ["1", "1", "1"]
+
+
+def test_render_defaults_enable_self_consume_and_disable_live_push_posts():
+    """Auf Render (RENDER=true) muessen die Code-Defaults wirken, weil der
+    Blueprint-Env-Sync neue Keys nicht zuverlaessig anlegt."""
+    import os, subprocess, sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import app.config as c; print(int(c.PUSH_BALANCER_SCORE_API_ENABLED),"
+         " int(c.PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED), c.PUSH_BALANCER_SCORE_API_BASE_URL)"],
+        capture_output=True, text=True, cwd=root, timeout=60,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root,
+             "RENDER": "true", "PORT": "8050"},
+    )
+    assert out.returncode == 0, out.stderr
+    parts = out.stdout.split()
+    assert parts[0] == "1", "Selbstkonsum muss auf Render aktiv sein"
+    assert parts[1] == "0", "Live-Push-Posts muessen aus sein"
+    assert parts[2] == "http://127.0.0.1:8050"
