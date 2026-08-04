@@ -59,12 +59,13 @@ services:
         value: "16"
       - key: PUSH_BALANCER_SCORE_API_MAX_RETRIES
         value: "1"
-      # Render ist wieder aktiver Teams-Sender: der Next/K8s-Pod liefert nicht
-      # (Outbound gestoert), und ohne Sender kommen keine Empfehlungen im Kanal
-      # an. Sobald Next verifiziert laeuft, hier zurueck auf "false".
-      # KURZPAUSE nach Doppelpost-Korrektur (User-Wunsch): Sender bis ~09:20
-      # aus; Wiedereinschalten stellt den normalen Tagesrhythmus wieder her.
+      # Render ist aktiver Teams-Sender: der Next/K8s-Pod liefert nicht
+      # (Outbound gestoert). Sobald Next verifiziert laeuft, hier auf "false".
       - key: PUSH_TEAMS_ALERTS_ENABLED
+        value: "true"
+      # Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04):
+      # 🔴 LIVE-PUSH-GESENDET-Posts sind abgeschaltet.
+      - key: PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED
         value: "false"
       - key: PUSH_TEAMS_WEBHOOK_URL
         sync: false
