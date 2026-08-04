@@ -290,16 +290,17 @@ def test_runtime_environment_variables_are_documented_for_handover():
 
 
 def test_legacy_capture_frontend_stays_out_of_the_score_runtime_image():
-    """Die Legacy-Capture-UI bleibt bewusst im Repo: sie ist die einzige Quelle
-    der Browser-Score-Erfassung (POST /api/score-capture) und wird nur vom
-    Render-Deployment (Dockerfile.render) ausgeliefert. Das kontraktgebundene
-    Score-Runtime-Image (./Dockerfile) bleibt frei davon."""
+    """Render-Fork-Realitaet: ./Dockerfile ist hier das Render-Deployment und
+    liefert die Legacy-Capture-UI (einzige Quelle der Browser-Score-Erfassung,
+    POST /api/score-capture) mit aus. Das kontraktgebundene Score-Runtime-Image
+    ohne diese UI lebt im canonical-next-Repo; der Render-Service haengt per
+    Dashboard fest an ./Dockerfile (kein Blueprint-Sync)."""
     repo_root = Path(__file__).resolve().parents[1]
 
     assert (repo_root / "push-balancer.html").exists()
 
     score_dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY push-balancer.html ./push-balancer.html" not in score_dockerfile
+    assert "COPY push-balancer.html ./push-balancer.html" in score_dockerfile
 
     render_dockerfile = (repo_root / "Dockerfile.render").read_text(encoding="utf-8")
     assert "COPY push-balancer.html ./push-balancer.html" in render_dockerfile
