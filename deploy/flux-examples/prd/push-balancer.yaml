@@ -1,0 +1,116 @@
+# Fail-closed Flux scaffold for https://github.com/spring-media/next-push.balancer
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: push-balancer
+  namespace: bildnext
+spec:
+  releaseName: push-balancer
+  interval: 5m
+  chart:
+    spec:
+      chart: next-push-balancer-chart
+      version: "0.1.59"
+      sourceRef:
+        name: next-helm-charts
+        kind: HelmRepository
+        namespace: flux-system
+  values:
+    # Keep a single replica until score-state parity and stateless operation
+    # have been approved for horizontal scaling.
+    replicaCount: 1
+    image: ghcr.io/spring-media/next-push.balancer
+    tag: 0.1.59 # {"$imagepolicy": "bildnext:push-balancer:tag"}
+    digest: "" # Set the approved release digest before activation.
+    imagePullPolicy: IfNotPresent
+    imagePullSecrets:
+      - name: ghcr-imagepull-secret
+    imagePullSecret:
+      enabled: true
+      name: ghcr-imagepull-secret
+      refreshInterval: 5m
+      secretStoreRef:
+        name: example-parameter-store
+        kind: ClusterSecretStore
+      remoteRef:
+        key: /example/project/github/imagepullsecret
+    serviceAccount:
+      create: true
+      annotations: {}
+      name: "bildnext-push-balancer"
+    service:
+      type: ClusterIP
+      port: 8050
+      targetPort: 8050
+    ingress:
+      # Fail closed. Enable only after the private ingress, TLS/mTLS and
+      # NetworkPolicy gates in deploy/README.md are approved and configured.
+      enabled: false
+      rolloutGateApproved: false
+      requireTls: true
+      className: ""
+      annotations: {}
+      hosts:
+        # Replace with the production ingress host in your cluster environment.
+        - host: push-balancer.example.invalid
+          paths:
+            - path: /api/v1/scores
+              pathType: Prefix
+      tls: []
+    reloader:
+      enabled: true
+    persistence:
+      enabled: false
+    configMapName: push-balancer-config
+    secretName: push-balancer-secret
+    config:
+      ASGI_APP: "app.score_main:app"
+      PUSH_API_BASE: ""
+      URL_API_BASE: "https://url-server.example.invalid"
+      BACKGROUND_AUTOMATIONS_ENABLED: "false"
+      HEALTH_ACTIVE_CHECKS_ENABLED: "false"
+      PUSH_LIVE_FETCH_ENABLED: "false"
+      LIVE_FEED_FALLBACK_ENABLED: "false"
+      RESEARCH_EXTERNAL_CONTEXT_ENABLED: "false"
+      ARTICLE_PREDICTION_ENRICHMENT_ENABLED: "true"
+      TAGESPLAN_ON_DEMAND_BUILD_ENABLED: "false"
+      PAID_EXTERNAL_APIS_ENABLED: "false"
+      INTERNAL_ACCESS_ENABLED: "true"
+      INTERNAL_ACCESS_ALLOWED_CIDRS: "127.0.0.1/32,::1/128"
+      INTERNAL_ACCESS_EXEMPT_PATHS: "/api/health"
+      TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128"
+    externalSecret:
+      enabled: true
+      refreshInterval: "5m"
+      secretStoreRef:
+        # Replace with the ClusterSecretStore available in production.
+        name: example-secret-manager
+        kind: ClusterSecretStore
+      data:
+        - secretKey: SCORE_API_KEY
+          remoteRef:
+            key: /example/project/push-balancer/score-api-key
+        - secretKey: URL_API_KEY
+          remoteRef:
+            key: /example/project/push-balancer/url-api-key
+    networkPolicy:
+      # Default deny. Replace both lists with target-cluster selectors/rules;
+      # do not disable the policy to make the service reachable.
+      enabled: true
+      policyTypes:
+        - Ingress
+        - Egress
+      ingress: []
+      egress: []
+    flux:
+      enabled: true
+      namespace: bildnext
+      imagerepository:
+        interval: "1m"
+        secretRefName: ghcr-imagepull-secret
+      imagepolicy:
+        filterTags:
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+        policy:
+          semver:
+            range: '^0.x.x'

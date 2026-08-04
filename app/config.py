@@ -79,6 +79,23 @@ BACKGROUND_AUTOMATIONS_ENABLED: bool = _env_flag(
     "BACKGROUND_AUTOMATIONS_ENABLED",
     False,
 )
+# Push-Auto-Fetch (bildcms.de → Push-Historie) getrennt schaltbar von den
+# schweren Research-/ML-Workern. So kann eine Instanz im AS-Netz (z.B. der
+# Next-Pod) Push-Daten 24/7 selbst ziehen, OHNE die CPU-intensiven Research-
+# Automationen zu aktivieren. Default = BACKGROUND_AUTOMATIONS_ENABLED
+# (rückwärtskompatibel: bestehende Deploys ändern ihr Verhalten nicht).
+PUSH_AUTO_FETCH_ENABLED: bool = _env_flag(
+    "PUSH_AUTO_FETCH_ENABLED",
+    BACKGROUND_AUTOMATIONS_ENABLED,
+)
+# Render-Sync (Push-Historie -> Render-Relay) getrennt schaltbar. So kann der
+# Next-Pod (im AS-Netz, mit AutoFetch) Render 24/7 selbst füttern und damit den
+# lokalen Mac-Relay ersetzen. Default = BACKGROUND_AUTOMATIONS_ENABLED
+# (rückwärtskompatibel). Braucht zusätzlich RENDER_SYNC_URL + PUSH_SYNC_SECRET.
+PUSH_RENDER_SYNC_ENABLED: bool = _env_flag(
+    "PUSH_RENDER_SYNC_ENABLED",
+    BACKGROUND_AUTOMATIONS_ENABLED,
+)
 HEALTH_ACTIVE_CHECKS_ENABLED: bool = _env_flag(
     "HEALTH_ACTIVE_CHECKS_ENABLED",
     False,
@@ -143,6 +160,12 @@ OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY: int = _env_int(
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")
+URL_API_BASE: str = os.environ.get("URL_API_BASE", "").rstrip("/")
+URL_API_KEY: str = os.environ.get("URL_API_KEY", "")
+PUBLIC_ARTICLE_BASE_URL: str = os.environ.get(
+    "PUBLIC_ARTICLE_BASE_URL",
+    "https://www.bild.de",
+).rstrip("/")
 
 
 def push_api_base_candidates() -> list[str]:
@@ -213,6 +236,9 @@ PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS: int = _env_int(
     "PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS",
     180,
 )
+# On-Demand-Tagesplan-Builds sind im Economy-Betrieb deaktiviert; der Endpoint
+# liefert dann ein leichtes Loading-Payload statt eines teuren Rebuilds.
+TAGESPLAN_ON_DEMAND_BUILD_ENABLED: bool = _env_flag("TAGESPLAN_ON_DEMAND_BUILD_ENABLED", False)
 # ── Dateipfade ─────────────────────────────────────────────────────────────
 SERVE_DIR: str = os.path.join(_APP_DIR, "dist-frontend")  # React App Build
 # DB_PATH env var → Render nutzt /data (persistent disk), lokal .push_history.db
@@ -390,13 +416,18 @@ ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 # Wenn nicht gesetzt, bleiben die Consumer-Endpunkte deaktiviert.
 CONSUMER_API_KEY: str = os.environ.get("CONSUMER_API_KEY", "")
 
+# Dedicated least-privilege credential for the CMS-ID score lookup.
+SCORE_API_KEY: str = os.environ.get("SCORE_API_KEY", "")
+
 # ── Dev Mode (Tunnel-Wildcards für CORS nur im lokalen Betrieb) ────────────
 DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")
 
 
 # ── Interner Zugriff / Netzwerk-Allowlist ─────────────────────────────────
 # Auf Render ist der Browser-Zugriff standardmäßig eingeschränkt, bis
-# die erlaubten AS-/VPN-Egress-CIDRs explizit gesetzt wurden.
+# die erlaubten AS-/VPN-Egress-CIDRs explizit gesetzt wurden. FORCE_INTERNAL_ACCESS
+# erzwingt die Allowlist zusaetzlich in der Score-API-Laufzeit (app.score_main).
+FORCE_INTERNAL_ACCESS: bool = _env_flag("FORCE_INTERNAL_ACCESS", False)
 INTERNAL_ACCESS_ENABLED: bool = _env_flag("INTERNAL_ACCESS_ENABLED", IS_RENDER)
 INTERNAL_ACCESS_ALLOWED_CIDRS: list[str] = _csv_env(
     "INTERNAL_ACCESS_ALLOWED_CIDRS",
@@ -415,15 +446,13 @@ SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS: list[str] = _csv_env(
 )
 
 # ── Microsoft Teams Push Recommendation Alerts ─────────────────────────────
-# Reaktiviert: Render ist wieder aktiver Teams-Sender, bis der Next/K8s-Pod
-# verifiziert liefert (sein Outbound ist gestoert, seit dem Hard-Disable hier
-# postete niemand mehr). Gesteuert ueber render.yaml, nicht ueber alte
-# Dashboard-Overrides — render.yaml ist die einzige Quelle fuer diesen Wert.
+# Disabled by default. Enabling this sends selected article metadata to the
+# configured Teams/Power Automate endpoint and requires editorial/privacy approval.
 PUSH_TEAMS_ALERTS_ENABLED: bool = _env_flag("PUSH_TEAMS_ALERTS_ENABLED", False)
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
-# Kanonischer Push-Score fuer die Teams-Auswahl. Der Consumer bleibt bis zur
-# dokumentierten Privacy-/Product-Freigabe aus; bei Aktivierung gibt es keinen
-# lokalen Score-Fallback.
+# Kanonischer Push-Score fuer die Teams-Auswahl. In Produktion (render.yaml)
+# auf Anweisung des Product Owners aktiviert (2026-07-29); lokal default aus.
+# Fail-closed: bei Aktivierung gibt es keinen lokalen Score-Fallback.
 PUSH_BALANCER_SCORE_API_ENABLED: bool = _env_flag(
     "PUSH_BALANCER_SCORE_API_ENABLED",
     False,
@@ -436,9 +465,24 @@ PUSH_BALANCER_SCORE_API_KEY: str = os.environ.get(
     "PUSH_BALANCER_SCORE_API_KEY",
     "",
 ).strip()
+# Selbst-Konsum (Render): Zeigt die Score-API-Basis-URL auf die eigene Instanz
+# (Loopback), ist der eigene Server-Key SCORE_API_KEY per Definition der
+# richtige Consumer-Key — er gewinnt dann immer. Das macht die kanonische
+# Top-1 auf der Instanz möglich, die den Score selbst berechnet, ohne einen
+# separat synchronisierten Consumer-Key. Auf Next (externe Basis-URL) ändert
+# sich nichts.
+_score_api_host = urlsplit(PUSH_BALANCER_SCORE_API_BASE_URL).hostname or ""
+if _score_api_host in ("127.0.0.1", "localhost", "::1") and SCORE_API_KEY:
+    PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
+elif not PUSH_BALANCER_SCORE_API_KEY:
+    PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
 PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS: float = _env_float(
     "PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS",
     2.5,
+)
+PUSH_BALANCER_SCORE_API_BATCH_TIMEOUT_SECONDS: float = _env_float(
+    "PUSH_BALANCER_SCORE_API_BATCH_TIMEOUT_SECONDS",
+    35.0,
 )
 PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS: float = _env_float(
     "PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS",
@@ -446,7 +490,7 @@ PUSH_BALANCER_SCORE_API_CACHE_TTL_SECONDS: float = _env_float(
 )
 PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS: int = _env_int(
     "PUSH_BALANCER_SCORE_API_MAX_AGE_SECONDS",
-    900,
+    8 * 3600,
 )
 PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY: int = _env_int(
     "PUSH_BALANCER_SCORE_API_MAX_CONCURRENCY",
@@ -530,10 +574,14 @@ PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD: float = _env_float(
     "PUSH_TEAMS_HIGH_SCORE_ALWAYS_THRESHOLD",
     80.0,
 )
-# Nicht konfigurierbare Produktregel: Teams-Empfehlungen haben einen eigenen
-# Takt. Eine identische bereits live gepushte Artikel-URL oder CMS-ID bleibt gesperrt.
-PUSH_TEAMS_INDEPENDENT_PACING_ENABLED: bool = True
-_DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = "News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport"
+# Nicht konfigurierbare Produktregel: Alle tatsaechlich gesendeten Live-Pushes
+# zaehlen zum Tagesvolumen und steuern Pacing, Mindestabstand und Tageslimit der
+# Teams-Empfehlungen. Eine identische bereits live gepushte Artikel-URL oder
+# CMS-ID bleibt zusaetzlich gesperrt.
+PUSH_TEAMS_INDEPENDENT_PACING_ENABLED: bool = False
+_DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS = (
+    "News,Politik,Wirtschaft,Geld,Regional,Digital,Unterhaltung,Sport,Leben-Wissen"
+)
 PUSH_TEAMS_ALLOWED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_ALLOWED_SECTIONS",
     _DEFAULT_PUSH_TEAMS_ALLOWED_SECTIONS,
@@ -545,15 +593,22 @@ PUSH_TEAMS_EXCLUDED_SECTIONS: list[str] = _csv_env(
     "PUSH_TEAMS_EXCLUDED_SECTIONS",
     "",
 )
-# Eigenes Tagesziel fuer Teams-Empfehlungen und dynamische Schwellenanpassung.
-# Der echte Push-Bestand beeinflusst weder Pacing noch Cooldown.
-PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 15)
-PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 15)
-PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 18)
+# Public article URLs that were recommended through an approved operational
+# recovery outside the application transport. They participate only in exact
+# Teams deduplication and contain no recipient or employee data.
+PUSH_TEAMS_EXTERNALLY_RECOMMENDED_URLS: list[str] = _csv_env(
+    "PUSH_TEAMS_EXTERNALLY_RECOMMENDED_URLS",
+    "",
+)
+# Tagesvolumen: mindestens 11, maximal 15 Pushes pro Tag. Alle gesendeten
+# Live-Pushes zaehlen mit; das Pacing arbeitet auf dem echten Push-Bestand.
+PUSH_TEAMS_TARGET_PUSHES_PER_DAY: int = _env_int("PUSH_TEAMS_TARGET_PUSHES_PER_DAY", 11)
+PUSH_TEAMS_MIN_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MIN_ALERTS_PER_DAY", 11)
+PUSH_TEAMS_MAX_ALERTS_PER_DAY: int = _env_int("PUSH_TEAMS_MAX_ALERTS_PER_DAY", 15)
 # Redaktioneller Tagesplan fuer Teams: nicht jeder Slot muss ein Sofort-Alert sein,
 # aber der CvD soll einen vollstaendigen, transparent priorisierten Tagesplan sehen.
-PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 15)
-PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS", 18)
+PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MIN_ITEMS", 11)
+PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS", 15)
 # Verbindliche Live-Entscheidungslogik: 06:15 und 06:45 sind taegliche
 # Basisfenster. Jede rote/gelbe Wochentagszelle bekommt ebenfalls zwei frische
 # Top-1-Entscheidungen um :15 und :45. Bis mindestens 15 werden die besten
@@ -561,6 +616,21 @@ PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS: int = _env_int("PUSH_TEAMS_DAILY_PLAN_MAX_ITEMS
 PUSH_TEAMS_SLOT_GATE_ENABLED: bool = _env_flag("PUSH_TEAMS_SLOT_GATE_ENABLED", True)
 PUSH_TEAMS_SLOT_DEADLINE_MINUTE: int = _env_int("PUSH_TEAMS_SLOT_DEADLINE_MINUTE", 45)
 PUSH_TEAMS_PEAK_SLOT_MIN_OR: float = _env_float("PUSH_TEAMS_PEAK_SLOT_MIN_OR", 6.0)
+# Date-scoped recovery delay for the remaining binding slots after a late
+# operational recovery.  The date makes the override self-expiring so the
+# normal deterministic schedule resumes automatically on the next day.
+PUSH_TEAMS_SLOT_DELAY_DATE: str = os.environ.get(
+    "PUSH_TEAMS_SLOT_DELAY_DATE",
+    "",
+).strip()
+PUSH_TEAMS_SLOT_DELAY_FROM: str = os.environ.get(
+    "PUSH_TEAMS_SLOT_DELAY_FROM",
+    "",
+).strip()
+PUSH_TEAMS_SLOT_DELAY_MINUTES: int = _env_int(
+    "PUSH_TEAMS_SLOT_DELAY_MINUTES",
+    0,
+)
 PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE: float = _env_float(
     "PUSH_TEAMS_EARLY_EXCEPTIONAL_SCORE",
     88.0,
@@ -595,13 +665,12 @@ PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME: str = os.environ.get(
     "PUSH_TEAMS_DAILY_SCHEDULE_SEND_TIME",
     "05:45",
 )
-# Heartbeat/Mindest-Kadenz: Der Teams-Channel soll nie laenger als
-# PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES still sein. Ist seit dieser Zeit kein
-# Post rausgegangen und liegt kein Kandidat ueber der Alarm-Schwelle, wird der
-# beste aktuell zulaessige Kandidat als klar markierter Fallback gepostet.
+# Legacy Heartbeat-Konfiguration bleibt nur fuer rueckwaertskompatible Deployments
+# lesbar. Artikel-Heartbeats sind durch die Versand-Policy hart gesperrt: Eine
+# Empfehlung darf ausschliesslich den regulaeren Slot- und Freigabepfad nutzen.
 PUSH_TEAMS_HEARTBEAT_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_HEARTBEAT_ENABLED",
-    True,
+    False,
 )
 PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES: int = _env_int(
     "PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES",
@@ -613,6 +682,74 @@ PUSH_TEAMS_HEARTBEAT_MAX_SILENCE_MINUTES: int = _env_int(
 # darf die eskalierende Story regulaer als Hard-Alert erneut in den Channel.
 PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN: float = float(
     _env_int("PUSH_TEAMS_HEARTBEAT_ESCALATION_MARGIN", 8)
+)
+# Nachrichtentyp 2: Jeder tatsaechlich versendete Live-Push der Redaktion wird
+# als eigene Teams-Nachricht gespiegelt und fliesst sofort in die weitere Planung.
+PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED: bool = _env_flag(
+    "PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED",
+    True,
+)
+# Nur Live-Pushes, die juenger als dieses Fenster sind, werden noch als Nachricht
+# gepostet (aeltere zaehlen trotzdem zum Tagesvolumen). Verhindert eine Flut
+# historischer Posts nach Neustart oder Ausfall.
+PUSH_TEAMS_LIVE_PUSH_POST_LOOKBACK_MINUTES: int = _env_int(
+    "PUSH_TEAMS_LIVE_PUSH_POST_LOOKBACK_MINUTES",
+    90,
+)
+PUSH_TEAMS_LIVE_PUSH_POSTS_PER_CYCLE: int = _env_int(
+    "PUSH_TEAMS_LIVE_PUSH_POSTS_PER_CYCLE",
+    3,
+)
+# Zustellungs-Robustheit: transiente Webhook-Fehler (Timeout, Verbindungsabbruch,
+# 408/429/5xx) werden mit exponentiellem Backoff wiederholt. Permanente 4xx
+# werden nicht wiederholt. Schlaegt der Versand endgueltig fehl, bleibt der
+# Kandidat nur kurz gesperrt (statt den ganzen Tag), damit ein Netzwerk-Blip
+# keine Story verbrennt.
+PUSH_TEAMS_WEBHOOK_MAX_ATTEMPTS: int = _env_int("PUSH_TEAMS_WEBHOOK_MAX_ATTEMPTS", 3)
+PUSH_TEAMS_WEBHOOK_RETRY_BACKOFF_SECONDS: float = _env_float(
+    "PUSH_TEAMS_WEBHOOK_RETRY_BACKOFF_SECONDS",
+    1.5,
+)
+PUSH_TEAMS_TRANSPORT_FAILURE_COOLDOWN_MINUTES: int = _env_int(
+    "PUSH_TEAMS_TRANSPORT_FAILURE_COOLDOWN_MINUTES",
+    20,
+)
+# Watchdog: laeuft laenger als diese Frist kein Worker-Zyklus, gilt der Kanal
+# als gestoert (Health degraded) und der Supervisor startet den Thread neu.
+PUSH_TEAMS_WORKER_STALL_SECONDS: int = _env_int("PUSH_TEAMS_WORKER_STALL_SECONDS", 600)
+
+# Timeliness-Eskalation: eine brandaktuelle Top-Story (hoher Push-Balancer-Score
+# UND sehr frisch veroeffentlicht) darf sofort raus, ohne auf den naechsten
+# Raster-Slot zu warten. Das ist bewusst an Qualitaet + Frische gekoppelt und
+# NIE an Volumendruck - so bleibt der Off-Raster-Schutz gegen schwache Fueller
+# unangetastet. Ein Live-Event (z. B. eine Parade) ist damit schnell, ohne dass
+# eine formale Eilmeldung noetig ist.
+PUSH_TEAMS_HOT_FRESH_ENABLED: bool = _env_flag("PUSH_TEAMS_HOT_FRESH_ENABLED", True)
+PUSH_TEAMS_HOT_FRESH_MIN_SCORE: float = _env_float("PUSH_TEAMS_HOT_FRESH_MIN_SCORE", 85.0)
+PUSH_TEAMS_HOT_FRESH_MAX_AGE_MINUTES: float = _env_float(
+    "PUSH_TEAMS_HOT_FRESH_MAX_AGE_MINUTES",
+    20.0,
+)
+# Eskalation nur, wenn der naechste Raster-Slot weiter als dieser Abstand
+# entfernt ist - eine brandaktuelle Story soll nicht stundenlang warten, aber
+# wenn der naechste Slot ohnehin bald kommt, altert sie kaum. Trennt das
+# Live-Event (grosse Luecke) sauber vom normalen Takt (kleine Luecke).
+PUSH_TEAMS_HOT_FRESH_MIN_GAP_MINUTES: float = _env_float(
+    "PUSH_TEAMS_HOT_FRESH_MIN_GAP_MINUTES",
+    180.0,
+)
+# Sport-Zielkorridor: ungefaehr ein Drittel des Tagesvolumens (4-5 von 11-15).
+# Weicher Korridor, keine starre Pflicht. Die Praeferenz-Bandbreite begrenzt,
+# wie viele Score-Punkte ein Sport-Kandidat maximal schwaecher sein darf, um bei
+# Unterdeckung dennoch vorgezogen zu werden - ein deutlich staerkerer News-Push
+# wird nie verdraengt.
+PUSH_TEAMS_SPORT_MIN_PER_DAY: int = _env_int("PUSH_TEAMS_SPORT_MIN_PER_DAY", 4)
+PUSH_TEAMS_SPORT_MAX_PER_DAY: int = _env_int("PUSH_TEAMS_SPORT_MAX_PER_DAY", 5)
+PUSH_TEAMS_SPORT_SHARE_LOW: float = _env_float("PUSH_TEAMS_SPORT_SHARE_LOW", 0.27)
+PUSH_TEAMS_SPORT_SHARE_HIGH: float = _env_float("PUSH_TEAMS_SPORT_SHARE_HIGH", 0.40)
+PUSH_TEAMS_SPORT_PREFERENCE_BAND: float = _env_float(
+    "PUSH_TEAMS_SPORT_PREFERENCE_BAND",
+    4.0,
 )
 # LLM-Slot-Fit: Vor dem Versand prueft ein LLM, ob der empfohlene Push inhaltlich
 # in den AKTUELLEN Zeitslot passt oder auf eine spaetere Hot Hour warten sollte
@@ -736,9 +873,10 @@ PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE: float = _env_float(
     "PUSH_TEAMS_DYNAMIC_THRESHOLD_MAX_RISE",
     14.0,
 )
-# Aktives Push-Fenster (Berlin-Stunden) fuer die Pace-Berechnung des Tagesziels.
+# Aktives Push-Fenster (Berlin-Stunden) fuer Slot-Planung und Pace-Berechnung.
+# Ende 22: die letzte planbare Stunde ist 22:xx, ab 23:00 gilt die Ruhezeit.
 PUSH_TEAMS_ACTIVE_HOURS_START: int = _env_int("PUSH_TEAMS_ACTIVE_HOURS_START", 6)
-PUSH_TEAMS_ACTIVE_HOURS_END: int = _env_int("PUSH_TEAMS_ACTIVE_HOURS_END", 23)
+PUSH_TEAMS_ACTIVE_HOURS_END: int = _env_int("PUSH_TEAMS_ACTIVE_HOURS_END", 22)
 PUSH_TEAMS_BREAKING_OVERRIDE: bool = _env_flag("PUSH_TEAMS_BREAKING_OVERRIDE", True)
 PUSH_TEAMS_BREAKING_MIN_SCORE: float = _env_float("PUSH_TEAMS_BREAKING_MIN_SCORE", 72.0)
 PUSH_TEAMS_BREAKING_MIN_OR: float = _env_float("PUSH_TEAMS_BREAKING_MIN_OR", 4.0)
@@ -750,5 +888,7 @@ PUSH_TEAMS_MAX_ARTICLE_AGE_HOURS: int = _env_int("PUSH_TEAMS_MAX_ARTICLE_AGE_HOU
 PUSH_TEAMS_MAX_PUSHES_LAST_6H: int = _env_int("PUSH_TEAMS_MAX_PUSHES_LAST_6H", 8)
 PUSH_TEAMS_CHECK_INTERVAL_SECONDS: int = _env_int("PUSH_TEAMS_CHECK_INTERVAL_SECONDS", 60)
 PUSH_TEAMS_CANDIDATE_LIMIT: int = _env_int("PUSH_TEAMS_CANDIDATE_LIMIT", 80)
-
-# Build-Trigger 2026-08-04: Render-Deploy des Teams-Reaktivierungs-Fix (#18) erzwingen.
+TRUSTED_PROXY_CIDRS: list[str] = _csv_env(
+    "TRUSTED_PROXY_CIDRS",
+    "127.0.0.1/32,::1/128",
+)

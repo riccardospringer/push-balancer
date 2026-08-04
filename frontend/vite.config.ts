@@ -1,21 +1,30 @@
+import fs from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
-export default defineConfig(() => ({
-  base: '/',
+const editorialOneUiInstalled = fs.existsSync(
+  path.resolve(__dirname, './node_modules/@spring-media/editorial-one-ui/package.json'),
+)
+
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/dist-frontend/' : '/',
   plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@spring-media/editorial-one-ui/fonts.css': path.resolve(
-        __dirname,
-        './src/editorial-one-ui-shim/fonts.css',
-      ),
-      '@spring-media/editorial-one-ui': path.resolve(
-        __dirname,
-        './src/editorial-one-ui-shim/index.tsx',
-      ),
+      ...(!editorialOneUiInstalled
+        ? {
+            '@spring-media/editorial-one-ui/fonts.css': path.resolve(
+              __dirname,
+              './src/editorial-one-ui-shim/fonts.css',
+            ),
+            '@spring-media/editorial-one-ui': path.resolve(
+              __dirname,
+              './src/editorial-one-ui-shim/index.tsx',
+            ),
+          }
+        : {}),
     },
   },
   server: {

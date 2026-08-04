@@ -582,6 +582,21 @@ def init_db() -> None:
         "ON teams_daily_schedule_sends(sent_at)"
     )
 
+    # Genau eine Teams-Nachricht "Live-Push gesendet" pro echtem Live-Push.
+    # Der persistente Claim verhindert Doppelposts bei Restart oder mehreren Workern.
+    conn.execute("""CREATE TABLE IF NOT EXISTS teams_live_push_posts (
+        message_id TEXT PRIMARY KEY,
+        push_ts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT '',
+        claimed_at INTEGER DEFAULT 0,
+        posted_at INTEGER DEFAULT 0,
+        last_error TEXT DEFAULT ''
+    )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_teams_live_push_posts_ts "
+        "ON teams_live_push_posts(push_ts)"
+    )
+
     # ML v2: LLM-Score Spalten (idempotent via ALTER TABLE)
     _llm_columns = [
         ("llm_magnitude", "REAL DEFAULT 0"),
@@ -1179,6 +1194,7 @@ def teams_alert_try_claim_send(
     global_cooldown_minutes: int = 30,
     in_progress_cooldown_minutes: int = 15,
     failed_cooldown_minutes: int = 720,
+    transport_failure_cooldown_minutes: int = 20,
 ) -> dict:
     """Atomically reserve one Teams send before calling the external webhook."""
     if not article_key:
@@ -1188,6 +1204,7 @@ def teams_alert_try_claim_send(
     global_cooldown_seconds = max(0, int(global_cooldown_minutes or 0)) * 60
     in_progress_seconds = max(60, int(in_progress_cooldown_minutes or 15) * 60)
     failed_cooldown_seconds = max(0, int(failed_cooldown_minutes or 0)) * 60
+    transport_failure_seconds = max(0, int(transport_failure_cooldown_minutes or 0)) * 60
 
     with _push_db_lock:
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=30, isolation_level=None)
@@ -1214,6 +1231,16 @@ def teams_alert_try_claim_send(
                     conn.execute("ROLLBACK")
                     return {"claimed": False, "reason": "article_already_sent"}
                 if (
+                    existing_status == "transport_failed"
+                    and existing_decision_ts
+                    and transport_failure_seconds > 0
+                    and now - existing_decision_ts < transport_failure_seconds
+                ):
+                    # Nur kurze Sperre: ein Netzwerk-Blip darf die Story nicht
+                    # fuer den Rest des Tages aus dem Kanal nehmen.
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "article_transport_cooldown"}
+                if (
                     existing_status == "failed"
                     and existing_decision_ts
                     and failed_cooldown_seconds > 0
@@ -1231,7 +1258,7 @@ def teams_alert_try_claim_send(
                            END
                        ) AS message_ts
                        FROM teams_alerts
-                       WHERE status IN ('sent', 'sending', 'failed')"""
+                       WHERE status IN ('sent', 'sending', 'failed', 'transport_failed')"""
                 ).fetchone()
                 if global_row:
                     global_ts = int(global_row["message_ts"] or 0)
@@ -1665,6 +1692,105 @@ def teams_daily_schedule_record(
                 now,
                 sent_at,
                 max(0, int(item_count or 0)),
+                str(error or "")[:500],
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+
+def teams_live_push_post_try_claim(
+    message_id: str,
+    *,
+    push_ts: int,
+    now_ts: int | None = None,
+    retry_cooldown_minutes: int = 30,
+) -> dict:
+    """Atomically reserve the one Teams post for a single live push."""
+    key = str(message_id or "").strip()
+    if not key:
+        return {"claimed": False, "reason": "missing_message_id"}
+    now = int(now_ts or time.time())
+    retry_seconds = max(60, int(retry_cooldown_minutes or 30) * 60)
+
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM teams_live_push_posts WHERE message_id = ?",
+                (key,),
+            ).fetchone()
+            if existing:
+                status = str(existing["status"] or "")
+                claimed_at = int(existing["claimed_at"] or 0)
+                if status.startswith("skipped") or status == "sent":
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": f"already_{status}"}
+                if status in {"sending", "failed"} and now - claimed_at < retry_seconds:
+                    conn.execute("ROLLBACK")
+                    return {"claimed": False, "reason": "retry_cooldown"}
+
+            conn.execute(
+                """INSERT INTO teams_live_push_posts (
+                       message_id, push_ts, status, claimed_at, posted_at, last_error
+                   ) VALUES (?, ?, 'sending', ?, 0, '')
+                   ON CONFLICT(message_id) DO UPDATE SET
+                       status = 'sending',
+                       push_ts = excluded.push_ts,
+                       claimed_at = excluded.claimed_at,
+                       last_error = ''""",
+                (key, int(push_ts or 0), now),
+            )
+            conn.execute("COMMIT")
+            return {"claimed": True, "reason": "claimed"}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def teams_live_push_post_record(
+    message_id: str,
+    *,
+    push_ts: int,
+    status: str,
+    error: str = "",
+    now_ts: int | None = None,
+) -> None:
+    """Persist the final post state for one live push announcement."""
+    key = str(message_id or "").strip()
+    if not key:
+        return
+    now = int(now_ts or time.time())
+    posted_at = now if status == "sent" else 0
+    with _push_db_lock:
+        conn = sqlite3.connect(PUSH_DB_PATH)
+        conn.execute(
+            """INSERT INTO teams_live_push_posts (
+                   message_id, push_ts, status, claimed_at, posted_at, last_error
+               ) VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(message_id) DO UPDATE SET
+                   status = excluded.status,
+                   push_ts = excluded.push_ts,
+                   claimed_at = CASE
+                       WHEN teams_live_push_posts.claimed_at > 0
+                       THEN teams_live_push_posts.claimed_at
+                       ELSE excluded.claimed_at
+                   END,
+                   posted_at = excluded.posted_at,
+                   last_error = excluded.last_error""",
+            (
+                key,
+                int(push_ts or 0),
+                str(status or "")[:32],
+                now,
+                posted_at,
                 str(error or "")[:500],
             ),
         )

@@ -52,6 +52,19 @@ def get_health() -> JSONResponse:
     status = "healthy" if raw_status == "ok" else raw_status
     if status not in {"healthy", "degraded", "unhealthy"}:
         status = "unhealthy"
+    teams_channel: dict = {}
+    try:
+        from app.notifications.teams import TeamsAlertConfig, channel_health
+
+        teams_config = TeamsAlertConfig()
+        teams_channel = channel_health(teams_config)
+        # Ein stehender oder dauerhaft scheiternder Teams-Kanal darf nicht als
+        # "healthy" durchgehen - sonst bleibt Stille unbemerkt.
+        if teams_config.enabled and not teams_channel.get("healthy"):
+            raw_status = "degraded"
+    except Exception as exc:  # pragma: no cover - reine Diagnose
+        teams_channel = {"status": "unknown", "error": type(exc).__name__}
+
     endpoints = _health_state.get("endpoints", {})
     checks = {
         key: {
@@ -112,6 +125,18 @@ def get_health() -> JSONResponse:
         "endpoints": endpoints,
         "researchDataPoints": len(_research_state.get("push_data", [])),
         "researchLastAnalysis": _research_state.get("last_analysis", 0),
+        "teamsChannel": {
+            "status": teams_channel.get("status", "unknown"),
+            "healthy": bool(teams_channel.get("healthy", True)),
+            "reason": teams_channel.get("reason") or "",
+            "cycleAgeSeconds": teams_channel.get("cycleAgeSeconds"),
+            "cycleCount": teams_channel.get("cycleCount", 0),
+            "workerRestarts": teams_channel.get("workerRestarts", 0),
+            "consecutiveTransportFailures": teams_channel.get(
+                "consecutiveTransportFailures", 0
+            ),
+            "lastSendTs": teams_channel.get("lastSendTs", 0),
+        },
     })
 
 
@@ -147,3 +172,155 @@ def get_memory_stats() -> JSONResponse:
         "last_cleanup_ago_s": last_cleanup_ago,
         "push_data_count": len(s.get("push_data", [])),
     })
+
+
+@router.get("/api/teams-readiness", include_in_schema=False)
+def get_teams_readiness() -> JSONResponse:
+    """Live-Nachweis: sind alle Voraussetzungen des Teams-Kanals erfuellt?
+
+    Prueft die reale Kette (Kandidatenfeld inkl. Score-API, Push-Historie,
+    Slot-Planung, Ruhezeit, Webhook-Konfiguration) gegen die laufende Instanz.
+    """
+    import datetime as dt
+    import time as _time
+    from zoneinfo import ZoneInfo
+
+    from app.notifications.teams import (
+        TeamsAlertConfig,
+        _daily_runtime_opportunities,
+        _quiet_hours_reason,
+        build_teams_alert_context,
+    )
+
+    now_ts = int(_time.time())
+    config = TeamsAlertConfig()
+    berlin_now = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin"))
+
+    score_api: dict = {"enabled": bool(config.require_internal_score_api)}
+    candidates: list = []
+    try:
+        from app.routers.feed import build_articles_payload
+
+        payload = build_articles_payload(
+            offset=0,
+            limit=12,
+            include_teams_decisions=False,
+            use_internal_score_api=config.require_internal_score_api,
+        )
+        candidates = payload.get("articles") or []
+        sources: dict[str, int] = {}
+        for item in candidates:
+            source = str(item.get("scoreSource") or "unknown")
+            sources[source] = sources.get(source, 0) + 1
+        score_api["checkedCandidates"] = len(candidates)
+        score_api["sources"] = dict(sorted(sources.items()))
+        score_api["freshCanonicalScores"] = sources.get("internal_score_api", 0)
+        score_api["outageBuffered"] = sum(
+            1 for item in candidates if item.get("scoreServedFromOutageBuffer")
+        )
+        score_api["ok"] = bool(
+            not config.require_internal_score_api
+            or sources.get("internal_score_api", 0) > 0
+        )
+    except Exception as exc:  # pragma: no cover - reine Diagnose
+        score_api["ok"] = False
+        score_api["error"] = type(exc).__name__
+
+    history_info: dict = {}
+    try:
+        context = build_teams_alert_context(candidates, now_ts=now_ts, config=config)
+        last_push_ts = int(context.get("lastPushTs") or 0)
+        history_info = {
+            "ok": last_push_ts > 0,
+            "lastPushAgeMinutes": (
+                round((now_ts - last_push_ts) / 60) if last_push_ts > 0 else None
+            ),
+            "pushesToday": context.get("pushesToday"),
+            "sportPushesToday": context.get("sportPushesToday"),
+            "historyAuthoritative": bool(context.get("historyAuthoritative")),
+        }
+    except Exception as exc:  # pragma: no cover - reine Diagnose
+        history_info = {"ok": False, "error": type(exc).__name__}
+
+    slots_info: dict = {}
+    try:
+        slots = _daily_runtime_opportunities(berlin_now.date(), config)
+        upcoming = [slot for slot in slots if int(slot.get("ts") or 0) > now_ts]
+        next_slot = min(upcoming, key=lambda s: int(s.get("ts") or 0)) if upcoming else None
+        slots_info = {
+            "ok": 11 <= len(slots) <= 17,
+            "plannedToday": len(slots),
+            "labels": [str(slot.get("label")) for slot in slots],
+            "nextSlot": (
+                {
+                    "label": str(next_slot.get("label")),
+                    "role": str(next_slot.get("slotRole") or ""),
+                }
+                if next_slot
+                else None
+            ),
+        }
+    except Exception as exc:  # pragma: no cover - reine Diagnose
+        slots_info = {"ok": False, "error": type(exc).__name__}
+
+    quiet_reason = _quiet_hours_reason(now_ts, config)
+    from app.notifications.teams import channel_configuration_problems, channel_health
+
+    runtime = channel_health(config, now_ts=now_ts)
+    config_problems = channel_configuration_problems(config)
+    ready = bool(
+        config.enabled
+        and bool(config.webhook_url)
+        and score_api.get("ok")
+        and history_info.get("ok")
+        and slots_info.get("ok")
+        and runtime.get("healthy", True)
+        and not config_problems
+    )
+    return JSONResponse(
+        content={
+            "ready": ready,
+            "berlinTime": berlin_now.strftime("%Y-%m-%d %H:%M"),
+            "teamsAlertsEnabled": bool(config.enabled),
+            "webhookConfigured": bool(config.webhook_url),
+            "quietHoursActive": bool(quiet_reason),
+            "quietHoursReason": quiet_reason or None,
+            "volume": {
+                "min": int(config.min_alerts_per_day),
+                "max": int(config.max_alerts_per_day),
+                "sportMin": int(config.sport_min_per_day),
+                "sportMax": int(config.sport_max_per_day),
+            },
+            "scoreApi": score_api,
+            "pushHistory": history_info,
+            "slots": slots_info,
+            "runtime": {
+                "status": runtime.get("status"),
+                "reason": runtime.get("reason") or "",
+                "cycleAgeSeconds": runtime.get("cycleAgeSeconds"),
+                "cycleCount": runtime.get("cycleCount"),
+                "consecutiveCycleErrors": runtime.get("consecutiveCycleErrors"),
+                "consecutiveTransportFailures": runtime.get(
+                    "consecutiveTransportFailures"
+                ),
+                "workerRestarts": runtime.get("workerRestarts"),
+                "lastSendTs": runtime.get("lastSendTs"),
+            },
+            "configurationProblems": config_problems,
+        }
+    )
+
+
+@router.get("/api/ready", include_in_schema=False)
+def get_ready() -> JSONResponse:
+    """Leichte Readiness-Probe fuer die volle App (K8s/Flux-Deployment)."""
+    return JSONResponse(content={"ready": True})
+
+
+@router.get("/api/teams-effectiveness", include_in_schema=False)
+def get_teams_effectiveness(days: int = 14) -> JSONResponse:
+    """Wirkungsnachweis: Annahmequote und Opening-Rate-Vergleich des Kanals."""
+    from app.notifications.teams_effectiveness import build_effectiveness_report
+
+    safe_days = max(1, min(int(days or 14), 90))
+    return JSONResponse(content=build_effectiveness_report(safe_days))

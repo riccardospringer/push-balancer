@@ -5,7 +5,6 @@ import yaml
 
 
 OPENAPI_PATH = Path(__file__).resolve().parents[1] / "push-balancer-api-v3.1.0.yaml"
-ROUTERS_DIR = Path(__file__).resolve().parents[1] / "app" / "routers"
 
 
 def load_openapi() -> dict:
@@ -24,19 +23,50 @@ def normalize_router_path(path: str) -> str:
 
 
 def load_router_paths() -> set[str]:
-    paths: set[str] = set()
-    pattern = re.compile(r'@router\.(?:get|post|put|patch|delete)\("([^"]+)"')
-    for router_file in ROUTERS_DIR.glob("*.py"):
-        for match in pattern.finditer(router_file.read_text(encoding="utf-8")):
-            route = match.group(1)
-            if route.startswith("/api/"):
-                paths.add(normalize_router_path(route))
-    return paths
+    from app.main import app
+
+    return {
+        normalize_router_path(path)
+        for path in app.openapi()["paths"]
+        if path.startswith("/api/")
+    }
 
 
 def test_openapi_uses_supported_version():
     document = load_openapi()
     assert document["openapi"] == "3.1.0"
+
+
+def test_score_contract_matches_runtime_openapi():
+    from app.main import app
+
+    static_document = load_openapi()
+    runtime_document = app.openapi()
+    score_path = "/api/v1/scores/{cms_id}"
+    static_components = static_document["components"]
+    runtime_components = runtime_document["components"]
+
+    assert static_document["paths"][score_path]["get"] == runtime_document["paths"][score_path][
+        "get"
+    ]
+    batch_path = "/api/v1/scores/batch"
+    assert static_document["paths"][batch_path]["post"] == runtime_document["paths"][
+        batch_path
+    ]["post"]
+    assert static_components["securitySchemes"]["scoreApiKey"] == runtime_components[
+        "securitySchemes"
+    ]["scoreApiKey"]
+    for schema_name in {
+        "ArticleScoreResponse",
+        "BatchFoundScoreResponse",
+        "BatchNotFoundScoreResponse",
+        "BatchScoreRequest",
+        "BatchScoreResponse",
+        "EngagementScoreBreakdownResponse",
+        "ProblemResponse",
+        "SportScoreBreakdownResponse",
+    }:
+        assert static_components["schemas"][schema_name] == runtime_components["schemas"][schema_name]
 
 
 def test_openapi_documents_critical_public_routes():
@@ -137,6 +167,11 @@ def test_removed_compatibility_operations_are_absent_from_openapi():
 
 def test_runtime_no_longer_contains_compatibility_deprecation_helpers():
     main_py = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert "_DEPRECATED_COMPATIBILITY_EXACT_PATHS" not in main_py
+    assert "_DEPRECATED_COMPATIBILITY_PREFIXES" not in main_py
+    assert "_apply_runtime_headers" not in main_py
+    assert '@app.get("/push-balancer.html"' not in main_py
 
     assert "_DEPRECATED_COMPATIBILITY_EXACT_PATHS" not in main_py
     assert "_DEPRECATED_COMPATIBILITY_PREFIXES" not in main_py
@@ -254,28 +289,46 @@ def test_runtime_environment_variables_are_documented_for_handover():
             assert variable in render_env_keys, f"{variable} missing from render.yaml"
 
 
-def test_repo_does_not_track_legacy_frontend_html_artifacts():
+def test_legacy_capture_frontend_stays_out_of_the_score_runtime_image():
+    """Die Legacy-Capture-UI bleibt bewusst im Repo: sie ist die einzige Quelle
+    der Browser-Score-Erfassung (POST /api/score-capture) und wird nur vom
+    Render-Deployment (Dockerfile.render) ausgeliefert. Das kontraktgebundene
+    Score-Runtime-Image (./Dockerfile) bleibt frei davon."""
     repo_root = Path(__file__).resolve().parents[1]
 
-    assert not (repo_root / "push-balancer.html").exists()
-    assert not (repo_root / "app" / "legacy_push_balancer.html").exists()
+    assert (repo_root / "push-balancer.html").exists()
+
+    score_dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY push-balancer.html ./push-balancer.html" not in score_dockerfile
+
+    render_dockerfile = (repo_root / "Dockerfile.render").read_text(encoding="utf-8")
+    assert "COPY push-balancer.html ./push-balancer.html" in render_dockerfile
 
 
-def test_dockerfile_does_not_copy_removed_legacy_frontend_html():
-    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+def test_score_runtime_has_no_legacy_frontend_helper():
+    score_main = (Path(__file__).resolve().parents[1] / "app" / "score_main.py").read_text(
         encoding="utf-8"
     )
 
-    assert "COPY push-balancer.html ./push-balancer.html" not in dockerfile
+    assert "_legacy_frontend_path" not in score_main
+    assert "push-balancer.html" not in score_main
 
 
-def test_app_main_uses_spa_compat_frontend_without_file_based_legacy_helper():
-    app_main = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(
-        encoding="utf-8"
+def test_render_blueprint_keeps_public_routes_reachable_by_default():
+    render_config = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
     )
 
-    assert "_legacy_frontend_path" not in app_main
-    assert "_legacy_frontend_response" not in app_main
+    internal_access_values = [
+        item.get("value")
+        for service in render_config.get("services", [])
+        for item in service.get("envVars", [])
+        if item.get("key") == "INTERNAL_ACCESS_ENABLED"
+    ]
+
+    # Das Render-Deployment ist bewusst zugriffsbeschraenkt: Browser-Zugriff nur
+    # aus den freigegebenen AS-/VPN-Netzen, /api/health bleibt oeffentlich erreichbar.
+    assert internal_access_values == ["true"]
 
 
 def test_stable_openapi_schemas_include_descriptions_and_examples():

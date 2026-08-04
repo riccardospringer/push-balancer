@@ -33,11 +33,16 @@ services:
         value: "true"
       - key: PUSH_BALANCER_CAPTURED_SCORE_MAX_AGE_SECONDS
         value: "180"
-      # Activation remains gated by Privacy/Product/DPO/Legal approval.
+      # Selbst-Konsum: Render bedient /api/v1/scores in derselben App und ist
+      # die kanonische Score-Quelle. Loopback-Basis-URL -> der eigene
+      # SCORE_API_KEY gilt automatisch als Consumer-Key (config-Logik 0.1.58+).
+      # Noetig fuer die mandatory-Slot-Top-1 (require_internal_score_api).
       - key: PUSH_BALANCER_SCORE_API_ENABLED
-        value: "false"
+        value: "true"
       - key: PUSH_BALANCER_SCORE_API_BASE_URL
-        value: https://push-balancer-internal.eks1.euc1.stg.bildnext.as-infra.de
+        value: http://127.0.0.1:8050
+      - key: SCORE_API_KEY
+        generateValue: true
       - key: PUSH_BALANCER_SCORE_API_KEY
         sync: false
       - key: PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS

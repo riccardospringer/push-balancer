@@ -134,6 +134,17 @@ export function KonkurrenzPage() {
           </FilterChip>
         </div>
       </div>
+      <p
+        style={{
+          margin: '0 0 16px',
+          fontSize: '12px',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        {konkurrenzMode === 'sport'
+          ? 'Sport-Modus bündelt jetzt nationale, europäische und globale Sport-Quellen.'
+          : 'Redaktions-Modus zeigt die wichtigsten allgemeinen Konkurrenz-Themen.'}
+      </p>
 
       {/* KPI Cards */}
       {data?.summary && (

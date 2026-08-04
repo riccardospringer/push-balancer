@@ -1,0 +1,311 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare exact build or release tree
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit_outputs() {
+            {
+              echo "build=$1"
+              echo "publish=$2"
+              echo "publish_latest=$3"
+              echo "version=$4"
+              echo "release_sha=$5"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          is_version_bump() {
+            local sha="$1"
+            local subject author version actual_files expected_files
+            subject="$(git log -1 --format='%s' "$sha")"
+            author="$(git log -1 --format='%ae' "$sha")"
+            if [[ ! "$subject" =~ ^chore:\ bump\ version\ to\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              return 1
+            fi
+            version="${BASH_REMATCH[1]}"
+            [[ "$author" == "github-actions[bot]@users.noreply.github.com" ]] || return 1
+            expected_files=$'VERSION\ndeploy/flux-examples/prd/push-balancer.yaml\ndeploy/flux-examples/stg/push-balancer.yaml\nhelm/Chart.yaml\nhelm/values.yaml'
+            actual_files="$(git diff-tree --no-commit-id --name-only -r "$sha" | LC_ALL=C sort)"
+            [[ "$actual_files" == "$expected_files" ]] || return 1
+            [[ "$(git show "${sha}:VERSION" | tr -d '\n')" == "$version" ]] || return 1
+            [[ "$(git show "${sha}:helm/Chart.yaml" | awk '/^version:/ {print $2; exit}')" == "$version" ]] || return 1
+            [[ "$(git show "${sha}:helm/Chart.yaml" | awk '/^appVersion:/ {gsub(/\"/, "", $2); print $2; exit}')" == "$version" ]] || return 1
+            [[ "$(git show "${sha}:helm/values.yaml" | awk '/^tag:/ {print $2; exit}')" == "$version" ]] || return 1
+          }
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            emit_outputs true false false "$(tr -d '\n' < VERSION)" "$(git rev-parse HEAD)"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            emit_outputs false false false "$(tr -d '\n' < VERSION)" "$(git rev-parse HEAD)"
+            exit 0
+          fi
+
+          git fetch --no-tags origin main
+          EVENT_SHA="$GITHUB_SHA"
+          REMOTE_SHA="$(git rev-parse origin/main)"
+          git checkout --detach "$EVENT_SHA"
+
+          if is_version_bump "$EVENT_SHA"; then
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              VERSION="$(git show "${EVENT_SHA}:VERSION" | tr -d '\n')"
+              LATEST=false
+              [[ "$EVENT_SHA" == "$REMOTE_SHA" ]] && LATEST=true
+              emit_outputs true true "$LATEST" "$VERSION" "$EVENT_SHA"
+            else
+              emit_outputs false false false "$(git show "${EVENT_SHA}:VERSION" | tr -d '\n')" "$EVENT_SHA"
+            fi
+            exit 0
+          fi
+
+          if [[ "$REMOTE_SHA" != "$EVENT_SHA" ]]; then
+            CANDIDATE=""
+            if git merge-base --is-ancestor "$EVENT_SHA" "$REMOTE_SHA"; then
+              CANDIDATE="$(git rev-list --reverse --ancestry-path "$EVENT_SHA..$REMOTE_SHA" | sed -n '1p')"
+            fi
+            if [[ -n "$CANDIDATE" ]] \
+              && [[ "$(git rev-parse "${CANDIDATE}^")" == "$EVENT_SHA" ]] \
+              && is_version_bump "$CANDIDATE"; then
+              git checkout --detach "$CANDIDATE"
+              VERSION="$(tr -d '\n' < VERSION)"
+              LATEST=false
+              [[ "$CANDIDATE" == "$REMOTE_SHA" ]] && LATEST=true
+              emit_outputs true true "$LATEST" "$VERSION" "$CANDIDATE"
+              exit 0
+            fi
+            echo "Skipping stale main event; a newer workflow owns the release"
+            emit_outputs false false false "$(tr -d '\n' < VERSION)" "$EVENT_SHA"
+            exit 0
+          fi
+
+          CURRENT="$(cat VERSION)"
+          MAJOR="$(echo "$CURRENT" | cut -d. -f1)"
+          MINOR="$(echo "$CURRENT" | cut -d. -f2)"
+          PATCH="$(echo "$CURRENT" | cut -d. -f3)"
+          VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          printf '%s\n' "$VERSION" > VERSION
+          sed -i "s/^tag: .*/tag: ${VERSION}/" helm/values.yaml
+          sed -i "s/^version: .*/version: ${VERSION}/" helm/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" helm/Chart.yaml
+          sed -i "s/^      version: .*/      version: \"${VERSION}\"/" deploy/flux-examples/stg/push-balancer.yaml
+          sed -i "s/^      version: .*/      version: \"${VERSION}\"/" deploy/flux-examples/prd/push-balancer.yaml
+          sed -i "s/^    tag: .*/    tag: ${VERSION} # {\"\$imagepolicy\": \"bildnext:push-balancer:tag\"}/" deploy/flux-examples/stg/push-balancer.yaml
+          sed -i "s/^    tag: .*/    tag: ${VERSION} # {\"\$imagepolicy\": \"bildnext:push-balancer:tag\"}/" deploy/flux-examples/prd/push-balancer.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION helm/values.yaml helm/Chart.yaml deploy/flux-examples/stg/push-balancer.yaml deploy/flux-examples/prd/push-balancer.yaml
+          git commit -m "chore: bump version to ${VERSION}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          git push origin "$RELEASE_SHA:refs/heads/main"
+          emit_outputs true true true "$VERSION" "$RELEASE_SHA"
+
+      - name: Set up QEMU
+        if: steps.release.outputs.build == 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        if: steps.release.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: steps.release.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reuse an existing immutable version image
+        id: existing_image
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}"
+          INSPECT_ERROR="$(mktemp)"
+          if docker buildx imagetools inspect "$IMAGE_REF" > /dev/null 2> "$INSPECT_ERROR"; then
+            docker pull "$IMAGE_REF" > /dev/null
+            REVISION="$(docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "$IMAGE_REF")"
+            VERSION_LABEL="$(docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+              "$IMAGE_REF")"
+            ARCHITECTURE="$(docker image inspect --format '{{ .Architecture }}' "$IMAGE_REF")"
+            REPO_DIGEST="$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$IMAGE_REF")"
+            DIGEST="${REPO_DIGEST##*@}"
+            if [[ "$REVISION" != "${{ steps.release.outputs.release_sha }}" ]] \
+              || [[ "$VERSION_LABEL" != "${{ steps.release.outputs.version }}" ]] \
+              || [[ "$ARCHITECTURE" != "arm64" ]] \
+              || [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+              echo "Existing semver image does not match the immutable release metadata" >&2
+              exit 1
+            fi
+            {
+              echo "exists=true"
+              echo "digest=$DIGEST"
+            } >> "$GITHUB_OUTPUT"
+            echo "Reusing the existing image for the identical release commit"
+          elif grep -Eqi 'manifest unknown|not found|does not exist' "$INSPECT_ERROR"; then
+            {
+              echo "exists=false"
+              echo "digest="
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to determine whether the semver image already exists" >&2
+            exit 1
+          fi
+          rm -f "$INSPECT_ERROR"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        if: steps.release.outputs.build == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }},enable=${{ steps.release.outputs.publish }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.publish_latest }}
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.revision=${{ steps.release.outputs.release_sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+
+      - name: Build and push Docker image
+        id: image
+        if: >-
+          steps.release.outputs.build == 'true' &&
+          (steps.release.outputs.publish != 'true' ||
+          steps.existing_image.outputs.exists != 'true')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: ${{ steps.release.outputs.publish == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Resolve immutable image digest
+        id: final_image
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          if [[ "${{ steps.existing_image.outputs.exists }}" == "true" ]]; then
+            DIGEST="${{ steps.existing_image.outputs.digest }}"
+          else
+            DIGEST="${{ steps.image.outputs.digest }}"
+          fi
+          if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Release image digest is missing or invalid" >&2
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Helm
+        if: steps.release.outputs.publish == 'true'
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.21.3
+
+      - name: Publish and verify matching Helm chart
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.release.outputs.version }}"
+          CHART_NAME="$(awk '/^name:/ {print $2; exit}' helm/Chart.yaml)"
+          REGISTRY="oci://ghcr.io/${{ github.repository_owner }}"
+          WORK_DIRECTORY="$(mktemp -d)"
+          export HELM_REGISTRY_CONFIG="$WORK_DIRECTORY/registry.json"
+          trap 'rm -rf "$WORK_DIRECTORY"' EXIT
+
+          mkdir -p "$WORK_DIRECTORY/local" "$WORK_DIRECTORY/remote"
+          helm lint helm
+          helm package helm --version "$VERSION" --destination "$WORK_DIRECTORY/local"
+          LOCAL_ARCHIVE="$WORK_DIRECTORY/local/$CHART_NAME-$VERSION.tgz"
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+          compare_chart_contents() {
+            rm -rf "$WORK_DIRECTORY/local-unpacked" "$WORK_DIRECTORY/remote-unpacked"
+            mkdir -p "$WORK_DIRECTORY/local-unpacked" "$WORK_DIRECTORY/remote-unpacked"
+            tar -xzf "$LOCAL_ARCHIVE" -C "$WORK_DIRECTORY/local-unpacked"
+            tar -xzf "$WORK_DIRECTORY/remote/$CHART_NAME-$VERSION.tgz" \
+              -C "$WORK_DIRECTORY/remote-unpacked"
+            diff -rq "$WORK_DIRECTORY/local-unpacked" "$WORK_DIRECTORY/remote-unpacked"
+          }
+
+          if helm pull "$REGISTRY/$CHART_NAME" \
+            --version "$VERSION" --destination "$WORK_DIRECTORY/remote"; then
+            compare_chart_contents
+            echo "The identical Helm chart version is already published"
+            exit 0
+          fi
+
+          helm push "$LOCAL_ARCHIVE" "$REGISTRY"
+          for attempt in 1 2 3 4 5; do
+            rm -f "$WORK_DIRECTORY/remote/$CHART_NAME-$VERSION.tgz"
+            if helm pull "$REGISTRY/$CHART_NAME" \
+              --version "$VERSION" --destination "$WORK_DIRECTORY/remote"; then
+              compare_chart_contents
+              echo "Published Helm chart contents verified"
+              exit 0
+            fi
+            sleep "$((attempt * 2))"
+          done
+          echo "Published Helm chart verification failed" >&2
+          exit 1
+
+      - name: Record immutable release metadata
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          {
+            echo "### Push Balancer release"
+            echo "- Version: \`${{ steps.release.outputs.version }}\`"
+            echo "- Source commit: \`${{ steps.release.outputs.release_sha }}\`"
+            echo "- Image digest: \`${{ steps.final_image.outputs.digest }}\`"
+            echo "- Chart contents: verified against the same source tree"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,7 +10,7 @@ from app.push_schedule.service import build_push_schedule
 router = APIRouter()
 
 
-@router.get("/api/push-schedule")
+@router.get("/api/push-schedule", include_in_schema=False)
 def get_push_schedule(
     date: Optional[str] = Query(None, description="YYYY-MM-DD. Optional, default heute."),
 ) -> dict:

@@ -175,3 +175,15 @@ _feed_cache_lock = threading.Lock()
 # ── Retro Cache ───────────────────────────────────────────────────────────
 _retro_cache: dict = {"result": None, "ts": 0, "day": ""}
 _retro_cache_lock = threading.Lock()
+
+
+# ── Tagesplan Cache ───────────────────────────────────────────────────────
+def _TP_CACHE_EMPTY() -> dict:
+    return {"result": None, "hour": -1, "ts": 0, "building": False, "model_id": None}
+
+
+_tagesplan_cache: dict = {
+    "redaktion": _TP_CACHE_EMPTY(),
+    "sport": _TP_CACHE_EMPTY(),
+}
+_tagesplan_cache_lock = threading.Lock()

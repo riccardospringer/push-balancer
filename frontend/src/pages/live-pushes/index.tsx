@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { usePushStats, useSyncPush } from '@/hooks/use-api'
 import {
   Alert,
@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
   FilterChip,
+  Select,
   Spinner,
   StatCard,
   Table,
@@ -20,6 +21,17 @@ import { getApiErrorMessage } from '@/utils/api-errors'
 import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
 import type { Push } from '@/types/api'
 
+const PUSH_CATEGORIES = [
+  'alle',
+  'news',
+  'politik',
+  'sport',
+  'wirtschaft',
+  'unterhaltung',
+  'regional',
+  'digital',
+]
+
 function orVariant(or: number): 'green' | 'amber' | 'red' {
   if (or >= 0.06) return 'green'
   if (or >= 0.04) return 'amber'
@@ -28,6 +40,9 @@ function orVariant(or: number): 'green' | 'amber' | 'red' {
 
 function PushRow({ push }: { push: Push }) {
   const variant = orVariant(push.openRate)
+  const delta = push.performanceDelta
+  const deltaVariant =
+    delta == null ? 'default' : delta > 0.002 ? 'green' : delta < -0.002 ? 'red' : 'amber'
   return (
     <TableRow
       onClick={push.url ? () => window.open(push.url, '_blank') : undefined}
@@ -54,7 +69,11 @@ function PushRow({ push }: { push: Push }) {
         </div>
       </TableCell>
       <TableCell>
-        <Badge variant="blue">{push.channel}</Badge>
+        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+          <Badge variant="blue">{push.channel}</Badge>
+          {push.category && <Badge variant="default">{push.category}</Badge>}
+          {push.type === 'video' && <Badge variant="purple">Video</Badge>}
+        </div>
       </TableCell>
       <TableCell style={{ fontVariantNumeric: 'tabular-nums' }}>
         {fmtNum(push.recipients)}
@@ -77,12 +96,29 @@ function PushRow({ push }: { push: Push }) {
           <span style={{ color: 'var(--text-tertiary)' }}>—</span>
         )}
       </TableCell>
+      <TableCell>
+        {delta != null ? (
+          <Badge variant={deltaVariant}>{`${delta > 0 ? '+' : ''}${(delta * 100).toFixed(2)} pp`}</Badge>
+        ) : (
+          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+        )}
+      </TableCell>
     </TableRow>
   )
 }
 
 export function LivePushesPage() {
-  const { data, isLoading, error } = usePushStats()
+  const [days, setDays] = useState('7')
+  const [sort, setSort] = useState<
+    'sentAt' | 'openRate' | 'performanceDelta' | 'recipients'
+  >('sentAt')
+  const [category, setCategory] = useState('alle')
+  const { data, isLoading, error } = usePushStats({
+    days: Number(days),
+    sort,
+    category: category === 'alle' ? undefined : category,
+    limit: 500,
+  })
   const { liveChannel, setLiveChannel } = useLivePushFilterStore()
   const syncMutation = useSyncPush()
 
@@ -95,6 +131,14 @@ export function LivePushesPage() {
     if (liveChannel === 'alle') return data.pushes
     return data.pushes.filter((p) => p.channel === liveChannel)
   }, [data, liveChannel])
+
+  const avgDelta = useMemo(() => {
+    const deltas = filtered
+      .map((push) => push.performanceDelta)
+      .filter((value): value is number => value != null)
+    if (!deltas.length) return null
+    return deltas.reduce((sum, value) => sum + value, 0) / deltas.length
+  }, [filtered])
 
   const today = data?.today
 
@@ -162,19 +206,75 @@ export function LivePushesPage() {
           style={{
             padding: '12px 16px',
             display: 'flex',
-            gap: '6px',
+            gap: '12px',
             flexWrap: 'wrap',
+            alignItems: 'center',
           }}
         >
-          {channels.map((ch) => (
-            <FilterChip
-              key={ch}
-              active={liveChannel === ch}
-              onClick={() => setLiveChannel(ch)}
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {channels.map((ch) => (
+              <FilterChip
+                key={ch}
+                active={liveChannel === ch}
+                onClick={() => setLiveChannel(ch)}
+              >
+                {ch.charAt(0).toUpperCase() + ch.slice(1)}
+              </FilterChip>
+            ))}
+          </div>
+          <Select
+            label="Zeitraum"
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            options={[
+              { value: '7', label: 'Letzte 7 Tage' },
+              { value: '30', label: 'Letzte 30 Tage' },
+              { value: '90', label: 'Letzte 90 Tage' },
+            ]}
+            style={{ width: '170px' }}
+          />
+          <Select
+            label="Sortierung"
+            value={sort}
+            onChange={(e) =>
+              setSort(
+                e.target.value as
+                  | 'sentAt'
+                  | 'openRate'
+                  | 'performanceDelta'
+                  | 'recipients',
+              )
+            }
+            options={[
+              { value: 'sentAt', label: 'Neueste zuerst' },
+              { value: 'openRate', label: 'Beste OR' },
+              { value: 'performanceDelta', label: 'Über Prognose' },
+              { value: 'recipients', label: 'Größte Reichweite' },
+            ]}
+            style={{ width: '180px' }}
+          />
+          <Select
+            label="Ressort"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            options={PUSH_CATEGORIES.map((value) => ({
+              value,
+              label: value === 'alle' ? 'Alle Ressorts' : value,
+            }))}
+            style={{ width: '180px' }}
+          />
+          {avgDelta != null && (
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+              }}
             >
-              {ch.charAt(0).toUpperCase() + ch.slice(1)}
-            </FilterChip>
-          ))}
+              Ø Delta vs. Prognose:{' '}
+              <strong>{`${avgDelta > 0 ? '+' : ''}${(avgDelta * 100).toFixed(2)} pp`}</strong>
+            </span>
+          )}
         </CardContent>
       </Card>
 
@@ -215,6 +315,7 @@ export function LivePushesPage() {
                 <TableHeader>Empfänger</TableHeader>
                 <TableHeader>Opening Rate</TableHeader>
                 <TableHeader>XOR (Prognose)</TableHeader>
+                <TableHeader>Delta</TableHeader>
               </tr>
             </thead>
             <tbody>
@@ -226,7 +327,7 @@ export function LivePushesPage() {
                       color: 'var(--text-tertiary)',
                       padding: '32px',
                     }}
-                    colSpan={5}
+                    colSpan={6}
                   >
                     Keine Push-Daten vorhanden
                   </TableCell>

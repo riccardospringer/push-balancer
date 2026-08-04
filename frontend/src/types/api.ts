@@ -18,9 +18,11 @@ export interface Article {
   url: string
   title: string
   category: string
+  type?: string
   pubDate: string
   modDate?: string
   score: number
+  scoreReason?: string
   predictedOR?: number
   scoreReason?: string
   performanceDrivers?: string[]
@@ -62,6 +64,7 @@ export interface Article {
   isBreaking?: boolean
   isEilmeldung?: boolean
   isSport?: boolean
+  isVideo?: boolean
   isPlusArticle?: boolean
 }
 
@@ -102,11 +105,14 @@ export interface Push {
   id: string
   title: string
   channel: string
+  category?: string
+  type?: string
   sentAt: string
   recipients: number
   opened: number
   openRate: number
   predictedOR?: number
+  performanceDelta?: number
   url?: string
 }
 
@@ -331,6 +337,7 @@ export interface GenerateTitleResponse {
   alternativeTitles: string[]
   reasoning: string
   advisoryOnly: true
+  contentType?: string
 }
 
 

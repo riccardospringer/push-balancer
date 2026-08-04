@@ -7,6 +7,7 @@ POST /api/predictions/feedback — Prediction-Feedback für ML-Training
 import json
 import logging
 import datetime as dt
+import re
 import sqlite3
 import time
 import threading
@@ -105,21 +106,62 @@ def _ratio(value: float | int | None) -> float:
 
 
 _CATEGORY_SEGMENTS = (
-    "regional", "sport", "politik", "unterhaltung", "ratgeber",
+    "regional", "sport", "sports", "fussball", "fußball", "bundesliga",
+    "politik", "unterhaltung", "ratgeber",
     "geld", "auto", "digital", "leben", "spiele", "reise",
     "news", "bild-plus", "lifestyle", "ausland", "video",
 )
+_DOCUMENT_ID_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-fA-F]{24})(?![0-9a-fA-F])")
+
+
+def _document_id_from_value(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    match = _DOCUMENT_ID_RE.search(urllib.parse.unquote(raw))
+    return match.group(1).lower() if match else ""
+
+
+def _is_absolute_http_url(value: object) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(str(value or "").strip())
+    except Exception:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _preferred_article_link(raw_url: object, raw_url_id: object) -> str:
+    """Keep the URL that retains the canonical article identity.
+
+    Some live-API payloads expose a generic target URL alongside an article
+    URL/ID. Prefer ``urlId`` only when it contributes the missing CMS document
+    ID; otherwise preserve the regular clickable URL.
+    """
+    url = str(raw_url or "").strip()
+    url_id = str(raw_url_id or "").strip()
+    if (
+        _is_absolute_http_url(url_id)
+        and _document_id_from_value(url_id)
+        and not _document_id_from_value(url)
+    ):
+        return url_id
+    if url:
+        return url
+    return url_id if _is_absolute_http_url(url_id) else ""
 
 
 def _extract_category_from_url(url: str) -> str:
     if not url:
         return ""
     try:
-        path = urllib.parse.urlparse(url).path.lower()
+        path = urllib.parse.unquote(urllib.parse.urlparse(url).path).lower()
     except Exception:
         return ""
+    path_segments = {segment for segment in path.split("/") if segment}
     for seg in _CATEGORY_SEGMENTS:
-        if f"/{seg}/" in path or path.startswith(f"/{seg}"):
+        if seg in path_segments:
+            if seg in {"sport", "sports", "fussball", "fußball", "bundesliga"}:
+                return "sport"
             return seg
     return ""
 
@@ -157,7 +199,17 @@ def _parse_bild_messages(raw_messages: list) -> list:
         or_val = or_raw / 100 if or_raw > 1 else or_raw
 
         title = m.get("kickerAndHeadline") or m.get("headline") or ""
-        link = m.get("url") or m.get("urlId") or ""
+        raw_url = m.get("url") or ""
+        raw_url_id = m.get("urlId") or ""
+        link = _preferred_article_link(raw_url, raw_url_id)
+        url_id_cms = _document_id_from_value(raw_url_id)
+        url_cms = _document_id_from_value(raw_url)
+        cms_id = url_id_cms or url_cms
+        identity_category = (
+            _extract_category_from_url(str(raw_url_id))
+            if url_id_cms
+            else (_extract_category_from_url(str(raw_url)) if url_cms else "")
+        )
         try:
             hour = dt.datetime.fromtimestamp(ts).hour
         except (OSError, ValueError, OverflowError):
@@ -170,8 +222,14 @@ def _parse_bild_messages(raw_messages: list) -> list:
             "title": title,
             "headline": m.get("headline", "") or "",
             "kicker": m.get("kicker", "") or "",
-            "cat": _extract_category_from_url(link) or "news",
+            "cat": (
+                identity_category
+                or _extract_category_from_url(str(raw_url))
+                or _extract_category_from_url(str(raw_url_id))
+                or "news"
+            ),
             "link": link,
+            "cmsId": cms_id,
             "type": (m.get("sourceType") or "EDITORIAL").lower(),
             "hour": hour,
             "title_len": len(title),
@@ -213,10 +271,16 @@ def _fetch_live_push_snapshot(force: bool = False) -> tuple[list, list]:
             )
             with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
                 data = json.loads(resp.read())
-                all_msgs = data.get("messages", [])
+                if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+                    raise ValueError("Live push response has no valid messages list")
+                all_msgs = list(data["messages"])
                 next_params = data.get("next")
                 page = 0
-                while next_params and page < 10:
+                while next_params:
+                    if page >= 10:
+                        raise RuntimeError(
+                            "Live push pagination exceeded the verified page limit"
+                        )
                     url2 = f"{base_url}/push/statistics/message?{next_params}"
                     req2 = urllib.request.Request(
                         url2,
@@ -227,7 +291,13 @@ def _fetch_live_push_snapshot(force: bool = False) -> tuple[list, list]:
                     )
                     with urllib.request.urlopen(req2, timeout=15, context=_SSL_CTX) as resp2:
                         d2 = json.loads(resp2.read())
-                        all_msgs.extend(d2.get("messages", []))
+                        if not isinstance(d2, dict) or not isinstance(
+                            d2.get("messages"), list
+                        ):
+                            raise ValueError(
+                                "Paginated live push response has no valid messages list"
+                            )
+                        all_msgs.extend(d2["messages"])
                         next_params = d2.get("next")
                     page += 1
 
@@ -375,27 +445,46 @@ def _build_pushes_response(
     }
 
 
-def _build_refresh_response() -> dict:
+def _build_refresh_response(*, include_history: bool = False) -> dict:
     try:
         messages, channels = _fetch_live_push_snapshot(force=True)
         with _push_sync_lock:
             _push_sync_cache["messages"] = messages
             _push_sync_cache["channels"] = channels
             _push_sync_cache["ts"] = time.time()
+        parsed_messages: list[dict] = []
+        snapshot_authoritative = False
+        persistence_ok = False
         try:
-            n_written = push_db_upsert(_parse_bild_messages(messages))
-        except Exception as upsert_exc:
-            log.warning("[refresh] DB-Upsert fehlgeschlagen: %s", upsert_exc)
+            parsed_messages = _parse_bild_messages(messages)
+            snapshot_authoritative = bool(messages) and len(parsed_messages) == len(messages)
+            if not snapshot_authoritative:
+                log.warning(
+                    "[refresh] Push-Snapshot unvollstaendig geparst: raw=%s parsed=%s",
+                    len(messages),
+                    len(parsed_messages),
+                )
+        except Exception as parse_exc:
+            log.warning("[refresh] Push-Parsing fehlgeschlagen: %s", parse_exc)
+        try:
+            n_written = push_db_upsert(parsed_messages) if snapshot_authoritative else 0
+            persistence_ok = snapshot_authoritative
+        except Exception as persist_exc:
+            log.warning("[refresh] DB-Upsert fehlgeschlagen: %s", persist_exc)
             n_written = 0
-        return {
+        result = {
             "ok": True,
             "synced": len(messages),
             "channels": len(channels),
             "db_written": n_written,
             "source": "live",
-            "history_authoritative": True,
+            "history_authoritative": bool(snapshot_authoritative and persistence_ok),
             "snapshot_age_seconds": 0,
         }
+        if include_history:
+            result["_parsed_history"] = parsed_messages
+            result["_snapshot_authoritative"] = snapshot_authoritative
+        return result
     except Exception as exc:
         log.warning("[pushes] live refresh failed: %s", exc)
         # Fallback: aus dem Sync-Cache parsen + in DB schreiben (lokales Relay hat ihn ggf. befüllt)
@@ -403,31 +492,52 @@ def _build_refresh_response() -> dict:
             cache_msgs = list(_push_sync_cache.get("messages") or [])
             cache_ts = float(_push_sync_cache.get("ts") or 0.0)
         if cache_msgs:
+            cache_age = max(0.0, time.time() - cache_ts) if cache_ts > 0 else None
+            cache_is_fresh = bool(cache_age is not None and cache_age <= 300.0)
+            parsed_cache: list[dict] = []
+            parse_ok = False
+            persistence_ok = False
             try:
-                n_written = push_db_upsert(_parse_bild_messages(cache_msgs))
-                cache_age = max(0.0, time.time() - cache_ts) if cache_ts > 0 else None
-                history_authoritative = bool(
-                    cache_age is not None and cache_age <= 300.0
+                parsed_cache = _parse_bild_messages(cache_msgs)
+                parse_ok = len(parsed_cache) == len(cache_msgs)
+                if not parse_ok:
+                    log.warning(
+                        "[pushes] Cache-Snapshot unvollstaendig geparst: raw=%s parsed=%s",
+                        len(cache_msgs),
+                        len(parsed_cache),
+                    )
+            except Exception as cache_parse_exc:
+                log.warning("[pushes] Cache-Parsing fehlgeschlagen: %s", cache_parse_exc)
+            try:
+                n_written = push_db_upsert(parsed_cache) if parse_ok else 0
+                persistence_ok = parse_ok
+            except Exception as cache_persist_exc:
+                log.warning(
+                    "[pushes] cache→db Fallback fehlgeschlagen: %s",
+                    cache_persist_exc,
                 )
-                return {
-                    "ok": True,
-                    "synced": len(cache_msgs),
-                    "channels": 0,
-                    "db_written": n_written,
-                    "source": "cache->db",
-                    "history_authoritative": history_authoritative,
-                    "snapshot_age_seconds": (
-                        round(cache_age, 1) if cache_age is not None else None
-                    ),
-                }
-            except Exception as cache_exc:
-                log.warning("[pushes] cache→db Fallback fehlgeschlagen: %s", cache_exc)
+                n_written = 0
+            result = {
+                "ok": True,
+                "synced": len(cache_msgs),
+                "channels": 0,
+                "db_written": n_written,
+                "source": "cache->db",
+                "history_authoritative": bool(cache_is_fresh and parse_ok and persistence_ok),
+                "snapshot_age_seconds": (
+                    round(cache_age, 1) if cache_age is not None else None
+                ),
+            }
+            if include_history:
+                result["_parsed_history"] = parsed_cache
+                result["_snapshot_authoritative"] = bool(cache_is_fresh and parse_ok)
+            return result
         try:
             rows = push_db_load_all(max_rows=50)
         except Exception as db_exc:
             log.warning("[pushes] refresh fallback without DB: %s", db_exc)
             rows = []
-        return {
+        result = {
             "ok": True,
             "synced": len(rows),
             "channels": 0,
@@ -435,6 +545,10 @@ def _build_refresh_response() -> dict:
             "history_authoritative": False,
             "snapshot_age_seconds": None,
         }
+        if include_history:
+            result["_parsed_history"] = []
+            result["_snapshot_authoritative"] = False
+        return result
 
 
 def auto_seed_db_if_empty() -> int:
@@ -476,7 +590,6 @@ def auto_seed_db_if_empty() -> int:
         return 0
 
 
-@router.get("/api/push/{path:path}")
 async def proxy_push_api(path: str, request: Request) -> Response:
     """Proxy zur BILD Push-API mit Sync-Cache-Fallback.
 
@@ -538,6 +651,14 @@ async def proxy_push_api(path: str, request: Request) -> Response:
     return Response(content=fallback, media_type="application/json; charset=utf-8")
 
 
+router.add_api_route(
+    "/api/push/{path:path}",
+    proxy_push_api,
+    methods=["GET"],
+    include_in_schema=False,
+)
+
+
 @router.get("/api/pushes")
 def get_pushes(
     limit: int = 100,
@@ -549,7 +670,7 @@ def get_pushes(
     return JSONResponse(content=_build_pushes_response(limit, days, sort, category))
 
 
-@router.get("/api/pushes/export.csv")
+@router.get("/api/pushes/export.csv", include_in_schema=False)
 def export_pushes_csv(
     days: int = 90,
     limit: int = 10000,

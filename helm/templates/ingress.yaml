@@ -1,0 +1,71 @@
+{{- if and .Values.ingress.enabled (not .Values.ingress.rolloutGateApproved) -}}
+{{- fail "ingress rollout is blocked: set ingress.rolloutGateApproved=true only after the privacy and network gates are approved" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled .Values.ingress.requireTls (empty .Values.ingress.tls) (not .Values.ingress.platformManagedTls) -}}
+{{- fail "ingress rollout is blocked: ingress.tls must be configured" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled .Values.ingress.platformManagedTls (ne .Values.ingress.className "skipper") -}}
+{{- fail "ingress rollout is blocked: platform-managed TLS is approved only for the skipper class" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled .Values.ingress.platformManagedTls (ne (index .Values.ingress.annotations "zalando.org/aws-load-balancer-scheme") "internal") -}}
+{{- fail "ingress rollout is blocked: platform-managed TLS requires the internal load-balancer scheme" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled (not .Values.networkPolicy.enabled) -}}
+{{- fail "ingress rollout is blocked: the score workload requires a NetworkPolicy" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled (empty .Values.digest) -}}
+{{- fail "ingress rollout is blocked: an immutable image digest is required" -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled (or (empty .Values.networkPolicy.ingress) (and (empty .Values.networkPolicy.egress) (not .Values.egressProxy.enabled))) -}}
+{{- fail "ingress rollout is blocked: approved NetworkPolicy ingress and egress rules are required" -}}
+{{- end -}}
+{{- if .Values.ingress.enabled -}}
+{{- range .Values.ingress.hosts -}}
+{{- range .paths -}}
+{{- if ne .path "/api/v1/scores" -}}
+{{- fail "ingress rollout is blocked: only /api/v1/scores may be exposed" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "push-balancer.fullname" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "push-balancer.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

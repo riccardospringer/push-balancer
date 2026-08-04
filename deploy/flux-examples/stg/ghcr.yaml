@@ -1,0 +1,12 @@
+# OCI chart source for https://github.com/spring-media/next-push.balancer
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: next-helm-charts
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 5m
+  secretRef:
+    name: ghcr-read-secret
+  url: oci://ghcr.io/spring-media

@@ -4,11 +4,16 @@ from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
 from app import config
-from app.config import ADMIN_API_KEY
+from app.config import ADMIN_API_KEY, SCORE_API_KEY
 
 _api_key_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 _consumer_key_header = APIKeyHeader(name="X-Consumer-Key", auto_error=False)
 _authorization_header = APIKeyHeader(name="Authorization", auto_error=False)
+_score_api_key_header = APIKeyHeader(
+    name="X-Score-Key",
+    auto_error=False,
+    scheme_name="scoreApiKey",
+)
 
 
 async def require_admin_key(api_key: str | None = Security(_api_key_header)) -> None:
@@ -53,4 +58,23 @@ async def require_consumer_key(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing consumer API key.",
+        )
+
+
+async def require_score_key(
+    score_api_key: str | None = Security(_score_api_key_header),
+) -> None:
+    """Protect the read-only CMS-ID score lookup with a dedicated key."""
+    if not SCORE_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Article score lookup is disabled.",
+        )
+    if not score_api_key or not hmac.compare_digest(
+        score_api_key.encode("utf-8"),
+        SCORE_API_KEY.encode("utf-8"),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing score API key.",
         )

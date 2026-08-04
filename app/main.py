@@ -47,6 +47,7 @@ from app.config import (
     PUSH_TEAMS_CHECK_INTERVAL_SECONDS,
     SERVE_DIR,
     SNAPSHOT_PATH,
+    TRUSTED_PROXY_CIDRS,
 )
 from app.database import init_db, push_db_count, push_db_upsert
 from app.ml.gbrt import gbrt_load_model
@@ -62,6 +63,8 @@ from app.routers import (
     push,
     push_schedule,
     score_capture,
+    score_api,
+    tagesplan,
 )
 
 log = logging.getLogger("push-balancer")
@@ -84,7 +87,7 @@ import ctypes as _ctypes
 _omp_lib = os.path.expanduser("~/.local/lib/libomp.dylib")
 if os.path.exists(_omp_lib):
     try:
-        _ctypes.cdll.LoadLibrary(_omp_lib)
+        _ctypes.CDLL(_omp_lib, mode=_ctypes.RTLD_GLOBAL)
     except OSError:
         pass
 
@@ -187,6 +190,7 @@ def _problem_response(
     title: str,
     detail: str,
     problem_type: str,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -195,46 +199,16 @@ def _problem_response(
             "title": title,
             "status": status_code,
             "detail": detail,
-            "instance": str(request.url.path),
+            "instance": _log_safe_request_path(str(request.url.path)),
         },
         media_type="application/problem+json",
+        headers=headers,
     )
 
 
-_DEPRECATED_COMPATIBILITY_EXACT_PATHS = {
-    "/api/competitors",
-    "/api/sport-competitors",
-    "/api/forschung",
-    "/api/learnings",
-    "/api/adobe/traffic",
-    "/api/ml/status",
-    "/api/ml/monitoring",
-    "/api/ml/retrain",
-    "/api/ml/monitoring/tick",
-    "/api/predict-batch",
-    "/api/gbrt/status",
-    "/api/gbrt/model.json",
-    "/api/gbrt/retrain",
-    "/api/gbrt/force-promote",
-}
-_DEPRECATED_COMPATIBILITY_PREFIXES = (
-    "/api/push/",
-)
-_DEPRECATION_SUNSET = "Wed, 31 Dec 2026 23:59:59 GMT"
-
-
-def _is_deprecated_compatibility_path(path: str) -> bool:
-    return path in _DEPRECATED_COMPATIBILITY_EXACT_PATHS or any(
-        path.startswith(prefix) for prefix in _DEPRECATED_COMPATIBILITY_PREFIXES
-    )
-
-
-def _apply_runtime_headers(path: str, response: Response) -> Response:
+def _apply_cache_headers(path: str, response: Response) -> Response:
     if path == "/api/score-capture" or path.startswith("/api/score-capture/"):
         response.headers["Cache-Control"] = "no-store"
-    if _is_deprecated_compatibility_path(path):
-        response.headers["Deprecation"] = "true"
-        response.headers["Sunset"] = _DEPRECATION_SUNSET
     return response
 
 
@@ -245,13 +219,52 @@ def _path_is_exempt_from_internal_access(path: str) -> bool:
     return False
 
 
+def _ip_is_in_cidrs(client_ip: str | None, cidrs: list[str]) -> bool:
+    if not client_ip:
+        return False
+    try:
+        parsed_ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    for cidr in cidrs:
+        try:
+            if parsed_ip in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            log.warning("[Access] Ungueltige CIDR-Konfiguration: %s", cidr)
+    return False
+
+
+def _request_comes_from_trusted_proxy(request: Request) -> bool:
+    peer_ip = request.client.host if request.client and request.client.host else None
+    return _ip_is_in_cidrs(peer_ip, TRUSTED_PROXY_CIDRS)
+
+
 def _extract_client_ip(request: Request) -> str | None:
-    """Return only an ingress-authenticated peer identity for CIDR decisions."""
+    """Return only an ingress-authenticated peer identity for CIDR decisions.
+
+    Auf Render zaehlt ausschliesslich genau ein Cloudflare-Header; weitergereichte
+    X-Forwarded-For-Werte werden dort nie als Identitaet akzeptiert. Ausserhalb
+    von Render werden Forwarding-Header nur hinter einem vertrauenswuerdigen
+    Proxy beruecksichtigt, sonst gilt der Socket-Peer.
+    """
     if IS_RENDER:
         cloudflare_values = request.headers.getlist("cf-connecting-ip")
         if len(cloudflare_values) != 1:
             return None
         candidate = cloudflare_values[0].strip()
+    elif _request_comes_from_trusted_proxy(request):
+        candidate = ""
+        for header_name in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+            header_value = request.headers.get(header_name, "").strip()
+            if header_value:
+                candidate = header_value
+                break
+        if not candidate:
+            forwarded_for = request.headers.get("x-forwarded-for", "")
+            candidate = forwarded_for.split(",", 1)[0].strip() if forwarded_for else ""
+        if not candidate and request.client and request.client.host:
+            candidate = request.client.host.strip()
     else:
         candidate = request.client.host.strip() if request.client else ""
     if not candidate:
@@ -267,12 +280,17 @@ _SCORE_CAPTURE_BATCH_PATH = f"{_SCORE_CAPTURE_CMS_PATH_PREFIX}batch"
 _SCORE_CAPTURE_HEALTH_PATH = "/api/score-capture/health"
 
 
+_SCORE_API_PATH_RE = re.compile(r"^/api/v1/scores/[^/]+$")
+
+
 def _log_safe_request_path(path: str) -> str:
     """Redact CMS identifiers before a request path enters application logs."""
     if path == _SCORE_CAPTURE_BATCH_PATH:
         return path
     if path.startswith(_SCORE_CAPTURE_CMS_PATH_PREFIX):
         return f"{_SCORE_CAPTURE_CMS_PATH_PREFIX}{{cms_id}}"
+    if path != "/api/v1/scores/batch" and _SCORE_API_PATH_RE.match(path):
+        return "/api/v1/scores/{cms_id}"
     return path
 
 
@@ -288,23 +306,8 @@ def _client_is_on_allowed_network(
     client_ip: str | None,
     allowed_cidrs: list[str] | None = None,
 ) -> bool:
-    if not client_ip:
-        return False
-
-    try:
-        parsed_ip = ipaddress.ip_address(client_ip)
-    except ValueError:
-        return False
-
     cidrs = INTERNAL_ACCESS_ALLOWED_CIDRS if allowed_cidrs is None else allowed_cidrs
-    for cidr in cidrs:
-        try:
-            if parsed_ip in ipaddress.ip_network(cidr, strict=False):
-                return True
-        except ValueError:
-            log.warning("[Access] Ungültige INTERNAL_ACCESS_ALLOWED_CIDRS-Konfiguration: %s", cidr)
-
-    return False
+    return _ip_is_in_cidrs(client_ip, cidrs)
 
 
 def _is_approved_score_capture_consumer(
@@ -334,16 +337,6 @@ def _frontend_index_path() -> str:
 
 def _frontend_assets_dir() -> str:
     return os.path.join(SERVE_DIR, "assets")
-
-
-def _legacy_frontend_path() -> str:
-    # push-balancer.html liegt eine Ebene über app/ im Projekt-Root
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    p = os.path.join(root, "push-balancer.html")
-    if os.path.isfile(p):
-        return p
-    # Fallback auf legacy_push_balancer.html im app/-Verzeichnis
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
 
 
 def _find_replacement_asset_name(asset_name: str) -> str | None:
@@ -410,10 +403,11 @@ def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
         return html
 
     rewritten_html = html.replace("/dist-frontend/assets/", "/assets/")
-    if request_path == "/push-balancer.html":
+    history_target = _frontend_history_target(request_path)
+    if history_target:
         bootstrap_script = (
             "<script>"
-            "window.history.replaceState(window.history.state, '', '/dist-frontend/');"
+            f"window.history.replaceState(window.history.state, '', {json.dumps(history_target)});"
             "</script>"
         )
         rewritten_html = rewritten_html.replace(
@@ -422,6 +416,18 @@ def _prepare_frontend_html_for_request(html: str, request_path: str) -> str:
             1,
         )
     return rewritten_html
+
+
+def _frontend_history_target(request_path: str) -> str | None:
+    if request_path in {"/", "/push-balancer.html"}:
+        return "/dist-frontend/"
+    if request_path in {"/dist-frontend", "/dist-frontend/"}:
+        return None
+    if request_path.startswith("/dist-frontend/") or request_path.startswith("/assets/"):
+        return None
+    if request_path.startswith("/"):
+        return f"/dist-frontend{request_path}"
+    return f"/dist-frontend/{request_path}"
 
 
 def _normalize_frontend_path(path: str) -> str:
@@ -751,7 +757,8 @@ def _start_background_workers() -> None:
     except ImportError:
         _auto_ssl = _ssl_mod2.create_default_context()
 
-    if BACKGROUND_AUTOMATIONS_ENABLED:
+    from app.config import PUSH_AUTO_FETCH_ENABLED
+    if PUSH_AUTO_FETCH_ENABLED:
         def _push_auto_fetch_worker():
             import urllib.request as _ur
             from app.routers.push import _push_sync_cache, _push_sync_lock
@@ -852,23 +859,61 @@ def _start_background_workers() -> None:
                 log.warning("[Sync] Fehler: %s", e)
             time.sleep(60)
 
-    if BACKGROUND_AUTOMATIONS_ENABLED and RENDER_SYNC_URL:
+    from app.config import PUSH_RENDER_SYNC_ENABLED
+    if PUSH_RENDER_SYNC_ENABLED and RENDER_SYNC_URL:
         threading.Thread(target=_push_sync_worker, daemon=True).start()
         log.info("[Sync] Worker gestartet")
     elif RENDER_SYNC_URL:
-        log.info("[Sync] Deaktiviert, da BACKGROUND_AUTOMATIONS_ENABLED=false")
+        log.info("[Sync] Deaktiviert, da PUSH_RENDER_SYNC_ENABLED=false")
 
     # 14. Auto-Suggestion Worker — entfallen (Tagesplan-Suggestions abgeschafft)
 
     # 15. Microsoft Teams recommendation alert worker
     if PUSH_TEAMS_ALERTS_ENABLED:
         def _teams_alert_worker():
-            from app.notifications.teams import run_teams_alert_cycle
+            from app.notifications.teams import (
+                TeamsAlertConfig,
+                binding_slot_window_open,
+                record_worker_start,
+                run_teams_alert_cycle,
+                seconds_to_defer_cycle_for_binding_slot,
+                seconds_until_next_binding_slot,
+            )
+
+            record_worker_start()
+            config = TeamsAlertConfig()
+            try:
+                from app.notifications.teams import (
+                    log_channel_startup_selfcheck,
+                )
+
+                log_channel_startup_selfcheck(config)
+            except Exception as exc:
+                log.warning("[TeamsAlert] Startup-Selbstcheck uebersprungen: %s", exc)
 
             interval = max(30, int(PUSH_TEAMS_CHECK_INTERVAL_SECONDS or 120))
             time.sleep(45)
-            log.info("[TeamsAlert] Worker gestartet (alle %ds)", interval)
+            log.info(
+                "[TeamsAlert] Worker gestartet (Takt %ds, sekundengenau auf "
+                "Raster-Slots ausgerichtet)",
+                interval,
+            )
             while True:
+                # A normal collection cycle may take longer than a minute when
+                # upstream APIs are slow.  Do not start it close enough to cross
+                # a mandatory slot; wake just after the exact slot instead.
+                try:
+                    defer_seconds = seconds_to_defer_cycle_for_binding_slot(
+                        time.time(),
+                        config,
+                        guard_seconds=max(180.0, float(interval) + 60.0),
+                    )
+                except Exception:
+                    defer_seconds = 0.0
+                if defer_seconds > 0:
+                    time.sleep(defer_seconds)
+
+                result = {}
                 try:
                     result = run_teams_alert_cycle()
                     if result.get("sent"):
@@ -887,10 +932,75 @@ def _start_background_workers() -> None:
                         )
                 except Exception as e:
                     log.warning("[TeamsAlert] Worker-Fehler: %s", e)
-                time.sleep(interval)
+                # A transient API or transport failure must not consume the
+                # entire five-minute mandatory window.  Slot claims are durable
+                # and release failed attempts, so an in-window retry is safe and
+                # cannot duplicate a successful delivery.
+                try:
+                    retry_open_slot = (
+                        not result.get("sent")
+                        and binding_slot_window_open(time.time(), config)
+                    )
+                except Exception:
+                    retry_open_slot = False
+                if retry_open_slot:
+                    time.sleep(5)
+                    continue
+                # Weckzeit exakt auf die naechste Raster-Entscheidung ausrichten:
+                # der Zyklus feuert dann im Sekundenbereich nach der Slotzeit
+                # statt bis zu einer Minute spaeter. Zwischen den Slots bleibt
+                # der normale Takt fuer Live-Push-Spiegelung aktiv.
+                try:
+                    until_slot = seconds_until_next_binding_slot(time.time())
+                except Exception:
+                    until_slot = float(interval)
+                time.sleep(max(1.0, min(float(interval), until_slot + 0.5)))
 
-        threading.Thread(target=_teams_alert_worker, daemon=True, name="teams_alert_worker").start()
-        log.info("[TeamsAlert] Aktiviert")
+        def _teams_alert_supervisor():
+            """Watchdog: ein gestorbener Worker-Thread darf den Kanal nicht toeten.
+
+            Startet den Worker neu, wenn der Thread endet (unerwartete Exception
+            ausserhalb der Zyklus-Schleife) oder laenger als die Stall-Frist
+            keinen Herzschlag mehr geschrieben hat.
+            """
+            from app.notifications.teams import (
+                TeamsAlertConfig,
+                channel_health,
+                record_worker_start,
+            )
+
+            worker = threading.Thread(
+                target=_teams_alert_worker, daemon=True, name="teams_alert_worker"
+            )
+            worker.start()
+            while True:
+                time.sleep(60)
+                try:
+                    config = TeamsAlertConfig()
+                    health = channel_health(config)
+                    stalled = health.get("status") == "stalled"
+                    if worker.is_alive() and not stalled:
+                        continue
+                    log.error(
+                        "[TeamsAlert] Watchdog startet Worker neu (alive=%s status=%s reason=%s)",
+                        worker.is_alive(),
+                        health.get("status"),
+                        health.get("reason"),
+                    )
+                    record_worker_start(restart=True)
+                    worker = threading.Thread(
+                        target=_teams_alert_worker,
+                        daemon=True,
+                        name="teams_alert_worker",
+                    )
+                    worker.start()
+                except Exception as exc:
+                    log.warning("[TeamsAlert] Watchdog-Fehler: %s", exc)
+
+        threading.Thread(
+            target=_teams_alert_supervisor, daemon=True, name="teams_alert_supervisor"
+        ).start()
+        log.info("[TeamsAlert] Aktiviert (mit Watchdog)")
     else:
         log.info("[TeamsAlert] Deaktiviert (PUSH_TEAMS_ALERTS_ENABLED=false)")
 
@@ -999,6 +1109,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         403: "Forbidden",
         404: "Not Found",
         422: "Unprocessable Content",
+        429: "Too Many Requests",
         502: "Bad Gateway",
         503: "Service Unavailable",
     }
@@ -1008,6 +1119,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         title=title_map.get(exc.status_code, "HTTP Error"),
         detail=str(exc.detail),
         problem_type=f"https://api.editorialsuite.io/problems/http-{exc.status_code}",
+        headers=exc.headers,
     )
 
 
@@ -1058,8 +1170,17 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    if _SCORE_API_PATH_RE.fullmatch(request.url.path):
+        response.headers["Cache-Control"] = "no-store"
+        vary_values = {
+            value.strip()
+            for value in response.headers.get("Vary", "").split(",")
+            if value.strip()
+        }
+        vary_values.add("X-Score-Key")
+        response.headers["Vary"] = ", ".join(sorted(vary_values))
     request_path = request.scope.get("path", request.url.path)
-    return _apply_runtime_headers(request_path, response)
+    return _apply_cache_headers(request_path, response)
 
 
 @app.middleware("http")
@@ -1073,7 +1194,9 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     if not INTERNAL_ACCESS_ENABLED or _path_is_exempt_from_internal_access(request.url.path) or _is_always_public(normalized_path) or frontend_navigation:
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            return _legacy_frontend_response()
+            frontend_response = _frontend_html_response(normalized_path)
+            if frontend_response is not None:
+                return frontend_response
         return response
 
     client_ip = _extract_client_ip(request)
@@ -1082,7 +1205,9 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
     if _client_is_on_allowed_network(client_ip):
         response = await call_next(request)
         if frontend_navigation and response.status_code == 404:
-            return _legacy_frontend_response()
+            frontend_response = _frontend_html_response(normalized_path)
+            if frontend_response is not None:
+                return frontend_response
         return response
 
     safe_path = _log_safe_request_path(normalized_path)
@@ -1101,7 +1226,7 @@ async def restrict_internal_access(request: Request, call_next) -> Response:
         detail="The requested resource was not found.",
         problem_type="about:blank",
     )
-    return _apply_runtime_headers(normalized_path, response)
+    return _apply_cache_headers(normalized_path, response)
 
 
 # ── CORS ────────────────────────────────────────────────────────────────────
@@ -1125,14 +1250,53 @@ app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(consumer.router, tags=["Consumer"])
+app.include_router(score_api.router, tags=["Score"])
+app.include_router(tagesplan.router, tags=["Tagesplan"])
 app.include_router(misc.router, tags=["Misc"])
 
+def _frontend_file_response(relative_path: str) -> FileResponse | None:
+    normalized_relative_path = relative_path.lstrip("/")
+    candidate_path = os.path.normpath(os.path.join(SERVE_DIR, normalized_relative_path))
+    serve_root = os.path.normpath(SERVE_DIR)
+    if not (
+        candidate_path == serve_root or candidate_path.startswith(serve_root + os.sep)
+    ):
+        return None
+    if not os.path.isfile(candidate_path):
+        return None
+    return FileResponse(candidate_path)
 
-def _legacy_frontend_response() -> Response:
-    legacy_path = _legacy_frontend_path()
+
+@app.get("/", include_in_schema=False)
+async def frontend_root_entrypoint() -> Response:
+    frontend_response = _frontend_html_response("/")
+    if frontend_response is not None:
+        return frontend_response
+    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
+
+
+def _legacy_capture_frontend_path() -> str:
+    # push-balancer.html liegt eine Ebene ueber app/ im Projekt-Root
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(root, "push-balancer.html")
+    if os.path.isfile(p):
+        return p
+    # Fallback auf legacy_push_balancer.html im app/-Verzeichnis
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_push_balancer.html")
+
+
+async def frontend_compat_entrypoint() -> Response:
+    """Liefert die Legacy-Capture-UI: einzige Quelle der Browser-Score-Erfassung.
+
+    Die Score-Capture-Pipeline (POST /api/score-capture) laeuft im CvD-Browser
+    ueber dieses klassische Frontend; die React-SPA hat keinen Capture-Pfad.
+    """
+    legacy_path = _legacy_capture_frontend_path()
     if not os.path.isfile(legacy_path):
-        raise HTTPException(status_code=404, detail="Legacy frontend entrypoint not found.")
-
+        frontend_response = _frontend_html_response("/push-balancer.html")
+        if frontend_response is not None:
+            return frontend_response
+        raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
     response = FileResponse(legacy_path, media_type="text/html")
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
@@ -1140,20 +1304,32 @@ def _legacy_frontend_response() -> Response:
     return response
 
 
-@app.get("/", include_in_schema=False)
-@app.get("/push-balancer.html", include_in_schema=False)
-async def frontend_entrypoint(request: Request) -> Response:
-    """Liefert das klassische push-balancer.html Frontend."""
-    return _legacy_frontend_response()
-
-
 @app.get("/dist-frontend", include_in_schema=False)
 @app.get("/dist-frontend/", include_in_schema=False)
-@app.get("/app", include_in_schema=False)
-@app.get("/app/", include_in_schema=False)
-async def frontend_spa_entrypoint(request: Request) -> Response:
-    """Komplett deaktiviert — liefert klassisches push-balancer.html."""
-    return _legacy_frontend_response()
+@app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
+async def frontend_dist_entrypoint(asset_path: str = "") -> Response:
+    """Kompatibilitaetspfad fuer die gebaute SPA und alte Asset-Links."""
+    normalized_asset_path = asset_path.lstrip("/")
+    if normalized_asset_path:
+        file_response = _frontend_file_response(normalized_asset_path)
+        if file_response is not None:
+            return file_response
+
+        if normalized_asset_path.startswith("assets/"):
+            replacement_name = _find_replacement_asset_name(os.path.basename(normalized_asset_path))
+            if replacement_name:
+                aliased_response = _frontend_file_response(f"assets/{replacement_name}")
+                if aliased_response is not None:
+                    return aliased_response
+            raise HTTPException(status_code=404, detail="Frontend asset not found.")
+
+    frontend_response = _frontend_html_response("/dist-frontend/")
+    if frontend_response is not None:
+        return frontend_response
+    raise HTTPException(status_code=404, detail="Frontend entrypoint not found.")
+
+
+app.add_api_route("/push-balancer.html", frontend_compat_entrypoint, methods=["GET"], include_in_schema=False)
 
 
 @app.get("/assets/{asset_path:path}", include_in_schema=False)
@@ -1164,12 +1340,6 @@ async def serve_frontend_asset(asset_path: str) -> Response:
     if candidate.startswith(assets_dir + os.sep) and os.path.isfile(candidate):
         return FileResponse(candidate)
     raise HTTPException(status_code=404, detail=f"Asset not found: {asset_path}")
-
-
-@app.get("/dist-frontend/{asset_path:path}", include_in_schema=False)
-async def frontend_dist_assets(asset_path: str = "") -> Response:
-    """Compat-Route — keine React-SPA-Assets mehr, alles auf push-balancer.html."""
-    return _legacy_frontend_response()
 
 
 # ── Einstiegspunkt für direkten Start ─────────────────────────────────────

@@ -1,15 +1,14 @@
 """app/routers/ml.py — LightGBM/ML-Endpunkte.
 
 GET  /api/ml/safety-status          — Safety-Status-Prüfung
-GET  /api/ml/status                 — ML-Modell-Status
+GET  /api/ml-model                  — ML-Modell-Status
 GET  /api/ml/predict                — Einzelne ML-Prediction
 GET  /api/ml/experiments            — Experiment-Liste
 GET  /api/ml/experiments/compare    — Experiment-Vergleich
 GET  /api/ml/ab-status              — A/B-Test-Status
-GET  /api/ml/monitoring             — Monitoring-Events
-POST /api/ml/retrain                — Manuelles Retraining
-POST /api/ml/monitoring/tick        — Manueller Monitoring-Tick
-POST /api/ml/predict-batch          — Batch-Prediction (auch /api/predict-batch)
+GET  /api/ml-model/monitoring       — Monitoring-Events
+POST /api/ml-model/retraining-jobs  — Manuelles Retraining
+POST /api/ml/predict-batch          — Batch-Prediction
 """
 import logging
 import hashlib
@@ -161,7 +160,6 @@ def get_ml_safety_status() -> JSONResponse:
     })
 
 
-@router.get("/api/ml/status")
 def get_ml_status() -> JSONResponse:
     """Liefert den aktuellen ML-Modell-Status (Metriken, Feature Importance, etc.)."""
     return JSONResponse(content=_build_ml_status_payload())
@@ -309,7 +307,6 @@ def get_ml_ab_status() -> JSONResponse:
     )
 
 
-@router.get("/api/ml/monitoring")
 def get_ml_monitoring(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=200),
@@ -340,7 +337,14 @@ def get_ml_model_monitoring() -> JSONResponse:
     return JSONResponse(content=_build_ml_monitoring_payload())
 
 
-@router.post("/api/ml/retrain", dependencies=[Depends(require_admin_key)])
+router.add_api_route(
+    "/api/ml/status",
+    get_ml_status,
+    methods=["GET"],
+    include_in_schema=False,
+)
+
+
 def post_ml_retrain() -> JSONResponse:
     """Löst manuelles LightGBM-Retraining aus (asynchron via Thread)."""
     import threading
@@ -365,7 +369,6 @@ def post_ml_model_retraining_job() -> JSONResponse:
     return post_ml_retrain()
 
 
-@router.post("/api/ml/monitoring/tick", dependencies=[Depends(require_admin_key)])
 def post_monitoring_tick() -> JSONResponse:
     """Manueller Monitoring-Tick (Drift-Check, MAE-Check etc.)."""
     try:
@@ -381,7 +384,6 @@ def post_monitoring_tick() -> JSONResponse:
 
 
 @router.post("/api/ml/predict-batch")
-@router.post("/api/predict-batch")
 def post_predict_batch(body: PredictBatchRequest) -> JSONResponse:
     """Batch-Prediction mit Cache + Micro-Variation für Live-Ticker.
 

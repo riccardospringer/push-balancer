@@ -1,0 +1,194 @@
+{{- $cnp := .Values.egressProxy.clusterNetworkPolicy -}}
+{{- if $cnp.enabled -}}
+{{- if not .Values.egressProxy.enabled -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: the isolated egress proxy is required" -}}
+{{- end -}}
+{{- if or (empty .Values.digest) (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.digest)) -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: an immutable sha256 image digest is required" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: the application default-deny NetworkPolicy is required" -}}
+{{- end -}}
+{{- if or (not (has "Ingress" .Values.networkPolicy.policyTypes)) (not (has "Egress" .Values.networkPolicy.policyTypes)) -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: the application NetworkPolicy must select Ingress and Egress" -}}
+{{- end -}}
+{{- if not (empty .Values.networkPolicy.egress) -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: direct application egress rules are forbidden" -}}
+{{- end -}}
+{{- $dns := .Values.egressProxy.networkPolicy.dns -}}
+{{- $dnsByCidr := not (empty $dns.cidr) -}}
+{{- $dnsBySelector := and (not (empty $dns.namespace)) (not (empty $dns.podLabels)) -}}
+{{- if eq $dnsByCidr $dnsBySelector -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: exactly one target-cluster DNS peer is required" -}}
+{{- end -}}
+{{- if empty .Values.egressProxy.networkPolicy.upstreamCidrs -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: approved proxy upstream egress is required" -}}
+{{- end -}}
+{{- $identity := printf "%s/%s" .Release.Namespace .Release.Name -}}
+{{- $identityHash := sha256sum $identity | trunc 12 -}}
+{{- $namespacePart := .Release.Namespace | trunc 10 | trimSuffix "-" -}}
+{{- $releasePart := .Release.Name | trunc 10 | trimSuffix "-" -}}
+{{- $nameBase := printf "push-balancer-%s-%s-%s" $namespacePart $releasePart $identityHash -}}
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ClusterNetworkPolicy
+metadata:
+  name: {{ printf "%s-app-accept" $nameBase }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-control
+spec:
+  tier: Admin
+  priority: 900
+  subject:
+    pods:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+      podSelector:
+        matchLabels:
+          {{- include "push-balancer.selectorLabels" . | nindent 10 }}
+        matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: DoesNotExist
+  egress:
+    - name: accept-dns
+      action: Accept
+      to:
+        {{- if $dnsByCidr }}
+        - networks:
+            - {{ $dns.cidr | quote }}
+        {{- else }}
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $dns.namespace | quote }}
+            podSelector:
+              matchLabels:
+                {{- toYaml $dns.podLabels | nindent 16 }}
+        {{- end }}
+      ports:
+        - portNumber:
+            port: 53
+            protocol: UDP
+        - portNumber:
+            port: 53
+            protocol: TCP
+    - name: accept-egress-proxy
+      action: Accept
+      to:
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+            podSelector:
+              matchLabels:
+                {{- include "push-balancer.egressProxySelectorLabels" . | nindent 16 }}
+      ports:
+        - portNumber:
+            port: {{ .Values.egressProxy.port }}
+            protocol: TCP
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ClusterNetworkPolicy
+metadata:
+  name: {{ printf "%s-app-deny" $nameBase }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-control
+spec:
+  tier: Admin
+  priority: 901
+  subject:
+    pods:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+      podSelector:
+        matchLabels:
+          {{- include "push-balancer.selectorLabels" . | nindent 10 }}
+        matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: DoesNotExist
+  egress:
+    - name: deny-all-ipv4
+      action: Deny
+      to:
+        - networks:
+            - "0.0.0.0/0"
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ClusterNetworkPolicy
+metadata:
+  name: {{ printf "%s-proxy-accept" $nameBase }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-control
+spec:
+  tier: Admin
+  priority: 900
+  subject:
+    pods:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+      podSelector:
+        matchLabels:
+          {{- include "push-balancer.egressProxySelectorLabels" . | nindent 10 }}
+  egress:
+    - name: accept-dns
+      action: Accept
+      to:
+        {{- if $dnsByCidr }}
+        - networks:
+            - {{ $dns.cidr | quote }}
+        {{- else }}
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $dns.namespace | quote }}
+            podSelector:
+              matchLabels:
+                {{- toYaml $dns.podLabels | nindent 16 }}
+        {{- end }}
+      ports:
+        - portNumber:
+            port: 53
+            protocol: UDP
+        - portNumber:
+            port: 53
+            protocol: TCP
+    - name: accept-https
+      action: Accept
+      to:
+        - networks:
+            - "0.0.0.0/0"
+      ports:
+        - portNumber:
+            port: 443
+            protocol: TCP
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ClusterNetworkPolicy
+metadata:
+  name: {{ printf "%s-proxy-deny" $nameBase }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-control
+spec:
+  tier: Admin
+  priority: 901
+  subject:
+    pods:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+      podSelector:
+        matchLabels:
+          {{- include "push-balancer.egressProxySelectorLabels" . | nindent 10 }}
+  egress:
+    - name: deny-all-ipv4
+      action: Deny
+      to:
+        - networks:
+            - "0.0.0.0/0"
+{{- end }}

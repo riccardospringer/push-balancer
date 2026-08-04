@@ -20,7 +20,12 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config import ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET
+from app.config import (
+    ADOBE_CLIENT_ID,
+    ADOBE_CLIENT_SECRET,
+    ADOBE_TRAFFIC_ENABLED,
+    PAID_EXTERNAL_APIS_ENABLED,
+)
 from app.push_titles import build_push_title_suggestions, infer_content_type
 
 log = logging.getLogger("push-balancer")
@@ -34,7 +39,9 @@ _adobe_state: dict = {
     "traffic": None,
     "updated_at": 0,
     "error": "",
-    "enabled": bool(ADOBE_CLIENT_ID and ADOBE_CLIENT_SECRET),
+    "enabled": bool(
+        PAID_EXTERNAL_APIS_ENABLED and ADOBE_TRAFFIC_ENABLED and ADOBE_CLIENT_ID and ADOBE_CLIENT_SECRET
+    ),
 }
 
 # ── SSL Context ────────────────────────────────────────────────────────────
@@ -230,7 +237,6 @@ def check_plus_urls(
     return JSONResponse(content=results)
 
 
-@router.get("/api/adobe/traffic")
 def get_adobe_traffic() -> JSONResponse:
     """Liefert Adobe Analytics Traffic-Quellen für heutige Pushes.
 
@@ -240,7 +246,13 @@ def get_adobe_traffic() -> JSONResponse:
     Wird vom adobe_traffic_worker alle 30 Min befüllt.
     """
     if not _adobe_state["enabled"]:
-        return JSONResponse(content={"enabled": False, "error": "Adobe nicht konfiguriert"})
+        return JSONResponse(content={
+            "enabled": False,
+            "hourly": [],
+            "topArticles": [],
+            "updatedAt": 0,
+            "error": "Adobe nicht konfiguriert",
+        })
 
     traffic = _adobe_state.get("traffic")
     if not traffic:
@@ -279,6 +291,14 @@ def get_adobe_traffic_analytics() -> JSONResponse:
             "error": payload.get("error", ""),
         }
     )
+
+
+router.add_api_route(
+    "/api/adobe/traffic",
+    get_adobe_traffic,
+    methods=["GET"],
+    include_in_schema=False,
+)
 
 
 @router.post("/api/schwab-chat")
@@ -326,16 +346,4 @@ def post_push_title_generate(body: PushTitleGenerateRequest) -> JSONResponse:
 @router.post("/api/push-title-generations")
 def create_push_title_generation(body: PushTitleGenerateRequest) -> JSONResponse:
     """Resource-style alias for advisory push title generation."""
-    try:
-        return JSONResponse(content=_build_push_title_response(body))
-    except HTTPException:
-        raise
-    except RuntimeError as exc:
-        log.error("[PushTitle] %s", exc)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        log.exception("[PushTitle] Endpoint-Fehler")
-        raise HTTPException(
-            status_code=500,
-            detail="Push title generation failed.",
-        ) from exc
+    return JSONResponse(content=_build_push_title_response(body))

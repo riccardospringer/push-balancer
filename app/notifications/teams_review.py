@@ -427,7 +427,14 @@ def _news_value_agent(snapshot: Snapshot) -> Verdict:
             "CvD-Gesamtscore liegt unter der normalen Freigabe; Einzelindikatoren entscheiden",
             confidence=0.9,
         )
-    if not snapshot["newsEvent"] and not snapshot["breaking"]:
+    if (
+        not snapshot["newsEvent"]
+        and not snapshot["breaking"]
+        and not snapshot.get("sportEventful")
+    ):
+        # Ein bestaetigtes materielles Sport-Ereignis (Endstand, Transfer-Fakt)
+        # ist ein konkretes Nachrichten-Ereignis, auch wenn die generische
+        # Ereignis-Heuristik die Headline nicht erkennt.
         return _verdict(
             "Nachrichtenwert",
             "veto",

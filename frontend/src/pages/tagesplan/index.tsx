@@ -105,7 +105,7 @@ function SlotCard({ slot }: { slot: TagesplanSlot }) {
 }
 
 function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
-  const { data, isLoading } = useTagesplanRetro(mode)
+  const { data, isLoading, error } = useTagesplanRetro(mode)
   const [expandedDay, setExpandedDay] = useState<string | null>(null)
 
   if (isLoading)
@@ -115,6 +115,15 @@ function RetroSection({ mode }: { mode: 'redaktion' | 'sport' }) {
       >
         <Spinner size={20} />
       </div>
+    )
+  if (error)
+    return (
+      <Alert variant="warning" style={{ marginTop: '24px' }}>
+        {getApiErrorMessage(
+          error,
+          'Der Verlauf konnte gerade nicht geladen werden.',
+        )}
+      </Alert>
     )
   if (!data?.days?.length) return null
 
@@ -289,7 +298,7 @@ export function TagesplanPage() {
     useTagesplanStore()
 
   const { data, isLoading, error } = useTagesplan(tagesplanDate, tagesplanMode)
-  const { data: suggestionsResponse } = useTagesplanSuggestions(
+  const { data: suggestionsResponse, error: suggestionsError } = useTagesplanSuggestions(
     tagesplanDate,
     tagesplanMode,
   )
@@ -438,6 +447,14 @@ export function TagesplanPage() {
           </div>
 
           {/* Suggestions */}
+          {suggestionsError && (
+            <Alert variant="warning" style={{ marginBottom: '16px' }}>
+              {getApiErrorMessage(
+                suggestionsError,
+                'Die gespeicherten Tagesplan-Vorschläge sind gerade nicht verfügbar.',
+              )}
+            </Alert>
+          )}
           {suggestions && suggestions.length > 0 && (
             <Card>
               <CardHeader>

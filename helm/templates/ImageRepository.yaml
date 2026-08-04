@@ -1,0 +1,15 @@
+{{ if .Values.flux.enabled }}
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: {{ .Release.Name | default .Chart.Name }}
+  namespace: {{ .Values.systemNamespace | default .Release.Namespace }}
+spec:
+  interval: {{ .Values.flux.imagerepository.interval }}
+  image: {{ .Values.image }}
+  secretRef:
+    name: {{ .Values.flux.imagerepository.secretRefName }}
+  accessFrom:
+    namespaceSelectors:
+      - matchLabels: {}
+{{ end }}

@@ -320,33 +320,9 @@ def get_score_snapshots_for_cms_ids(
         ):
             resolved[cms_id] = database_snapshot
     if allow_server_fallback:
-        needs_server_details = [
-            cms_id
-            for cms_id in cms_ids
-            if cms_id not in resolved
-            or resolved[cms_id].get("scoreBreakdown") is None
-            or resolved[cms_id].get("orFactor") is None
-        ]
-        if needs_server_details:
-            server_snapshots = _get_server_candidate_score_snapshots(
-                list(dict.fromkeys(needs_server_details)),
-                now=now,
-            )
-            for cms_id, server_snapshot in server_snapshots.items():
-                existing = resolved.get(cms_id)
-                if existing is None:
-                    resolved[cms_id] = server_snapshot
-                    continue
-                if (
-                    existing.get("scoreBreakdown") is None
-                    and server_snapshot.get("scoreBreakdown") is not None
-                ):
-                    existing["scoreBreakdown"] = server_snapshot["scoreBreakdown"]
-                if (
-                    existing.get("orFactor") is None
-                    and server_snapshot.get("orFactor") is not None
-                ):
-                    existing["orFactor"] = server_snapshot["orFactor"]
+        missing = [cms_id for cms_id in cms_ids if cms_id not in resolved]
+        if missing:
+            resolved.update(_get_server_candidate_score_snapshots(missing, now=now))
     return resolved
 
 
@@ -389,165 +365,14 @@ def _get_server_candidate_score_snapshots(
             continue
         url = article.get("url") or article.get("link") or article.get("id")
         for cms_id in _cms_ids_in_trusted_url(url).intersection(requested):
-            score_details = _server_candidate_score_details(article, score)
             snapshots.setdefault(
                 cms_id,
                 {
                     "score": round(score, 1),
                     "capturedAt": captured_at,
-                    "scoreBreakdown": score_details["scoreBreakdown"],
-                    "orFactor": score_details["orFactor"],
                 },
             )
     return snapshots
-
-
-def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool):
-        return default
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(number):
-        return default
-    return max(minimum, min(number, maximum))
-
-
-def _scaled_component(
-    values: dict[str, object],
-    key: str,
-    maximum: float,
-    *,
-    default_percent: float,
-) -> float:
-    percent = _bounded_float(
-        values.get(key),
-        default=default_percent,
-        minimum=0.0,
-        maximum=100.0,
-    )
-    return round(percent / 100.0 * maximum, 1)
-
-
-def _server_candidate_or_factor(article: dict[str, object], score: float) -> float:
-    predicted_or = _bounded_float(
-        article.get("predictedOR"),
-        default=0.0,
-        minimum=0.0,
-        maximum=2.0,
-    )
-    if predicted_or > 0:
-        return round(max(0.6, min(predicted_or, 1.5)), 2)
-    return round(max(0.6, min(1.0 + (score - 50.0) / 100.0, 1.5)), 2)
-
-
-def _server_candidate_score_details(
-    article: dict[str, object],
-    score: float,
-) -> dict[str, object]:
-    """Return UI-compatible numeric details for server-scored fallback results."""
-    raw_breakdown = article.get("scoreBreakdown")
-    breakdown = raw_breakdown if isinstance(raw_breakdown, dict) else {}
-    default_percent = max(0.0, min(score, 100.0))
-
-    if bool(article.get("isSport")) or str(article.get("category") or "").lower() == "sport":
-        score_breakdown: dict[str, object] = {
-            "kind": "sport",
-            "sportRelevance": _scaled_component(
-                breakdown,
-                "bildFit",
-                35.0,
-                default_percent=default_percent,
-            ),
-            "timing": _scaled_component(
-                breakdown,
-                "historicalTiming",
-                30.0,
-                default_percent=default_percent,
-            ),
-            "drama": _scaled_component(
-                breakdown,
-                "bildReiz",
-                25.0,
-                default_percent=default_percent,
-            ),
-            "freshness": _scaled_component(
-                breakdown,
-                "freshness",
-                10.0,
-                default_percent=default_percent,
-            ),
-        }
-    else:
-        historical_timing = _bounded_float(
-            breakdown.get("historicalTiming"),
-            default=default_percent,
-            minimum=0.0,
-            maximum=100.0,
-        )
-        mix_balance = _bounded_float(
-            breakdown.get("mixBalance"),
-            default=100.0,
-            minimum=0.0,
-            maximum=100.0,
-        )
-        score_breakdown = {
-            "kind": "engagement",
-            "relevance": _scaled_component(
-                breakdown,
-                "bildFit",
-                30.0,
-                default_percent=default_percent,
-            ),
-            "urgency": _scaled_component(
-                breakdown,
-                "openingRatePotential",
-                25.0,
-                default_percent=default_percent,
-            ),
-            "curiosity": _scaled_component(
-                breakdown,
-                "bildReiz",
-                25.0,
-                default_percent=default_percent,
-            ),
-            "freshness": _scaled_component(
-                breakdown,
-                "freshness",
-                20.0,
-                default_percent=default_percent,
-            ),
-            "timing": _scaled_component(
-                breakdown,
-                "historicalTiming",
-                15.0,
-                default_percent=default_percent,
-            ),
-            "titleBoost": _scaled_component(
-                breakdown,
-                "headlineStrength",
-                15.0,
-                default_percent=default_percent,
-            ),
-            "breaking": (
-                15.0
-                if bool(article.get("isEilmeldung")) or bool(article.get("isBreaking"))
-                else 0.0
-            ),
-            "research": _scaled_component(
-                breakdown,
-                "editorialFeedback",
-                12.0,
-                default_percent=default_percent,
-            ),
-            "pushHistory": round(max(-4.0, min((historical_timing - 50.0) / 50.0 * 8.0, 8.0)), 1),
-            "topicSaturation": round(min(0.0, (mix_balance - 100.0) / 100.0 * 30.0), 1),
-        }
-    return {
-        "scoreBreakdown": score_breakdown,
-        "orFactor": _server_candidate_or_factor(article, score),
-    }
 
 
 class ScoreCaptureItem(BaseModel):
@@ -653,7 +478,7 @@ def get_score_capture_health(response: Response) -> ScoreCaptureHealthResponse:
     return ScoreCaptureHealthResponse(status="ok")
 
 
-@router.get("/api/score-capture/debug")
+@router.get("/api/score-capture/debug", include_in_schema=False)
 def debug_score_capture() -> JSONResponse:
     """Zeigt alle gecachten Scores (für Debugging)."""
     with _lock:
@@ -761,7 +586,7 @@ def post_score_capture_by_cms_id_batch(
     return BatchCmsScoreCaptureResponse.model_validate({"results": results})
 
 
-@router.post("/api/score-capture")
+@router.post("/api/score-capture", include_in_schema=False)
 def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
     """Empfängt Artikel-Scores vom Kandidaten-Tab — speichert in Memory + DB."""
     from app.database import ArticleScoreWriteError, save_article_score_to_db

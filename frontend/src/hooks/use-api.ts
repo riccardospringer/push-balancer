@@ -26,10 +26,15 @@ export function useTeamsAlerts() {
   })
 }
 
-export function usePushStats() {
+export function usePushStats(params?: {
+  limit?: number
+  days?: number
+  sort?: 'sentAt' | 'openRate' | 'performanceDelta' | 'recipients'
+  category?: string
+}) {
   return useQuery({
-    queryKey: ['pushStats'],
-    queryFn: ({ signal }) => api.pushStats(signal),
+    queryKey: ['pushStats', params],
+    queryFn: ({ signal }) => api.pushStats(params, signal),
     refetchInterval: 60_000,
   })
 }

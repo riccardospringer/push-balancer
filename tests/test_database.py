@@ -402,7 +402,7 @@ class TestPushDbUpsert:
                 "SELECT or_val FROM pushes WHERE message_id = ?", ("dup_test_001",)
             ).fetchone()
             conn.close()
-        assert row[0] == pytest.approx(7.5)
+        assert abs(float(row[0]) - 7.5) < 1e-9
 
     def test_upsert_does_not_downgrade_or_val(self, tmp_db):
         """Bei Duplikat wird or_val NICHT überschrieben wenn neuer Wert kleiner."""
@@ -438,7 +438,7 @@ class TestPushDbUpsert:
             ).fetchone()
             conn.close()
         # or_val=0 darf nicht überschreiben, das ON CONFLICT behält den alten Wert
-        assert row[0] == pytest.approx(8.0)
+        assert abs(float(row[0]) - 8.0) < 1e-9
 
 
 # ── _push_db_load_all ────────────────────────────────────────────────────────

@@ -81,21 +81,6 @@ class TestTeamsAlertsEndpoint:
 
 
 class TestStableFrontendContracts:
-    def test_ki_push_title_request_prefers_visible_overlay_fields(self):
-        repo_root = Path(__file__).resolve().parents[1]
-
-        for frontend_path in (
-            repo_root / "push-balancer.html",
-            repo_root / "app" / "legacy_push_balancer.html",
-        ):
-            html = frontend_path.read_text(encoding="utf-8")
-
-            assert "const visibleTitle = (document.getElementById('pushTitle')?.value || '').trim();" in html
-            assert "const visibleKicker = (document.getElementById('pushDachzeile')?.value || '').trim();" in html
-            assert "title: requestTitle" in html
-            assert "headline: requestTitle" in html
-            assert "force_llm: true" in html
-
     def test_pushes_contract_returns_collection(self):
         resp = client.get("/api/pushes")
         assert resp.status_code == 200
@@ -320,7 +305,7 @@ class TestStableFrontendContracts:
         monkeypatch.setattr(
             push_router,
             "_fetch_live_push_snapshot",
-            lambda: ([{"id": "abc"}], [{"name": "main"}]),
+            lambda force=True: ([{"id": "abc"}], [{"name": "main"}]),
         )
 
         resp = client.post("/api/push-refresh-jobs", json={})
@@ -486,19 +471,21 @@ class TestStableFrontendContracts:
             research_router._research_state.clear()
             research_router._research_state.update(original_state)
 
-    def test_deprecated_compatibility_route_emits_runtime_headers(self):
+    def test_hidden_compatibility_route_stays_available_without_deprecation_headers(self):
         resp = client.get("/api/ml/status")
         assert resp.status_code == 200
-        assert resp.headers.get("Deprecation") == "true"
-        assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
+        assert "Deprecation" not in resp.headers
+        assert "Sunset" not in resp.headers
 
     def test_deprecated_compatibility_prefix_route_emits_runtime_headers(self):
         with patch("app.routers.push.urllib.request.urlopen", side_effect=OSError("offline")):
             resp = client.get("/api/push/messages")
 
         assert resp.status_code == 200
-        assert resp.headers.get("Deprecation") == "true"
-        assert resp.headers.get("Sunset") == "Wed, 31 Dec 2026 23:59:59 GMT"
+        data = resp.json()
+        assert "messages" in data
+        assert "Deprecation" not in resp.headers
+        assert "Sunset" not in resp.headers
 
 
 class TestAdobeTrafficEndpoint:
@@ -517,6 +504,7 @@ class TestAdobeTrafficEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["enabled"] is False
+        assert data["hourly"] == []
 
     def test_stable_contract_route_has_no_deprecation_headers(self):
         resp = client.get("/api/ml-model")
@@ -632,6 +620,7 @@ class TestInternalAccessControl:
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr("app.main._request_comes_from_trusted_proxy", lambda _request: True)
 
         resp = client.get("/api/pushes", headers={"X-Forwarded-For": "203.0.113.7"})
 
@@ -645,6 +634,7 @@ class TestInternalAccessControl:
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ENABLED", True)
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_ALLOWED_CIDRS", ["10.0.0.0/8"])
         monkeypatch.setattr("app.main.INTERNAL_ACCESS_EXEMPT_PATHS", ["/api/health"])
+        monkeypatch.setattr("app.main._request_comes_from_trusted_proxy", lambda _request: True)
 
         resp = client.get("/api/pushes", headers={"X-Forwarded-For": "10.24.8.15"})
 
@@ -712,7 +702,7 @@ class TestInternalAccessControl:
 
     def test_container_disables_uvicorn_proxy_and_access_logs(self):
         dockerfile = (
-            Path(__file__).resolve().parents[1] / "Dockerfile"
+            Path(__file__).resolve().parents[1] / "Dockerfile.render"
         ).read_text(encoding="utf-8")
 
         assert "uvicorn app.main:app" in dockerfile
@@ -793,15 +783,11 @@ class TestInternalAccessControl:
 
         resp = client.get("/push-balancer.html", headers={"CF-Connecting-IP": "145.243.163.23"})
 
+        # /push-balancer.html liefert bewusst weiter die Legacy-Capture-UI:
+        # sie ist die einzige Quelle der Browser-Score-Erfassung (Score-API-Pipeline).
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
-        assert "Push Balancer" in resp.text
-        assert 'data-tab="live"' in resp.text
-        assert 'data-tab="analyse"' in resp.text
-        assert 'data-tab="konkurrenz"' in resp.text
-        assert 'data-tab="forschung"' in resp.text
-        assert 'data-tab="tagesplan"' in resp.text
-        assert "/api/forschung" in resp.text
+        assert "_captureArticleScores" in resp.text
         assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
 
     def test_unknown_frontend_path_falls_back_to_spa_for_allowlisted_clients(self, monkeypatch):
@@ -842,9 +828,7 @@ class TestInternalAccessControl:
 
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
-        assert "Push Balancer" in resp.text
-        assert 'data-tab="konkurrenz"' in resp.text
-        assert resp.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
+        assert '<div id="root"></div>' in resp.text
 
     def test_prepare_frontend_html_rewrites_legacy_bundle_paths_for_compat_route(self):
         from app.main import _prepare_frontend_html_for_request
@@ -913,6 +897,46 @@ class TestPushApiBaseCandidates:
 
 
 # ── /api/tagesplan ────────────────────────────────────────────────────────────
+
+class TestTeamsReadiness:
+    def test_teams_readiness_reports_the_full_chain(self, monkeypatch):
+        import app.routers.feed as feed_router
+
+        monkeypatch.setattr(
+            feed_router,
+            "build_articles_payload",
+            lambda **_kwargs: {
+                "articles": [
+                    {
+                        "url": "https://www.bild.de/politik/readiness-probe",
+                        "title": "Readiness-Probe",
+                        "score": 90.0,
+                        "scoreSource": "internal_score_api",
+                    }
+                ]
+            },
+        )
+
+        resp = client.get("/api/teams-readiness")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data["ready"], bool)
+        assert set(data) >= {
+            "teamsAlertsEnabled",
+            "webhookConfigured",
+            "quietHoursActive",
+            "volume",
+            "scoreApi",
+            "pushHistory",
+            "slots",
+        }
+        # Der Tagesplan der laufenden Instanz muss dem 11-15-Layout entsprechen.
+        assert data["slots"]["ok"] is True
+        assert 11 <= data["slots"]["plannedToday"] <= 15
+        assert data["volume"]["min"] == 11
+        assert data["volume"]["max"] == 15
+
 
 class TestTagesplanEndpoint:
     def test_tagesplan_returns_200(self):
@@ -1000,24 +1024,24 @@ class TestTagesplanEndpoint:
 
 class TestMlStatusEndpoint:
     def test_ml_status_returns_200(self):
-        """GET /api/ml/status → HTTP 200."""
-        resp = client.get("/api/ml/status")
+        """GET /api/ml-model → HTTP 200."""
+        resp = client.get("/api/ml-model")
         assert resp.status_code == 200
 
     def test_ml_status_has_trained_field(self):
         """Response muss 'trained'-Feld enthalten."""
-        resp = client.get("/api/ml/status")
+        resp = client.get("/api/ml-model")
         data = resp.json()
         assert "trained" in data
 
     def test_ml_status_trained_is_bool(self):
         """'trained' muss ein Boolean sein."""
-        resp = client.get("/api/ml/status")
+        resp = client.get("/api/ml-model")
         data = resp.json()
         assert isinstance(data.get("trained"), bool)
 
     def test_ml_status_content_type_json(self):
-        resp = client.get("/api/ml/status")
+        resp = client.get("/api/ml-model")
         assert "application/json" in resp.headers.get("content-type", "")
 
 

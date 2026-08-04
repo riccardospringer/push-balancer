@@ -1,0 +1,152 @@
+{{- if and .Values.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.digest)) -}}
+{{- fail "digest must be empty or an immutable sha256:<64 lowercase hex> value" -}}
+{{- end -}}
+{{- $gateTargetAllowed := false -}}
+{{- range .Values.egressProxy.allowedConnectHosts -}}
+{{- if eq (lower .) "www.bild.de" -}}
+{{- $gateTargetAllowed = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.egressProxy.clusterNetworkPolicy.enabled (not $gateTargetAllowed) -}}
+{{- fail "AWS ClusterNetworkPolicy rollout is blocked: the fixed gate target www.bild.de must be allowlisted" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "push-balancer.fullname" . }}
+  labels:
+    {{- include "push-balancer.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "push-balancer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret-spec: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{ if .Values.reloader.enabled }}
+        reloader.stakater.com/auto: "true"
+        {{ end }}
+        {{ with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{ end }}
+      labels:
+        {{- include "push-balancer.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "push-balancer.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- if .Values.egressProxy.clusterNetworkPolicy.enabled }}
+      initContainers:
+        - name: egress-policy-gate
+          image: "{{ .Values.image }}@{{ .Values.digest }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["python", "-I", "-B", "/app/app/egress_policy_gate.py"]
+          args:
+            - {{ include "push-balancer.egressProxyName" . | quote }}
+            - {{ .Values.egressProxy.port | quote }}
+            - {{ .Values.egressProxy.sentinelPort | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml .Values.egressProxy.resources | nindent 12 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image }}{{ if .Values.digest }}@{{ .Values.digest }}{{ else }}:{{ .Values.tag }}{{ end }}" # {"$imagepolicy": {{ printf "%q" (printf "%s:%s" (default "flux-system" .Values.flux.namespace) (include "push-balancer.fullname" .)) }}}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- omit .Values.livenessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: PORT
+              value: {{ .Values.service.targetPort | quote }}
+            {{- if .Values.egressProxy.enabled }}
+            - name: HTTPS_PROXY
+              value: {{ printf "http://%s:%v" (include "push-balancer.egressProxyName" .) .Values.egressProxy.port | quote }}
+            - name: https_proxy
+              value: {{ printf "http://%s:%v" (include "push-balancer.egressProxyName" .) .Values.egressProxy.port | quote }}
+            - name: NO_PROXY
+              value: {{ .Values.egressProxy.noProxy | quote }}
+            - name: no_proxy
+              value: {{ .Values.egressProxy.noProxy | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "push-balancer.configMapName" . }}
+            - secretRef:
+                name: {{ include "push-balancer.secretName" . }}
+                optional: true
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.persistence.enabled .Values.temporaryDirectory.enabled }}
+          volumeMounts:
+            {{- if .Values.temporaryDirectory.enabled }}
+            - name: temporary-directory
+              mountPath: {{ .Values.temporaryDirectory.mountPath }}
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or .Values.persistence.enabled .Values.temporaryDirectory.enabled }}
+      volumes:
+        {{- if .Values.temporaryDirectory.enabled }}
+        - name: temporary-directory
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.temporaryDirectory.sizeLimit }}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "push-balancer.fullname" . }}
+        {{- end }}
+      {{- end }}
