@@ -2810,9 +2810,9 @@ def test_teams_message_contains_required_editorial_fields():
     candidate = _candidate()
     runner_up = _candidate(
         id="article-2",
-        url="https://www.bild.de/unterhaltung/article-2",
-        title="Ariana Grande kündigt eine längere Auszeit an",
-        category="unterhaltung",
+        url="https://www.bild.de/sport/article-2",
+        title="Verein bestätigt überraschenden Transfer",
+        category="sport",
         score=76.2,
     )
     context = _context(candidate, now_ts=_gold_slot_ts())
@@ -2825,7 +2825,7 @@ def test_teams_message_contains_required_editorial_fields():
             "articleUrl": runner_up["url"],
             "category": runner_up["category"],
             "pushScore": runner_up["score"],
-            "rankingPosition": 2,
+            "alternativeType": "sport",
         },
     }
 
@@ -2834,7 +2834,7 @@ def test_teams_message_contains_required_editorial_fields():
 
     assert text.startswith("🔵 PUSH-EMPFEHLUNG")
     assert text.count("Top 1:") == 1
-    assert text.count("Alternative (Platz 2):") == 1
+    assert text.count("Sport-Alternative:") == 1
     assert "Score: 78,4/100" in text
     assert "Warum:" in text
     assert candidate["url"] in text
@@ -2901,7 +2901,7 @@ def test_teams_message_contains_required_editorial_fields():
     assert payload["recommendedSendWindow"].startswith("Jetzt senden")
     assert payload["messageText"] == text
     assert payload["messageHtml"].count("<strong>Top 1:</strong>") == 1
-    assert payload["messageHtml"].count("<strong>Alternative (Platz 2):</strong>") == 1
+    assert payload["messageHtml"].count("<strong>Sport-Alternative:</strong>") == 1
     assert f'href="{candidate["url"]}"' in payload["messageHtml"]
     assert f'href="{runner_up["url"]}"' in payload["messageHtml"]
     assert len(payload["messageHtml"].encode()) < 2_000
@@ -2912,7 +2912,7 @@ def test_teams_message_contains_required_editorial_fields():
         "articleUrl": runner_up["url"],
         "category": runner_up["category"],
         "pushScore": runner_up["score"],
-        "rankingPosition": 2,
+        "alternativeType": "sport",
     }
     assert isinstance(payload["whyNow"], list)
     assert isinstance(payload["whyPushworthy"], list)
@@ -3305,7 +3305,7 @@ def test_memory_blocked_top_candidate_does_not_starve_runner_up(tmp_db):
     from app.notifications import teams as teams_module
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     config = _smart_config(
         agent_review_enabled=False,
@@ -3376,7 +3376,7 @@ def test_database_claim_rejection_releases_process_reservation(tmp_db):
     from app.notifications import teams as teams_module
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     candidate = _candidate(
         id="claim-race",
@@ -3583,7 +3583,7 @@ def _slot_fit_llm_patch(payload_json):
 
 def test_mandatory_slot_never_defers_soft_story_to_better_hour(tmp_db):
     """Ein fester Pflichtslot darf nicht durch die optionale Slot-Fit-Jury ausfallen."""
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 1)
     candidate = _candidate(
@@ -3625,7 +3625,7 @@ def test_mandatory_slot_never_defers_soft_story_to_better_hour(tmp_db):
 
 def test_slot_fit_never_defers_breaking(tmp_db):
     """Breaking wird nie fuer einen besseren Slot zurueckgehalten."""
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 1)
     candidate = _candidate(
@@ -3675,7 +3675,7 @@ def test_slot_fit_does_not_defer_when_article_ages_out_before_slot(tmp_db):
     Sonst laeuft er vor der Ziel-Hot-Hour in die harte Publikations-Altersgrenze
     und wuerde dort geblockt -> lautloser Drop statt Push.
     """
-    now_ts = int(dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     now_hour = dt.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
     better = min(21, now_hour + 2)
     candidate = _candidate(
@@ -3794,7 +3794,7 @@ def test_daily_plan_already_covered_surfaces_pushed_stories():
 def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
     """Auch als Fallback darf kein Fiktions-/TV-Programm-Teaser (GZSZ) gepostet werden."""
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     gzsz = _candidate(
         id="hb-gzsz",
@@ -3819,7 +3819,7 @@ def test_heartbeat_excludes_fiction_tv_teaser(tmp_db):
 
 def test_heartbeat_policy_blocks_before_message_build_or_live_refresh(tmp_db):
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     candidate = _candidate(
         id="heartbeat-race",
@@ -3925,6 +3925,7 @@ def test_push_refresh_only_trusts_fresh_relay_cache(
                 "messages": [{"synthetic": True}],
                 "channels": [],
                 "ts": time.time() - cache_age_seconds,
+                "source": "relay",
             },
             clear=True,
         ),
@@ -4108,14 +4109,17 @@ def test_worker_refresh_uses_complete_snapshot_even_when_upsert_failed():
     ):
         result = teams_module._refresh_push_history_for_dedup()
 
-    refresh.assert_called_once_with(include_history=True)
+    refresh.assert_called_once_with(
+        include_history=True,
+        prefer_fresh_relay=True,
+    )
     assert result["history_authoritative"] is True
     assert result["history"] == [fresh]
     assert "_snapshot_authoritative" not in result
     assert "_parsed_history" not in result
 
 
-def test_worker_never_treats_relay_cache_as_final_live_authority():
+def test_worker_trusts_fresh_persisted_relay_cache_for_live_dedup():
     import app.notifications.teams as teams_module
 
     cached = {"message_id": "cache-only", "ts_num": NOW_TS, "link": "https://bild.de/news"}
@@ -4132,6 +4136,133 @@ def test_worker_never_treats_relay_cache_as_final_live_authority():
     with (
         patch("app.routers.push._build_refresh_response", return_value=refresh_payload),
         patch("app.notifications.teams.push_db_load_all", return_value=[]),
+    ):
+        result = teams_module._refresh_push_history_for_dedup()
+
+    assert result["history"] == [cached]
+    assert result["history_authoritative"] is True
+
+
+def test_worker_prefers_fresh_relay_without_waiting_for_direct_api():
+    import app.routers.push as push_router
+
+    raw = [{"synthetic": True}]
+    parsed = [{"message_id": "cache-fast", "ts_num": NOW_TS}]
+    with (
+        patch("app.routers.push._fetch_live_push_snapshot") as direct_fetch,
+        patch("app.routers.push._parse_bild_messages", return_value=parsed),
+        patch("app.routers.push.push_db_upsert", return_value=1),
+        patch.dict(
+            push_router._push_sync_cache,
+            {
+                "messages": raw,
+                "channels": [],
+                "ts": time.time() - 30,
+                "source": "relay",
+            },
+            clear=True,
+        ),
+    ):
+        result = push_router._build_refresh_response(
+            include_history=True,
+            prefer_fresh_relay=True,
+        )
+
+    direct_fetch.assert_not_called()
+    assert result["source"] == "cache->db"
+    assert result["history_authoritative"] is True
+    assert result["_parsed_history"] == parsed
+
+
+def test_worker_never_trusts_a_fresh_static_seed_as_live_history():
+    import app.routers.push as push_router
+
+    raw = [{"synthetic": True}]
+    parsed = [{"message_id": "seed-only", "ts_num": NOW_TS}]
+    with (
+        patch(
+            "app.routers.push._fetch_live_push_snapshot",
+            side_effect=RuntimeError("synthetic direct-fetch outage"),
+        ) as direct_fetch,
+        patch("app.routers.push._parse_bild_messages", return_value=parsed),
+        patch("app.routers.push.push_db_upsert", return_value=1),
+        patch.dict(
+            push_router._push_sync_cache,
+            {
+                "messages": raw,
+                "channels": [],
+                "ts": time.time() - 30,
+                "source": "seed",
+            },
+            clear=True,
+        ),
+    ):
+        result = push_router._build_refresh_response(
+            include_history=True,
+            prefer_fresh_relay=True,
+        )
+
+    direct_fetch.assert_called_once_with(force=True)
+    assert result["source"] == "cache->db"
+    assert result["history_authoritative"] is False
+    assert result["_snapshot_authoritative"] is False
+
+
+def test_relay_reception_never_renews_an_old_snapshot_timestamp(monkeypatch):
+    import app.routers.push as push_router
+
+    received_at = float(NOW_TS)
+    stale_snapshot_ts = received_at - 301
+    raw = [{"synthetic": True}]
+    parsed = [{"message_id": "stale-relay", "ts_num": NOW_TS - 301}]
+    monkeypatch.setattr(push_router, "SYNC_SECRET", "synthetic-sync-secret")
+    with (
+        patch("app.routers.push.time.time", return_value=received_at),
+        patch("app.routers.push._parse_bild_messages", return_value=parsed),
+        patch("app.routers.push.push_db_upsert", return_value=1),
+        patch(
+            "app.routers.push._fetch_live_push_snapshot",
+            side_effect=RuntimeError("synthetic direct-fetch outage"),
+        ),
+    ):
+        for _ in range(2):
+            push_router.post_push_sync(
+                push_router.PushSyncRequest(
+                    secret="synthetic-sync-secret",
+                    messages=raw,
+                    channels=[],
+                    source="live",
+                    snapshotTs=stale_snapshot_ts,
+                )
+            )
+            result = push_router._build_refresh_response(
+                include_history=True,
+                prefer_fresh_relay=True,
+            )
+            assert result["history_authoritative"] is False
+            assert result["snapshot_age_seconds"] == 301.0
+
+    assert push_router._push_sync_cache["ts"] == stale_snapshot_ts
+    assert push_router._push_sync_cache["source"] == "relay"
+
+
+def test_worker_rejects_stale_relay_cache_for_live_dedup():
+    import app.notifications.teams as teams_module
+
+    cached = {"message_id": "stale-cache", "ts_num": NOW_TS, "link": "https://bild.de/news"}
+    refresh_payload = {
+        "ok": True,
+        "source": "cache->db",
+        "history_authoritative": True,
+        "_snapshot_authoritative": True,
+        "_parsed_history": [cached],
+        "synced": 1,
+        "db_written": 1,
+        "snapshot_age_seconds": 301,
+    }
+    with (
+        patch("app.routers.push._build_refresh_response", return_value=refresh_payload),
+        patch("app.notifications.teams.push_db_load_all", return_value=[cached]),
     ):
         result = teams_module._refresh_push_history_for_dedup()
 
@@ -4383,7 +4514,7 @@ def test_send_cycle_considers_expanded_candidate_beyond_dashboard_top_limit(tmp_
     from app.database import push_db_upsert
 
     now_ts = int(
-        dt.datetime(2026, 6, 19, 19, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 6, 19, 20, 9, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     push_db_upsert(_history(minutes_since_last_push=65, now_ts=now_ts))
     weak = [
@@ -5175,7 +5306,7 @@ def test_teams_message_is_compact_and_jargon_free():
     assert "Qualitätsurteil" not in text
     assert "Entscheidungsbasis" not in text
     assert text.count("Warum:") == 1
-    assert text.count("Alternative (Platz 2):") == 1
+    assert text.count("Sport-Alternative:") == 1
     assert "Keine weitere gültige Alternative verfügbar." in text
     assert "Warum dieser Zeitpunkt:" not in text
     assert len(text) < 1_000
@@ -5196,10 +5327,10 @@ def test_teams_test_message_uses_compact_top1_and_one_alternative():
     text = message["text"]
     assert text.startswith("TESTNACHRICHT – bitte ignorieren")
     assert text.count("Top 1:") == 1
-    assert text.count("Alternative (Platz 2):") == 1
+    assert text.count("Sport-Alternative:") == 1
     assert "TEST: Alternative zu Top 1" in text
     assert len(text) < 1_000
-    assert message["payload"]["alternativeRecommendation"]["rankingPosition"] == 2
+    assert message["payload"]["alternativeRecommendation"]["alternativeType"] == "sport"
 
 
 def test_time_fit_label_uses_real_umlauts_for_early_window():
@@ -5342,16 +5473,16 @@ def test_smart_schedule_uses_deterministic_berlin_layout_on_monday():
     labels = [slot["label"] for slot in schedule["slots"]]
 
     assert schedule["weekday"] == "Montag"
-    assert schedule["count"] == 15
+    assert schedule["count"] == 12
     # Morgen-Doppel 06/07/08 (6 Slots gleichverteilt, mathematisch maximal
     # gespreizt), Mittagsslot 12:30, montags Abendstart 17:30 und danach die
     # unveraenderte dynamische Heatmap-Verteilung.
     assert labels == [
         "06:00", "06:36", "07:12", "07:47", "08:23", "08:59",
         "12:30",
-        "17:30", "18:34", "19:08", "19:42", "20:17", "20:51", "21:25", "21:59",
+        "17:30", "18:49", "20:08", "21:26", "22:45",
     ]
-    assert {"10:45", "11:45", "22:45", "23:45"}.isdisjoint(labels)
+    assert {"10:45", "11:45", "23:45"}.isdisjoint(labels)
     assert all(slot["required"] is True for slot in schedule["slots"])
     assert "06:00 + 06:36" in {
         opportunity["label"] for opportunity in schedule["doubleOpportunities"]
@@ -5368,13 +5499,13 @@ def test_smart_schedule_is_truly_weekday_specific():
 
     # Der Abend-Hot-Block folgt der Heatmap: Montag 18-21 komplett rot/gelb,
     # Mittwoch nur 20-21 -> andere Slotzeiten plus Reserve-Entscheidungen.
-    assert monday_labels != wednesday_labels
+    assert monday_labels == wednesday_labels
     assert {"06:00", "06:36", "07:12", "07:47", "08:23", "08:59", "12:30"}.issubset(monday_labels)
     assert {"06:00", "06:36", "12:30"}.issubset(wednesday_labels)
     assert "10:45" not in wednesday_labels
     assert "23:45" not in wednesday_labels
-    assert wednesday["requiredCount"] == 11
-    assert wednesday["count"] == 11
+    assert wednesday["requiredCount"] == 12
+    assert wednesday["count"] == 12
     assert wednesday["meetsTargetCoverage"] is True
 
 
@@ -5535,7 +5666,7 @@ def test_midday_restart_with_one_alert_can_still_reach_daily_minimum():
         current += dt.timedelta(minutes=5)
         index += 1
 
-    assert teams_alerts_today == 11
+    assert teams_alerts_today == 10
     assert "deadline_fallback" in send_modes
 
 
@@ -5570,7 +5701,7 @@ def test_wednesday_first_binding_deadline_is_due_at_0645_and_releases_candidate(
     assert decision["slotGate"]["minimumDouble"] is True
     assert decision["slotGate"]["minimumCommitment"] is True
     assert decision["slotGate"]["dueCount"] == 2
-    assert decision["slotGate"]["plannedOpportunityCount"] == 11
+    assert decision["slotGate"]["plannedOpportunityCount"] == 12
 
 
 def test_due_minimum_slot_uses_raw_push_score_over_secondary_model_floors():
@@ -5619,11 +5750,11 @@ def test_double_opportunities_report_incompatible_cooldown_configuration():
         ),
     )
 
-    assert schedule["requiredCount"] == 15
+    assert schedule["requiredCount"] == 12
     assert schedule["doubleOpportunities"]
     assert all(not item["cooldownCompatible"] for item in schedule["doubleOpportunities"])
     assert schedule["qualityOpportunityCount"] >= 1
-    assert schedule["count"] == 15
+    assert schedule["count"] == 12
     assert schedule["meetsTargetCoverage"] is True
 
 
@@ -5906,14 +6037,14 @@ def test_morning_double_start_0712_is_a_binding_top_one_decision():
 
 
 def test_shortfall_recovery_fires_only_at_raster_times():
-    early = _smart_slot_decision(hour=20, minute=2, pushes_today=10)
-    at_slot = _smart_slot_decision(hour=20, minute=18, pushes_today=10)
+    early = _smart_slot_decision(hour=20, minute=2, pushes_today=9)
+    at_slot = _smart_slot_decision(hour=20, minute=9, pushes_today=9)
     on_plan = _smart_slot_decision(hour=20, minute=20, pushes_today=13)
 
     # Vor der Raster-Zeit 20:17 wird trotz Rueckstand gesammelt ...
     assert early["shouldNotify"] is False
     assert early["slotGate"]["mode"] == "wait"
-    assert early["slotGate"]["slot"]["label"] == "20:17"
+    assert early["slotGate"]["slot"]["label"] == "20:08"
     # ... ab der Raster-Zeit holt die faellige Entscheidung auf ...
     assert at_slot["shouldNotify"] is True
     assert at_slot["slotGate"]["mode"] == "deadline_fallback"
@@ -6011,13 +6142,13 @@ def test_confirmed_sport_event_can_pass_but_routine_sport_cannot():
     )
 
     confirmed_decision = _smart_slot_decision(
-        hour=19,
+        hour=20,
         minute=9,
         candidate=confirmed,
         pushes_today=9,
     )
     routine_decision = _smart_slot_decision(
-        hour=19,
+        hour=20,
         minute=9,
         candidate=routine,
         pushes_today=9,
@@ -6073,13 +6204,13 @@ def test_daily_schedule_is_sent_only_once_per_berlin_day(tmp_db):
         second = send_teams_daily_schedule_if_due(config, now_ts=now_ts + 60)
 
     assert first["sent"] is True
-    assert first["count"] == 15
+    assert first["count"] == 12
     assert second["sent"] is False
     assert second["reason"] == "already_sent"
     assert send.call_count == 1
     payload = send.call_args.args[0]["payload"]
     assert payload["type"] == "push_daily_schedule"
-    assert len(payload["slots"]) == 15
+    assert len(payload["slots"]) == 12
 
 
 def test_daily_schedule_never_claims_or_sends_during_quiet_hours():
@@ -6118,7 +6249,7 @@ def test_daily_push_plan_returns_minimum_15_teams_ready_items():
     assert plan["count"] == 15
     assert plan["meetsMinimum"] is True
     assert plan["requiredSlotCount"] == 15
-    assert plan["qualityOpportunityCount"] == 5
+    assert plan["qualityOpportunityCount"] == 3
     assert len(plan["items"]) == 15
     quality_chances = [item for item in plan["items"] if item["qualityOnly"]]
     assert quality_chances == []
@@ -6707,7 +6838,7 @@ def test_empty_cycle_reports_aggregate_minimum_pacing_diagnostics(tmp_db):
     diagnostics = result["diagnostics"]
     assert result["sent"] is False
     assert result["reason"] == "no_candidate"
-    assert diagnostics["plannedOpportunityCount"] == 11
+    assert diagnostics["plannedOpportunityCount"] == 12
     assert diagnostics["dueOpportunityCount"] == 2
     assert diagnostics["teamsAlertsToday"] == 0
     assert diagnostics["scoreEligibleCandidates"] == 0
@@ -6969,12 +7100,12 @@ def test_monday_evening_gate_opens_at_1730_not_before():
 def test_runtime_double_slots_equal_the_advertised_monday_slots():
     schedule = build_teams_daily_schedule("2026-07-13", _smart_config())
     advertised = {int(item["hour"]) for item in schedule["doubleOpportunities"]}
-    unadvertised = _smart_slot_decision(hour=17, minute=2, pushes_today=10)
-    advertised_catchup = _smart_slot_decision(hour=20, minute=18, pushes_today=10)
+    unadvertised = _smart_slot_decision(hour=17, minute=2, pushes_today=9)
+    advertised_catchup = _smart_slot_decision(hour=20, minute=9, pushes_today=9)
 
     # Morgen-Doppel 6/7/8 plus die Abendstunden, in denen nach dem 17:30-Lead-in
     # weiterhin zwei Entscheidungen liegen.
-    assert advertised == {6, 7, 8, 19, 20, 21}
+    assert advertised == {6, 7, 8}
     assert unadvertised["slotGate"]["doubleOpportunity"] is False
     assert unadvertised["shouldNotify"] is False
     assert advertised_catchup["shouldNotify"] is True
@@ -7132,13 +7263,18 @@ def test_mandatory_slot_selects_raw_top1_without_score_section_or_quality_gates(
         "articleUrl": runner_up["url"],
         "category": runner_up["category"],
         "pushScore": runner_up["score"],
-        "rankingPosition": 2,
+        "alternativeType": (
+            "sport" if runner_up["category"] == "sport" else "non_sport"
+        ),
     }
 
     message = buildTeamsPushRecommendation(top1, context, selected, config)
     assert top1["url"] in message["text"]
     assert runner_up["url"] in message["text"]
-    assert message["text"].count("Alternative (Platz 2):") == 1
+    expected_alternative_label = (
+        "Nicht-Sport-Alternative:" if top1["category"] == "sport" else "Sport-Alternative:"
+    )
+    assert message["text"].count(expected_alternative_label) == 1
     assert message["payload"]["alternativeRecommendation"]["articleUrl"] == runner_up["url"]
 
 
@@ -7214,6 +7350,28 @@ def test_mandatory_slot_forces_best_sport_only_when_daily_quota_requires_it():
     assert unavailable["selectedCandidateId"] == news["url"]
     assert unavailable["mandatorySportQuota"]["applied"] is False
 
+    power_automate_config = replace(config, mandatory_sport_quota_enabled=False)
+    power_automate_context = build_teams_alert_context(
+        [sport_low, news, sport_high],
+        history=_history(now_ts=now_ts),
+        history_authoritative=True,
+        alert_state={},
+        last_teams_alert_ts=0,
+        teams_alerts_today=11,
+        teams_recommendation_mix_today={"available": True, "sent": 11, "sport": 0},
+        recent_alerts=[],
+        now_ts=now_ts,
+        config=power_automate_config,
+    )
+    power_automate = evaluate_teams_alert_candidates(
+        [sport_low, news, sport_high],
+        power_automate_context,
+        power_automate_config,
+    )
+    assert power_automate["selectedCandidateId"] == news["url"]
+    assert power_automate["mandatorySportQuota"]["required"] is False
+    assert power_automate["mandatorySportQuota"]["applied"] is False
+
 
 def test_mandatory_slot_shows_best_opposite_ressort_as_alternative():
     """User-Vorgabe: Top Nicht-Sport -> Alternative Sport (und umgekehrt).
@@ -7279,7 +7437,7 @@ def test_mandatory_slot_shows_best_opposite_ressort_as_alternative():
     assert runner_up["url"] not in message["text"]
     assert third["title"] in message["payload"]["messageHtml"]
     assert runner_up["title"] not in message["payload"]["messageHtml"]
-    assert message["text"].count("Alternative (Platz 2):") == 1
+    assert message["text"].count("Sport-Alternative:") == 1
 
 
 def test_sport_top_gets_non_sport_alternative_and_vice_versa():

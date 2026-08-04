@@ -7,6 +7,7 @@ POST /api/predictions/feedback — Prediction-Feedback für ML-Training
 import json
 import logging
 import datetime as dt
+import math
 import re
 import sqlite3
 import time
@@ -26,7 +27,12 @@ log = logging.getLogger("push-balancer")
 router = APIRouter()
 
 # ── Push-Sync Cache (module-level, thread-safe) ───────────────────────────
-_push_sync_cache: dict = {"messages": [], "ts": 0, "channels": []}
+_push_sync_cache: dict = {
+    "messages": [],
+    "ts": 0,
+    "channels": [],
+    "source": "unknown",
+}
 _push_sync_lock = threading.Lock()
 
 # ── SSL Context ────────────────────────────────────────────────────────────
@@ -91,6 +97,8 @@ class PushSyncRequest(BaseModel):
     secret: str = ""   # default "" → leerer Body ergibt 403 statt 422
     messages: list = []
     channels: list = []
+    source: str = "unknown"
+    snapshotTs: float = 0.0
 
 
 def _iso_from_ts(ts_value: int | str | float) -> str:
@@ -445,13 +453,85 @@ def _build_pushes_response(
     }
 
 
-def _build_refresh_response(*, include_history: bool = False) -> dict:
+def _build_cached_relay_response(
+    *,
+    include_history: bool,
+    max_age_seconds: float | None,
+) -> dict | None:
+    """Parse and persist the authenticated relay snapshot without network I/O."""
+    with _push_sync_lock:
+        cache_msgs = list(_push_sync_cache.get("messages") or [])
+        cache_ts = float(_push_sync_cache.get("ts") or 0.0)
+        cache_source = str(_push_sync_cache.get("source") or "unknown")
+    if not cache_msgs or cache_ts <= 0:
+        return None
+
+    cache_age = max(0.0, time.time() - cache_ts)
+    if max_age_seconds is not None and cache_age > max(0.0, max_age_seconds):
+        return None
+    cache_is_fresh = cache_age <= 300.0
+    source_is_authoritative = cache_source in {"live", "relay"}
+    parsed_cache: list[dict] = []
+    parse_ok = False
+    persistence_ok = False
+    try:
+        parsed_cache = _parse_bild_messages(cache_msgs)
+        parse_ok = len(parsed_cache) == len(cache_msgs)
+        if not parse_ok:
+            log.warning(
+                "[pushes] Cache-Snapshot unvollstaendig geparst: raw=%s parsed=%s",
+                len(cache_msgs),
+                len(parsed_cache),
+            )
+    except Exception as cache_parse_exc:
+        log.warning("[pushes] Cache-Parsing fehlgeschlagen: %s", cache_parse_exc)
+    try:
+        n_written = push_db_upsert(parsed_cache) if parse_ok else 0
+        persistence_ok = parse_ok
+    except Exception as cache_persist_exc:
+        log.warning(
+            "[pushes] cache→db Fallback fehlgeschlagen: %s",
+            cache_persist_exc,
+        )
+        n_written = 0
+    result = {
+        "ok": True,
+        "synced": len(cache_msgs),
+        "channels": 0,
+        "db_written": n_written,
+        "source": "cache->db",
+        "history_authoritative": bool(
+            source_is_authoritative and cache_is_fresh and parse_ok and persistence_ok
+        ),
+        "snapshot_age_seconds": round(cache_age, 1),
+    }
+    if include_history:
+        result["_parsed_history"] = parsed_cache
+        result["_snapshot_authoritative"] = bool(
+            source_is_authoritative and cache_is_fresh and parse_ok
+        )
+    return result
+
+
+def _build_refresh_response(
+    *,
+    include_history: bool = False,
+    prefer_fresh_relay: bool = False,
+) -> dict:
+    if prefer_fresh_relay:
+        relay_result = _build_cached_relay_response(
+            include_history=include_history,
+            max_age_seconds=300.0,
+        )
+        if relay_result and relay_result.get("history_authoritative"):
+            return relay_result
     try:
         messages, channels = _fetch_live_push_snapshot(force=True)
         with _push_sync_lock:
             _push_sync_cache["messages"] = messages
             _push_sync_cache["channels"] = channels
             _push_sync_cache["ts"] = time.time()
+            _push_sync_cache["source"] = "live"
         parsed_messages: list[dict] = []
         snapshot_authoritative = False
         persistence_ok = False
@@ -487,51 +567,13 @@ def _build_refresh_response(*, include_history: bool = False) -> dict:
         return result
     except Exception as exc:
         log.warning("[pushes] live refresh failed: %s", exc)
-        # Fallback: aus dem Sync-Cache parsen + in DB schreiben (lokales Relay hat ihn ggf. befüllt)
-        with _push_sync_lock:
-            cache_msgs = list(_push_sync_cache.get("messages") or [])
-            cache_ts = float(_push_sync_cache.get("ts") or 0.0)
-        if cache_msgs:
-            cache_age = max(0.0, time.time() - cache_ts) if cache_ts > 0 else None
-            cache_is_fresh = bool(cache_age is not None and cache_age <= 300.0)
-            parsed_cache: list[dict] = []
-            parse_ok = False
-            persistence_ok = False
-            try:
-                parsed_cache = _parse_bild_messages(cache_msgs)
-                parse_ok = len(parsed_cache) == len(cache_msgs)
-                if not parse_ok:
-                    log.warning(
-                        "[pushes] Cache-Snapshot unvollstaendig geparst: raw=%s parsed=%s",
-                        len(cache_msgs),
-                        len(parsed_cache),
-                    )
-            except Exception as cache_parse_exc:
-                log.warning("[pushes] Cache-Parsing fehlgeschlagen: %s", cache_parse_exc)
-            try:
-                n_written = push_db_upsert(parsed_cache) if parse_ok else 0
-                persistence_ok = parse_ok
-            except Exception as cache_persist_exc:
-                log.warning(
-                    "[pushes] cache→db Fallback fehlgeschlagen: %s",
-                    cache_persist_exc,
-                )
-                n_written = 0
-            result = {
-                "ok": True,
-                "synced": len(cache_msgs),
-                "channels": 0,
-                "db_written": n_written,
-                "source": "cache->db",
-                "history_authoritative": bool(cache_is_fresh and parse_ok and persistence_ok),
-                "snapshot_age_seconds": (
-                    round(cache_age, 1) if cache_age is not None else None
-                ),
-            }
-            if include_history:
-                result["_parsed_history"] = parsed_cache
-                result["_snapshot_authoritative"] = bool(cache_is_fresh and parse_ok)
-            return result
+        # Fallback: der lokale Relay kann Render auch ohne direkten API-Zugriff versorgen.
+        relay_result = _build_cached_relay_response(
+            include_history=include_history,
+            max_age_seconds=None,
+        )
+        if relay_result is not None:
+            return relay_result
         try:
             rows = push_db_load_all(max_rows=50)
         except Exception as db_exc:
@@ -570,6 +612,7 @@ def auto_seed_db_if_empty() -> int:
             _push_sync_cache["messages"] = messages
             _push_sync_cache["channels"] = channels
             _push_sync_cache["ts"] = time.time()
+            _push_sync_cache["source"] = "live"
         n = push_db_upsert(_parse_bild_messages(messages))
         log.info("[AutoSeed] %d Pushes von BILD-API in leere DB geseedet", n)
         return n
@@ -599,8 +642,9 @@ async def proxy_push_api(path: str, request: Request) -> Response:
     """
     full_path = f"/push/{path}"
     query = str(request.url.query)
+    cache_only = str(request.query_params.get("relayCacheOnly") or "") == "1"
     last_error: Exception | None = None
-    if PUSH_LIVE_FETCH_ENABLED:
+    if PUSH_LIVE_FETCH_ENABLED and not cache_only:
         for base_url in push_api_base_candidates():
             url = f"{base_url}{full_path}"
             if query:
@@ -620,13 +664,15 @@ async def proxy_push_api(path: str, request: Request) -> Response:
             except Exception as exc:
                 last_error = exc
         log.info("[Proxy] Push-API direkt nicht erreichbar, prüfe Sync-Cache: %s", last_error)
-    else:
+    elif not cache_only:
         log.info("[Proxy] Live Push-API deaktiviert, nutze Cache/Fallback")
 
     # 2. Sync-Cache
     with _push_sync_lock:
-        cache_age = time.time() - _push_sync_cache["ts"]
-        if _push_sync_cache["ts"] > 0 and cache_age < 86400:
+        cache_ts = float(_push_sync_cache.get("ts") or 0.0)
+        cache_source = str(_push_sync_cache.get("source") or "unknown")
+        cache_age = time.time() - cache_ts
+        if cache_ts > 0 and cache_age < 86400:
             if "channels" in path:
                 payload = json.dumps(_push_sync_cache.get("channels", [])).encode()
             else:
@@ -635,6 +681,8 @@ async def proxy_push_api(path: str, request: Request) -> Response:
                     "next": None,
                     "_synced": True,
                     "_age_s": int(cache_age),
+                    "_snapshotTs": cache_ts,
+                    "_source": cache_source,
                 }).encode()
             return Response(
                 content=payload,
@@ -738,10 +786,20 @@ def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     if body.secret != SYNC_SECRET:
         raise HTTPException(status_code=403, detail="Invalid sync secret")
 
+    received_at = time.time()
+    snapshot_ts = float(body.snapshotTs or 0.0)
+    source = str(body.source or "").strip().lower()
+    timestamp_is_valid = bool(
+        math.isfinite(snapshot_ts) and snapshot_ts > 0 and snapshot_ts <= received_at
+    )
     with _push_sync_lock:
         _push_sync_cache["messages"] = body.messages
         _push_sync_cache["channels"] = body.channels
-        _push_sync_cache["ts"] = time.time()
+        _push_sync_cache["ts"] = min(snapshot_ts, received_at) if timestamp_is_valid else 0.0
+        _push_sync_cache["source"] = (
+            "relay" if timestamp_is_valid and source in {"live", "relay"}
+            else "unknown"
+        )
 
     log.info("[Sync] Empfangen: %d Messages, %d Channels",
              len(body.messages), len(body.channels))

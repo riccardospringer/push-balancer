@@ -56,20 +56,20 @@ def test_monday_uses_the_deterministic_berlin_layout():
     assert labels == {
         "06:00", "06:36", "07:12", "07:47", "08:23", "08:59",
         "12:30",
-        "17:30", "18:34", "19:08", "19:42", "20:17", "20:51", "21:25", "21:59",
+        "17:30", "18:49", "20:08", "21:26", "22:45",
     }
     # Ab 22:00 gilt die Ruhezeit; die Totzone 10/11 bleibt draussen.
-    assert {"10:45", "11:45", "22:15", "22:45", "23:45"}.isdisjoint(labels)
-    assert schedule["count"] == 15
-    assert schedule["requiredCount"] == 15
-    assert schedule["runtimeOpportunityCount"] == 15
+    assert {"10:45", "11:45", "23:45"}.isdisjoint(labels)
+    assert schedule["count"] == 12
+    assert schedule["requiredCount"] == 12
+    assert schedule["runtimeOpportunityCount"] == 12
     assert schedule["meetsTargetCoverage"] is True
 
 
 def test_date_scoped_delay_moves_only_the_remaining_monday_slots():
     config = _config(
         slot_delay_date="2026-08-03",
-        slot_delay_from="19:08",
+        slot_delay_from="20:08",
         slot_delay_minutes=14,
     )
     berlin = ZoneInfo("Europe/Berlin")
@@ -82,11 +82,11 @@ def test_date_scoped_delay_moves_only_the_remaining_monday_slots():
         for slot in _daily_runtime_opportunities(dt.date(2026, 8, 4), config)
     ]
 
-    assert today[-6:] == ["19:22", "19:56", "20:31", "21:05", "21:39", "22:13"]
-    assert "19:08" not in today
-    assert "19:08" in tomorrow
-    old_slot = int(dt.datetime(2026, 8, 3, 19, 8, tzinfo=berlin).timestamp())
-    new_slot = int(dt.datetime(2026, 8, 3, 19, 22, tzinfo=berlin).timestamp())
+    assert today[-3:] == ["20:22", "21:40", "22:59"]
+    assert "20:08" not in today
+    assert "20:08" in tomorrow
+    old_slot = int(dt.datetime(2026, 8, 3, 20, 8, tzinfo=berlin).timestamp())
+    new_slot = int(dt.datetime(2026, 8, 3, 20, 22, tzinfo=berlin).timestamp())
     assert _mandatory_slot_top1_binding_slot(old_slot, config) is None
     assert _mandatory_slot_top1_binding_slot(new_slot, config)["ts"] == new_slot
 
@@ -94,12 +94,12 @@ def test_date_scoped_delay_moves_only_the_remaining_monday_slots():
 def test_worker_defers_slow_cycle_before_slot_and_retries_inside_window():
     config = _config(
         slot_delay_date="2026-08-03",
-        slot_delay_from="19:08",
+        slot_delay_from="20:08",
         slot_delay_minutes=14,
     )
     berlin = ZoneInfo("Europe/Berlin")
-    before = dt.datetime(2026, 8, 3, 19, 20, tzinfo=berlin).timestamp()
-    inside = dt.datetime(2026, 8, 3, 19, 22, 30, tzinfo=berlin).timestamp()
+    before = dt.datetime(2026, 8, 3, 20, 20, tzinfo=berlin).timestamp()
+    inside = dt.datetime(2026, 8, 3, 20, 22, 30, tzinfo=berlin).timestamp()
 
     assert seconds_to_defer_cycle_for_binding_slot(
         before,
@@ -136,7 +136,7 @@ def test_every_weekday_uses_the_deterministic_layout_and_reaches_11_to_15(
 
     # Morgen-Doppel und Mittagsslot sind an jedem Wochentag identisch verbindlich.
     assert {"06:00", "06:36", "07:12", "07:47", "08:23", "08:59", "12:30"}.issubset(labels)
-    assert 11 <= schedule["runtimeOpportunityCount"] <= 15
+    assert schedule["runtimeOpportunityCount"] == 12
     assert len(labels) == schedule["runtimeOpportunityCount"]
     assert not ({"10:45", "11:45"} & labels)
 
@@ -146,15 +146,10 @@ def test_every_weekday_uses_the_deterministic_layout_and_reaches_11_to_15(
 
     # Abend-Hot-Hours (rot/gelb 18-21 laut Heatmap) maximal ausschoepfen:
     # zwei Slots je Hot-Stunde, gleichverteilt ueber den Block.
-    hot_hours = [
-        hour
-        for hour in (18, 19, 20, 21)
-        if (PDF_OR_MATRIX.get((hour, weekday)) or {}).get("avg_or", 0.0) >= 6.0
-    ]
     evening = [slot for slot in slots if slot.get("slotRole") == "evening_hot"]
-    assert len(evening) >= 2 * max(1, len(hot_hours))
-    if weekday == 0:
-        assert evening[0]["label"] == "17:30"
+    assert [slot["label"] for slot in evening] == [
+        "17:30", "18:49", "20:08", "21:26", "22:45",
+    ]
 
     # Mindestabstand zwischen allen verbindlichen Entscheidungen: 30 Minuten.
     gaps = [

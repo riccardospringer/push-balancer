@@ -21,6 +21,8 @@ from app.config import (
     OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR,
     OPENAI_TITLE_GENERATION_ENABLED,
     PAID_EXTERNAL_APIS_ENABLED,
+    POWER_AUTOMATE_API_KEY,
+    PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
     PUSH_LIVE_FETCH_ENABLED,
     RESEARCH_EXTERNAL_CONTEXT_ENABLED,
 )
@@ -57,7 +59,19 @@ def get_health() -> JSONResponse:
         from app.notifications.teams import TeamsAlertConfig, channel_health
 
         teams_config = TeamsAlertConfig()
-        teams_channel = channel_health(teams_config)
+        if teams_config.enabled and not PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
+            power_automate_configured = bool(str(POWER_AUTOMATE_API_KEY or "").strip())
+            teams_channel = {
+                "status": "external_scheduler",
+                "healthy": power_automate_configured,
+                "reason": (
+                    ""
+                    if power_automate_configured
+                    else "POWER_AUTOMATE_API_KEY ist nicht konfiguriert."
+                ),
+            }
+        else:
+            teams_channel = channel_health(teams_config)
         # Ein stehender oder dauerhaft scheiternder Teams-Kanal darf nicht als
         # "healthy" durchgehen - sonst bleibt Stille unbemerkt.
         if teams_config.enabled and not teams_channel.get("healthy"):
@@ -228,27 +242,66 @@ def get_teams_readiness() -> JSONResponse:
 
     history_info: dict = {}
     try:
-        context = build_teams_alert_context(candidates, now_ts=now_ts, config=config)
+        from app.notifications.teams import _refresh_push_history_for_dedup
+
+        refresh = _refresh_push_history_for_dedup()
+        history = refresh.get("history")
+        history_authoritative = bool(
+            refresh.get("history_authoritative") and isinstance(history, list)
+        )
+        context = build_teams_alert_context(
+            candidates,
+            history=history if isinstance(history, list) else [],
+            history_authoritative=history_authoritative,
+            now_ts=now_ts,
+            config=config,
+        )
         last_push_ts = int(context.get("lastPushTs") or 0)
         history_info = {
-            "ok": last_push_ts > 0,
+            "ok": history_authoritative,
+            "source": str(refresh.get("source") or "unknown"),
+            "snapshotAgeSeconds": refresh.get("snapshot_age_seconds"),
             "lastPushAgeMinutes": (
                 round((now_ts - last_push_ts) / 60) if last_push_ts > 0 else None
             ),
             "pushesToday": context.get("pushesToday"),
             "sportPushesToday": context.get("sportPushesToday"),
-            "historyAuthoritative": bool(context.get("historyAuthoritative")),
+            "historyAuthoritative": history_authoritative,
         }
     except Exception as exc:  # pragma: no cover - reine Diagnose
         history_info = {"ok": False, "error": type(exc).__name__}
 
     slots_info: dict = {}
     try:
-        slots = _daily_runtime_opportunities(berlin_now.date(), config)
+        if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
+            slots = _daily_runtime_opportunities(berlin_now.date(), config)
+        else:
+            from app.routers.power_automate import POWER_AUTOMATE_TEAMS_SLOT_LABELS
+
+            slots = []
+            for label in POWER_AUTOMATE_TEAMS_SLOT_LABELS:
+                hour, minute = (int(part) for part in label.split(":"))
+                slot_dt = berlin_now.replace(
+                    hour=hour,
+                    minute=minute,
+                    second=0,
+                    microsecond=0,
+                )
+                slots.append(
+                    {
+                        "ts": int(slot_dt.timestamp()),
+                        "label": label,
+                        "slotRole": "power_automate_fixed",
+                    }
+                )
         upcoming = [slot for slot in slots if int(slot.get("ts") or 0) > now_ts]
         next_slot = min(upcoming, key=lambda s: int(s.get("ts") or 0)) if upcoming else None
         slots_info = {
-            "ok": 11 <= len(slots) <= 17,
+            "ok": bool(slots) and (
+                11 <= len(slots) <= 17
+                if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+                else len(slots) == 12
+            ),
             "plannedToday": len(slots),
             "labels": [str(slot.get("label")) for slot in slots],
             "nextSlot": (
@@ -266,11 +319,44 @@ def get_teams_readiness() -> JSONResponse:
     quiet_reason = _quiet_hours_reason(now_ts, config)
     from app.notifications.teams import channel_configuration_problems, channel_health
 
-    runtime = channel_health(config, now_ts=now_ts)
+    power_automate_configured = bool(str(POWER_AUTOMATE_API_KEY or "").strip())
+    transport_mode = (
+        "legacy_background_sender"
+        if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+        else "power_automate_scheduled"
+    )
+    runtime = (
+        channel_health(config, now_ts=now_ts)
+        if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+        else {
+            "status": "external_scheduler",
+            "healthy": power_automate_configured,
+            "reason": (
+                ""
+                if power_automate_configured
+                else "POWER_AUTOMATE_API_KEY ist nicht konfiguriert."
+            ),
+        }
+    )
     config_problems = channel_configuration_problems(config)
+    if not PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
+        config_problems = [
+            problem
+            for problem in config_problems
+            if "PUSH_TEAMS_WEBHOOK_URL" not in problem
+        ]
+        if not power_automate_configured:
+            config_problems.append(
+                "POWER_AUTOMATE_API_KEY fehlt - der geplante Claim-Endpunkt ist deaktiviert."
+            )
+    transport_configured = bool(
+        config.webhook_url
+        if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
+        else power_automate_configured
+    )
     ready = bool(
         config.enabled
-        and bool(config.webhook_url)
+        and transport_configured
         and score_api.get("ok")
         and history_info.get("ok")
         and slots_info.get("ok")
@@ -282,6 +368,9 @@ def get_teams_readiness() -> JSONResponse:
             "ready": ready,
             "berlinTime": berlin_now.strftime("%Y-%m-%d %H:%M"),
             "teamsAlertsEnabled": bool(config.enabled),
+            "transportMode": transport_mode,
+            "backgroundSenderEnabled": bool(PUSH_TEAMS_BACKGROUND_SENDER_ENABLED),
+            "powerAutomateConfigured": power_automate_configured,
             "webhookConfigured": bool(config.webhook_url),
             "quietHoursActive": bool(quiet_reason),
             "quietHoursReason": quiet_reason or None,

@@ -52,3 +52,7 @@ Available methods:
 | `scores()` | `GET /api/v1/scores` | Compact score projection |
 
 Keep the API key on the server side. Browser-side usage exposes the key to users.
+
+## Scheduled Teams delivery
+
+The production Microsoft Teams hand-off uses a scheduled Power Automate flow and a separate least-privilege API key. It does not use the consumer client above. See [`power-automate/README.md`](power-automate/README.md) for the exact Recurrence trigger, claim/receipt contract, secure action settings, cutover, and rollback.
