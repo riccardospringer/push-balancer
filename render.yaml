@@ -43,6 +43,10 @@ services:
         value: http://127.0.0.1:8050
       - key: SCORE_API_KEY
         generateValue: true
+      # NEUER Key ohne Dashboard-Schatten: erzwingt den Loopback-Selbstkonsum
+      # (config 0.1.60+), egal welche Alt-Werte das Dashboard ueberschattet.
+      - key: PUSH_BALANCER_SCORE_API_SELF_CONSUME
+        value: "true"
       - key: PUSH_BALANCER_SCORE_API_KEY
         sync: false
       - key: PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS
