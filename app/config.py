@@ -476,6 +476,22 @@ if _score_api_host in ("127.0.0.1", "localhost", "::1") and SCORE_API_KEY:
     PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
 elif not PUSH_BALANCER_SCORE_API_KEY:
     PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
+
+# Selbst-Konsum-Schalter, der Alt-Env-Werte vollstaendig ignoriert: Render-
+# Dashboards koennen historisch materialisierte Blueprint-Werte (z.B.
+# PUSH_BALANCER_SCORE_API_ENABLED=false) ueberschatten, sodass render.yaml-
+# Aenderungen an diesen Keys wirkungslos bleiben. Der NEUE Key existiert in
+# keinem Dashboard-Schatten; ist er gesetzt und ein Server-Key vorhanden,
+# erzwingt er die kanonische Selbst-Konsum-Konfiguration (eigene
+# /api/v1/scores-Route via Loopback mit dem eigenen SCORE_API_KEY).
+PUSH_BALANCER_SCORE_API_SELF_CONSUME: bool = _env_flag(
+    "PUSH_BALANCER_SCORE_API_SELF_CONSUME",
+    False,
+)
+if PUSH_BALANCER_SCORE_API_SELF_CONSUME and SCORE_API_KEY:
+    PUSH_BALANCER_SCORE_API_ENABLED = True
+    PUSH_BALANCER_SCORE_API_BASE_URL = f"http://127.0.0.1:{PORT}"
+    PUSH_BALANCER_SCORE_API_KEY = SCORE_API_KEY
 PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS: float = _env_float(
     "PUSH_BALANCER_SCORE_API_TIMEOUT_SECONDS",
     2.5,

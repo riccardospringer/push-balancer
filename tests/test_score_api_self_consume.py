@@ -49,3 +49,30 @@ def test_empty_consumer_key_falls_back_to_server_key():
         "SCORE_API_KEY": "serverkey",
         "PUSH_BALANCER_SCORE_API_BASE_URL": "https://push-balancer-internal.example.de",
     }) == "serverkey"
+
+
+def test_self_consume_flag_overrides_shadowed_dashboard_values():
+    """Render-Dashboards koennen alte Blueprint-Werte ueberschatten; der neue
+    SELF_CONSUME-Key muss sie vollstaendig ueberstimmen."""
+    assert _key({
+        "PUSH_BALANCER_SCORE_API_SELF_CONSUME": "true",
+        "SCORE_API_KEY": "serverkey",
+        "PUSH_BALANCER_SCORE_API_ENABLED": "false",
+        "PUSH_BALANCER_SCORE_API_BASE_URL": "https://tot.example.invalid",
+        "PUSH_BALANCER_SCORE_API_KEY": "stale",
+        "PORT": "8050",
+    }) == "serverkey"
+
+
+def test_self_consume_without_server_key_stays_disabled():
+    import os, subprocess, sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run(
+        [sys.executable, "-c", "import app.config as c; print(int(c.PUSH_BALANCER_SCORE_API_ENABLED))"],
+        capture_output=True, text=True, cwd=root, timeout=60,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root,
+             "PUSH_BALANCER_SCORE_API_SELF_CONSUME": "true",
+             "PUSH_BALANCER_SCORE_API_ENABLED": "false"},
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "0"
