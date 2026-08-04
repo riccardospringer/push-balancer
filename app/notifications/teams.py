@@ -6663,8 +6663,11 @@ def _daily_plan_slots(
 #   montags beginnt das Abendfenster bereits um 17:30
 _MORNING_DOUBLE_HOURS = (6, 7, 8)
 _MIDDAY_HOUR = 12
-_EVENING_HOT_HOURS = (18, 19, 20, 21)
-_MONDAY_EVENING_START_MINUTE = 17 * 60 + 30
+# Abendbereich (User-Vorgabe 2026-08-04): beginnt JEDEN Tag um 17:30 mit fuenf
+# Pflichtslots bis 22:45 (letzter deutlich vor der Ruhezeit 23:00).
+_EVENING_START_MINUTE = 17 * 60 + 30
+_EVENING_END_MINUTE = 22 * 60 + 45
+_EVENING_SLOT_COUNT = 5
 
 
 def _evenly_spaced_minutes(start_minute: int, end_minute: int, count: int) -> list[int]:
@@ -6686,30 +6689,18 @@ def _morning_double_minutes() -> list[int]:
 
 
 def _evening_hot_layout(target_date: dt.date, config: TeamsAlertConfig) -> list[int]:
-    """Abend-Hot-Hours maximal ausschoepfen: 2 Slots je roter/gelber Stunde.
+    """Abendbereich (User-Vorgabe 2026-08-04): 5 Pflichtslots, immer ab 17:30.
 
-    Die Heatmap-Verteilung bleibt unveraendert. Montags wird nur der erste Slot
-    auf 17:30 vorgezogen; die folgenden dynamischen Slots behalten ihre Zeiten.
+    Wochentagsunabhaengig fix: Start 17:30, letzter Slot 22:45 (deutlich vor
+    der Ruhezeit 23:00), mathematisch maximal gespreizt ->
+    17:30, 18:49, 20:08, 21:26, 22:45. Die Heatmap steuert weiterhin nur die
+    Reserve-Slots ausserhalb des Blocks.
     """
-    weekday = target_date.weekday()
-    hot_hours = [
-        hour
-        for hour in _EVENING_HOT_HOURS
-        if _daily_plan_slot(target_date, hour, 0, weekday, config).get("tier")
-        in {"rot", "gelb"}
-    ]
-    if not hot_hours:
-        # Fallback: 21 Uhr ist historisch die staerkste Stunde des Tages.
-        hot_hours = [21]
-    first, last = min(hot_hours), max(hot_hours)
-    layout = _evenly_spaced_minutes(
-        first * 60,
-        last * 60 + 59,
-        len(hot_hours) * 2,
+    return _evenly_spaced_minutes(
+        _EVENING_START_MINUTE,
+        _EVENING_END_MINUTE,
+        _EVENING_SLOT_COUNT,
     )
-    if weekday == 0 and layout:
-        layout[0] = min(layout[0], _MONDAY_EVENING_START_MINUTE)
-    return layout
 
 
 def _daily_plan_slot_candidates(
@@ -6764,9 +6755,14 @@ def _daily_plan_slot_candidates(
         _binding_slot(
             total_minute,
             "evening_hot",
-            "verbindlicher Abend-Hot-Hour-Slot (Heatmap maximal ausgeschoepft, "
-            "gleichverteilt ueber den Hot-Block)",
+            "verbindlicher Abendbereich-Slot (17:30 bis 22:45, mathematisch "
+            "maximal gespreizt)",
         )
+    # Der Abendblock beansprucht den gesamten Bereich 17-22 Uhr: keine
+    # zusaetzlichen :45-Reserven zwischen den gespreizten Pflichtslots
+    # (die wuerden den Mindestabstand verletzen, z.B. 19:45 vor 20:08).
+    for hour in range(_EVENING_START_MINUTE // 60, _EVENING_END_MINUTE // 60 + 1):
+        covered_hours.add(hour)
 
     # Das montags vorgezogene 17:30-Fenster ist ein einzelner Lead-in und darf
     # nicht als Doppelchance derselben Stunde beworben oder bewertet werden.

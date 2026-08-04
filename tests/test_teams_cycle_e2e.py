@@ -22,7 +22,7 @@ import pytest
 from tests.test_teams_notifications import _candidate, _history
 
 # Freitag 21:23 ist eine verbindliche Raster-Entscheidung (+30s = faellig).
-_SLOT_TS = int(dt.datetime(2026, 6, 19, 21, 23, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+_SLOT_TS = int(dt.datetime(2026, 6, 19, 21, 26, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
 
 
 @pytest.fixture(autouse=True)
