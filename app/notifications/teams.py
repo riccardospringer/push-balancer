@@ -2366,6 +2366,38 @@ def evaluate_teams_alert_candidates(
             else:
                 selection_confidence = "niedrig"
 
+    # Angezeigte Alternative (User-Vorgabe): immer das gegenlaeufige Ressort.
+    # Top Sport -> Alternative Nicht-Sport, Top Nicht-Sport -> Alternative
+    # Sport. Der echte Zweitplatzierte (runner_up_*) bleibt unveraendert die
+    # Basis der Margin-/Unsicherheits-Bewertung; hier wird nur bestimmt,
+    # welcher Kandidat im Teams-Post als Alternative erscheint. Gibt es keinen
+    # gegenlaeufigen Kandidaten, bleibt die Alternative leer statt die
+    # Vorgabe zu verletzen.
+    alternative_candidate = runner_up_candidate
+    alternative_decision = runner_up_decision
+    if selected_candidate is not None:
+        selected_is_sport = _is_sport_item(selected_candidate)
+        if alternative_candidate is None or (
+            _is_sport_item(alternative_candidate) == selected_is_sport
+        ):
+            opposite_pair = max(
+                (
+                    item
+                    for item in runner_up_pool
+                    if candidate_key(item[0]) != selected_key
+                    and _is_sport_item(item[0]) != selected_is_sport
+                ),
+                key=_selection_key,
+                default=None,
+            )
+            if opposite_pair is not None:
+                alternative_candidate, alternative_decision = opposite_pair
+            elif alternative_candidate is not None and (
+                _is_sport_item(alternative_candidate) == selected_is_sport
+            ):
+                alternative_candidate = None
+                alternative_decision = None
+
     # "Klarer Gewinner"-Regel: wenn der Top-Kandidat nur knapp vor dem Verfolger
     # liegt und selbst nicht eindeutig stark ist, ist das Feld unsicher -> kein Alert.
     uncertainty_reason = ""
@@ -2480,16 +2512,18 @@ def evaluate_teams_alert_candidates(
                         if runner_up_decision is not None
                         else None
                     ),
+                    # Anzeige-Alternative: bester Kandidat des gegenlaeufigen
+                    # Ressorts (Sport<->Nicht-Sport), nicht zwingend Platz 2.
                     "runnerUp": (
                         {
-                            "articleTitle": _title(runner_up_candidate),
-                            "articleUrl": _url(runner_up_candidate),
-                            "category": _section(runner_up_candidate),
-                            "pushScore": float(runner_up_decision.get("score") or 0.0),
+                            "articleTitle": _title(alternative_candidate),
+                            "articleUrl": _url(alternative_candidate),
+                            "category": _section(alternative_candidate),
+                            "pushScore": float(alternative_decision.get("score") or 0.0),
                             "rankingPosition": 2,
                         }
-                        if runner_up_candidate is not None
-                        and runner_up_decision is not None
+                        if alternative_candidate is not None
+                        and alternative_decision is not None
                         else {}
                     ),
                     "scoreDelta": (
