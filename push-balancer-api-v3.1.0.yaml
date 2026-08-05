@@ -390,7 +390,7 @@ paths:
       operationId: listConsumerRecommendations
       summary: List consumer recommendations
       description: Returns the simplest drop-in list of ranked article recommendations for trusted downstream
-        app integrations.
+        app integrations. Already-sent pushes from the last 24 hours are returned separately in `livePushes`.
       security:
       - consumerBearerAuth: []
       - consumerApiKey: []
@@ -453,7 +453,8 @@ paths:
       operationId: listConsumerArticles
       summary: List consumer article candidates
       description: Returns ranked article candidates and advisory scores for trusted downstream app integrations.
-        The endpoint is read-only and never triggers push delivery.
+        The endpoint is read-only and never triggers push delivery. Already-sent pushes from the last 24 hours
+        are returned separately in `livePushes`.
       security:
       - consumerBearerAuth: []
       - consumerApiKey: []
@@ -515,7 +516,8 @@ paths:
       operationId: listConsumerScores
       summary: List consumer article scores
       description: Returns a compact read-only score projection for trusted downstream apps that only
-        need article IDs, URLs, and advisory ranking values.
+        need article IDs, URLs, and advisory ranking values. Already-sent pushes from the last 24 hours are
+        returned separately in `livePushes`.
       security:
       - consumerBearerAuth: []
       - consumerApiKey: []
@@ -2463,12 +2465,22 @@ components:
     ConsumerArticleFlags:
       type: object
       required:
+      - livePush
+      - alreadySent
       - breaking
       - eilmeldung
       - sport
       - video
       - plusArticle
       properties:
+        livePush:
+          type: boolean
+          description: Whether this item represents an already-sent live push.
+          example: false
+        alreadySent:
+          type: boolean
+          description: Whether this item has already been sent as a push notification.
+          example: false
         breaking:
           type: boolean
           description: Whether the article looks like breaking news.
@@ -2529,6 +2541,8 @@ components:
       - publishedAt
       - score
       - recommendedText
+      - isLivePush
+      - alreadySent
       - flags
       properties:
         id:
@@ -2573,10 +2587,101 @@ components:
           type: string
           description: Suggested push text for editorial review.
           example: 'Eilmeldung: Consumer Test Artikel'
+        isLivePush:
+          type: boolean
+          description: Always false for unsent article candidates.
+          example: false
+        alreadySent:
+          type: boolean
+          description: Always false for unsent article candidates.
+          example: false
         flags:
           $ref: '#/components/schemas/ConsumerArticleFlags'
         explanation:
           $ref: '#/components/schemas/ConsumerArticleExplanation'
+    ConsumerLivePushFlags:
+      type: object
+      required:
+      - livePush
+      - alreadySent
+      - sport
+      properties:
+        livePush:
+          type: boolean
+          const: true
+          description: Marks the item as an already-sent live push.
+        alreadySent:
+          type: boolean
+          const: true
+          description: Confirms that the push has already been delivered.
+        sport:
+          type: boolean
+          description: Whether the live push belongs to sport coverage.
+          example: false
+    ConsumerLivePush:
+      type: object
+      required:
+      - id
+      - url
+      - title
+      - category
+      - sentAt
+      - channel
+      - score
+      - predictedOpenRate
+      - isLivePush
+      - alreadySent
+      - flags
+      properties:
+        id:
+          type: string
+          description: Stable push message identifier.
+          example: synthetic-live-push-1
+        url:
+          type: string
+          description: Associated article URL, or an empty string when unavailable.
+          example: https://www.bild.de/politik/synthetic-live-push
+        title:
+          type: string
+          description: Text of the already-sent push.
+          example: Bereits versendeter Push
+        category:
+          type: string
+          description: Editorial category of the live push.
+          example: politik
+        sentAt:
+          type: string
+          format: date-time
+          description: Timestamp when the push was sent.
+          example: '2026-04-09T09:30:00Z'
+        channel:
+          type: string
+          description: Delivery channel of the push.
+          example: BILD
+        score:
+          type:
+          - number
+          - 'null'
+          format: float
+          description: Captured 0-100 Push Balancer score when available.
+          example: 82.0
+        predictedOpenRate:
+          type:
+          - number
+          - 'null'
+          format: float
+          description: Predicted opening-rate ratio captured for the push when available.
+          example: 0.061
+        isLivePush:
+          type: boolean
+          const: true
+          description: Marks this item as an already-sent live push.
+        alreadySent:
+          type: boolean
+          const: true
+          description: Confirms that this push must not be treated as an unsent recommendation.
+        flags:
+          $ref: '#/components/schemas/ConsumerLivePushFlags'
     ConsumerArticleCollectionResponse:
       type: object
       required:
@@ -2584,6 +2689,9 @@ components:
       - advisoryOnly
       - actionAllowed
       - articles
+      - livePushes
+      - livePushCount
+      - livePushLookbackHours
       - total
       - count
       - offset
@@ -2611,6 +2719,21 @@ components:
           description: Current page of ranked article candidates for consumers.
           items:
             $ref: '#/components/schemas/ConsumerArticle'
+        livePushes:
+          type: array
+          description: Already-sent pushes from the last 24 hours, newest first.
+          items:
+            $ref: '#/components/schemas/ConsumerLivePush'
+        livePushCount:
+          type: integer
+          format: int32
+          description: Number of live pushes returned.
+          example: 8
+        livePushLookbackHours:
+          type: integer
+          format: int32
+          description: Rolling history window used for live pushes.
+          example: 24
         total:
           type: integer
           format: int64
@@ -2646,6 +2769,8 @@ components:
       - score
       - predictedOpenRate
       - priority
+      - isLivePush
+      - alreadySent
       - updatedAt
       properties:
         articleId:
@@ -2681,6 +2806,14 @@ components:
           type: string
           description: Current mix priority label.
           example: hoch
+        isLivePush:
+          type: boolean
+          description: Always false for unsent score projections.
+          example: false
+        alreadySent:
+          type: boolean
+          description: Always false for unsent score projections.
+          example: false
         updatedAt:
           type: string
           format: date-time
@@ -2693,6 +2826,9 @@ components:
       - advisoryOnly
       - actionAllowed
       - scores
+      - livePushes
+      - livePushCount
+      - livePushLookbackHours
       - total
       - count
       - offset
@@ -2716,6 +2852,21 @@ components:
           description: Current page of compact article scores for consumers.
           items:
             $ref: '#/components/schemas/ConsumerScore'
+        livePushes:
+          type: array
+          description: Already-sent pushes from the last 24 hours, newest first.
+          items:
+            $ref: '#/components/schemas/ConsumerLivePush'
+        livePushCount:
+          type: integer
+          format: int32
+          description: Number of live pushes returned.
+          example: 8
+        livePushLookbackHours:
+          type: integer
+          format: int32
+          description: Rolling history window used for live pushes.
+          example: 24
         total:
           type: integer
           format: int64

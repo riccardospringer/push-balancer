@@ -17,7 +17,13 @@ const recommendations = await pushBalancer.recommendations({
 });
 
 console.log(recommendations.articles);
+console.log(recommendations.livePushes);
 ```
+
+Every article response also contains the already-sent pushes from the last 24
+hours in `livePushes`. These entries are separate from recommendations and are
+marked with `isLivePush: true`, `alreadySent: true`, and
+`flags.livePush: true` so consumers cannot mistake them for unsent candidates.
 
 The API also works with plain `fetch`:
 

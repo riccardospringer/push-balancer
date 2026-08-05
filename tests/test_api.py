@@ -572,6 +572,23 @@ class TestConsumerApi:
             "app.ml.predict.predict_or",
             lambda *_args, **_kwargs: {"predicted_or": 6.2},
         )
+        monkeypatch.setattr(
+            "app.routers.consumer._build_pushes_response",
+            lambda **_kwargs: {
+                "pushes": [
+                    {
+                        "id": "synthetic-live-push-1",
+                        "url": "https://www.bild.de/politik/synthetic-live-push",
+                        "title": "Bereits versendeter Test-Push",
+                        "category": "politik",
+                        "sentAt": "2026-04-09T09:30:00",
+                        "channel": "BILD",
+                        "pushScore": 82,
+                        "predictedOR": 0.061,
+                    }
+                ]
+            },
+        )
 
     def test_consumer_articles_requires_configured_key(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")
@@ -597,6 +614,17 @@ class TestConsumerApi:
         assert data["actionAllowed"] is False
         assert data["count"] == 2
         assert "explanation" not in data["articles"][0]
+        assert data["articles"][0]["isLivePush"] is False
+        assert data["articles"][0]["flags"]["livePush"] is False
+        assert data["livePushCount"] == 1
+        assert data["livePushLookbackHours"] == 24
+        assert data["livePushes"][0]["isLivePush"] is True
+        assert data["livePushes"][0]["alreadySent"] is True
+        assert data["livePushes"][0]["flags"] == {
+            "livePush": True,
+            "alreadySent": True,
+            "sport": False,
+        }
 
     def test_consumer_status_supports_bearer_auth(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
@@ -624,6 +652,9 @@ class TestConsumerApi:
         assert data["apiVersion"] == "v1"
         assert data["count"] == 2
         assert "scores" in data
+        assert data["livePushCount"] == 1
+        assert data["livePushes"][0]["id"] == "synthetic-live-push-1"
+        assert data["livePushes"][0]["score"] == 82.0
         assert set(data["scores"][0]) == {
             "articleId",
             "url",
@@ -632,6 +663,8 @@ class TestConsumerApi:
             "score",
             "predictedOpenRate",
             "priority",
+            "isLivePush",
+            "alreadySent",
             "updatedAt",
         }
 

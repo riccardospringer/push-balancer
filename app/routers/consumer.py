@@ -8,8 +8,12 @@ from fastapi.responses import JSONResponse
 
 from app.auth import require_consumer_key
 from app.routers.feed import build_articles_payload
+from app.routers.push import _build_pushes_response
 
 router = APIRouter()
+
+_LIVE_PUSH_LOOKBACK_HOURS = 24
+_LIVE_PUSH_LIMIT = 100
 
 
 def _consumer_status_payload() -> dict[str, Any]:
@@ -79,7 +83,11 @@ def _consumer_article(article: dict[str, Any], *, include_explanations: bool) ->
         "predictedOpenRateIsFallback": bool(article.get("predictedORIsFallback")),
         "priority": article.get("mixPriority") or "",
         "recommendedText": article.get("recommendedText") or article.get("title") or "",
+        "isLivePush": False,
+        "alreadySent": False,
         "flags": {
+            "livePush": False,
+            "alreadySent": False,
             "breaking": bool(article.get("isBreaking")),
             "eilmeldung": bool(article.get("isEilmeldung")),
             "sport": bool(article.get("isSport")),
@@ -97,6 +105,42 @@ def _consumer_article(article: dict[str, Any], *, include_explanations: bool) ->
     return payload
 
 
+def _consumer_live_push(push: dict[str, Any]) -> dict[str, Any]:
+    score = _as_float(push.get("pushScore"))
+    predicted_open_rate = _as_float(push.get("predictedOR"))
+    category = str(push.get("category") or "news")
+
+    return {
+        "id": str(push.get("id") or ""),
+        "url": push.get("url") or "",
+        "title": push.get("title") or "",
+        "category": category,
+        "sentAt": push.get("sentAt") or "",
+        "channel": push.get("channel") or "",
+        "score": round(score, 1) if score is not None and score > 0 else None,
+        "predictedOpenRate": (
+            round(predicted_open_rate, 4) if predicted_open_rate is not None else None
+        ),
+        "isLivePush": True,
+        "alreadySent": True,
+        "flags": {
+            "livePush": True,
+            "alreadySent": True,
+            "sport": category.strip().lower() == "sport",
+        },
+    }
+
+
+def _load_consumer_live_pushes(category: str | None) -> list[dict[str, Any]]:
+    payload = _build_pushes_response(
+        limit=_LIVE_PUSH_LIMIT,
+        days=max(1, _LIVE_PUSH_LOOKBACK_HOURS // 24),
+        sort="sentAt",
+        category=category or "",
+    )
+    return [_consumer_live_push(push) for push in payload.get("pushes", [])]
+
+
 def _load_consumer_articles(
     offset: int,
     limit: int,
@@ -108,6 +152,7 @@ def _load_consumer_articles(
     source_payload = build_articles_payload(offset=0, limit=source_limit)
     filtered = _filter_articles(source_payload["articles"], category, min_score)
     selected = filtered[offset : offset + limit]
+    live_pushes = _load_consumer_live_pushes(category)
 
     return {
         "apiVersion": "v1",
@@ -117,6 +162,9 @@ def _load_consumer_articles(
             _consumer_article(article, include_explanations=include_explanations)
             for article in selected
         ],
+        "livePushes": live_pushes,
+        "livePushCount": len(live_pushes),
+        "livePushLookbackHours": _LIVE_PUSH_LOOKBACK_HOURS,
         "total": len(filtered),
         "count": len(selected),
         "offset": offset,
@@ -194,6 +242,8 @@ def get_consumer_scores(
             "score": article["score"],
             "predictedOpenRate": article["predictedOpenRate"],
             "priority": article["priority"],
+            "isLivePush": False,
+            "alreadySent": False,
             "updatedAt": payload["fetchedAt"],
         }
         for article in payload["articles"]
@@ -204,6 +254,9 @@ def get_consumer_scores(
             "advisoryOnly": True,
             "actionAllowed": False,
             "scores": scores,
+            "livePushes": payload["livePushes"],
+            "livePushCount": payload["livePushCount"],
+            "livePushLookbackHours": payload["livePushLookbackHours"],
             "total": payload["total"],
             "count": len(scores),
             "offset": offset,

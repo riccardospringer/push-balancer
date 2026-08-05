@@ -251,6 +251,11 @@ curl -H "Authorization: Bearer $CONSUMER_API_KEY" \
   "https://push-balancer.onrender.com/api/v1/scores?category=sport&limit=20"
 ```
 
+Recommendation, article, and score responses include the last 24 hours of
+already-sent pushes in a separate `livePushes` array. Each entry is marked with
+`isLivePush=true`, `alreadySent=true`, and `flags.livePush=true`; unsent article
+candidates remain in `articles`/`scores` and are explicitly marked as not live.
+
 The responses are read-only and advisory-only (`actionAllowed=false`). Production deployments should expose `/api/health` for platform checks and `/api/v1/*` for authenticated consumers only. Keep `/api/docs`, `/api/openapi.json`, and legacy `/api/*` routes behind the internal CIDR allowlist.
 
 ### Editorial Push Scoring
