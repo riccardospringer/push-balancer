@@ -626,6 +626,9 @@ class TestAdobeTrafficEndpoint:
 
 class TestConsumerApi:
     def _stub_article_source(self, monkeypatch):
+        from app.routers.consumer import invalidate_consumer_article_snapshot
+
+        invalidate_consumer_article_snapshot()
         sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -668,6 +671,98 @@ class TestConsumerApi:
                 ]
             },
         )
+
+    def test_render_candidates_share_exact_recommendations_snapshot(self, monkeypatch):
+        import app.routers.consumer as consumer_router
+
+        consumer_router.invalidate_consumer_article_snapshot()
+        calls = 0
+
+        def build_source(**kwargs):
+            nonlocal calls
+            calls += 1
+            assert kwargs == {
+                "offset": 0,
+                "limit": 200,
+                "include_teams_decisions": False,
+            }
+            return {
+                "articles": [
+                    {
+                        "id": "https://www.bild.de/politik/shared-score-test",
+                        "url": "https://www.bild.de/politik/shared-score-test",
+                        "title": "Synthetischer gemeinsamer Score",
+                        "category": "politik",
+                        "pubDate": "2026-08-05T12:00:00Z",
+                        "score": 72.4,
+                        "scoreReason": "Synthetischer kanonischer Score",
+                        "predictedOR": 0.061,
+                        "predictedORBasis": "synthetic",
+                        "predictedORConfidence": 0.9,
+                        "predictedORIsFallback": False,
+                        "mixPriority": "hoch",
+                        "recommendedText": "Synthetischer gemeinsamer Score",
+                        "performanceDrivers": ["synthetischer Treiber"],
+                        "risks": [],
+                        "scoreBreakdown": {"freshness": 8.0},
+                        "isBreaking": False,
+                        "isEilmeldung": False,
+                        "isSport": False,
+                        "isVideo": False,
+                        "isPlusArticle": False,
+                    }
+                ],
+                "total": 1,
+                "count": 1,
+                "offset": 0,
+                "limit": 200,
+                "fetchedAt": "2026-08-05T12:00:01",
+            }
+
+        monkeypatch.setattr(consumer_router, "build_articles_payload", build_source)
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
+        monkeypatch.setattr(
+            "app.routers.candidate_scores.EDITORIAL_ONE_SCORE_API_ENABLED",
+            False,
+        )
+        monkeypatch.setattr(
+            "app.routers.consumer._build_pushes_response",
+            lambda **_kwargs: {"pushes": []},
+        )
+        monkeypatch.setattr(
+            "app.notifications.teams.annotate_candidates_with_teams_decisions",
+            lambda candidates: candidates,
+        )
+
+        try:
+            recommendations = client.get(
+                "/api/v1/recommendations?limit=10&minScore=0",
+                headers={"Authorization": "Bearer consumer-test-key"},
+            )
+            candidates = client.get("/api/editorial-one/articles?limit=10")
+
+            assert recommendations.status_code == 200
+            assert candidates.status_code == 200
+            recommendation_data = recommendations.json()
+            candidate_data = candidates.json()
+            assert calls == 1
+            assert recommendation_data["articles"][0]["score"] == 72.4
+            assert candidate_data["articles"][0]["score"] == 72.4
+            assert (
+                candidate_data["articles"][0]["scoreSource"]
+                == "consumer_recommendations_api"
+            )
+            assert candidate_data["fetchedAt"] == recommendation_data["fetchedAt"]
+            assert candidate_data["scoreSync"] == {
+                "required": True,
+                "source": "consumer_recommendations_api",
+                "status": "ok",
+                "syncedCount": 1,
+                "totalCount": 1,
+                "snapshotAt": recommendation_data["fetchedAt"],
+            }
+        finally:
+            consumer_router.invalidate_consumer_article_snapshot()
 
     def test_consumer_articles_requires_configured_key(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")

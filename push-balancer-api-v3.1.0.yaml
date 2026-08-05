@@ -265,7 +265,7 @@ paths:
       - Articles
       operationId: listEditorialOneArticles
       summary: List candidates with canonical Editorial One scores
-      description: Returns the candidate collection with a server-side, CMS-ID-only projection of the canonical Editorial One Push Balancer score. When synchronization is activated, missing, stale or unavailable API scores do not fall back to a local score.
+      description: Returns the candidate collection from the same immutable score snapshot as the versioned recommendations API. An optional external Editorial One score projection remains fail-closed when explicitly activated.
       parameters:
       - $ref: '#/components/parameters/Offset'
       - $ref: '#/components/parameters/LimitArticles'
@@ -296,6 +296,7 @@ paths:
                           type: string
                           enum:
                           - editorial_one_score_api
+                          - consumer_recommendations_api
                           - render
                         status:
                           type: string
@@ -308,6 +309,9 @@ paths:
                         totalCount:
                           type: integer
                           minimum: 0
+                        snapshotAt:
+                          type: string
+                          format: date-time
         '502':
           $ref: '#/components/responses/BadGateway'
         '503':

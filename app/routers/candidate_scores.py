@@ -60,7 +60,13 @@ def _get_score_client():
 
 def _score_sync_metadata(articles: list[dict], *, required: bool) -> dict:
     synced = sum(
-        1 for article in articles if article.get("scoreSource") == "internal_score_api"
+        1
+        for article in articles
+        if article.get("scoreSource") == "internal_score_api"
+        or (
+            article.get("scoreSource") == "consumer_recommendations_api"
+            and article.get("scoreApiStatus") == "ok"
+        )
     )
     return {
         "required": required,
@@ -71,6 +77,89 @@ def _score_sync_metadata(articles: list[dict], *, required: bool) -> dict:
     }
 
 
+def _candidate_from_consumer_article(
+    article: dict[str, Any],
+    *,
+    snapshot_at: str,
+) -> dict[str, Any]:
+    """Map the shared versioned-consumer projection to the candidate contract."""
+    flags = article.get("flags") or {}
+    explanation = article.get("explanation") or {}
+    score = article.get("score")
+    return {
+        "id": article.get("id") or article.get("url") or "",
+        "url": article.get("url") or article.get("id") or "",
+        "title": article.get("title") or "",
+        "category": article.get("category") or "news",
+        "pubDate": article.get("publishedAt") or "",
+        "score": float(score) if score is not None else 0.0,
+        "scoreReason": explanation.get("reason")
+        or "Kanonischer Score aus der Recommendations-API",
+        "scoreSource": "consumer_recommendations_api",
+        "scoreApiStatus": "ok" if score is not None else "missing",
+        "pushBalancerScore": float(score) if score is not None else None,
+        "pushBalancerScoreScoredAt": snapshot_at,
+        "predictedOR": article.get("predictedOpenRate"),
+        "predictedORBasis": article.get("predictedOpenRateBasis"),
+        "predictedORConfidence": article.get("predictedOpenRateConfidence"),
+        "predictedORIsFallback": bool(article.get("predictedOpenRateIsFallback")),
+        "performanceDrivers": list(explanation.get("drivers") or []),
+        "risks": list(explanation.get("risks") or []),
+        "recommendedText": article.get("recommendedText") or article.get("title") or "",
+        "mixPriority": article.get("priority") or "",
+        "scoreBreakdown": explanation.get("breakdown") or {},
+        "isBreaking": bool(flags.get("breaking")),
+        "isEilmeldung": bool(flags.get("eilmeldung")),
+        "isSport": bool(flags.get("sport")),
+        "isVideo": bool(flags.get("video")),
+        "isPlusArticle": bool(flags.get("plusArticle")),
+        "isLivePush": False,
+        "alreadySent": False,
+    }
+
+
+def _get_shared_consumer_candidates(offset: int, limit: int) -> dict[str, Any]:
+    """Use the same immutable score snapshot as ``/api/v1/recommendations``."""
+    from app.notifications.teams import annotate_candidates_with_teams_decisions
+    from app.routers.consumer import _load_consumer_articles
+
+    consumer_payload = _load_consumer_articles(
+        offset=offset,
+        limit=limit,
+        category=None,
+        min_score=None,
+        include_explanations=True,
+    )
+    snapshot_at = str(consumer_payload.get("fetchedAt") or "")
+    articles = [
+        _candidate_from_consumer_article(article, snapshot_at=snapshot_at)
+        for article in consumer_payload.get("articles") or []
+    ]
+    try:
+        articles = annotate_candidates_with_teams_decisions(articles)
+    except Exception as exc:
+        log.warning(
+            "[candidate-scores] Teams annotation unavailable: %s",
+            type(exc).__name__,
+        )
+
+    return {
+        "articles": articles,
+        "total": int(consumer_payload.get("total") or len(articles)),
+        "count": len(articles),
+        "offset": offset,
+        "limit": limit,
+        "fetchedAt": snapshot_at,
+        "livePushes": consumer_payload.get("livePushes") or [],
+        "livePushCount": int(consumer_payload.get("livePushCount") or 0),
+        "scoreSync": {
+            **_score_sync_metadata(articles, required=True),
+            "source": "consumer_recommendations_api",
+            "snapshotAt": snapshot_at,
+        },
+    }
+
+
 @router.get("/api/editorial-one/articles")
 def get_editorial_one_articles(
     offset: int = Query(default=0, ge=0),
@@ -78,12 +167,7 @@ def get_editorial_one_articles(
 ) -> JSONResponse:
     """Return candidates with a fail-closed Editorial One score projection."""
     if not EDITORIAL_ONE_SCORE_API_ENABLED:
-        payload = build_articles_payload(offset=offset, limit=limit)
-        payload["scoreSync"] = _score_sync_metadata(
-            payload.get("articles") or [],
-            required=False,
-        )
-        return JSONResponse(content=payload)
+        return JSONResponse(content=_get_shared_consumer_candidates(offset, limit))
 
     source_limit = min(200, max(120, offset + limit))
     payload = build_articles_payload(

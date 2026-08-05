@@ -68,6 +68,8 @@ export interface Article {
   isSport?: boolean
   isVideo?: boolean
   isPlusArticle?: boolean
+  isLivePush?: boolean
+  alreadySent?: boolean
 }
 
 export interface FeedResponse {
@@ -83,6 +85,7 @@ export interface FeedResponse {
     status: 'ok' | 'partial' | string
     syncedCount: number
     totalCount: number
+    snapshotAt?: string
   }
 }
 

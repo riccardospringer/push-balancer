@@ -632,4 +632,10 @@ def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
             status_code=503,
             detail="Score capture storage is unavailable.",
         ) from exc
+    # The versioned consumer API and the Render candidate view share one
+    # canonical projection. New browser captures invalidate that projection so
+    # both surfaces advance to the same next snapshot together.
+    from app.routers.consumer import invalidate_consumer_article_snapshot
+
+    invalidate_consumer_article_snapshot()
     return JSONResponse({"ok": True, "stored": stored})

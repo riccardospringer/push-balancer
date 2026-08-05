@@ -1,6 +1,9 @@
 """Versioned read-only API for downstream app consumers."""
 from __future__ import annotations
 
+import copy
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -14,6 +17,44 @@ router = APIRouter()
 
 _LIVE_PUSH_LOOKBACK_HOURS = 24
 _LIVE_PUSH_LIMIT = 100
+_ARTICLE_SNAPSHOT_LIMIT = 200
+_ARTICLE_SNAPSHOT_TTL_SECONDS = 30.0
+_article_snapshot_lock = threading.Lock()
+_article_snapshot: dict[str, Any] = {
+    "createdMonotonic": 0.0,
+    "payload": None,
+}
+
+
+def invalidate_consumer_article_snapshot() -> None:
+    """Drop the shared consumer snapshot after a new canonical score capture."""
+    with _article_snapshot_lock:
+        _article_snapshot["createdMonotonic"] = 0.0
+        _article_snapshot["payload"] = None
+
+
+def _load_consumer_article_snapshot() -> dict[str, Any]:
+    """Return one short-lived score snapshot shared by every consumer surface.
+
+    Keeping the versioned API and the Render candidate view on this exact
+    snapshot prevents sub-minute freshness decay from producing different
+    scores for the same article in two systems.
+    """
+    now = time.monotonic()
+    with _article_snapshot_lock:
+        cached = _article_snapshot.get("payload")
+        created = float(_article_snapshot.get("createdMonotonic") or 0.0)
+        if cached is not None and now - created < _ARTICLE_SNAPSHOT_TTL_SECONDS:
+            return copy.deepcopy(cached)
+
+        payload = build_articles_payload(
+            offset=0,
+            limit=_ARTICLE_SNAPSHOT_LIMIT,
+            include_teams_decisions=False,
+        )
+        _article_snapshot["createdMonotonic"] = now
+        _article_snapshot["payload"] = payload
+        return copy.deepcopy(payload)
 
 
 def _consumer_status_payload() -> dict[str, Any]:
@@ -148,8 +189,7 @@ def _load_consumer_articles(
     min_score: float | None,
     include_explanations: bool,
 ) -> dict[str, Any]:
-    source_limit = max(offset + limit, 120)
-    source_payload = build_articles_payload(offset=0, limit=source_limit)
+    source_payload = _load_consumer_article_snapshot()
     filtered = _filter_articles(source_payload["articles"], category, min_score)
     selected = filtered[offset : offset + limit]
     live_pushes = _load_consumer_live_pushes(category)
