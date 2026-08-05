@@ -127,15 +127,15 @@ def test_sport_record_story_rewrites_headline_into_push_hook():
     assert all(title != headline for title in result["alternativeTitles"])
 
 
-def test_llm_prompt_enforces_push_first_opening_rate_rules():
+def test_llm_prompt_enforces_v14_two_field_rules():
     from push_title_agent import EDITORIAL_ONE_BRAIN_SYS
 
-    assert "Opening Rate" in EDITORIAL_ONE_BRAIN_SYS
-    assert "35 bis 65 Zeichen" in EDITORIAL_ONE_BRAIN_SYS
-    assert "Original-Headline nicht kopieren" in EDITORIAL_ONE_BRAIN_SYS
-    assert "keine Clickbait-Luege" in EDITORIAL_ONE_BRAIN_SYS
-    assert "A-klare-news-push" in EDITORIAL_ONE_BRAIN_SYS
-    assert "Klose ahnte Messis WM-Rekord" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Push-Headline-Prompt v1.4" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Headline 25-45 Zeichen" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Zeile 2: 20-35 Zeichen" in EDITORIAL_ONE_BRAIN_SYS
+    assert "genau drei" in EDITORIAL_ONE_BRAIN_SYS
+    assert "Zuschreibung" in EDITORIAL_ONE_BRAIN_SYS
+    assert "OFFENE IMPLIKATION" in EDITORIAL_ONE_BRAIN_SYS
 
 
 def test_push_title_generator_prefers_editorial_depth_over_surface_length():

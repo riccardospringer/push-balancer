@@ -194,6 +194,106 @@ def test_claim_requires_dedicated_auth_and_never_allows_caching(monkeypatch):
     assert response.headers["vary"] == "X-Power-Automate-Key"
 
 
+def test_headline_command_returns_three_v14_pairs(monkeypatch):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(
+        power_automate,
+        "_headline_article_context",
+        lambda _article_id: {
+            "url": "https://www.bild.de/politik/synthetischer-artikel",
+            "title": "Bund beschliesst synthetisches Hilfspaket",
+            "text": "Das Hilfspaket gilt ab Montag bundesweit.",
+            "category": "politik",
+        },
+    )
+    candidates = [
+        {
+            "titel": "Bund startet neues Hilfspaket",
+            "zeile2": "Ab Montag gilt die neue Hilfe",
+            "ansatz": "FAKT",
+        },
+        {
+            "titel": "Neue Hilfe erreicht Millionen",
+            "zeile2": "Bund setzt Paket am Montag um",
+            "ansatz": "BETROFFENHEIT",
+        },
+        {
+            "titel": "Hilfspaket gilt ab Montag",
+            "zeile2": "Diese Haushalte profitieren",
+            "ansatz": "FOLGE",
+        },
+    ]
+    monkeypatch.setattr(
+        "app.routers.misc._build_push_title_response",
+        lambda _request: {
+            "gewinner": {
+                **candidates[0],
+                "warum_dieser": "Kern und Folge stehen sofort fest.",
+            },
+            "alle_kandidaten": {"v1.4": candidates},
+            "reasoning": "Kern und Folge stehen sofort fest.",
+            "stufe": 2,
+            "stufe_begruendung": "Entscheidung hat Zeit",
+        },
+    )
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={"articleId": "0123456789abcdef01234567"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    payload = response.json()
+    assert payload["ready"] is True
+    assert len(payload["suggestions"]) == 3
+    assert payload["suggestions"][0] == {
+        "type": "FAKT",
+        "headline": "Bund startet neues Hilfspaket",
+        "line2": "Ab Montag gilt die neue Hilfe",
+    }
+    assert "Headline-Vorschläge" in payload["messageHtml"]
+    assert "bitte vor Versand prüfen" in payload["messageHtml"]
+
+
+def test_headline_command_requires_auth_and_rejects_invalid_ids(monkeypatch):
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+
+    unauthorized = client.post(
+        "/api/v1/power-automate/teams/headline",
+        json={"articleId": "0123456789abcdef01234567"},
+    )
+    invalid = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={"articleId": "not-an-id"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert invalid.status_code == 422
+
+
+def test_headline_command_returns_no_op_when_article_is_unknown(monkeypatch):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(power_automate, "_headline_article_context", lambda _article_id: None)
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={"articleId": "0123456789abcdef01234567"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["reason"] == "article_not_found"
+    assert "Artikel nicht gefunden" in response.json()["messageHtml"]
+
+
 def test_claim_fails_closed_when_dedicated_key_is_not_configured(monkeypatch):
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", "")
     monkeypatch.setattr(auth.config, "PUSH_TEAMS_WEBHOOK_URL", "")

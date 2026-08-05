@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import html
 import json
 import re
 import time
@@ -16,6 +17,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth import require_power_automate_key
+from app.cms.article_context import fetch_public_article_context
+from app.cms.url_api import (
+    UrlApiNotConfigured,
+    UrlApiUnavailable,
+    get_canonical_article_url,
+)
 from app.config import POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
 from app.database import teams_alert_get, teams_alert_try_claim_send
 from app.notifications.teams import (
@@ -124,6 +131,109 @@ class PowerAutomateReceipt(BaseModel):
         if not normalized:
             raise ValueError("requestId must not be blank")
         return normalized
+
+
+class PowerAutomateHeadlineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    articleId: str = Field(min_length=24, max_length=24)
+
+    @field_validator("articleId")
+    @classmethod
+    def validate_article_id(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{24}", normalized):
+            raise ValueError("articleId must be a 24-character CMS ID")
+        return normalized
+
+
+def _headline_article_context(article_id: str) -> dict[str, str] | None:
+    try:
+        from app.score_api_client import resolve_cms_id
+
+        payload = build_articles_payload(
+            offset=0,
+            limit=200,
+            include_teams_decisions=False,
+            use_internal_score_api=False,
+        )
+        for item in payload.get("articles") or []:
+            if not isinstance(item, dict) or resolve_cms_id(item) != article_id:
+                continue
+            return {
+                "url": str(item.get("url") or "").strip(),
+                "title": str(item.get("title") or "").strip(),
+                "text": str(item.get("description") or "").strip(),
+                "category": str(item.get("category") or "news").strip() or "news",
+            }
+    except Exception:
+        pass
+
+    try:
+        url = get_canonical_article_url(article_id)
+    except (UrlApiNotConfigured, UrlApiUnavailable):
+        return None
+    return fetch_public_article_context(url) if url else None
+
+
+def _headline_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
+    winner = result.get("gewinner") if isinstance(result.get("gewinner"), dict) else {}
+    winner_title = str(winner.get("titel") or "").strip()
+    raw: list[dict[str, Any]] = []
+    for group in (result.get("alle_kandidaten") or {}).values():
+        if isinstance(group, list):
+            raw.extend(item for item in group if isinstance(item, dict))
+    raw.sort(key=lambda item: str(item.get("titel") or "") != winner_title)
+
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        headline = str(item.get("titel") or "").strip()
+        line_two = str(item.get("zeile2") or "").strip()
+        if not headline or not line_two or headline.casefold() in seen:
+            continue
+        seen.add(headline.casefold())
+        candidates.append(
+            {
+                "type": str(item.get("ansatz") or "FAKT").strip(),
+                "headline": headline,
+                "line2": line_two,
+            }
+        )
+        if len(candidates) == 3:
+            break
+    return candidates
+
+
+def _headline_message_html(
+    *,
+    article_id: str,
+    article_url: str,
+    result: dict[str, Any],
+    candidates: list[dict[str, str]],
+) -> str:
+    level = int(result.get("stufe") or 2)
+    level_reason = html.escape(str(result.get("stufe_begruendung") or "").strip())
+    parts = [
+        "<h2>Headline-Vorschläge</h2>",
+        f"<p><strong>Artikel:</strong> <a href=\"{html.escape(article_url, quote=True)}\">{html.escape(article_id)}</a></p>",
+        f"<p><strong>Stufe {level}</strong>{' · ' + level_reason if level_reason else ''}</p>",
+    ]
+    for index, item in enumerate(candidates):
+        label = chr(ord("A") + index)
+        parts.append(
+            f"<p><strong>{label} — {html.escape(item['type'])}</strong><br>"
+            f"{html.escape(item['headline'])} ({len(item['headline'])})<br>"
+            f"{html.escape(item['line2'])} ({len(item['line2'])})</p>"
+        )
+    reason = str(result.get("reasoning") or "").strip()
+    warning = str(result.get("warnhinweis") or "").strip()
+    if reason:
+        parts.append(f"<p><strong>Empfehlung:</strong> A · {html.escape(reason)}</p>")
+    if warning:
+        parts.append(f"<p><strong>Prüfpunkt:</strong> {html.escape(warning)}</p>")
+    parts.append("<p><em>Redaktioneller Vorschlag – bitte vor Versand prüfen.</em></p>")
+    return "".join(parts)
 
 
 def _slot_id(slot_ts: int) -> str:
@@ -609,6 +719,70 @@ def claim_power_automate_teams_recommendation(
         content=response_payload,
         headers=_NO_STORE_HEADERS,
     )
+
+
+@router.post(
+    "/api/v1/power-automate/teams/headline",
+    dependencies=[Depends(require_power_automate_key)],
+    include_in_schema=False,
+)
+def generate_power_automate_teams_headlines(
+    request: PowerAutomateHeadlineRequest,
+) -> JSONResponse:
+    """Generate three v1.4 headline pairs for a Teams slash command."""
+    context = _headline_article_context(request.articleId)
+    if not context or not context.get("title") or not context.get("url"):
+        return JSONResponse(
+            content={
+                "ready": False,
+                "reason": "article_not_found",
+                "messageHtml": (
+                    "<p><strong>Artikel nicht gefunden.</strong><br>"
+                    "Bitte die 24-stellige Artikel-ID prüfen.</p>"
+                ),
+            },
+            headers=_NO_STORE_HEADERS,
+        )
+
+    from app.routers.misc import PushTitleGenerateRequest, _build_push_title_response
+
+    result = _build_push_title_response(
+        PushTitleGenerateRequest(
+            url=context["url"],
+            title=context["title"],
+            text=context.get("text", ""),
+            headline=context["title"],
+            category=context.get("category", "news"),
+            force_llm=True,
+        )
+    )
+    candidates = _headline_candidates(result)
+    if len(candidates) < 3:
+        return JSONResponse(
+            content={
+                "ready": False,
+                "reason": "headline_generator_unavailable",
+                "messageHtml": (
+                    "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+                    "Bitte den Befehl später erneut senden.</p>"
+                ),
+            },
+            headers=_NO_STORE_HEADERS,
+        )
+
+    response = {
+        "ready": True,
+        "articleId": request.articleId,
+        "articleUrl": context["url"],
+        "suggestions": candidates,
+        "messageHtml": _headline_message_html(
+            article_id=request.articleId,
+            article_url=context["url"],
+            result=result,
+            candidates=candidates,
+        ),
+    }
+    return JSONResponse(content=response, headers=_NO_STORE_HEADERS)
 
 
 @router.post(
