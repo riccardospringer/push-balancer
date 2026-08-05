@@ -2599,6 +2599,7 @@ components:
       - category
       - publishedAt
       - score
+      - scoreSource
       - recommendedText
       - isLivePush
       - alreadySent
@@ -2629,8 +2630,12 @@ components:
         score:
           type: number
           format: float
-          description: Advisory 0-100 editorial ranking score.
+          description: Canonical 0-100 score captured from the Editorial One Push Balancer. Render-local fallback scores are excluded from this API.
           example: 88.0
+        scoreSource:
+          type: string
+          const: captured_push_balancer
+          description: Canonical source marker. Only fresh Editorial One browser captures are returned.
         predictedOpenRate:
           type:
           - number
@@ -2826,6 +2831,7 @@ components:
       - title
       - category
       - score
+      - scoreSource
       - predictedOpenRate
       - priority
       - isLivePush
@@ -2852,8 +2858,12 @@ components:
         score:
           type: number
           format: float
-          description: Advisory 0-100 editorial ranking score.
+          description: Canonical 0-100 score captured from the Editorial One Push Balancer.
           example: 88.0
+        scoreSource:
+          type: string
+          const: captured_push_balancer
+          description: Canonical source marker; Render-local fallback scores are excluded.
         predictedOpenRate:
           type:
           - number

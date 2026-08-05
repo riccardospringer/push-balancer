@@ -85,7 +85,8 @@ def _candidate_from_consumer_article(
     """Map the shared versioned-consumer projection to the candidate contract."""
     flags = article.get("flags") or {}
     explanation = article.get("explanation") or {}
-    score = article.get("score")
+    is_canonical = article.get("scoreSource") == "captured_push_balancer"
+    score = article.get("score") if is_canonical else None
     return {
         "id": article.get("id") or article.get("url") or "",
         "url": article.get("url") or article.get("id") or "",
