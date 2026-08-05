@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -772,8 +772,20 @@ def export_pushes_csv(
     )
 
 
+def _persist_synced_pushes(raw_messages: list) -> None:
+    """Persist relay data after acknowledgement without changing relay behavior."""
+    try:
+        persisted = push_db_upsert(_parse_bild_messages(raw_messages))
+        log.info("[Sync] %d Pushes in Historie aktualisiert", persisted)
+    except Exception as exc:
+        log.warning("[Sync] Push-Historie konnte nicht aktualisiert werden: %s", exc)
+
+
 @router.post("/api/pushes/sync")
-def post_push_sync(body: PushSyncRequest) -> JSONResponse:
+def post_push_sync(
+    body: PushSyncRequest,
+    background_tasks: BackgroundTasks = None,
+) -> JSONResponse:
     """Empfängt Push-Daten von lokalem Server (Relay für Render).
 
     Authentifizierung via PUSH_SYNC_SECRET.
@@ -800,6 +812,15 @@ def post_push_sync(body: PushSyncRequest) -> JSONResponse:
             "relay" if timestamp_is_valid and source in {"live", "relay"}
             else "unknown"
         )
+
+    # Keep relay latency and acknowledgement independent from persistence. The
+    # snapshot remains immediately available in memory; durable history is
+    # updated only after the response has been sent.
+    if background_tasks is None:
+        # Preserve compatibility with the existing internal direct-call path.
+        _persist_synced_pushes(body.messages)
+    else:
+        background_tasks.add_task(_persist_synced_pushes, body.messages)
 
     log.info("[Sync] Empfangen: %d Messages, %d Channels",
              len(body.messages), len(body.channels))

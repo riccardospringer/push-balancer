@@ -1276,6 +1276,45 @@ class TestPushSyncEndpoint:
         )
         assert resp.status_code in (200, 201)
 
+    def test_push_sync_persists_relay_messages_without_changing_contract(
+        self, monkeypatch, tmp_db
+    ):
+        """Relay-Snapshots speisen die bestehende Push-Historie für UI-Auswertungen."""
+        monkeypatch.setattr("app.routers.push.SYNC_SECRET", "test-sync-secret")
+        now = int(time.time())
+        resp = client.post(
+            "/api/pushes/sync",
+            json={
+                "secret": "test-sync-secret",
+                "source": "live",
+                "snapshotTs": now,
+                "channels": ["bild"],
+                "messages": [
+                    {
+                        "id": "synthetic-relay-push-1",
+                        "sendDate": now,
+                        "kickerAndHeadline": "Test: Synthetischer Push für die Analyse",
+                        "url": "https://example.invalid/news/synthetic-relay-push-1",
+                        "targetList": [{"channel": "bild", "appList": ["test-app"]}],
+                        "openingRate": 7.5,
+                        "openedCount": 75,
+                        "receivedCount": 1000,
+                        "recipientCount": 1000,
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "received": 1}
+
+        pushes = client.get("/api/pushes?limit=10&days=1").json()["pushes"]
+        persisted = next(push for push in pushes if push["id"] == "synthetic-relay-push-1")
+        assert persisted["title"] == "Test: Synthetischer Push für die Analyse"
+        assert persisted["recipients"] == 1000
+        assert persisted["opened"] == 75
+        assert persisted["openRate"] == pytest.approx(0.075)
+
 
 class TestPushTitleGenerateEndpoint:
     def test_generate_push_title_returns_stable_local_response_shape(self):
