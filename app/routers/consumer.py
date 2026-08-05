@@ -1,6 +1,9 @@
 """Versioned read-only API for downstream app consumers."""
 from __future__ import annotations
 
+import copy
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -14,6 +17,16 @@ router = APIRouter()
 
 _LIVE_PUSH_LOOKBACK_HOURS = 24
 _LIVE_PUSH_LIMIT = 100
+_RECOMMENDATIONS_RESPONSE_TTL_SECONDS = 30.0
+_RECOMMENDATIONS_CACHE_MAX_ENTRIES = 32
+_recommendations_cache_lock = threading.Lock()
+_recommendations_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
+def _clear_recommendations_cache() -> None:
+    """Clear the process-local authoritative response cache."""
+    with _recommendations_cache_lock:
+        _recommendations_cache.clear()
 
 
 def _consumer_status_payload() -> dict[str, Any]:
@@ -173,6 +186,60 @@ def _load_consumer_articles(
     }
 
 
+def _load_consumer_recommendations(
+    *,
+    offset: int,
+    limit: int,
+    category: str | None,
+    min_score: float | None,
+    include_explanations: bool,
+) -> dict[str, Any]:
+    """Return one short-lived, immutable Recommendations API response.
+
+    The authenticated endpoint and the Render candidate adapter use this same
+    function and cache key. Separate requests therefore receive the identical
+    score response instead of recalculating freshness a few seconds apart.
+    """
+    key = (offset, limit, category, min_score, include_explanations)
+    now = time.monotonic()
+    with _recommendations_cache_lock:
+        cached = _recommendations_cache.get(key)
+        if cached is not None:
+            age = now - float(cached["createdMonotonic"])
+            if age < _RECOMMENDATIONS_RESPONSE_TTL_SECONDS:
+                return copy.deepcopy(cached["payload"])
+
+        payload = _load_consumer_articles(
+            offset=offset,
+            limit=limit,
+            category=category,
+            min_score=min_score,
+            include_explanations=include_explanations,
+        )
+        payload["kind"] = "recommendations"
+        expired_keys = [
+            cache_key
+            for cache_key, entry in _recommendations_cache.items()
+            if now - float(entry["createdMonotonic"])
+            >= _RECOMMENDATIONS_RESPONSE_TTL_SECONDS
+        ]
+        for cache_key in expired_keys:
+            _recommendations_cache.pop(cache_key, None)
+        if len(_recommendations_cache) >= _RECOMMENDATIONS_CACHE_MAX_ENTRIES:
+            oldest_key = min(
+                _recommendations_cache,
+                key=lambda cache_key: float(
+                    _recommendations_cache[cache_key]["createdMonotonic"]
+                ),
+            )
+            _recommendations_cache.pop(oldest_key, None)
+        _recommendations_cache[key] = {
+            "createdMonotonic": now,
+            "payload": copy.deepcopy(payload),
+        }
+        return copy.deepcopy(payload)
+
+
 @router.get("/api/v1/status", dependencies=[Depends(require_consumer_key)])
 def get_consumer_status() -> JSONResponse:
     """Return consumer API readiness and integration metadata."""
@@ -188,14 +255,13 @@ def get_consumer_recommendations(
     include_explanations: bool = Query(default=False, alias="includeExplanations"),
 ) -> JSONResponse:
     """Return the simplest drop-in list of ranked article recommendations."""
-    payload = _load_consumer_articles(
+    payload = _load_consumer_recommendations(
         offset=offset,
         limit=limit,
         category=category,
         min_score=min_score,
         include_explanations=include_explanations,
     )
-    payload["kind"] = "recommendations"
     return JSONResponse(content=payload)
 
 
