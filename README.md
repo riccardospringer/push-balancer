@@ -324,11 +324,15 @@ Because Render instances cannot reach the internal BILD Push Statistics API dire
 
 ### Microsoft Teams Push Recommendations
 
-Power Automate owns the production schedule and Teams transport. A one-minute Recurrence trigger opens a five-minute Berlin-local window for each fixed daily slot:
+Power Automate owns the production schedule and Teams transport. A one-minute Recurrence trigger opens a five-minute Berlin-local window for each fixed slot. Monday through Friday use:
 
 `06:00`, `06:36`, `07:12`, `07:47`, `08:23`, `08:59`, `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, `22:45`.
 
-These 12 times are the complete scheduled-flow plan on every Berlin date. The Power Automate path ignores `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, the legacy golden-hour plan, catch-up logic, and daily Sport quotas. An initial claim is issued only while at least 30 seconds remain before the five-minute window expires; a later request returns HTTP 200 with `ready=false` and `reason=slot_closed`.
+Saturday and Sunday move only the six morning slots two hours later:
+
+`08:00`, `08:36`, `09:12`, `09:47`, `10:23`, `10:59`, `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, `22:45`.
+
+These weekday/weekend times are the complete scheduled-flow plan. The Power Automate path ignores `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, the legacy golden-hour plan, catch-up logic, and daily Sport quotas. An initial claim is issued only while at least 30 seconds remain before the five-minute window expires; a later request returns HTTP 200 with `ready=false` and `reason=slot_closed`.
 
 During a window, the flow calls `POST /api/v1/power-automate/teams/claim` with its dedicated `X-Power-Automate-Key` and a unique `requestId`. `top` is the candidate with the absolute highest fresh, technically valid `internal_score_api` score after Teams-article duplicate removal and, when available, exact live-push duplicate removal. Lower-scored Sport, Breaking, section-mix, OR, local quality, pacing, or quota signals can never replace it; secondary signals only break an exact API-score tie. The separate nullable `alternative` is the highest valid candidate from the opposite Sport/non-Sport class for display and is not necessarily overall rank 2. Expected no-send outcomes return HTTP 200 with `ready=false`; the flow must not post to Teams in that branch.
 
@@ -340,7 +344,7 @@ Keep `PUSH_TEAMS_ALERTS_ENABLED=true` so recommendation claims remain enabled, a
 
 The adaptive schedule, cooldown, deadline, delay, Sport-quota, and daily-plan environment variables below remain available to the legacy worker and internal diagnostics. They do not affect or replace the fixed 12-slot Power Automate schedule.
 
-Before cutover, the internal `/api/teams-readiness` proof must report top-level `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `scoreApi.ok=true`, `pushHistory.ok=true`, `slots.ok=true`, `slots.plannedToday=12`, and the exact 12 labels above. `pushHistory.historyAuthoritative=false` together with `fallbackMode=durable_slot_and_receipt_dedup` is the expected cloud-only state when no AS-network relay is available.
+Before cutover, the internal `/api/teams-readiness` proof must report top-level `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `scoreApi.ok=true`, `pushHistory.ok=true`, `slots.ok=true`, `slots.plannedToday=12`, and the exact weekday or weekend labels above. `pushHistory.historyAuthoritative=false` together with `fallbackMode=durable_slot_and_receipt_dedup` is the expected cloud-only state when no AS-network relay is available.
 
 The dedicated `POWER_AUTOMATE_API_KEY` is a strong random opaque shared secret, not a derived key or KDF output. It must exist only in the deployment secret store and the protected Power Automate secret/configuration. `render.yaml` declares it with `sync: false`, so configure it manually in the Render dashboard. Enable Secure Inputs and Secure Outputs on every HTTP and Teams action that handles the key or recommendation payload. Neither the key nor a signed webhook URL may appear in Git, flow names, URLs, Teams messages, logs, screenshots, or run-history output.
 

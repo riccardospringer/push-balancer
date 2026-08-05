@@ -4,7 +4,7 @@ This runbook configures Power Automate as the only production scheduler and Micr
 
 ## Production contract
 
-The flow uses these fixed Europe/Berlin slots every day:
+The flow uses these fixed Europe/Berlin slots Monday through Friday:
 
 | Slot | Recurrence/claim-attempt window |
 |---|---|
@@ -21,9 +21,22 @@ The flow uses these fixed Europe/Berlin slots every day:
 | `21:26` | `21:26`–`21:30` |
 | `22:45` | `22:45`–`22:49` |
 
+On Saturday and Sunday, only the six morning slots move two hours later:
+
+| Slot | Recurrence/claim-attempt window |
+|---|---|
+| `08:00` | `08:00`–`08:04` |
+| `08:36` | `08:36`–`08:40` |
+| `09:12` | `09:12`–`09:16` |
+| `09:47` | `09:47`–`09:51` |
+| `10:23` | `10:23`–`10:27` |
+| `10:59` | `10:59`–`11:03` |
+
+The common `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, and `22:45` slots remain unchanged on weekends.
+
 All windows are half-open (`slot <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed or the claim API is temporarily unavailable before a slot is reserved. The backend slot claim makes those repeated runs idempotent.
 
-The 12 labels above are the entire Power Automate schedule and do not change by weekday. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the five-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
+The weekday/weekend labels above are the entire Power Automate schedule. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the five-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
 
 The operational endpoints are deliberately excluded from the public OpenAPI document:
 
@@ -79,7 +92,7 @@ Create a **Scheduled cloud flow** and configure its **Recurrence** trigger:
 Under **Settings → Trigger conditions**, add this single condition:
 
 ```text
-@contains('|06:00|06:01|06:02|06:03|06:04|06:36|06:37|06:38|06:39|06:40|07:12|07:13|07:14|07:15|07:16|07:47|07:48|07:49|07:50|07:51|08:23|08:24|08:25|08:26|08:27|08:59|09:00|09:01|09:02|09:03|12:30|12:31|12:32|12:33|12:34|17:30|17:31|17:32|17:33|17:34|18:49|18:50|18:51|18:52|18:53|20:08|20:09|20:10|20:11|20:12|21:26|21:27|21:28|21:29|21:30|22:45|22:46|22:47|22:48|22:49|',concat('|',formatDateTime(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time'),'HH:mm'),'|'))
+@contains(if(or(equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),0),equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),6)),'|08:00|08:01|08:02|08:03|08:04|08:36|08:37|08:38|08:39|08:40|09:12|09:13|09:14|09:15|09:16|09:47|09:48|09:49|09:50|09:51|10:23|10:24|10:25|10:26|10:27|10:59|11:00|11:01|11:02|11:03|12:30|12:31|12:32|12:33|12:34|17:30|17:31|17:32|17:33|17:34|18:49|18:50|18:51|18:52|18:53|20:08|20:09|20:10|20:11|20:12|21:26|21:27|21:28|21:29|21:30|22:45|22:46|22:47|22:48|22:49|','|06:00|06:01|06:02|06:03|06:04|06:36|06:37|06:38|06:39|06:40|07:12|07:13|07:14|07:15|07:16|07:47|07:48|07:49|07:50|07:51|08:23|08:24|08:25|08:26|08:27|08:59|09:00|09:01|09:02|09:03|12:30|12:31|12:32|12:33|12:34|17:30|17:31|17:32|17:33|17:34|18:49|18:50|18:51|18:52|18:53|20:08|20:09|20:10|20:11|20:12|21:26|21:27|21:28|21:29|21:30|22:45|22:46|22:47|22:48|22:49|'),concat('|',formatDateTime(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time'),'HH:mm'),'|'))
 ```
 
 The delimiters make the string lookup exact. Do not replace the explicit time-zone conversion with the flow owner's local time zone.

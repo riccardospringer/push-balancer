@@ -287,10 +287,10 @@ def get_teams_readiness() -> JSONResponse:
         if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
             slots = _daily_runtime_opportunities(berlin_now.date(), config)
         else:
-            from app.routers.power_automate import POWER_AUTOMATE_TEAMS_SLOT_LABELS
+            from app.routers.power_automate import power_automate_slot_labels_for_date
 
             slots = []
-            for label in POWER_AUTOMATE_TEAMS_SLOT_LABELS:
+            for label in power_automate_slot_labels_for_date(berlin_now.date()):
                 hour, minute = (int(part) for part in label.split(":"))
                 slot_dt = berlin_now.replace(
                     hour=hour,
