@@ -79,13 +79,13 @@ def _candidate_from_consumer_article(
 def _get_recommendations_api_candidates(offset: int, limit: int) -> dict[str, Any]:
     """Project the exact authoritative Recommendations API query for the UI."""
     from app.notifications.teams import annotate_candidates_with_teams_decisions
-    from app.routers.consumer import _load_consumer_articles
+    from app.routers.consumer import _load_consumer_recommendations
 
     page_limit = min(limit, _RECOMMENDATIONS_LIMIT)
     # This is the same service function used behind the authenticated endpoint.
     # Keeping the call in-process avoids a self-HTTP request and keeps the
     # credential out of the browser while preserving the exact API contract.
-    consumer_payload = _load_consumer_articles(
+    consumer_payload = _load_consumer_recommendations(
         offset=offset,
         limit=page_limit,
         category=None,

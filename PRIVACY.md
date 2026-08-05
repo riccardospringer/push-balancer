@@ -422,8 +422,8 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Legal basis: unchanged from the established editorial recommendation and score-consumption workflow; no new processing purpose is introduced.
 - Roles: unchanged Axel Springer editorial controller and existing Push Balancer system ownership; no new processor or provider.
 - External recipients / international transfer: none added. The candidate adapter invokes the same in-process service function as the authenticated recommendations endpoint; no self-HTTP request, browser credential, Power Automate change, or Teams payload change is introduced.
-- Retention / deletion: no new cache or persistence. The adapter projects the current recommendations response; existing score and push-history retention/deletion rules remain unchanged.
-- Safeguards: fixed `limit=10`, `minScore=70`, and default `includeExplanations=false`, the same filtering and projection function as the versioned API, explicit Recommendations API source labeling, synthetic contract tests, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
+- Retention / deletion: the exact Recommendations API response is retained only in process memory for at most 30 seconds and is never persisted. Existing score and push-history retention/deletion rules remain unchanged.
+- Safeguards: fixed `limit=10`, `minScore=70`, and default `includeExplanations=false`, one immutable response shared by the endpoint and adapter under the same cache key, defensive copies, explicit Recommendations API source labeling, synthetic contract tests, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
 - Required documentation / approvals: no new approval is introduced because purpose, data categories, roles, recipients, transfer path, and persistence are unchanged. Product/System Owner and Privacy Manager should record the shared-view behavior in the existing workflow documentation; reassessment is required before adding a new recipient, identifier, persistence layer, or processing purpose.
 
 ## Engineering rules

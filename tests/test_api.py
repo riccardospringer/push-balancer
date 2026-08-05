@@ -547,6 +547,9 @@ class TestAdobeTrafficEndpoint:
 
 class TestConsumerApi:
     def _stub_article_source(self, monkeypatch):
+        from app.routers.consumer import _clear_recommendations_cache
+
+        _clear_recommendations_cache()
         sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -628,7 +631,7 @@ class TestConsumerApi:
             }
 
         monkeypatch.setattr(
-            "app.routers.consumer._load_consumer_articles",
+            "app.routers.consumer._load_consumer_recommendations",
             load_recommendations,
         )
         monkeypatch.setattr(
@@ -660,6 +663,69 @@ class TestConsumerApi:
             "totalCount": 1,
             "snapshotAt": "2026-08-05T12:00:01Z",
         }
+
+    def test_endpoint_and_render_adapter_share_identical_cached_response(
+        self, monkeypatch
+    ):
+        import app.routers.consumer as consumer_router
+
+        consumer_router._clear_recommendations_cache()
+        calls = 0
+
+        def changing_source(**kwargs):
+            nonlocal calls
+            calls += 1
+            score = 74.2 if calls == 1 else 74.1
+            return {
+                "articles": [
+                    {
+                        "id": "shared-recommendation",
+                        "url": "https://example.invalid/shared-recommendation",
+                        "title": "Gemeinsame Recommendations-Antwort",
+                        "category": "politik",
+                        "publishedAt": "2026-08-05T12:00:00Z",
+                        "score": score,
+                        "predictedOpenRate": 0.061,
+                        "priority": "hoch",
+                        "recommendedText": "Gemeinsame Recommendations-Antwort",
+                        "flags": {},
+                    }
+                ],
+                "livePushes": [],
+                "livePushCount": 0,
+                "total": 1,
+                "count": 1,
+                "offset": kwargs["offset"],
+                "limit": kwargs["limit"],
+                "fetchedAt": "2026-08-05T12:00:01Z",
+            }
+
+        monkeypatch.setattr(
+            consumer_router,
+            "_load_consumer_articles",
+            changing_source,
+        )
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
+        monkeypatch.setattr(
+            "app.notifications.teams.annotate_candidates_with_teams_decisions",
+            lambda candidates: candidates,
+        )
+
+        try:
+            recommendations = client.get(
+                "/api/v1/recommendations?limit=10&minScore=70",
+                headers={"Authorization": "Bearer consumer-test-key"},
+            )
+            candidates = client.get("/api/editorial-one/articles")
+
+            assert recommendations.status_code == 200
+            assert candidates.status_code == 200
+            assert calls == 1
+            assert recommendations.json()["articles"][0]["score"] == 74.2
+            assert candidates.json()["articles"][0]["score"] == 74.2
+            assert candidates.json()["fetchedAt"] == recommendations.json()["fetchedAt"]
+        finally:
+            consumer_router._clear_recommendations_cache()
 
     def test_consumer_articles_requires_configured_key(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")
