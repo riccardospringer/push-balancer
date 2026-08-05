@@ -59,6 +59,16 @@ services:
         value: "16"
       - key: PUSH_BALANCER_SCORE_API_MAX_RETRIES
         value: "1"
+      # Kandidaten-UI: eigener, standardmaessig inaktiver Consumer. Aktivierung
+      # erst nach Consumer-/Netzwerk-/Privacy-Gate; niemals den Key committen.
+      - key: EDITORIAL_ONE_SCORE_API_ENABLED
+        value: "false"
+      - key: EDITORIAL_ONE_SCORE_API_BASE_URL
+        sync: false
+      - key: EDITORIAL_ONE_SCORE_API_KEY
+        sync: false
+      - key: EDITORIAL_ONE_SCORE_API_MAX_AGE_SECONDS
+        value: "900"
       # Render ist aktiver Teams-Sender: der Next/K8s-Pod liefert nicht
       # (Outbound gestoert). Sobald Next verifiziert laeuft, hier auf "false".
       - key: PUSH_TEAMS_ALERTS_ENABLED

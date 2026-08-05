@@ -71,6 +71,30 @@ function ScoreBar({ score }: { score: number }) {
   )
 }
 
+function ArticleScore({ article }: { article: Article }) {
+  const isEditorialOne = article.scoreSource === 'internal_score_api'
+  const syncUnavailable = article.scoreSource?.startsWith('internal_score_api_')
+
+  return (
+    <div style={{ display: 'grid', gap: '4px', justifyItems: 'start' }}>
+      {article.score > 0 ? (
+        <ScoreBar score={article.score} />
+      ) : (
+        <span
+          style={{ color: 'var(--red)', fontSize: '12px', fontWeight: 600 }}
+        >
+          Kein API-Score
+        </span>
+      )}
+      {isEditorialOne && <Badge variant="green">Editorial One</Badge>}
+      {syncUnavailable && <Badge variant="red">Nicht synchronisiert</Badge>}
+      {article.scoreSource === 'captured_push_balancer' && (
+        <Badge variant="default">Render Capture</Badge>
+      )}
+    </div>
+  )
+}
+
 function teamsAlertVariant(
   teamsAlert: Article['teamsAlert'],
 ): 'green' | 'amber' | 'default' | 'red' {
@@ -84,7 +108,8 @@ function teamsAlertVariant(
 function teamsAlertLabel(teamsAlert: Article['teamsAlert']): string {
   if (!teamsAlert) return 'Teams offen'
   if (teamsAlert.status === 'sent') return 'Teams gesendet'
-  if (teamsAlert.shouldNotify || teamsAlert.status === 'notify') return 'Teams empfohlen'
+  if (teamsAlert.shouldNotify || teamsAlert.status === 'notify')
+    return 'Teams empfohlen'
   if (teamsAlert.status === 'observe') return 'Teams beobachtet'
   if (teamsAlert.status === 'failed') return 'Teams Fehler'
   return 'Teams kein Alert'
@@ -154,7 +179,10 @@ function TeamsAlertHistory({
           <div style={{ display: 'grid', gap: '8px' }}>
             {alerts.slice(0, 5).map((alert) => {
               const title =
-                alert.articleTitle || alert.articleUrl || alert.articleId || alert.articleKey
+                alert.articleTitle ||
+                alert.articleUrl ||
+                alert.articleId ||
+                alert.articleKey
               const time = alert.lastAlertAt || alert.lastDecisionAt
               return (
                 <div
@@ -181,7 +209,9 @@ function TeamsAlertHistory({
                       <Badge variant={teamsAlertRecordVariant(alert)}>
                         {teamsAlertRecordLabel(alert)}
                       </Badge>
-                      {alert.isBreaking && <Badge variant="red">Breaking</Badge>}
+                      {alert.isBreaking && (
+                        <Badge variant="red">Breaking</Badge>
+                      )}
                       {time && (
                         <span
                           style={{
@@ -228,10 +258,16 @@ function TeamsAlertHistory({
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                       }}
-                      title={alert.status === 'failed' ? alert.lastError : alert.reason}
+                      title={
+                        alert.status === 'failed'
+                          ? alert.lastError
+                          : alert.reason
+                      }
                     >
                       {alert.status === 'failed'
-                        ? alert.lastError || alert.reason || 'Teams-Versand fehlgeschlagen'
+                        ? alert.lastError ||
+                          alert.reason ||
+                          'Teams-Versand fehlgeschlagen'
                         : alert.reason || 'Push empfohlen'}
                     </div>
                   </div>
@@ -244,7 +280,9 @@ function TeamsAlertHistory({
                       fontVariantNumeric: 'tabular-nums',
                     }}
                   >
-                    <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                    <div
+                      style={{ fontWeight: 700, color: 'var(--text-primary)' }}
+                    >
                       Score {fmtScore(alert.score)}
                     </div>
                     <div>{fmtTeamsAlertOR(alert.predictedOR)}</div>
@@ -325,7 +363,7 @@ function ArticleRow({
         )}
       </TableCell>
       <TableCell>
-        <ScoreBar score={article.score} />
+        <ArticleScore article={article} />
       </TableCell>
       <TableCell>
         {article.predictedOR != null ? (
@@ -345,7 +383,9 @@ function ArticleRow({
       <TableCell>
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
           {article.mixPriority && (
-            <Badge variant={priorityVariant}>Priorität {article.mixPriority}</Badge>
+            <Badge variant={priorityVariant}>
+              Priorität {article.mixPriority}
+            </Badge>
           )}
           {article.teamsAlert && (
             <Badge variant={teamsAlertVariant(article.teamsAlert)}>
@@ -455,8 +495,11 @@ export function KandidatenPage() {
                 margin: '2px 0 0',
               }}
             >
-              {data.count} Artikel · aktualisiert {fmtDateTime(data.fetchedAt)} ·
-              Bedarf kombiniert Frische, Ressort-Fit, Breaking-Signale und Typ
+              {data.count} Artikel · aktualisiert {fmtDateTime(data.fetchedAt)}{' '}
+              ·
+              {data.scoreSync?.required
+                ? ` Editorial One Scores: ${data.scoreSync.syncedCount}/${data.scoreSync.totalCount} synchron`
+                : ' Render-Scorequelle'}
             </p>
           )}
         </div>

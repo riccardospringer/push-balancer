@@ -481,6 +481,27 @@ PUSH_BALANCER_SCORE_API_KEY: str = os.environ.get(
     "PUSH_BALANCER_SCORE_API_KEY",
     "",
 ).strip()
+
+# Kandidaten-UI: getrennte, explizit aktivierte Verbindung zur kanonischen
+# Editorial-One-Score-API. Diese Werte werden absichtlich nicht mit der
+# Teams/Power-Automate-Score-Konfiguration geteilt, damit ein UI-Rollout den
+# bestehenden Versandpfad weder umleitet noch blockiert.
+EDITORIAL_ONE_SCORE_API_ENABLED: bool = _env_flag(
+    "EDITORIAL_ONE_SCORE_API_ENABLED",
+    False,
+)
+EDITORIAL_ONE_SCORE_API_BASE_URL: str = os.environ.get(
+    "EDITORIAL_ONE_SCORE_API_BASE_URL",
+    "",
+).strip()
+EDITORIAL_ONE_SCORE_API_KEY: str = os.environ.get(
+    "EDITORIAL_ONE_SCORE_API_KEY",
+    "",
+).strip()
+EDITORIAL_ONE_SCORE_API_MAX_AGE_SECONDS: int = _env_int(
+    "EDITORIAL_ONE_SCORE_API_MAX_AGE_SECONDS",
+    15 * 60,
+)
 # Selbst-Konsum (Render): Zeigt die Score-API-Basis-URL auf die eigene Instanz
 # (Loopback), ist der eigene Server-Key SCORE_API_KEY per Definition der
 # richtige Consumer-Key — er gewinnt dann immer. Das macht die kanonische
