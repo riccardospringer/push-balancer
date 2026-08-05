@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import {
   BarChart,
   Bar,
@@ -7,7 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { useAdobeTraffic } from '@/hooks/use-api'
+import { usePushStats } from '@/hooks/use-api'
 import {
   Alert,
   Card,
@@ -21,22 +22,82 @@ import {
   TableRow,
 } from '@spring-media/editorial-one-ui'
 import { getApiErrorMessage } from '@/utils/api-errors'
-import { fmtDateTime, fmtNum } from '@/utils/format'
+import { fmtDateTime, fmtNum, fmtOR } from '@/utils/format'
+
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
 
 export function AnalysePage() {
-  const { data, isLoading, error } = useAdobeTraffic()
+  const { data, isLoading, error } = usePushStats({
+    limit: 2000,
+    days: 30,
+    sort: 'sentAt',
+  })
 
-  const chartData =
-    data?.hourly?.map((h) => ({
-      hour: `${String(h.hour).padStart(2, '0')}h`,
-      Pageviews: h.pageviews,
-      Visitors: h.visitors,
-    })) ?? []
+  const analysis = useMemo(() => {
+    const buckets = HOURS.map((hour) => ({
+      hour,
+      pushes: 0,
+      recipients: 0,
+      opened: 0,
+      openRate: 0,
+    }))
 
-  const peakHour = data?.hourly?.reduce(
-    (max, h) => (h.pageviews > max.pageviews ? h : max),
-    { hour: 0, pageviews: 0, visitors: 0 },
-  )
+    for (const push of data?.pushes ?? []) {
+      const sentAt = new Date(push.sentAt)
+      if (Number.isNaN(sentAt.getTime())) continue
+      const bucket = buckets[sentAt.getHours()]
+      bucket.pushes += 1
+      bucket.recipients += push.recipients
+      bucket.opened += push.opened
+    }
+
+    for (const bucket of buckets) {
+      bucket.openRate =
+        bucket.recipients > 0 ? bucket.opened / bucket.recipients : 0
+    }
+
+    const populated = buckets.filter((bucket) => bucket.pushes > 0)
+    const peakHour = populated.reduce<(typeof buckets)[number] | undefined>(
+      (peak, bucket) => (!peak || bucket.opened > peak.opened ? bucket : peak),
+      undefined,
+    )
+    const totalRecipients = populated.reduce(
+      (sum, bucket) => sum + bucket.recipients,
+      0,
+    )
+    const totalOpened = populated.reduce(
+      (sum, bucket) => sum + bucket.opened,
+      0,
+    )
+    const topPushes = [...(data?.pushes ?? [])]
+      .sort((a, b) => b.opened - a.opened)
+      .slice(0, 10)
+
+    return {
+      chartData: populated.map((bucket) => ({
+        hour: `${String(bucket.hour).padStart(2, '0')}h`,
+        Pushes: bucket.pushes,
+        'Opening Rate': Number((bucket.openRate * 100).toFixed(2)),
+      })),
+      peakHour,
+      totalRecipients,
+      totalOpened,
+      openRate: totalRecipients > 0 ? totalOpened / totalRecipients : 0,
+      topPushes,
+    }
+  }, [data])
+
+  const summaryCards = [
+    {
+      label: 'Peak-Stunde',
+      value: analysis.peakHour
+        ? `${String(analysis.peakHour.hour).padStart(2, '0')}:00`
+        : '—',
+    },
+    { label: 'Pushes (30 Tage)', value: fmtNum(data?.total ?? 0) },
+    { label: 'Empfänger', value: fmtNum(analysis.totalRecipients) },
+    { label: 'Ø Opening Rate', value: fmtOR(analysis.openRate) },
+  ]
 
   return (
     <div
@@ -48,30 +109,19 @@ export function AnalysePage() {
         animation: 'fadeIn 0.2s ease',
       }}
     >
-      <div
-        style={{
-          marginBottom: '20px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <div>
-          <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
-            Traffic-Analyse
-          </h1>
-          {data?.fetchedAt && (
-            <p
-              style={{
-                fontSize: '12px',
-                color: 'var(--text-secondary)',
-                margin: '2px 0 0',
-              }}
-            >
-              Adobe Analytics · Abgerufen: {fmtDateTime(data.fetchedAt)}
-            </p>
-          )}
-        </div>
+      <div style={{ marginBottom: '20px' }}>
+        <h1 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>
+          Push-Analyse
+        </h1>
+        <p
+          style={{
+            fontSize: '12px',
+            color: 'var(--text-secondary)',
+            margin: '2px 0 0',
+          }}
+        >
+          Push-Performance · letzte 30 Tage
+        </p>
       </div>
 
       {isLoading && (
@@ -86,23 +136,23 @@ export function AnalysePage() {
         <Alert variant="error">
           {getApiErrorMessage(
             error,
-            'Adobe Analytics konnte nicht geladen werden. Sind die Credentials konfiguriert?',
+            'Push-Daten konnten nicht geladen werden.',
           )}
         </Alert>
       )}
 
       {data && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Peak summary */}
-          {peakHour && peakHour.pageviews > 0 && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                gap: '12px',
-              }}
-            >
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: '12px',
+            }}
+          >
+            {summaryCards.map((card) => (
               <div
+                key={card.label}
                 style={{
                   background: 'var(--white)',
                   border: '1px solid var(--border)',
@@ -118,96 +168,23 @@ export function AnalysePage() {
                     marginBottom: '4px',
                   }}
                 >
-                  Peak-Stunde
+                  {card.label}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 700 }}>
-                  {String(peakHour.hour).padStart(2, '0')}:00
+                  {card.value}
                 </div>
               </div>
-              <div
-                style={{
-                  background: 'var(--accent-light)',
-                  border: '1px solid #c7d2fe',
-                  borderRadius: 'var(--radius)',
-                  padding: '16px',
-                  boxShadow: 'var(--shadow-sm)',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--text-secondary)',
-                    marginBottom: '4px',
-                  }}
-                >
-                  Peak Pageviews
-                </div>
-                <div
-                  style={{
-                    fontSize: '22px',
-                    fontWeight: 700,
-                    color: 'var(--accent)',
-                  }}
-                >
-                  {fmtNum(peakHour.pageviews)}
-                </div>
-              </div>
-              <div
-                style={{
-                  background: 'var(--white)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius)',
-                  padding: '16px',
-                  boxShadow: 'var(--shadow-sm)',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--text-secondary)',
-                    marginBottom: '4px',
-                  }}
-                >
-                  Peak Visitors
-                </div>
-                <div style={{ fontSize: '22px', fontWeight: 700 }}>
-                  {fmtNum(peakHour.visitors)}
-                </div>
-              </div>
-              <div
-                style={{
-                  background: 'var(--white)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius)',
-                  padding: '16px',
-                  boxShadow: 'var(--shadow-sm)',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--text-secondary)',
-                    marginBottom: '4px',
-                  }}
-                >
-                  Gesamt PV
-                </div>
-                <div style={{ fontSize: '22px', fontWeight: 700 }}>
-                  {fmtNum(data.hourly.reduce((s, h) => s + h.pageviews, 0))}
-                </div>
-              </div>
-            </div>
-          )}
+            ))}
+          </div>
 
-          {/* Hourly Chart */}
           <Card>
             <CardHeader>
-              <CardTitle>Stündlicher Traffic</CardTitle>
+              <CardTitle>Stündliche Push-Performance</CardTitle>
             </CardHeader>
             <CardContent>
-              {chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={chartData} barSize={14}>
+              {analysis.chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={analysis.chartData} barSize={12}>
                     <CartesianGrid
                       strokeDasharray="3 3"
                       stroke="var(--border)"
@@ -220,21 +197,35 @@ export function AnalysePage() {
                       axisLine={false}
                     />
                     <YAxis
-                      yAxisId="pv"
+                      yAxisId="pushes"
+                      allowDecimals={false}
                       tick={{ fontSize: 11 }}
                       tickLine={false}
                       axisLine={false}
-                      width={50}
-                      tickFormatter={(v) => fmtNum(v)}
+                      width={36}
+                    />
+                    <YAxis
+                      yAxisId="or"
+                      orientation="right"
+                      tick={{ fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={42}
+                      unit="%"
                     />
                     <Tooltip
-                      formatter={(v: number) => fmtNum(v)}
                       contentStyle={{ fontSize: '12px', borderRadius: '6px' }}
                     />
                     <Bar
-                      yAxisId="pv"
-                      dataKey="Pageviews"
+                      yAxisId="pushes"
+                      dataKey="Pushes"
                       fill="var(--accent)"
+                      radius={[3, 3, 0, 0]}
+                    />
+                    <Bar
+                      yAxisId="or"
+                      dataKey="Opening Rate"
+                      fill="var(--green)"
                       radius={[3, 3, 0, 0]}
                     />
                   </BarChart>
@@ -250,39 +241,34 @@ export function AnalysePage() {
                     fontSize: '13px',
                   }}
                 >
-                  Keine Stundendaten vorhanden
+                  Noch keine persistierten Push-Daten vorhanden
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Top Articles */}
-          {data.topArticles && data.topArticles.length > 0 && (
+          {analysis.topPushes.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Top-Artikel (nach Pageviews)</CardTitle>
+                <CardTitle>Stärkste Pushes (nach Öffnungen)</CardTitle>
               </CardHeader>
               <Table>
                 <thead>
                   <tr>
-                    <TableHeader>#</TableHeader>
-                    <TableHeader>Artikel</TableHeader>
+                    <TableHeader>Push</TableHeader>
+                    <TableHeader>Versand</TableHeader>
                     <TableHeader style={{ textAlign: 'right' }}>
-                      Pageviews
+                      Empfänger
                     </TableHeader>
+                    <TableHeader style={{ textAlign: 'right' }}>
+                      Öffnungen
+                    </TableHeader>
+                    <TableHeader style={{ textAlign: 'right' }}>OR</TableHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.topArticles.map((a, i) => (
-                    <TableRow
-                      key={i}
-                      onClick={() => window.open(a.url, '_blank')}
-                    >
-                      <TableCell
-                        style={{ color: 'var(--text-tertiary)', width: '32px' }}
-                      >
-                        {i + 1}
-                      </TableCell>
+                  {analysis.topPushes.map((push) => (
+                    <TableRow key={push.id}>
                       <TableCell>
                         <div
                           style={{
@@ -290,20 +276,21 @@ export function AnalysePage() {
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
-                            maxWidth: '500px',
+                            maxWidth: '480px',
                           }}
                         >
-                          {a.title}
+                          {push.title}
                         </div>
                       </TableCell>
-                      <TableCell
-                        style={{
-                          textAlign: 'right',
-                          fontVariantNumeric: 'tabular-nums',
-                          fontWeight: 600,
-                        }}
-                      >
-                        {fmtNum(a.pageviews)}
+                      <TableCell>{fmtDateTime(push.sentAt)}</TableCell>
+                      <TableCell style={{ textAlign: 'right' }}>
+                        {fmtNum(push.recipients)}
+                      </TableCell>
+                      <TableCell style={{ textAlign: 'right' }}>
+                        {fmtNum(push.opened)}
+                      </TableCell>
+                      <TableCell style={{ textAlign: 'right' }}>
+                        {fmtOR(push.openRate)}
                       </TableCell>
                     </TableRow>
                   ))}
