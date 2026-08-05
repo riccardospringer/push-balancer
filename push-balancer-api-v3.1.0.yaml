@@ -264,8 +264,8 @@ paths:
       tags:
       - Articles
       operationId: listEditorialOneArticles
-      summary: List candidates with canonical Editorial One scores
-      description: Returns the candidate collection from the same immutable score snapshot as the versioned recommendations API. An optional external Editorial One score projection remains fail-closed when explicitly activated.
+      summary: List candidates from the authoritative recommendations contract
+      description: Returns the exact server-side projection of GET /api/v1/recommendations with limit=10 and minScore=70.
       parameters:
       - $ref: '#/components/parameters/Offset'
       - $ref: '#/components/parameters/LimitArticles'
@@ -2599,7 +2599,6 @@ components:
       - category
       - publishedAt
       - score
-      - scoreSource
       - recommendedText
       - isLivePush
       - alreadySent
@@ -2630,12 +2629,8 @@ components:
         score:
           type: number
           format: float
-          description: Canonical 0-100 score captured from the Editorial One Push Balancer. Render-local fallback scores are excluded from this API.
+          description: Advisory 0-100 editorial ranking score.
           example: 88.0
-        scoreSource:
-          type: string
-          const: captured_push_balancer
-          description: Canonical source marker. Only fresh Editorial One browser captures are returned.
         predictedOpenRate:
           type:
           - number
@@ -2831,7 +2826,6 @@ components:
       - title
       - category
       - score
-      - scoreSource
       - predictedOpenRate
       - priority
       - isLivePush
@@ -2858,12 +2852,8 @@ components:
         score:
           type: number
           format: float
-          description: Canonical 0-100 score captured from the Editorial One Push Balancer.
+          description: Advisory 0-100 editorial ranking score.
           example: 88.0
-        scoreSource:
-          type: string
-          const: captured_push_balancer
-          description: Canonical source marker; Render-local fallback scores are excluded.
         predictedOpenRate:
           type:
           - number

@@ -613,16 +613,6 @@ def test_legacy_upsert_cannot_attach_stale_enrichment_to_a_newer_score(
 
 def test_post_persists_complete_enrichment_pair(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    invalidations = 0
-
-    def invalidate_snapshot():
-        nonlocal invalidations
-        invalidations += 1
-
-    monkeypatch.setattr(
-        "app.routers.consumer.invalidate_consumer_article_snapshot",
-        invalidate_snapshot,
-    )
 
     posted = client.post(
         "/api/score-capture",
@@ -646,7 +636,6 @@ def test_post_persists_complete_enrichment_pair(tmp_db, monkeypatch):
 
     assert posted.status_code == 200
     assert posted.json() == {"ok": True, "stored": 1}
-    assert invalidations == 1
     assert posted.headers["cache-control"] == "no-store"
     assert read.status_code == 200
     assert read.json()["scoreBreakdown"] == ENGAGEMENT_BREAKDOWN

@@ -143,85 +143,6 @@ class TestStableFrontendContracts:
         assert data["count"] >= 1
         assert data["articles"][0]["title"] == "Breaking Test Artikel"
 
-    def test_articles_use_isolated_editorial_one_scores_when_enabled(self, monkeypatch):
-        from app.score_api_client import ArticleScore, ScoreLookup
-
-        cms_id = "0123456789abcdef01234567"
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
-        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
-<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
-        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
-  <url>
-    <loc>https://www.bild.de/politik/synthetic-{cms_id}</loc>
-    <news:news>
-      <news:title>Synthetischer Artikel fuer den API-Vertrag</news:title>
-      <news:publication_date>{published}</news:publication_date>
-    </news:news>
-  </url>
-</urlset>""".encode()
-        scored_at = dt.datetime.now(dt.timezone.utc)
-
-        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
-        monkeypatch.setattr("app.routers.feed.ARTICLE_PREDICTION_ENRICHMENT_ENABLED", False)
-        monkeypatch.setattr(
-            "app.routers.candidate_scores.EDITORIAL_ONE_SCORE_API_ENABLED", True
-        )
-        monkeypatch.setattr(
-            "app.routers.candidate_scores._get_score_client",
-            lambda: object(),
-        )
-        monkeypatch.setattr(
-            "app.score_api_client.fetch_score_lookups",
-            lambda ids, _client, **_kwargs: {
-                ids[0]: ScoreLookup(
-                    status="ok",
-                    value=ArticleScore(
-                        cms_id=ids[0],
-                        score=87.3,
-                        scored_at=scored_at,
-                    ),
-                )
-            },
-        )
-        monkeypatch.setattr(
-            "app.notifications.teams.annotate_candidates_with_teams_decisions",
-            lambda candidates: candidates,
-        )
-
-        resp = client.get("/api/editorial-one/articles?limit=5")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        article = data["articles"][0]
-        assert article["score"] == pytest.approx(87.3)
-        assert article["scoreSource"] == "internal_score_api"
-        assert article["cmsId"] == cms_id
-        assert data["scoreSync"] == {
-            "required": True,
-            "source": "editorial_one_score_api",
-            "status": "ok",
-            "syncedCount": 1,
-            "totalCount": 1,
-        }
-
-    def test_articles_fail_closed_when_editorial_one_score_client_is_unavailable(
-        self, monkeypatch
-    ):
-        from app.score_api_client import ScoreApiConfigurationError
-
-        monkeypatch.setattr(
-            "app.routers.candidate_scores.EDITORIAL_ONE_SCORE_API_ENABLED", True
-        )
-        monkeypatch.setattr(
-            "app.routers.candidate_scores._get_score_client",
-            lambda: (_ for _ in ()).throw(ScoreApiConfigurationError("synthetic")),
-        )
-
-        resp = client.get("/api/editorial-one/articles")
-
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "Editorial One score synchronization is unavailable."
-
     def test_articles_prefer_fresh_visible_push_balancer_ratings(self, monkeypatch):
         published = dt.datetime.now(dt.timezone.utc).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
@@ -626,9 +547,6 @@ class TestAdobeTrafficEndpoint:
 
 class TestConsumerApi:
     def _stub_article_source(self, monkeypatch):
-        from app.routers.consumer import invalidate_consumer_article_snapshot
-
-        invalidate_consumer_article_snapshot()
         sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -655,15 +573,6 @@ class TestConsumerApi:
             lambda *_args, **_kwargs: {"predicted_or": 6.2},
         )
         monkeypatch.setattr(
-            "app.routers.score_capture.get_score_snapshot_for_url",
-            lambda url, **_kwargs: {
-                "score": 88.0 if "consumer-test" in url else 76.0,
-                "capturedAt": 1_800_000_000,
-                "ageSeconds": 10,
-                "source": "memory",
-            },
-        )
-        monkeypatch.setattr(
             "app.routers.consumer._build_pushes_response",
             lambda **_kwargs: {
                 "pushes": [
@@ -681,98 +590,76 @@ class TestConsumerApi:
             },
         )
 
-    def test_render_candidates_share_exact_recommendations_snapshot(self, monkeypatch):
-        import app.routers.consumer as consumer_router
+    def test_render_candidates_use_exact_recommendations_api_contract(
+        self, monkeypatch
+    ):
+        calls = []
 
-        consumer_router.invalidate_consumer_article_snapshot()
-        calls = 0
-
-        def build_source(**kwargs):
-            nonlocal calls
-            calls += 1
-            assert kwargs == {
-                "offset": 0,
-                "limit": 200,
-                "include_teams_decisions": False,
-            }
+        def load_recommendations(**kwargs):
+            calls.append(kwargs)
             return {
                 "articles": [
                     {
-                        "id": "https://www.bild.de/politik/shared-score-test",
-                        "url": "https://www.bild.de/politik/shared-score-test",
-                        "title": "Synthetischer gemeinsamer Score",
+                        "id": "https://www.bild.de/politik/recommendations-test",
+                        "url": "https://www.bild.de/politik/recommendations-test",
+                        "title": "Synthetischer Recommendations-API-Score",
                         "category": "politik",
-                        "pubDate": "2026-08-05T12:00:00Z",
+                        "publishedAt": "2026-08-05T12:00:00Z",
                         "score": 72.4,
-                        "scoreSource": "captured_push_balancer",
-                        "scoreReason": "Synthetischer kanonischer Score",
-                        "predictedOR": 0.061,
-                        "predictedORBasis": "synthetic",
-                        "predictedORConfidence": 0.9,
-                        "predictedORIsFallback": False,
-                        "mixPriority": "hoch",
-                        "recommendedText": "Synthetischer gemeinsamer Score",
-                        "performanceDrivers": ["synthetischer Treiber"],
-                        "risks": [],
-                        "scoreBreakdown": {"freshness": 8.0},
-                        "isBreaking": False,
-                        "isEilmeldung": False,
-                        "isSport": False,
-                        "isVideo": False,
-                        "isPlusArticle": False,
+                        "predictedOpenRate": 0.061,
+                        "priority": "hoch",
+                        "recommendedText": "Synthetischer Recommendations-API-Score",
+                        "flags": {"breaking": False},
+                        "explanation": {
+                            "reason": "Score aus dem autoritativen API-Vertrag",
+                            "drivers": [],
+                            "risks": [],
+                            "breakdown": {},
+                        },
                     }
                 ],
+                "livePushes": [],
+                "livePushCount": 0,
                 "total": 1,
                 "count": 1,
                 "offset": 0,
-                "limit": 200,
-                "fetchedAt": "2026-08-05T12:00:01",
+                "limit": 10,
+                "fetchedAt": "2026-08-05T12:00:01Z",
             }
 
-        monkeypatch.setattr(consumer_router, "build_articles_payload", build_source)
-        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
         monkeypatch.setattr(
-            "app.routers.candidate_scores.EDITORIAL_ONE_SCORE_API_ENABLED",
-            False,
-        )
-        monkeypatch.setattr(
-            "app.routers.consumer._build_pushes_response",
-            lambda **_kwargs: {"pushes": []},
+            "app.routers.consumer._load_consumer_articles",
+            load_recommendations,
         )
         monkeypatch.setattr(
             "app.notifications.teams.annotate_candidates_with_teams_decisions",
             lambda candidates: candidates,
         )
 
-        try:
-            recommendations = client.get(
-                "/api/v1/recommendations?limit=10&minScore=0",
-                headers={"Authorization": "Bearer consumer-test-key"},
-            )
-            candidates = client.get("/api/editorial-one/articles?limit=10")
+        candidates = client.get("/api/editorial-one/articles?limit=60")
 
-            assert recommendations.status_code == 200
-            assert candidates.status_code == 200
-            recommendation_data = recommendations.json()
-            candidate_data = candidates.json()
-            assert calls == 1
-            assert recommendation_data["articles"][0]["score"] == 72.4
-            assert candidate_data["articles"][0]["score"] == 72.4
-            assert (
-                candidate_data["articles"][0]["scoreSource"]
-                == "consumer_recommendations_api"
-            )
-            assert candidate_data["fetchedAt"] == recommendation_data["fetchedAt"]
-            assert candidate_data["scoreSync"] == {
-                "required": True,
-                "source": "consumer_recommendations_api",
-                "status": "ok",
-                "syncedCount": 1,
-                "totalCount": 1,
-                "snapshotAt": recommendation_data["fetchedAt"],
+        assert candidates.status_code == 200
+        data = candidates.json()
+        assert calls == [
+            {
+                "offset": 0,
+                "limit": 10,
+                "category": None,
+                "min_score": 70.0,
+                "include_explanations": False,
             }
-        finally:
-            consumer_router.invalidate_consumer_article_snapshot()
+        ]
+        assert data["articles"][0]["score"] == 72.4
+        assert data["articles"][0]["scoreSource"] == "consumer_recommendations_api"
+        assert data["limit"] == 10
+        assert data["scoreSync"] == {
+            "required": True,
+            "source": "consumer_recommendations_api",
+            "status": "ok",
+            "syncedCount": 1,
+            "totalCount": 1,
+            "snapshotAt": "2026-08-05T12:00:01Z",
+        }
 
     def test_consumer_articles_requires_configured_key(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")
@@ -781,64 +668,6 @@ class TestConsumerApi:
 
         assert resp.status_code == 503
         assert resp.json()["title"] == "Service Unavailable"
-
-    def test_consumer_api_excludes_render_fallback_scores(self, monkeypatch):
-        import app.routers.consumer as consumer_router
-
-        consumer_router.invalidate_consumer_article_snapshot()
-        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
-        monkeypatch.setattr(
-            consumer_router,
-            "build_articles_payload",
-            lambda **_kwargs: {
-                "articles": [
-                    {
-                        "id": "canonical",
-                        "url": "https://example.invalid/canonical",
-                        "title": "Kanonischer Test-Score",
-                        "category": "politik",
-                        "pubDate": "2026-08-05T12:00:00Z",
-                        "score": 70.0,
-                        "scoreSource": "captured_push_balancer",
-                    },
-                    {
-                        "id": "fallback",
-                        "url": "https://example.invalid/fallback",
-                        "title": "Falscher lokaler Fallback",
-                        "category": "sport",
-                        "pubDate": "2026-08-05T11:00:00Z",
-                        "score": 99.9,
-                        "scoreSource": "server_editorial_fallback",
-                    },
-                ],
-                "total": 2,
-                "count": 2,
-                "offset": 0,
-                "limit": 200,
-                "fetchedAt": "2026-08-05T12:00:01",
-            },
-        )
-        monkeypatch.setattr(
-            consumer_router,
-            "_build_pushes_response",
-            lambda **_kwargs: {"pushes": []},
-        )
-
-        try:
-            response = client.get(
-                "/api/v1/recommendations?limit=10&minScore=0",
-                headers={"Authorization": "Bearer consumer-test-key"},
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["count"] == 1
-            assert data["total"] == 1
-            assert data["articles"][0]["id"] == "canonical"
-            assert data["articles"][0]["score"] == 70.0
-            assert data["articles"][0]["scoreSource"] == "captured_push_balancer"
-        finally:
-            consumer_router.invalidate_consumer_article_snapshot()
 
     def test_consumer_recommendations_supports_bearer_auth(self, monkeypatch):
         self._stub_article_source(monkeypatch)
@@ -903,7 +732,6 @@ class TestConsumerApi:
             "title",
             "category",
             "score",
-            "scoreSource",
             "predictedOpenRate",
             "priority",
             "isLivePush",
