@@ -8,8 +8,10 @@ import os
 import socket
 import logging
 from urllib.parse import urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger("push-balancer")
+TZ = ZoneInfo("Europe/Berlin")
 
 
 def _env_flag(name: str, default: bool) -> bool:

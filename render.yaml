@@ -244,7 +244,7 @@ services:
       - key: SCORE_CAPTURE_CONSUMER_ALLOWED_CIDRS
         value: 3.79.136.119/32
       - key: INTERNAL_ACCESS_EXEMPT_PATHS
-        value: /api/health,/api/v1,/api/push-title/generate,/api/push-title-generations
+        value: /api/health,/api/v1,/api/headline-generations,/api/push-title/generate,/api/push-title-generations
       - key: PUSH_SYNC_SECRET
         sync: false
       - key: FOOTBALL_DATA_KEY

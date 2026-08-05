@@ -224,6 +224,17 @@ A full OpenAPI specification is maintained in [`push-balancer-api-v3.1.0.yaml`](
 | `POST /api/gbrt-model/promotions` | Promote the current GBRT candidate |
 | `POST /api/tagesplan/log-suggestions` | Persist daily-plan suggestion snapshots |
 | `POST /api/push-title-generations` | Generate advisory push headline variants |
+| `POST /api/headline-generations` | Resolve one current CMS document ID and generate advisory Prompt v1.4 headline variants for the standalone `/dist-frontend/headline` tab |
+
+The standalone Headline tab keeps the complete supplied Prompt v1.4 in
+`app/prompts/push_headline_v1_4.md` with a checked SHA-256 digest. The request
+contains only a 24-character CMS document ID. The backend resolves the existing
+public title, category, URL and content type from local recommendation metadata
+or the BILD news sitemap; only the minimized title and allowlisted category can
+enter the optional Prompt v1.4 provider call. The CMS ID, URL, article body,
+Power Automate flow and Teams transport are not part of that call. When the
+approved external path is off, the tab stays usable with an explicitly marked
+local fallback.
 
 Additional compatibility and operational helper endpoints still exist, but the frontend contract should prefer the documented endpoints above.
 

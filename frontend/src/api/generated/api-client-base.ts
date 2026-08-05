@@ -181,6 +181,9 @@ export const rawClient = {
   createPushTitleGeneration: (body: unknown = {}, signal?: AbortSignal) =>
     request<unknown>('/api/push-title-generations', 'POST', { body, signal }),
 
+  createHeadlineGeneration: (body: unknown = {}, signal?: AbortSignal) =>
+    request<unknown>('/api/headline-generations', 'POST', { body, signal }),
+
   getBildSitemap: (signal?: AbortSignal) =>
     request<unknown>('/api/feed', 'GET', { signal }),
 
