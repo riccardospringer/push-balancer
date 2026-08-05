@@ -23,6 +23,9 @@ export interface Article {
   modDate?: string
   score: number
   scoreReason?: string
+  scoreSource?: string
+  scoreApiStatus?: string
+  pushBalancerScoreScoredAt?: string | null
   predictedOR?: number
   performanceDrivers?: string[]
   risks?: string[]
@@ -74,6 +77,13 @@ export interface FeedResponse {
   count: number
   offset: number
   limit: number
+  scoreSync?: {
+    required: boolean
+    source: 'editorial_one_score_api' | 'render' | string
+    status: 'ok' | 'partial' | string
+    syncedCount: number
+    totalCount: number
+  }
 }
 
 export interface TeamsAlertRecord {

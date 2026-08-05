@@ -54,6 +54,7 @@ from app.database import init_db, push_db_count, push_db_upsert
 from app.ml.gbrt import gbrt_load_model
 from app.routers import (
     alarm,
+    candidate_scores,
     consumer,
     feed,
     forschung,
@@ -1278,6 +1279,7 @@ app.include_router(push_schedule.router, tags=["PushSchedule"])
 app.include_router(ml.router, tags=["ML"])
 app.include_router(gbrt.router, tags=["GBRT"])
 app.include_router(push.router, tags=["Push"])
+app.include_router(candidate_scores.router, tags=["CandidateScores"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(consumer.router, tags=["Consumer"])
 app.include_router(power_automate.router, tags=["PowerAutomate"])

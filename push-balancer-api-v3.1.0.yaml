@@ -259,6 +259,61 @@ paths:
           $ref: '#/components/responses/BadGateway'
         '422':
           $ref: '#/components/responses/UnprocessableContent'
+  /api/editorial-one/articles:
+    get:
+      tags:
+      - Articles
+      operationId: listEditorialOneArticles
+      summary: List candidates with canonical Editorial One scores
+      description: Returns the candidate collection with a server-side, CMS-ID-only projection of the canonical Editorial One Push Balancer score. When synchronization is activated, missing, stale or unavailable API scores do not fall back to a local score.
+      parameters:
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/LimitArticles'
+      responses:
+        '200':
+          description: Article candidates with score synchronization metadata
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/ArticleCollectionResponse'
+                - type: object
+                  required:
+                  - scoreSync
+                  properties:
+                    scoreSync:
+                      type: object
+                      required:
+                      - required
+                      - source
+                      - status
+                      - syncedCount
+                      - totalCount
+                      properties:
+                        required:
+                          type: boolean
+                        source:
+                          type: string
+                          enum:
+                          - editorial_one_score_api
+                          - render
+                        status:
+                          type: string
+                          enum:
+                          - ok
+                          - partial
+                        syncedCount:
+                          type: integer
+                          minimum: 0
+                        totalCount:
+                          type: integer
+                          minimum: 0
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
   /api/teams-daily-plan:
     get:
       tags:

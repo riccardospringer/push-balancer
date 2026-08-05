@@ -390,6 +390,18 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Safeguards: maximum 500 unique lowercase exact CMS IDs, strict request and response shapes, input-order correlation, one memory plus one database scan, fixed `includeBreakdown=1`, internal CIDR allowlist, Render authorization from one validated Cloudflare `CF-Connecting-IP` only, fail-closed missing/invalid ingress identity, disabled proxy-header rewriting, ignored spoofable fallback headers, redacted application paths and disabled Uvicorn access paths, `no-store`, no identifier logging, no fallback/recalculation, and whole-request `503` on storage failure instead of false per-ID notFound.
 - Required documentation / approvals: the task owner recorded batch approval, named consumer, arranged deletion, and scoped incident-hold closure on 2026-07-23. A new consumer, larger batch, new persistence, or external transfer requires a new review.
 
+## PRIVACY NOTE: Editorial One candidate-score synchronization
+
+- Purpose: display the canonical Push Balancer score from the approved Editorial One score service in the Render candidate view instead of a Render-local capture or heuristic fallback.
+- Data categories: CMS document IDs are sent; numeric score, score timestamp and optionally the allowlisted numeric score breakdown are returned. No article prose, reader/device/session data, employee data, secret or raw log is transferred.
+- Data subjects: people incidentally represented by public CMS-linked articles; no reader-level or employee-level profiling.
+- Legal basis: unchanged from the internal score-consumption workflow, but the Render backend must be recorded as the concrete consumer before activation.
+- Roles: unchanged Axel Springer editorial controller and Editorial One score-service ownership; the Product/System Owner must record the Render service owner and consumer identity.
+- External recipients / international transfer: the internal Editorial One score service is the only added recipient for the Render candidate path; no Microsoft Teams or Power Automate payload/path changes. No international transfer is introduced by the code; the approved runtime network path remains an activation gate.
+- Retention / deletion: the candidate path adds no persistence. It uses the existing short process cache and the source service's approved retention/deletion handling.
+- Safeguards: default-off activation, separate UI-only configuration, server-side `X-Score-Key`, HTTPS-only non-loopback validation, redirect rejection, CMS-ID-only batch requests, bounded response/timeout/retry/cache, strict response schema, maximum score age, fail-closed missing/stale/unavailable scores, generic errors and no identifier/secret logging.
+- Required documentation / approvals: Product/System Owner and Privacy Manager must record Render as consumer, purpose, network identity, retention/deletion and secret handoff in the activation gate; Platform Owner must approve ingress/egress. DPO/Legal review is required if roles, purpose, data categories or transfer path change.
+
 ## PRIVACY NOTE: Render live push and analysis repair
 
 - Purpose: make already relayed editorial push statistics visible in the existing Live and Analyse views after process restarts, without changing the Power Automate schedule, ranking, claim, or Microsoft Teams delivery flow.

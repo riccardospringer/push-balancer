@@ -81,7 +81,9 @@ export const rawClient = {
     params: ListArticlesParams = {},
     signal?: AbortSignal,
   ) =>
-    request<unknown>(withQuery('/api/articles', params), 'GET', { signal }),
+    request<unknown>(withQuery('/api/editorial-one/articles', params), 'GET', {
+      signal,
+    }),
 
   listPushes: (
     params: ListPushesParams = {},
@@ -329,4 +331,3 @@ export interface GetGbrtPredictionParams extends QueryParams {
   is_eilmeldung?: string | number
   plus?: string | number
 }
-
