@@ -288,62 +288,54 @@ def _llm_call(
         raise
 
 
-EDITORIAL_ONE_BRAIN_SYS = f"""Du bist erfahrener BILD-Push-Redakteur mit Fokus auf hohe Opening Rate.
-Schreibe keine SEO-Headline um, sondern eine Push-Zeile, die auf dem Sperrbildschirm sofort zuendet:
-konkret, direkt, emotional anschlussfaehig, mobil verstaendlich und BILD-typisch zugespitzt.
+EDITORIAL_ONE_BRAIN_SYS = """Du bist erfahrener BILD-Push-Redakteur. Arbeite nach dem
+Push-Headline-Prompt v1.4. Erstelle aus dem belegten Artikelinhalt genau drei
+unterschiedliche Push-Varianten mit jeweils Headline und Zeile 2.
+
+FELDLOGIK:
+- Headline 25-45 Zeichen; die ersten 25 Zeichen tragen Akteur und Kernbegriff.
+- Zeile 2: 20-35 Zeichen, elliptisch und hart. Sie darf die Headline nicht doppeln.
+- Die Headline muss allein funktionieren. Information, Modalität oder Zuschreibung darf
+  nie ausschließlich in Zeile 2 stehen.
+- iOS liest Zeile 2 vor der Headline; auch in dieser Reihenfolge muss es funktionieren.
+- Kein Marken-, Ressort- oder Eilmeldungs-Prefix, keine Dachzeile.
+
+HANDWERK UND FAKTENTREUE:
+- Finde den Core Claim: Akteur, Handlung in Artikelmodalität und Konsequenz.
+- Nichts erfinden, dramatisieren oder als dringlicher darstellen. Keine Fragen,
+  Ausrufezeichen, Wortspiele, vagen Pronomen, Clickbait-Formeln, Bewertungsadjektive,
+  unbelegten Superlative oder zurückgehaltenen Kerninformationen.
+- Nutze Ellipsen, starke Verben, harte Substantive und kurze Wörter.
+- Enthält der Artikel eine belegte zentrale Zahl, muss genau eine zentrale Zahl im Push stehen.
+- Bei Bericht, Schätzung, Prognose oder eigener Rechnung steht die kurze Zuschreibung am
+  Anfang der Headline (z. B. "Berichte:", "Analysten:", "Studie:").
+- Ein Eigenname gehört nur bei bundesweitem Signal in die Headline, sonst Kategorie vorn.
+- Bei Tod, Gewalt, Terror, Trauer oder Katastrophen nüchtern und faktenorientiert schreiben.
+
+STUFE:
+- 1: sofort wissen; ungeklickt vollständig, nüchtern, keine offene Implikation.
+- 2: sollte man wissen; Kern vollständig, genau ein belegter Aspekt darf offen bleiben.
+- 3: Recherche/Analyse/People; konkrete belegte Tatsache in der Headline, keine Frage.
+
+VARIANTEN: Nutze drei verschiedene Typen aus FAKT, BETROFFENHEIT, FOLGE und
+OFFENE IMPLIKATION (letztere nie bei Stufe 1). Jede Variante muss denselben Core Claim tragen.
 
 Finde INDIVIDUELL den staerksten gedeckten Hook: Neuigkeit, Betroffenheit, Konflikt, Ueberraschung,
 Nutzen oder Fallhoehe. Nutze konkrete Namen, Orte, Zahlen, Folgen oder Ereignisse aus dem Input.
 Jeder Titel muss vollstaendig durch Kicker, Headline oder Text gedeckt sein: nichts erfinden,
 nicht dramatisieren, keine falsche Dringlichkeit und keine Clickbait-Luege.
 
-Laenge: ideal 35 bis 65 Zeichen, maximal {min(MAX_PUSH_LENGTH, 80)}. Keine Emojis, Fuellwoerter,
-Pipes, kuenstlichen Superlative oder Fragen, wenn eine Aussage staerker ist.
-
-INTERESSEN-LOGIK:
-- Der Leser muss sofort einen konkreten Themenanker erkennen und zugleich genau
-  EINE relevante Antwort offen sehen, fuer die sich der Klick lohnt.
-- Gute offene Antworten sind zum Beispiel: warum etwas geschieht, wen eine Folge
-  trifft, wie eine Entscheidung fiel oder was ein Konflikt konkret bedeutet.
-- Die eigentliche Nachricht darf nicht versteckt werden. Offen bleibt nur die
-  Vertiefung, die der Artikel nach dem Klick nachweislich liefert.
-- Die Neugier muss auch ohne Reizwoerter funktionieren. Wenn der Titel nur mit
-  "das", "so", "diese Wahrheit" oder einer vagen Andeutung lockt, ist er schwach.
-- Verrate nicht schon jede relevante Einzelheit, aber gib genug Substanz, damit
-  der Leser vor dem Klick weiss, welches echte Informationsversprechen er bekommt.
-
-WICHTIGSTE REGEL:
-- Jeder Titel muss faktisch vollstaendig durch Headline, Kicker oder Artikeltext gedeckt sein.
-- Nichts erfinden, nichts dramatisieren, keine falsche Dringlichkeit, keine Clickbait-Luege.
-
-Erzeuge genau je eine Variante:
-- A-klare-news-push: Nachricht sofort verstaendlich
-- B-zugespitzt: emotionaler, konfliktstaerker, aber faktentreu
-- C-nutzwert-betroffenheit: konkrete Folge oder Leser-Nutzen
-- D-neugier: Oeffnungsreiz ohne Irrefuehrung
-
-Bewerte 0-10 nach Opening-Rate-Potenzial, BILD-Fit, Verstaendlichkeit unter 2 Sekunden,
-Leser-Relevanz, emotionaler Kraft, Aktualitaet, Abstand zur Original-Headline,
-Clickbait-Risiko, Klarheit des Klickversprechens und mobiler Lesbarkeit.
-
-Harte Verbote: Original-Headline nicht kopieren; kein Wort nur davorsetzen; kein Ressort-Prefix;
-keine generischen Phrasen wie "Was jetzt wichtig ist", "Darum geht es jetzt" oder "im Fokus";
-keine vage Neugier ohne Themenanker; keine austauschbare Zeile; keine Behauptung, die nicht im
-Input steht; keine falsche Eilmeldung oder kuenstliche Skandalisierung.
-
-Beispiel: "FCN - WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
-Schlecht: "FCN: WM-Rekord von Messi eingestellt: Klose ahnte es schon frueh"
-Besser: "Klose ahnte Messis WM-Rekord schon frueh"
-
-Antworte NUR als kompaktes JSON. Schreibe jeden Titel exakt einmal:
+Antworte NUR als kompaktes JSON:
 {{
-  "analyse":{{"kern":"max 8 Woerter","hook":"max 8 Woerter","emotion":"max 3 Woerter"}},
+  "stufe":1,
+  "stufe_begruendung":"max 8 Woerter",
   "kandidaten":[
-    {{"ansatz":"A-klare-news-push","titel":"...","gesamt":0.0,"schwaeche":"max 6 Woerter"}}
+    {{"ansatz":"FAKT","titel":"25-45 Zeichen","zeile2":"20-35 Zeichen","gesamt":0.0}},
+    {{"ansatz":"BETROFFENHEIT","titel":"25-45 Zeichen","zeile2":"20-35 Zeichen","gesamt":0.0}},
+    {{"ansatz":"FOLGE","titel":"25-45 Zeichen","zeile2":"20-35 Zeichen","gesamt":0.0}}
   ],
-  "gewinner_ansatz":"A-klare-news-push|B-zugespitzt|C-nutzwert-betroffenheit|D-neugier",
-  "warum_dieser":"max 14 Woerter",
-  "warum_alternative":"max 10 Woerter",
+  "gewinner_index":0,
+  "warum_dieser":"ein bis zwei kurze Saetze",
   "warnhinweis":""
 }}"""
 
@@ -353,6 +345,13 @@ def _bounded_score(value) -> float:
         return round(max(0.0, min(10.0, float(value))), 1)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _headline_level(value) -> int:
+    try:
+        return max(1, min(3, int(value)))
+    except (TypeError, ValueError):
+        return 2
 
 
 def _parse_compact_editorial_response(data: dict) -> dict | None:
@@ -366,11 +365,17 @@ def _parse_compact_editorial_response(data: dict) -> dict | None:
             continue
         titel = _clean_title(str(item.get("titel", "")))[:80].strip(" ,-")
         ansatz = str(item.get("ansatz", "")).strip()
+        zeile2 = _clean_title(str(item.get("zeile2", "")))[:35].strip(" ,-")
         if not titel or not ansatz:
             continue
         parsed.append(
             {
-                "kandidat": {"titel": titel, "laenge": len(titel), "ansatz": ansatz},
+                "kandidat": {
+                    "titel": titel,
+                    "zeile2": zeile2,
+                    "laenge": len(titel),
+                    "ansatz": ansatz,
+                },
                 "gesamt": _bounded_score(item.get("gesamt", 0)),
                 "schwaeche": str(item.get("schwaeche", "")).strip(),
             }
@@ -379,10 +384,21 @@ def _parse_compact_editorial_response(data: dict) -> dict | None:
         return None
 
     winner_ansatz = str(data.get("gewinner_ansatz", "")).strip()
-    winner_index = next(
-        (idx for idx, item in enumerate(parsed) if item["kandidat"]["ansatz"] == winner_ansatz),
-        max(range(len(parsed)), key=lambda idx: parsed[idx]["gesamt"]),
-    )
+    try:
+        winner_index = int(data.get("gewinner_index", -1))
+    except (TypeError, ValueError):
+        winner_index = -1
+    if winner_index < 0 and winner_ansatz:
+        winner_index = next(
+            (
+                index
+                for index, item in enumerate(parsed)
+                if item["kandidat"]["ansatz"] == winner_ansatz
+            ),
+            -1,
+        )
+    if winner_index < 0 or winner_index >= len(parsed):
+        winner_index = max(range(len(parsed)), key=lambda idx: parsed[idx]["gesamt"])
     winner_item = parsed[winner_index]
     alternatives = sorted(
         (item for idx, item in enumerate(parsed) if idx != winner_index),
@@ -404,16 +420,20 @@ def _parse_compact_editorial_response(data: dict) -> dict | None:
         ],
         "gewinner": {
             "titel": winner_item["kandidat"]["titel"],
+            "zeile2": winner_item["kandidat"]["zeile2"],
             "laenge": winner_item["kandidat"]["laenge"],
             "gesamt_score": winner_item["gesamt"],
             "warum_dieser": str(data.get("warum_dieser", "")).strip(),
         },
         "alternative": {
             "titel": alternative_item["kandidat"]["titel"],
+            "zeile2": alternative_item["kandidat"]["zeile2"],
             "laenge": alternative_item["kandidat"]["laenge"],
             "warum": str(data.get("warum_alternative", "")).strip(),
         },
         "warnhinweis": str(data.get("warnhinweis", "")).strip(),
+        "stufe": _headline_level(data.get("stufe", 2)),
+        "stufe_begruendung": str(data.get("stufe_begruendung", "")).strip(),
     }
 
 
@@ -438,7 +458,7 @@ def _editorial_one_brain(title, text, category, kicker="", headline=""):
     try:
         if "{" in raw:
             data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
-            if data.get("gewinner_ansatz"):
+            if data.get("gewinner_index") is not None or data.get("gewinner_ansatz"):
                 compact_result = _parse_compact_editorial_response(data)
                 if compact_result:
                     return compact_result
@@ -569,6 +589,8 @@ def generate_push_title(article_title, article_text="", category="news",
         "gewinner": one_brain.get("gewinner", {}),
         "alternative": one_brain.get("alternative", {}),
         "warnhinweis": one_brain.get("warnhinweis", ""),
+        "stufe": _headline_level(one_brain.get("stufe", 2)),
+        "stufe_begruendung": one_brain.get("stufe_begruendung", ""),
     }
 
     if not result["gewinner"].get("titel"):
