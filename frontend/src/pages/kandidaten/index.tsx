@@ -73,6 +73,8 @@ function ScoreBar({ score }: { score: number }) {
 
 function ArticleScore({ article }: { article: Article }) {
   const isEditorialOne = article.scoreSource === 'internal_score_api'
+  const isRecommendationsApi =
+    article.scoreSource === 'consumer_recommendations_api'
   const syncUnavailable = article.scoreSource?.startsWith('internal_score_api_')
 
   return (
@@ -87,6 +89,7 @@ function ArticleScore({ article }: { article: Article }) {
         </span>
       )}
       {isEditorialOne && <Badge variant="green">Editorial One</Badge>}
+      {isRecommendationsApi && <Badge variant="green">Push API</Badge>}
       {syncUnavailable && <Badge variant="red">Nicht synchronisiert</Badge>}
       {article.scoreSource === 'captured_push_balancer' && (
         <Badge variant="default">Render Capture</Badge>
@@ -497,9 +500,11 @@ export function KandidatenPage() {
             >
               {data.count} Artikel · aktualisiert {fmtDateTime(data.fetchedAt)}{' '}
               ·
-              {data.scoreSync?.required
-                ? ` Editorial One Scores: ${data.scoreSync.syncedCount}/${data.scoreSync.totalCount} synchron`
-                : ' Render-Scorequelle'}
+              {data.scoreSync?.source === 'consumer_recommendations_api'
+                ? ` Push-API-Snapshot: ${data.scoreSync.syncedCount}/${data.scoreSync.totalCount} synchron`
+                : data.scoreSync?.required
+                  ? ` Editorial One Scores: ${data.scoreSync.syncedCount}/${data.scoreSync.totalCount} synchron`
+                  : ' Render-Scorequelle'}
             </p>
           )}
         </div>
