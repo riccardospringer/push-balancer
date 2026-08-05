@@ -50,7 +50,7 @@ from app.teams_slot_claims import (
 router = APIRouter()
 
 _BERLIN = ZoneInfo("Europe/Berlin")
-POWER_AUTOMATE_TEAMS_SLOT_LABELS = (
+POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS = (
     "06:00",
     "06:36",
     "07:12",
@@ -64,6 +64,22 @@ POWER_AUTOMATE_TEAMS_SLOT_LABELS = (
     "21:26",
     "22:45",
 )
+POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS = (
+    "08:00",
+    "08:36",
+    "09:12",
+    "09:47",
+    "10:23",
+    "10:59",
+    "12:30",
+    "17:30",
+    "18:49",
+    "20:08",
+    "21:26",
+    "22:45",
+)
+# Backwards-compatible weekday alias for existing imports.
+POWER_AUTOMATE_TEAMS_SLOT_LABELS = POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
 _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS = 30
 _SLOT_ID_RE = re.compile(r"^teams-recommendation-(?P<timestamp>[0-9]{9,11})$")
 _NO_STORE_HEADERS = {
@@ -128,11 +144,20 @@ def _iso_at(slot_ts: int) -> str:
     return dt.datetime.fromtimestamp(int(slot_ts), _BERLIN).isoformat()
 
 
+def power_automate_slot_labels_for_date(local_date: dt.date) -> tuple[str, ...]:
+    """Use a two-hour-later morning block on Saturday and Sunday."""
+    return (
+        POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS
+        if local_date.weekday() >= 5
+        else POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
+    )
+
+
 def _power_automate_binding_slot(now_ts: int) -> dict[str, Any] | None:
     """Resolve only the fixed Power Automate schedule, independent of legacy tuning."""
     now = int(now_ts)
     berlin_now = dt.datetime.fromtimestamp(now, _BERLIN)
-    for label in POWER_AUTOMATE_TEAMS_SLOT_LABELS:
+    for label in power_automate_slot_labels_for_date(berlin_now.date()):
         hour, minute = (int(part) for part in label.split(":"))
         slot_dt = berlin_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         slot_ts = int(slot_dt.timestamp())

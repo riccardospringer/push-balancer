@@ -27,6 +27,33 @@ SLOT_TS = int(dt.datetime(2026, 8, 3, 12, 30, tzinfo=BERLIN).timestamp())
 client = TestClient(app, raise_server_exceptions=True)
 
 
+def test_weekend_morning_slots_start_two_hours_later():
+    import app.routers.power_automate as power_automate
+
+    saturday = dt.date(2026, 8, 8)
+    sunday = dt.date(2026, 8, 9)
+    expected = (
+        "08:00",
+        "08:36",
+        "09:12",
+        "09:47",
+        "10:23",
+        "10:59",
+        "12:30",
+        "17:30",
+        "18:49",
+        "20:08",
+        "21:26",
+        "22:45",
+    )
+
+    assert power_automate.power_automate_slot_labels_for_date(saturday) == expected
+    assert power_automate.power_automate_slot_labels_for_date(sunday) == expected
+    assert power_automate.power_automate_slot_labels_for_date(
+        dt.date(2026, 8, 10)
+    )[0] == "06:00"
+
+
 def _synthetic_candidates(
     now_ts: int,
     *,
