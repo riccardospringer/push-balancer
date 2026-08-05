@@ -402,6 +402,18 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Safeguards: default-off activation, separate UI-only configuration, server-side `X-Score-Key`, HTTPS-only non-loopback validation, redirect rejection, CMS-ID-only batch requests, bounded response/timeout/retry/cache, strict response schema, maximum score age, fail-closed missing/stale/unavailable scores, generic errors and no identifier/secret logging.
 - Required documentation / approvals: Product/System Owner and Privacy Manager must record Render as consumer, purpose, network identity, retention/deletion and secret handoff in the activation gate; Platform Owner must approve ingress/egress. DPO/Legal review is required if roles, purpose, data categories or transfer path change.
 
+## PRIVACY NOTE: Render live push and analysis repair
+
+- Purpose: make already relayed editorial push statistics visible in the existing Live and Analyse views after process restarts, without changing the Power Automate schedule, ranking, claim, or Microsoft Teams delivery flow.
+- Data categories: existing push message ID, send time, public headline and article URL, editorial channel/category, aggregate recipient/open counts and opening rate. No reader-, device-, session-, or employee-level data is introduced.
+- Data subjects: people incidentally named in published editorial headlines; no individual behavior or employee performance is analysed.
+- Legal basis: unchanged from the existing editorial push-statistics workflow; the Product/System Owner must confirm that the existing documented basis covers durable relay persistence on Render.
+- Roles: unchanged Axel Springer controller and existing Push Balancer system ownership; no new processor or service is introduced.
+- External recipients / international transfer: none added. The analysis reads the existing local Push Balancer database; Adobe Analytics is not activated and the Microsoft Teams payload/flow is unchanged.
+- Retention / deletion: no new table or retention period. Relay rows use the existing push-history database and its established retention/deletion handling.
+- Safeguards: authenticated relay endpoint, unchanged acknowledgement response, best-effort persistence that cannot trigger relay retries, aggregate-only UI analysis, synthetic test data, no raw payload logging, and no changes to Power Automate or Teams configuration/code.
+- Required documentation / approvals: Product/System Owner and Privacy Manager must confirm the existing persistence purpose, retention, and deletion path before deployment; DPO/Legal review is required if that existing scope is not documented or changes.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples
