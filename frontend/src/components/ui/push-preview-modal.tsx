@@ -484,14 +484,25 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
   const { time, date, dateShort } = now()
   const { mutate, isPending, data, error } = useGenerateTitle()
   const suggestionResult = data as GenerateTitleResponse | undefined
+  const generatedTitles = [
+    suggestionResult?.title,
+    ...(suggestionResult?.alternativeTitles ?? []),
+  ]
+    .filter((candidate): candidate is string => Boolean(candidate?.trim()))
+    .filter(
+      (candidate, index, candidates) => candidates.indexOf(candidate) === index,
+    )
+    .slice(0, 3)
 
   const handleGenerateTitle = useCallback(() => {
+    const sourceTitle = title.trim()
+    if (!sourceTitle) return
     mutate({
       url: article.url,
-      title: article.title,
+      title: sourceTitle,
       category: article.category,
     })
-  }, [mutate, article])
+  }, [mutate, article.url, article.category, title])
 
   // Apply generated title when available
   useEffect(() => {
@@ -552,7 +563,9 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
           <Badge variant={scoreVar}>Score {fmtScore(article.score)}</Badge>
           {article.mixPriority && (
-            <Badge variant={priorityVariant}>Priorität {article.mixPriority}</Badge>
+            <Badge variant={priorityVariant}>
+              Priorität {article.mixPriority}
+            </Badge>
           )}
           {article.predictedOR != null && (
             <Badge variant="default">XOR {fmtOR(article.predictedOR)}</Badge>
@@ -705,7 +718,9 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
                 lineHeight: 1.45,
               }}
             >
-              <strong style={{ color: 'var(--text)' }}>Empfohlener Text: </strong>
+              <strong style={{ color: 'var(--text)' }}>
+                Empfohlener Text:{' '}
+              </strong>
               {article.recommendedText}
             </div>
           )}
@@ -788,21 +803,44 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
           <CharCount value={title} max={120} />
         </div>
 
-        {/* Suggestion generate button */}
-        <Button
-          onClick={handleGenerateTitle}
-          disabled={isPending}
-          variant="primary"
-          style={{ alignSelf: 'flex-start' }}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+            padding: '10px 12px',
+            border: '1px solid var(--border-light)',
+            borderRadius: 'var(--radius)',
+            background: 'var(--bg)',
+          }}
         >
-          {isPending ? (
-            <>
-              <Spinner size={13} color="#fff" /> Generiere…
-            </>
-          ) : (
-            'Titelvorschlaege generieren'
-          )}
-        </Button>
+          <div
+            style={{
+              flex: '1 1 190px',
+              color: 'var(--text-secondary)',
+              fontSize: '11px',
+              lineHeight: 1.4,
+            }}
+          >
+            Die eingegebene Headline wird als Ausgangstext verwendet.
+          </div>
+          <Button
+            onClick={handleGenerateTitle}
+            disabled={isPending || !title.trim()}
+            variant="primary"
+            style={{ flexShrink: 0 }}
+          >
+            {isPending ? (
+              <>
+                <Spinner size={13} color="#fff" /> Generiere…
+              </>
+            ) : (
+              'Titelvorschläge generieren'
+            )}
+          </Button>
+        </div>
 
         {error && (
           <div
@@ -816,128 +854,80 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
           >
             {getApiErrorMessage(
               error,
-              'Titelvorschlaege konnten nicht erzeugt werden.',
+              'Titelvorschläge konnten nicht erzeugt werden.',
             )}
           </div>
         )}
 
-        {/* Alternative titles */}
-        {suggestionResult?.alternativeTitles &&
-          suggestionResult.alternativeTitles.length > 0 && (
-            <div>
-              <div
-                style={{
-                  fontSize: '12px',
-                  color: 'var(--text-secondary)',
-                  marginBottom: '5px',
-                  fontWeight: 500,
-                }}
-              >
-                Alternativen:
-              </div>
-              <div
-                style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}
-              >
-                {suggestionResult.alternativeTitles.map((t, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setTitle(t)}
+        {generatedTitles.length > 0 && (
+          <div>
+            <div
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                marginBottom: '5px',
+                fontWeight: 500,
+              }}
+            >
+              Vorschläge – zum Übernehmen anklicken:
+            </div>
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}
+            >
+              {generatedTitles.map((candidate, index) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  aria-pressed={title === candidate}
+                  onClick={() => setTitle(candidate)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
+                    fontSize: '12px',
+                    padding: '8px 10px',
+                    borderRadius: '5px',
+                    border:
+                      title === candidate
+                        ? '1px solid var(--accent)'
+                        : '1px solid var(--border)',
+                    background:
+                      title === candidate
+                        ? 'var(--accent-light)'
+                        : 'var(--white)',
+                    cursor: 'pointer',
+                    color: 'var(--text)',
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={(e) =>
+                    ((e.currentTarget as HTMLElement).style.background =
+                      'var(--accent-light)')
+                  }
+                  onMouseLeave={(e) =>
+                    ((e.currentTarget as HTMLElement).style.background =
+                      title === candidate
+                        ? 'var(--accent-light)'
+                        : 'var(--white)')
+                  }
+                >
+                  <strong
                     style={{
-                      textAlign: 'left',
-                      fontFamily: 'inherit',
-                      fontSize: '12px',
-                      padding: '6px 10px',
-                      borderRadius: '5px',
-                      border: '1px solid var(--border)',
-                      background: 'var(--white)',
-                      cursor: 'pointer',
-                      color: 'var(--text)',
-                      transition: 'background 0.1s',
+                      color: 'var(--text-secondary)',
+                      flexShrink: 0,
                     }}
-                    onMouseEnter={(e) =>
-                      ((e.currentTarget as HTMLElement).style.background =
-                        'var(--accent-light)')
-                    }
-                    onMouseLeave={(e) =>
-                      ((e.currentTarget as HTMLElement).style.background =
-                        'var(--white)')
-                    }
                   >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-        {(suggestionResult?.title || suggestionResult?.alternativeTitles?.[0]) && (
-          <div
-            style={{
-              padding: '10px 12px',
-              background: 'var(--bg)',
-              borderRadius: 'var(--radius)',
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '10px',
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  fontSize: '11px',
-                  color: 'var(--text-secondary)',
-                  marginBottom: '4px',
-                  fontWeight: 600,
-                }}
-              >
-                Variante A
-              </div>
-              <button
-                onClick={() => setTitle(suggestionResult?.title || title)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  fontFamily: 'inherit',
-                  fontSize: '12px',
-                  padding: '8px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border)',
-                  background: 'var(--white)',
-                  cursor: 'pointer',
-                }}
-              >
-                {suggestionResult?.title || title}
-              </button>
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: '11px',
-                  color: 'var(--text-secondary)',
-                  marginBottom: '4px',
-                  fontWeight: 600,
-                }}
-              >
-                Variante B
-              </div>
-              <button
-                onClick={() =>
-                  setTitle(suggestionResult?.alternativeTitles?.[0] || title)
-                }
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  fontFamily: 'inherit',
-                  fontSize: '12px',
-                  padding: '8px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border)',
-                  background: 'var(--white)',
-                  cursor: 'pointer',
-                }}
-              >
-                {suggestionResult?.alternativeTitles?.[0] || title}
-              </button>
+                    {String.fromCharCode(65 + index)}
+                  </strong>
+                  <span style={{ flex: 1 }}>{candidate}</span>
+                  {title === candidate && (
+                    <span aria-hidden="true" style={{ color: 'var(--accent)' }}>
+                      ✓
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -947,7 +937,7 @@ export function PushPreviewModal({ article, onClose }: PushPreviewModalProps) {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
           gap: '20px',
           marginBottom: '16px',
         }}

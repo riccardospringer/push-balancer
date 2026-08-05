@@ -24,7 +24,6 @@ export interface Article {
   score: number
   scoreReason?: string
   predictedOR?: number
-  scoreReason?: string
   performanceDrivers?: string[]
   risks?: string[]
   recommendedText?: string
@@ -339,7 +338,6 @@ export interface GenerateTitleResponse {
   advisoryOnly: true
   contentType?: string
 }
-
 
 export interface PushAlarmArticle {
   title: string
