@@ -1,4 +1,5 @@
 import datetime as dt
+import gc
 import json
 import logging
 import time
@@ -7183,19 +7184,29 @@ def test_large_agent_field_stays_fast_with_long_real_push_history():
     ]
     config = _smart_config(slot_gate_enabled=False, min_selection_margin=0)
 
-    started = time.perf_counter()
-    context = build_teams_alert_context(
-        candidates,
-        history=history,
-        alert_state={},
-        last_teams_alert_ts=0,
-        teams_alerts_today=0,
-        recent_alerts=[],
-        now_ts=NOW_TS,
-        config=config,
-    )
-    result = evaluate_teams_alert_candidates(candidates, context, config)
-    elapsed_ms = (time.perf_counter() - started) * 1000
+    # Keep this micro-benchmark focused on the review algorithm. A collection
+    # triggered by the full test suite can otherwise dominate the tiny timing
+    # budget on shared CI runners without indicating a product regression.
+    gc.collect()
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        started = time.perf_counter()
+        context = build_teams_alert_context(
+            candidates,
+            history=history,
+            alert_state={},
+            last_teams_alert_ts=0,
+            teams_alerts_today=0,
+            recent_alerts=[],
+            now_ts=NOW_TS,
+            config=config,
+        )
+        result = evaluate_teams_alert_candidates(candidates, context, config)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+    finally:
+        if gc_was_enabled:
+            gc.enable()
     reviewer_ms = sum(
         float(item["decision"]["agentReview"]["latencyMs"]) for item in result["decisions"]
     )
