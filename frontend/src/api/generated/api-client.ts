@@ -20,7 +20,10 @@ import type {
 } from '@/types/api'
 import { rawClient, ApiError } from './api-client-base'
 
-function normalizeTagesplan(payload: unknown, mode: TagesplanMode): TagesplanResponse {
+function normalizeTagesplan(
+  payload: unknown,
+  mode: TagesplanMode,
+): TagesplanResponse {
   const data = (payload ?? {}) as Record<string, unknown>
   const slotsRaw = Array.isArray(data.slots) ? data.slots : []
   const goldenHour = Number(data.golden_hour ?? 0)
@@ -38,7 +41,8 @@ function normalizeTagesplan(payload: unknown, mode: TagesplanMode): TagesplanRes
       hour: Number(slot.hour ?? 0),
       label: `${String(slot.hour ?? 0).padStart(2, '0')}:00`,
       predictedOR: Number(slot.expected_or ?? 0) / 100,
-      actualOR: firstPushed?.or != null ? Number(firstPushed.or) / 100 : undefined,
+      actualOR:
+        firstPushed?.or != null ? Number(firstPushed.or) / 100 : undefined,
       pushed: pushedThisHour.length > 0,
       pushedTitle: firstPushed?.title ? String(firstPushed.title) : undefined,
       isGoldenHour: Number(slot.hour ?? -1) === goldenHour,
@@ -77,7 +81,10 @@ function normalizeTagesplanRetro(payload: unknown): TagesplanRetroResponse {
   return {
     days: daysRaw.map((raw) => {
       const day = raw as Record<string, unknown>
-      const hours = (day.hours ?? {}) as Record<string, { pushes?: Array<Record<string, unknown>> }>
+      const hours = (day.hours ?? {}) as Record<
+        string,
+        { pushes?: Array<Record<string, unknown>> }
+      >
       const slots = Object.entries(hours).map(([hour, hourData]) => {
         const pushes = Array.isArray(hourData?.pushes) ? hourData.pushes : []
         const first = pushes[0]
@@ -85,7 +92,10 @@ function normalizeTagesplanRetro(payload: unknown): TagesplanRetroResponse {
           hour: Number(hour),
           label: `${String(hour).padStart(2, '0')}:00`,
           predictedOR: Number(first?.predicted_or ?? 0) / 100,
-          actualOR: first?.actual_or != null ? Number(first.actual_or) / 100 : undefined,
+          actualOR:
+            first?.actual_or != null
+              ? Number(first.actual_or) / 100
+              : undefined,
           pushed: pushes.length > 0,
           pushedTitle: first?.title ? String(first.title) : undefined,
           isGoldenHour: false,
@@ -108,7 +118,9 @@ function normalizeTagesplanRetro(payload: unknown): TagesplanRetroResponse {
   }
 }
 
-function normalizeTagesplanSuggestions(payload: unknown): TagesplanSuggestionsResponse {
+function normalizeTagesplanSuggestions(
+  payload: unknown,
+): TagesplanSuggestionsResponse {
   const data = (payload ?? {}) as Record<string, unknown>
   const itemsRaw = Array.isArray(data.items) ? data.items : []
 
@@ -139,7 +151,11 @@ function normalizeTagesplanSuggestions(payload: unknown): TagesplanSuggestionsRe
   }
 }
 
-async function fetchJson<T>(path: string, method: 'GET' | 'POST' = 'GET', signal?: AbortSignal): Promise<T> {
+async function fetchJson<T>(
+  path: string,
+  method: 'GET' | 'POST' = 'GET',
+  signal?: AbortSignal,
+): Promise<T> {
   const res = await fetch(path, {
     method,
     signal,
@@ -163,7 +179,7 @@ export const api = {
     }
 
     const status =
-      payload.status === 'ok'
+      payload.status === 'ok' || payload.status === 'healthy'
         ? 'healthy'
         : payload.status === 'degraded'
           ? 'degraded'
@@ -233,12 +249,19 @@ export const api = {
   gbrtPromote: () =>
     rawClient.createGbrtPromotion({}) as Promise<{ ok: boolean }>,
 
-  tagesplan: async (date?: string, mode: TagesplanMode = 'redaktion', signal?: AbortSignal) => {
+  tagesplan: async (
+    date?: string,
+    mode: TagesplanMode = 'redaktion',
+    signal?: AbortSignal,
+  ) => {
     const payload = await rawClient.getDailyPlan({ date, mode }, signal)
     return normalizeTagesplan(payload, mode)
   },
 
-  tagesplanRetro: async (mode: TagesplanMode = 'redaktion', signal?: AbortSignal) => {
+  tagesplanRetro: async (
+    mode: TagesplanMode = 'redaktion',
+    signal?: AbortSignal,
+  ) => {
     const payload = await rawClient.getDailyPlanRetro({ mode }, signal)
     return normalizeTagesplanRetro(payload)
   },
@@ -248,7 +271,10 @@ export const api = {
     mode?: TagesplanMode,
     signal?: AbortSignal,
   ) => {
-    const payload = await rawClient.listDailyPlanSuggestions({ date, mode }, signal)
+    const payload = await rawClient.listDailyPlanSuggestions(
+      { date, mode },
+      signal,
+    )
     return normalizeTagesplanSuggestions(payload)
   },
 

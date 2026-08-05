@@ -390,6 +390,18 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Safeguards: maximum 500 unique lowercase exact CMS IDs, strict request and response shapes, input-order correlation, one memory plus one database scan, fixed `includeBreakdown=1`, internal CIDR allowlist, Render authorization from one validated Cloudflare `CF-Connecting-IP` only, fail-closed missing/invalid ingress identity, disabled proxy-header rewriting, ignored spoofable fallback headers, redacted application paths and disabled Uvicorn access paths, `no-store`, no identifier logging, no fallback/recalculation, and whole-request `503` on storage failure instead of false per-ID notFound.
 - Required documentation / approvals: the task owner recorded batch approval, named consumer, arranged deletion, and scoped incident-hold closure on 2026-07-23. A new consumer, larger batch, new persistence, or external transfer requires a new review.
 
+## PRIVACY NOTE: Render live push and analysis repair
+
+- Purpose: make already relayed editorial push statistics visible in the existing Live and Analyse views after process restarts, without changing the Power Automate schedule, ranking, claim, or Microsoft Teams delivery flow.
+- Data categories: existing push message ID, send time, public headline and article URL, editorial channel/category, aggregate recipient/open counts and opening rate. No reader-, device-, session-, or employee-level data is introduced.
+- Data subjects: people incidentally named in published editorial headlines; no individual behavior or employee performance is analysed.
+- Legal basis: unchanged from the existing editorial push-statistics workflow; the Product/System Owner must confirm that the existing documented basis covers durable relay persistence on Render.
+- Roles: unchanged Axel Springer controller and existing Push Balancer system ownership; no new processor or service is introduced.
+- External recipients / international transfer: none added. The analysis reads the existing local Push Balancer database; Adobe Analytics is not activated and the Microsoft Teams payload/flow is unchanged.
+- Retention / deletion: no new table or retention period. Relay rows use the existing push-history database and its established retention/deletion handling.
+- Safeguards: authenticated relay endpoint, unchanged acknowledgement response, best-effort persistence that cannot trigger relay retries, aggregate-only UI analysis, synthetic test data, no raw payload logging, and no changes to Power Automate or Teams configuration/code.
+- Required documentation / approvals: Product/System Owner and Privacy Manager must confirm the existing persistence purpose, retention, and deletion path before deployment; DPO/Legal review is required if that existing scope is not documented or changes.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples
