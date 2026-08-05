@@ -352,6 +352,46 @@ export interface GenerateTitleResponse {
   contentType?: string
 }
 
+export interface HeadlineGenerationRequest {
+  articleId: string
+}
+
+export interface HeadlineGenerationArticle {
+  articleId: string
+  title: string
+  url: string
+  category: string
+  contentType: 'editorial' | 'video'
+}
+
+export interface HeadlineVariant {
+  id: 'A' | 'B' | 'C'
+  type: string
+  headline: string
+  line2: string
+  headlineLength: number
+  line2Length: number
+  selected: boolean
+}
+
+export interface HeadlineGenerationResponse {
+  title: string
+  line2?: string
+  alternativeTitles: string[]
+  variants: HeadlineVariant[]
+  stage?: 1 | 2 | 3
+  stageReason?: string
+  reasoning?: string
+  reviewPoint?: string
+  promptVersion: string
+  sourcePromptSha256?: string
+  runtimeProfile?: string
+  promptActive: boolean
+  escalation?: boolean
+  advisoryOnly: true
+  article: HeadlineGenerationArticle
+}
+
 export interface PushAlarmArticle {
   title: string
   url: string

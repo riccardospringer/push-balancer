@@ -60,6 +60,7 @@ from app.routers import (
     forschung,
     gbrt,
     health,
+    headline,
     misc,
     ml,
     power_automate,
@@ -470,6 +471,7 @@ _ALWAYS_PUBLIC_PREFIXES = (
 )
 _ALWAYS_PUBLIC_PATHS = {
     "/api/feed",
+    "/api/headline-generations",
     "/api/push-title/generate",
     "/api/push-title-generations",
 }
@@ -1285,6 +1287,7 @@ app.include_router(consumer.router, tags=["Consumer"])
 app.include_router(power_automate.router, tags=["PowerAutomate"])
 app.include_router(score_api.router, tags=["Score"])
 app.include_router(tagesplan.router, tags=["Tagesplan"])
+app.include_router(headline.router, tags=["Headline"])
 app.include_router(misc.router, tags=["Misc"])
 
 def _frontend_file_response(relative_path: str) -> FileResponse | None:

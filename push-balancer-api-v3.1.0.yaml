@@ -1183,6 +1183,32 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/headline-generations:
+    post:
+      tags:
+      - AI
+      operationId: createHeadlineGeneration
+      summary: Generate Prompt v1.4 headlines for an article ID
+      description: Resolves one current BILD CMS document ID and creates advisory headline variants with the complete, version-controlled Push Headline Prompt v1.4. The endpoint never sends or schedules a push.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeadlineGenerationRequest'
+      responses:
+        '200':
+          description: Advisory Prompt v1.4 headline variants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeadlineGenerationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '502':
+          $ref: '#/components/responses/BadGateway'
   /api/feed:
     get:
       tags:
@@ -4504,6 +4530,115 @@ components:
           type: string
           description: Optional editorial category used to steer the generated variants.
           example: Politik
+    HeadlineGenerationRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - articleId
+      properties:
+        articleId:
+          type: string
+          pattern: '^[0-9a-fA-F]{24}$'
+          minLength: 24
+          maxLength: 24
+          description: Exact BILD CMS document ID to resolve from current Push Balancer article metadata.
+          example: 0123456789abcdef01234567
+    HeadlineGenerationArticle:
+      type: object
+      required:
+      - articleId
+      - title
+      - url
+      - category
+      - contentType
+      properties:
+        articleId:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+        category:
+          type: string
+        contentType:
+          type: string
+          enum: [editorial, video]
+    HeadlineVariant:
+      type: object
+      required:
+      - id
+      - type
+      - headline
+      - line2
+      - headlineLength
+      - line2Length
+      - selected
+      properties:
+        id:
+          type: string
+          enum: [A, B, C]
+        type:
+          type: string
+        headline:
+          type: string
+        line2:
+          type: string
+        headlineLength:
+          type: integer
+        line2Length:
+          type: integer
+        selected:
+          type: boolean
+    HeadlineGenerationResponse:
+      type: object
+      required:
+      - title
+      - alternativeTitles
+      - variants
+      - promptVersion
+      - promptActive
+      - advisoryOnly
+      - article
+      properties:
+        title:
+          type: string
+        line2:
+          type: string
+        alternativeTitles:
+          type: array
+          items:
+            type: string
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/HeadlineVariant'
+        stage:
+          type: integer
+          minimum: 1
+          maximum: 3
+        stageReason:
+          type: string
+        reasoning:
+          type: string
+        reviewPoint:
+          type: string
+        promptVersion:
+          type: string
+          example: '1.4'
+        sourcePromptSha256:
+          type: string
+        runtimeProfile:
+          type: string
+        promptActive:
+          type: boolean
+        escalation:
+          type: boolean
+        advisoryOnly:
+          type: boolean
+          const: true
+        article:
+          $ref: '#/components/schemas/HeadlineGenerationArticle'
     SchwabChatRequest:
       type: object
       required:

@@ -4,6 +4,7 @@ import { useHealth } from '@/hooks/use-api'
 
 const TABS = [
   { path: '/kandidaten', label: 'Kandidaten' },
+  { path: '/headline', label: 'Headline' },
   { path: '/live', label: 'Live Pushes' },
   { path: '/analyse', label: 'Analyse' },
   { path: '/konkurrenz', label: 'Konkurrenz' },
@@ -21,7 +22,15 @@ export function TopNav() {
   return (
     <AppBar>
       <Toolbar>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '24px',
+            flex: '1 1 auto',
+            minWidth: 0,
+          }}
+        >
           <div
             style={{
               fontSize: '16px',
@@ -32,6 +41,7 @@ export function TopNav() {
               alignItems: 'center',
               gap: '8px',
               cursor: 'pointer',
+              flex: '0 0 auto',
             }}
             onClick={() => navigate('/kandidaten')}
           >
@@ -56,7 +66,14 @@ export function TopNav() {
           </div>
 
           <div
-            style={{ display: 'flex', height: '56px', alignItems: 'stretch' }}
+            style={{
+              display: 'flex',
+              height: '56px',
+              alignItems: 'stretch',
+              overflowX: 'auto',
+              flex: '1 1 auto',
+              minWidth: 0,
+            }}
           >
             {TABS.map((tab) => {
               const active = location.pathname === tab.path
@@ -87,7 +104,14 @@ export function TopNav() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flex: '0 0 auto',
+          }}
+        >
           <StatusDot status={isLive ? 'live' : 'off'} />
           <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
             {health == null ? 'Verbinde…' : isLive ? 'Live' : 'Offline'}

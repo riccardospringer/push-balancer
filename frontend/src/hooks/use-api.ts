@@ -177,3 +177,10 @@ export function useGenerateTitle() {
       api.generateTitle(body),
   })
 }
+
+export function useGenerateHeadline() {
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.generateHeadline>[0]) =>
+      api.generateHeadline(body),
+  })
+}

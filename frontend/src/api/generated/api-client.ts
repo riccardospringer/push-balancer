@@ -7,6 +7,8 @@ import type {
   GbrtStatusResponse,
   GenerateTitleRequest,
   GenerateTitleResponse,
+  HeadlineGenerationRequest,
+  HeadlineGenerationResponse,
   HealthResponse,
   MlMonitoringResponse,
   MlStatusResponse,
@@ -333,4 +335,9 @@ export const api = {
 
   generateTitle: (body: GenerateTitleRequest) =>
     rawClient.createPushTitleGeneration(body) as Promise<GenerateTitleResponse>,
+
+  generateHeadline: (body: HeadlineGenerationRequest) =>
+    rawClient.createHeadlineGeneration(
+      body,
+    ) as Promise<HeadlineGenerationResponse>,
 }

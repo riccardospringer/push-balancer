@@ -426,6 +426,50 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Safeguards: fixed `limit=10`, `minScore=70`, and default `includeExplanations=false`, one immutable response shared by the endpoint and adapter under the same cache key, defensive copies, explicit Recommendations API source labeling, synthetic contract tests, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
 - Required documentation / approvals: no new approval is introduced because purpose, data categories, roles, recipients, transfer path, and persistence are unchanged. Product/System Owner and Privacy Manager should record the shared-view behavior in the existing workflow documentation; reassessment is required before adding a new recipient, identifier, persistence layer, or processing purpose.
 
+## PRIVACY NOTE: standalone Headline tab with Prompt v1.4
+
+- Purpose: provide an on-demand, advisory headline workspace in the existing
+  Render frontend after an editor enters one current BILD CMS document ID; the
+  feature never sends or schedules a push and does not call Power Automate or
+  Microsoft Teams.
+- Data categories: one CMS document ID used only for request-time lookup;
+  existing public article title, URL, category and content type; the complete
+  version-controlled Prompt v1.4; and generated headline/second-line variants.
+  No article body, image, reader/device/session data, employee assessment,
+  secret, token, recipient count, raw push history, or raw production log is
+  added.
+- Data subjects: persons incidentally named or described in an already-public
+  editorial headline or in the supplied prompt calibration examples; no
+  reader-level or employee-level profiling.
+- Legal basis: unchanged for the local editorial-support UI and public article
+  metadata lookup. External OpenAI activation remains subject to the existing
+  title-generation Legal/DPO approval gate; this change does not enable the
+  global paid-external-API switch.
+- Roles: unchanged Axel Springer/BILD editorial controller and Push Balancer
+  system ownership. OpenAI roles and contractual controls remain governed by
+  the existing, separately approved activation decision when that path is
+  enabled.
+- External recipients / international transfer: the existing public BILD news
+  sitemap is the only source added to the request path. The CMS ID and URL are
+  never forwarded to OpenAI. If the already-configured Prompt v1.4 provider
+  path is activated under its separate approvals, only the minimized public
+  article headline and allowlisted category are sent with `store=false`.
+- Retention / deletion: requests and generated variants are not persisted and
+  responses are `no-store`. The lookup may reuse existing recommendation
+  metadata under its established retention; no new table, log field, cache, or
+  deletion path is introduced.
+- Safeguards: exact 24-hex CMS-ID validation; lookup only in existing local
+  recommendation metadata and the public BILD news sitemap; prompt SHA-256
+  integrity check; input delimiters; category allowlist; strict output parser;
+  bounded provider call budgets; no SDK retries; no identifier/article/prompt
+  logging; human review and advisory-only output; isolated endpoint and UI with
+  no Teams/Power-Automate imports or mutations.
+- Required documentation / approvals: Product/System Owner and Privacy Manager
+  should record the new UI surface. Positive external generation still requires
+  the existing Privacy Manager, Product/System Owner, DPO and Legal/Group Legal
+  approval record; a broader source payload, article body, new recipient,
+  persistence, tracking or automatic send needs a new review.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples
