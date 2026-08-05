@@ -87,7 +87,15 @@ def _filter_articles(
     category: str | None,
     min_score: float | None,
 ) -> list[dict[str, Any]]:
-    filtered = articles
+    # The public consumer contract must never present a Render-local heuristic
+    # as an Editorial One Push Score. Fresh browser captures are the only
+    # canonical source available to this service; everything else fails closed.
+    filtered = [
+        article
+        for article in articles
+        if article.get("scoreSource") == "captured_push_balancer"
+        and _as_float(article.get("score")) is not None
+    ]
     if category:
         category_key = category.strip().lower()
         filtered = [
@@ -116,6 +124,7 @@ def _consumer_article(article: dict[str, Any], *, include_explanations: bool) ->
         "category": article.get("category") or "news",
         "publishedAt": article.get("pubDate") or "",
         "score": round(score, 1) if score is not None else None,
+        "scoreSource": article.get("scoreSource") or "",
         "predictedOpenRate": round(predicted_open_rate, 4)
         if predicted_open_rate is not None
         else None,
@@ -280,6 +289,7 @@ def get_consumer_scores(
             "title": article["title"],
             "category": article["category"],
             "score": article["score"],
+            "scoreSource": article["scoreSource"],
             "predictedOpenRate": article["predictedOpenRate"],
             "priority": article["priority"],
             "isLivePush": False,

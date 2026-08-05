@@ -424,6 +424,7 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - External recipients / international transfer: none added. Both response projections share one in-process backend snapshot; the Power Automate and Teams code paths and payloads are unchanged.
 - Retention / deletion: the shared projection is memory-only for at most 30 seconds and is invalidated immediately after a successful canonical browser-score capture. Existing persistent score and push-history retention/deletion rules remain unchanged.
 - Safeguards: single-process lock, defensive copies, bounded 200-article snapshot, synthetic tests, exact one-decimal score projection, explicit source and snapshot timestamp, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
+- Accuracy safeguard: Render-local heuristic or fallback scores are excluded from the consumer and candidate projections; only fresh scores captured from the existing Editorial One candidate view are exposed as canonical.
 - Required documentation / approvals: no new approval is introduced because purpose, data categories, roles, recipients, transfer path, and persistence are unchanged. Product/System Owner and Privacy Manager should record the shared-view behavior in the existing workflow documentation; reassessment is required before adding a new recipient, identifier, persistence layer, or processing purpose.
 
 ## Engineering rules

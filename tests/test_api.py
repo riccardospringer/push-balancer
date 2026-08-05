@@ -655,6 +655,15 @@ class TestConsumerApi:
             lambda *_args, **_kwargs: {"predicted_or": 6.2},
         )
         monkeypatch.setattr(
+            "app.routers.score_capture.get_score_snapshot_for_url",
+            lambda url, **_kwargs: {
+                "score": 88.0 if "consumer-test" in url else 76.0,
+                "capturedAt": 1_800_000_000,
+                "ageSeconds": 10,
+                "source": "memory",
+            },
+        )
+        monkeypatch.setattr(
             "app.routers.consumer._build_pushes_response",
             lambda **_kwargs: {
                 "pushes": [
@@ -695,6 +704,7 @@ class TestConsumerApi:
                         "category": "politik",
                         "pubDate": "2026-08-05T12:00:00Z",
                         "score": 72.4,
+                        "scoreSource": "captured_push_balancer",
                         "scoreReason": "Synthetischer kanonischer Score",
                         "predictedOR": 0.061,
                         "predictedORBasis": "synthetic",
@@ -772,6 +782,64 @@ class TestConsumerApi:
         assert resp.status_code == 503
         assert resp.json()["title"] == "Service Unavailable"
 
+    def test_consumer_api_excludes_render_fallback_scores(self, monkeypatch):
+        import app.routers.consumer as consumer_router
+
+        consumer_router.invalidate_consumer_article_snapshot()
+        monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
+        monkeypatch.setattr(
+            consumer_router,
+            "build_articles_payload",
+            lambda **_kwargs: {
+                "articles": [
+                    {
+                        "id": "canonical",
+                        "url": "https://example.invalid/canonical",
+                        "title": "Kanonischer Test-Score",
+                        "category": "politik",
+                        "pubDate": "2026-08-05T12:00:00Z",
+                        "score": 70.0,
+                        "scoreSource": "captured_push_balancer",
+                    },
+                    {
+                        "id": "fallback",
+                        "url": "https://example.invalid/fallback",
+                        "title": "Falscher lokaler Fallback",
+                        "category": "sport",
+                        "pubDate": "2026-08-05T11:00:00Z",
+                        "score": 99.9,
+                        "scoreSource": "server_editorial_fallback",
+                    },
+                ],
+                "total": 2,
+                "count": 2,
+                "offset": 0,
+                "limit": 200,
+                "fetchedAt": "2026-08-05T12:00:01",
+            },
+        )
+        monkeypatch.setattr(
+            consumer_router,
+            "_build_pushes_response",
+            lambda **_kwargs: {"pushes": []},
+        )
+
+        try:
+            response = client.get(
+                "/api/v1/recommendations?limit=10&minScore=0",
+                headers={"Authorization": "Bearer consumer-test-key"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["count"] == 1
+            assert data["total"] == 1
+            assert data["articles"][0]["id"] == "canonical"
+            assert data["articles"][0]["score"] == 70.0
+            assert data["articles"][0]["scoreSource"] == "captured_push_balancer"
+        finally:
+            consumer_router.invalidate_consumer_article_snapshot()
+
     def test_consumer_recommendations_supports_bearer_auth(self, monkeypatch):
         self._stub_article_source(monkeypatch)
 
@@ -835,6 +903,7 @@ class TestConsumerApi:
             "title",
             "category",
             "score",
+            "scoreSource",
             "predictedOpenRate",
             "priority",
             "isLivePush",
