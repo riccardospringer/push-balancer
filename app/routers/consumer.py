@@ -1,9 +1,6 @@
 """Versioned read-only API for downstream app consumers."""
 from __future__ import annotations
 
-import copy
-import threading
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -17,44 +14,6 @@ router = APIRouter()
 
 _LIVE_PUSH_LOOKBACK_HOURS = 24
 _LIVE_PUSH_LIMIT = 100
-_ARTICLE_SNAPSHOT_LIMIT = 200
-_ARTICLE_SNAPSHOT_TTL_SECONDS = 30.0
-_article_snapshot_lock = threading.Lock()
-_article_snapshot: dict[str, Any] = {
-    "createdMonotonic": 0.0,
-    "payload": None,
-}
-
-
-def invalidate_consumer_article_snapshot() -> None:
-    """Drop the shared consumer snapshot after a new canonical score capture."""
-    with _article_snapshot_lock:
-        _article_snapshot["createdMonotonic"] = 0.0
-        _article_snapshot["payload"] = None
-
-
-def _load_consumer_article_snapshot() -> dict[str, Any]:
-    """Return one short-lived score snapshot shared by every consumer surface.
-
-    Keeping the versioned API and the Render candidate view on this exact
-    snapshot prevents sub-minute freshness decay from producing different
-    scores for the same article in two systems.
-    """
-    now = time.monotonic()
-    with _article_snapshot_lock:
-        cached = _article_snapshot.get("payload")
-        created = float(_article_snapshot.get("createdMonotonic") or 0.0)
-        if cached is not None and now - created < _ARTICLE_SNAPSHOT_TTL_SECONDS:
-            return copy.deepcopy(cached)
-
-        payload = build_articles_payload(
-            offset=0,
-            limit=_ARTICLE_SNAPSHOT_LIMIT,
-            include_teams_decisions=False,
-        )
-        _article_snapshot["createdMonotonic"] = now
-        _article_snapshot["payload"] = payload
-        return copy.deepcopy(payload)
 
 
 def _consumer_status_payload() -> dict[str, Any]:
@@ -87,15 +46,7 @@ def _filter_articles(
     category: str | None,
     min_score: float | None,
 ) -> list[dict[str, Any]]:
-    # The public consumer contract must never present a Render-local heuristic
-    # as an Editorial One Push Score. Fresh browser captures are the only
-    # canonical source available to this service; everything else fails closed.
-    filtered = [
-        article
-        for article in articles
-        if article.get("scoreSource") == "captured_push_balancer"
-        and _as_float(article.get("score")) is not None
-    ]
+    filtered = articles
     if category:
         category_key = category.strip().lower()
         filtered = [
@@ -124,7 +75,6 @@ def _consumer_article(article: dict[str, Any], *, include_explanations: bool) ->
         "category": article.get("category") or "news",
         "publishedAt": article.get("pubDate") or "",
         "score": round(score, 1) if score is not None else None,
-        "scoreSource": article.get("scoreSource") or "",
         "predictedOpenRate": round(predicted_open_rate, 4)
         if predicted_open_rate is not None
         else None,
@@ -198,7 +148,8 @@ def _load_consumer_articles(
     min_score: float | None,
     include_explanations: bool,
 ) -> dict[str, Any]:
-    source_payload = _load_consumer_article_snapshot()
+    source_limit = max(offset + limit, 120)
+    source_payload = build_articles_payload(offset=0, limit=source_limit)
     filtered = _filter_articles(source_payload["articles"], category, min_score)
     selected = filtered[offset : offset + limit]
     live_pushes = _load_consumer_live_pushes(category)
@@ -289,7 +240,6 @@ def get_consumer_scores(
             "title": article["title"],
             "category": article["category"],
             "score": article["score"],
-            "scoreSource": article["scoreSource"],
             "predictedOpenRate": article["predictedOpenRate"],
             "priority": article["priority"],
             "isLivePush": False,

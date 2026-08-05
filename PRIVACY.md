@@ -414,17 +414,16 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 - Safeguards: authenticated relay endpoint, unchanged acknowledgement response, best-effort persistence that cannot trigger relay retries, aggregate-only UI analysis, synthetic test data, no raw payload logging, and no changes to Power Automate or Teams configuration/code.
 - Required documentation / approvals: Product/System Owner and Privacy Manager must confirm the existing persistence purpose, retention, and deletion path before deployment; DPO/Legal review is required if that existing scope is not documented or changes.
 
-## PRIVACY NOTE: shared recommendation score snapshot
+## PRIVACY NOTE: authoritative recommendations projection
 
-- Purpose: show the exact same article-level Push Score in the Render candidate view and the existing versioned recommendations API, without changing ranking, scheduling, Power Automate, or Microsoft Teams delivery.
+- Purpose: display the exact existing `GET /api/v1/recommendations?limit=10&minScore=70` response contract in the Render candidate view, without changing its ranking, score source, scheduling, Power Automate, or Microsoft Teams delivery.
 - Data categories: existing public article metadata, article-level numeric score, prediction metadata, explanation fields, and already-sent push metadata already returned by the two existing read paths. No reader, device, session, recipient, employee, secret, or raw-log data is added.
 - Data subjects: people incidentally named in public editorial article metadata; no reader-level or employee-level profiling.
 - Legal basis: unchanged from the established editorial recommendation and score-consumption workflow; no new processing purpose is introduced.
 - Roles: unchanged Axel Springer editorial controller and existing Push Balancer system ownership; no new processor or provider.
-- External recipients / international transfer: none added. Both response projections share one in-process backend snapshot; the Power Automate and Teams code paths and payloads are unchanged.
-- Retention / deletion: the shared projection is memory-only for at most 30 seconds and is invalidated immediately after a successful canonical browser-score capture. Existing persistent score and push-history retention/deletion rules remain unchanged.
-- Safeguards: single-process lock, defensive copies, bounded 200-article snapshot, synthetic tests, exact one-decimal score projection, explicit source and snapshot timestamp, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
-- Accuracy safeguard: Render-local heuristic or fallback scores are excluded from the consumer and candidate projections; only fresh scores captured from the existing Editorial One candidate view are exposed as canonical.
+- External recipients / international transfer: none added. The candidate adapter invokes the same in-process service function as the authenticated recommendations endpoint; no self-HTTP request, browser credential, Power Automate change, or Teams payload change is introduced.
+- Retention / deletion: no new cache or persistence. The adapter projects the current recommendations response; existing score and push-history retention/deletion rules remain unchanged.
+- Safeguards: fixed `limit=10`, `minScore=70`, and default `includeExplanations=false`, the same filtering and projection function as the versioned API, explicit Recommendations API source labeling, synthetic contract tests, no browser credential, no new request logging, and no mutation of the scheduled Teams/Power Automate flow.
 - Required documentation / approvals: no new approval is introduced because purpose, data categories, roles, recipients, transfer path, and persistence are unchanged. Product/System Owner and Privacy Manager should record the shared-view behavior in the existing workflow documentation; reassessment is required before adding a new recipient, identifier, persistence layer, or processing purpose.
 
 ## Engineering rules
