@@ -131,8 +131,10 @@ def run() -> None:
         raise RuntimeError("RENDER_SYNC_URL must use HTTPS")
     log.info("Relay started; interval=%ds", INTERVAL)
     while True:
+        cycle_started = time.monotonic()
         run_once()
-        time.sleep(INTERVAL)
+        cycle_duration = time.monotonic() - cycle_started
+        time.sleep(max(0.0, INTERVAL - cycle_duration))
 
 
 if __name__ == "__main__":

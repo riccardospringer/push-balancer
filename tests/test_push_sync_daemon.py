@@ -94,3 +94,31 @@ def test_relay_requires_receiver_persistence_confirmation(monkeypatch):
         source="live",
         snapshot_ts=1_800_000_000.0,
     ) is False
+
+
+def test_relay_interval_includes_cycle_duration(monkeypatch):
+    import scripts.push_sync_daemon as relay
+
+    class StopLoop(Exception):
+        pass
+
+    monotonic_values = iter([100.0, 108.0])
+    sleeps = []
+    monkeypatch.setattr(relay, "SECRET", "synthetic-secret")
+    monkeypatch.setattr(relay, "RENDER", "https://deployment.example.invalid")
+    monkeypatch.setattr(relay, "INTERVAL", 30)
+    monkeypatch.setattr(relay, "run_once", lambda: True)
+    monkeypatch.setattr(relay.time, "monotonic", lambda: next(monotonic_values))
+
+    def stop_after_sleep(seconds):
+        sleeps.append(seconds)
+        raise StopLoop
+
+    monkeypatch.setattr(relay.time, "sleep", stop_after_sleep)
+
+    try:
+        relay.run()
+    except StopLoop:
+        pass
+
+    assert sleeps == [22.0]
