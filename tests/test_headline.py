@@ -86,6 +86,42 @@ def test_headline_resolution_uses_matching_sitemap_article(monkeypatch):
     assert headline.resolve_headline_article(CMS_ID) == ARTICLE
 
 
+def test_headline_sitemap_lookup_searches_beyond_candidate_limit(monkeypatch):
+    def sitemap_entry(cms_id: str, title: str) -> str:
+        return f"""
+        <url>
+          <loc>https://www.bild.de/politik/test-{cms_id}</loc>
+          <news:news>
+            <news:publication>
+              <news:name>BILD</news:name>
+              <news:language>de</news:language>
+            </news:publication>
+            <news:publication_date>2026-08-06T10:00:00+02:00</news:publication_date>
+            <news:title>{title}</news:title>
+          </news:news>
+        </url>
+        """
+
+    filler = [
+        sitemap_entry(f"{index:024x}", f"Testartikel {index}")
+        for index in range(250)
+    ]
+    xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+        'xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">'
+        + "".join(filler)
+        + sitemap_entry(CMS_ID, ARTICLE["title"])
+        + "</urlset>"
+    ).encode()
+    monkeypatch.setattr(headline, "_fetch_url", lambda _url: xml)
+
+    resolved = headline._article_from_news_sitemap(CMS_ID)
+
+    assert resolved is not None
+    assert resolved["articleId"] == CMS_ID
+    assert resolved["title"] == ARTICLE["title"]
+
+
 def test_headline_route_is_in_openapi_contract():
     operation = app.openapi()["paths"]["/api/headline-generations"]["post"]
 

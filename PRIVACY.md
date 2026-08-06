@@ -480,6 +480,36 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
   approval record; a broader source payload, article body, new recipient,
   persistence, tracking or automatic send needs a new review.
 
+## PRIVACY NOTE: Teams headline command transport compatibility
+
+- Purpose: restore the existing on-demand `/headline` editorial-support command
+  when Microsoft Teams wraps the supplied CMS ID in command text or HTML, and
+  allow an exact lookup anywhere in the current public BILD news sitemap.
+- Data categories: the existing command field containing one CMS document ID
+  plus bounded Teams transport markup; existing public article title, URL and
+  category; generated advisory headline variants. No user identifier, reader
+  data, raw channel history, score, secret or unrelated message is added.
+- Data subjects: persons incidentally named in public editorial metadata and
+  the authorised command operator only within existing Microsoft audit data;
+  no employee evaluation or recipient profiling.
+- Legal basis: unchanged from the approved Teams editorial-support command and
+  title-generation purposes documented for the existing integration.
+- Roles: unchanged Axel Springer/BILD controller and existing Push Balancer,
+  Microsoft 365 and approved title-provider roles.
+- External recipients / international transfer: none added. Power Automate and
+  Teams remain the existing transport. Only the extracted CMS ID is retained by
+  the request model; transport markup is not forwarded to the title provider.
+- Retention / deletion: no new persistence, cache or log field. Responses remain
+  `no-store`; command wrappers and generated results are request-scoped only.
+- Safeguards: 4,096-character input bound, exactly-one-ID extraction, ambiguous
+  input rejection, no raw-payload logging, full-sitemap lookup only for the
+  requested ID, advisory output and unchanged human review. The Power Automate
+  flow, scheduled Teams transport and score paths are not modified.
+- Required documentation / approvals: no new purpose, data category, provider,
+  recipient or transfer is introduced. Product/System Owner and Privacy Manager
+  should record the compatibility fix; reassessment is required before accepting
+  unrelated message content, identities, persistence or a new destination.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples

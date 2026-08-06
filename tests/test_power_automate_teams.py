@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -335,6 +336,85 @@ def test_headline_command_requires_auth_and_rejects_invalid_ids(monkeypatch):
 
     assert unauthorized.status_code == 401
     assert invalid.status_code == 422
+
+
+def test_headline_command_extracts_one_id_from_teams_html(monkeypatch):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    context_lookup = Mock(return_value=None)
+    monkeypatch.setattr(power_automate, "_headline_article_context", context_lookup)
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={
+            "articleId": (
+                "<p><span>/headline&nbsp;</span>"
+                "0123456789ABCDEF01234567</p>"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "article_not_found"
+    context_lookup.assert_called_once_with("0123456789abcdef01234567")
+
+
+def test_headline_command_rejects_ambiguous_teams_content(monkeypatch):
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={
+            "articleId": (
+                "/headline 0123456789abcdef01234567 "
+                "fedcba987654321001234567"
+            )
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_headline_context_falls_back_to_complete_sitemap_lookup(monkeypatch):
+    import app.routers.headline as headline
+    import app.routers.power_automate as power_automate
+    from app.cms.url_api import UrlApiNotConfigured
+
+    monkeypatch.setattr(
+        power_automate,
+        "build_articles_payload",
+        lambda **_kwargs: {"articles": []},
+    )
+
+    def unavailable_url_api(_article_id: str):
+        raise UrlApiNotConfigured
+
+    monkeypatch.setattr(power_automate, "get_canonical_article_url", unavailable_url_api)
+    monkeypatch.setattr(
+        headline,
+        "resolve_headline_article",
+        lambda article_id: {
+            "articleId": article_id,
+            "url": "https://www.bild.de/politik/synthetischer-artikel",
+            "title": "Bund beschließt synthetisches Hilfspaket",
+            "category": "politik",
+            "contentType": "editorial",
+        },
+    )
+
+    context = power_automate._headline_article_context(
+        "0123456789abcdef01234567"
+    )
+
+    assert context == {
+        "url": "https://www.bild.de/politik/synthetischer-artikel",
+        "title": "Bund beschließt synthetisches Hilfspaket",
+        "text": "",
+        "category": "politik",
+    }
 
 
 def test_headline_command_returns_no_op_when_article_is_unknown(monkeypatch):

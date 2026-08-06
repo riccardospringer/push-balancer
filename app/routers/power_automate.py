@@ -57,6 +57,10 @@ from app.teams_slot_claims import (
 router = APIRouter()
 
 _BERLIN = ZoneInfo("Europe/Berlin")
+_HEADLINE_COMMAND_ARTICLE_ID_RE = re.compile(
+    r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])",
+    re.IGNORECASE,
+)
 POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS = (
     "06:00",
     "06:36",
@@ -139,15 +143,21 @@ class PowerAutomateReceipt(BaseModel):
 class PowerAutomateHeadlineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    articleId: str = Field(min_length=24, max_length=24)
+    articleId: str = Field(min_length=1, max_length=4096)
 
     @field_validator("articleId")
     @classmethod
     def validate_article_id(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if not re.fullmatch(r"[0-9a-f]{24}", normalized):
-            raise ValueError("articleId must be a 24-character CMS ID")
-        return normalized
+        # Teams message details can wrap the slash command in HTML. Accept the
+        # existing articleId field in that transport form, but retain exactly
+        # one CMS ID and reject ambiguous payloads.
+        matches = {
+            match.group(1).casefold()
+            for match in _HEADLINE_COMMAND_ARTICLE_ID_RE.finditer(html.unescape(value))
+        }
+        if len(matches) != 1:
+            raise ValueError("articleId must contain exactly one 24-character CMS ID")
+        return matches.pop()
 
 
 def _headline_article_context(article_id: str) -> dict[str, str] | None:
@@ -175,8 +185,26 @@ def _headline_article_context(article_id: str) -> dict[str, str] | None:
     try:
         url = get_canonical_article_url(article_id)
     except (UrlApiNotConfigured, UrlApiUnavailable):
+        url = None
+    if url:
+        context = fetch_public_article_context(url)
+        if context:
+            return context
+
+    # The command is an exact lookup, so it must not inherit the candidate
+    # view's result cap. Reuse the standalone resolver's full-sitemap fallback.
+    try:
+        from app.routers.headline import resolve_headline_article
+
+        article = resolve_headline_article(article_id)
+    except HTTPException:
         return None
-    return fetch_public_article_context(url) if url else None
+    return {
+        "url": article["url"],
+        "title": article["title"],
+        "text": "",
+        "category": article["category"],
+    }
 
 
 def _headline_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
