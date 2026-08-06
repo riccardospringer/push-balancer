@@ -356,6 +356,7 @@ def _scheduled_recommendations(evaluation: dict[str, Any]) -> list[dict[str, Any
                 "title": title,
                 "url": url,
                 "pushScore": round(float(decision.get("score") or _score(candidate)), 1),
+                "publicationTs": _candidate_updated_ts(candidate),
             }
         )
     recommendations.sort(key=lambda item: float(item["pushScore"]), reverse=True)
@@ -373,8 +374,17 @@ def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
         title = html.escape(str(recommendation["title"]))
         url = html.escape(str(recommendation["url"]), quote=True)
         score = f"{float(recommendation['pushScore']):.1f}".replace(".", ",")
+        publication_ts = int(recommendation.get("publicationTs") or 0)
+        publication_label = (
+            dt.datetime.fromtimestamp(publication_ts, _BERLIN).strftime(
+                "%d.%m.%Y, %H:%M Uhr"
+            )
+            if publication_ts > 0
+            else "Publikationsdatum unbekannt"
+        )
         parts.append(
-            f'<p><strong>Top {rank}:</strong> <a href="{url}">{title}</a><br>'
+            f'<p><strong>Top {rank}:</strong> <a href="{url}">{title}</a> '
+            f"({publication_label})<br>"
             f"<strong>Score:</strong> {score}/100</p>"
         )
     return "".join(parts)

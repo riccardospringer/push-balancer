@@ -219,6 +219,7 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
             "title": f"Synthetische Meldung {index}",
             "url": f"https://www.bild.de/news/synthetic-{index}",
             "score": score,
+            "pubDate": f"2026-08-03T{index + 8:02d}:15:00+02:00",
         }
         decisions.append(
             {
@@ -250,6 +251,8 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     ]
     assert message_html.count("<strong>Top ") == 5
     assert "<strong>Top 5:</strong>" in message_html
+    assert "(03.08.2026, 10:15 Uhr)" in message_html
+    assert "(03.08.2026, 14:15 Uhr)" in message_html
 
 
 def test_headline_command_returns_three_v14_pairs(monkeypatch):
@@ -424,6 +427,7 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
         f'<strong>Top 1:</strong> <a href="{top["url"]}">{top["title"]}</a>'
         in payload["messageHtml"]
     )
+    assert "(03.08.2026, 12:20 Uhr)" in payload["messageHtml"]
     assert "<strong>Score:</strong> 91,4/100" in payload["messageHtml"]
     assert (
         f'<strong>Top 2:</strong> <a href="{alternative["url"]}">'

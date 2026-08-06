@@ -326,7 +326,7 @@ The integration's purpose is to deliver an editorial recommendation, not to send
 
 - non-personal slot and delivery timestamps;
 - public article title and URL;
-- section, Sport/non-Sport marker, and advisory Push Score;
+- section, Sport/non-Sport marker, latest publication time, and advisory Push Score;
 - rendered `messageHtml`;
 - non-personal `slotId` and Power Automate `requestId` for idempotency.
 

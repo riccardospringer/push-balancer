@@ -5,11 +5,11 @@ This project processes editorial and analytics-related data in an Axel Springer 
 ## PRIVACY NOTE — Scheduled Top-5 display (2026-08-06)
 
 - **Purpose:** Show editors up to five current Push Balancer recommendations in the existing scheduled Teams message.
-- **Data categories / subjects:** Public article titles and URLs may name public persons; article-level Push Scores are non-personal editorial metadata. No reader, employee, device, or audience data is added.
+- **Data categories / subjects:** Public article titles and URLs may name public persons; latest article publication times and article-level Push Scores are non-personal editorial metadata. No reader, employee, device, or audience data is added.
 - **Legal basis / roles:** Unchanged from the approved scheduled Power Automate delivery; Axel Springer remains controller and the existing Microsoft 365 roles apply.
 - **Recipients / transfers:** The existing Microsoft Power Automate and Teams destination receives up to five recommendations instead of two. No new provider, destination, or transfer path is introduced.
 - **Retention:** Existing 45-day backend cleanup and approved Microsoft 365 retention continue to apply.
-- **Safeguards:** Only title, article URL, and one-decimal Push Score are displayed; raw histories, other candidates, prompts, secrets, and user activity remain excluded.
+- **Safeguards:** Only title, article URL, latest publication time, and one-decimal Push Score are displayed; raw histories, other candidates, prompts, secrets, and user activity remain excluded.
 - **Required approvals:** Product/System Owner must confirm the five-item display remains within the existing scheduled-delivery approval; Privacy Manager/DPO/Legal reassessment is required before adding another destination, data category, tracking purpose, or broader candidate payload.
 
 ## Rollout hold and incident escalation
