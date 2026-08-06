@@ -10,7 +10,7 @@ spec:
   chart:
     spec:
       chart: next-push-balancer-chart
-      version: "0.1.82"
+      version: "0.1.83"
       sourceRef:
         name: next-helm-charts
         kind: HelmRepository
@@ -18,7 +18,7 @@ spec:
   values:
     replicaCount: 1
     image: ghcr.io/spring-media/next-push.balancer
-    tag: 0.1.82 # {"$imagepolicy": "bildnext:push-balancer:tag"}
+    tag: 0.1.83 # {"$imagepolicy": "bildnext:push-balancer:tag"}
     digest: "" # Set the approved release digest before activation.
     imagePullPolicy: IfNotPresent
     imagePullSecrets:
