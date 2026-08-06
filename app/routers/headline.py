@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -26,7 +27,6 @@ from app.push_title_prompt_v14 import (
 )
 from app.push_titles import build_push_title_suggestions, infer_content_type
 from app.routers.feed import (
-    _extract_sitemap_articles,
     _fetch_url,
     _infer_article_category,
 )
@@ -37,7 +37,6 @@ log = logging.getLogger("push-balancer")
 router = APIRouter()
 
 _CMS_ID_RE = re.compile(r"^[0-9a-f]{24}$")
-_MAX_SITEMAP_ARTICLES = 250
 
 
 class HeadlineGenerationRequest(BaseModel):
@@ -110,7 +109,7 @@ def _article_from_news_sitemap(cms_id: str) -> dict[str, str] | None:
     if raw is None:
         raise HTTPException(status_code=502, detail="BILD Artikeldaten sind nicht erreichbar.")
     try:
-        articles = _extract_sitemap_articles(raw, max_items=_MAX_SITEMAP_ARTICLES)
+        root = ET.fromstring(raw.decode("utf-8", errors="replace"))
     except Exception as exc:
         log.warning("[Headline] Sitemap parsing failed (%s)", type(exc).__name__)
         raise HTTPException(
@@ -118,15 +117,21 @@ def _article_from_news_sitemap(cms_id: str) -> dict[str, str] | None:
             detail="BILD Artikeldaten konnten nicht gelesen werden.",
         ) from exc
 
-    for article in articles:
-        if resolve_cms_id(article) != cms_id:
+    sitemap_ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    news_ns = {"news": "http://www.google.com/schemas/sitemap-news/0.9"}
+    for url_element in root.findall("sm:url", sitemap_ns):
+        url = (url_element.findtext("sm:loc", "", sitemap_ns) or "").strip()
+        if resolve_cms_id({"url": url}) != cms_id:
             continue
+        news_element = url_element.find("news:news", news_ns)
+        if news_element is None:
+            return None
+        title = (news_element.findtext("news:title", "", news_ns) or "").strip()
         return _normalized_article(
             cms_id=cms_id,
-            title=str(article.get("title") or ""),
-            url=str(article.get("url") or ""),
-            category=str(article.get("category") or "news"),
-            article_type=str(article.get("type") or ""),
+            title=title,
+            url=url,
+            category=_infer_article_category(url, title),
         )
     return None
 
