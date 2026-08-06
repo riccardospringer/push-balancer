@@ -2737,7 +2737,7 @@ components:
         sentAt:
           type: string
           format: date-time
-          description: Timestamp when the push was sent.
+          description: Unambiguous UTC timestamp when the push was sent, serialized with a trailing `Z`.
           example: '2026-04-09T09:30:00Z'
         channel:
           type: string
@@ -2767,6 +2767,36 @@ components:
           description: Confirms that this push must not be treated as an unsent recommendation.
         flags:
           $ref: '#/components/schemas/ConsumerLivePushFlags'
+    ConsumerLivePushStatus:
+      type: object
+      required:
+      - authoritative
+      - source
+      - snapshotAt
+      - snapshotAgeSeconds
+      properties:
+        authoritative:
+          type: boolean
+          description: Whether the latest relay snapshot has trusted provenance and is at most five minutes old.
+          example: true
+        source:
+          type: string
+          description: Current in-memory snapshot source (`relay`, `live`, `seed`, or `unknown`).
+          example: relay
+        snapshotAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: UTC timestamp of the source snapshot, or null when no snapshot is available.
+          example: '2026-04-09T09:30:10Z'
+        snapshotAgeSeconds:
+          type:
+          - number
+          - 'null'
+          format: float
+          description: Age of the latest source snapshot at response time.
+          example: 12.4
     ConsumerArticleCollectionResponse:
       type: object
       required:
@@ -2777,6 +2807,7 @@ components:
       - livePushes
       - livePushCount
       - livePushLookbackHours
+      - livePushStatus
       - total
       - count
       - offset
@@ -2819,6 +2850,8 @@ components:
           format: int32
           description: Rolling history window used for live pushes.
           example: 24
+        livePushStatus:
+          $ref: '#/components/schemas/ConsumerLivePushStatus'
         total:
           type: integer
           format: int64
@@ -2914,6 +2947,7 @@ components:
       - livePushes
       - livePushCount
       - livePushLookbackHours
+      - livePushStatus
       - total
       - count
       - offset
@@ -2952,6 +2986,8 @@ components:
           format: int32
           description: Rolling history window used for live pushes.
           example: 24
+        livePushStatus:
+          $ref: '#/components/schemas/ConsumerLivePushStatus'
         total:
           type: integer
           format: int64
@@ -3173,11 +3209,27 @@ components:
           description: Channel metadata accompanying the synchronized push messages.
           items:
             type: object
+        source:
+          type: string
+          enum:
+          - live
+          - relay
+          - unknown
+          description: Provenance of the original snapshot. `live` or `relay` is required for authoritative persistence.
+          default: unknown
+        snapshotTs:
+          type: number
+          format: double
+          description: Original Unix snapshot timestamp. Required for authoritative persistence.
+          example: 1775727010
     PushSyncResponse:
       type: object
       required:
       - ok
       - received
+      - db_written
+      - history_authoritative
+      - snapshot_age_seconds
       properties:
         ok:
           type: boolean
@@ -3188,6 +3240,22 @@ components:
           format: int32
           description: Number of synchronized push messages accepted from the payload.
           example: 24
+        db_written:
+          type: integer
+          format: int32
+          description: Number of push rows inserted or updated before the response was acknowledged.
+          example: 24
+        history_authoritative:
+          type: boolean
+          description: Whether provenance, freshness, parsing, and persistence were all verified.
+          example: true
+        snapshot_age_seconds:
+          type:
+          - number
+          - 'null'
+          format: float
+          description: Age of the original snapshot when Render accepted it.
+          example: 3.2
     PredictionFeedbackRequest:
       type: object
       required:

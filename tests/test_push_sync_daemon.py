@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 
 def test_relay_forwards_original_authoritative_snapshot(monkeypatch):
     import scripts.push_sync_daemon as relay
@@ -63,3 +65,32 @@ def test_relay_refuses_non_authoritative_local_history(monkeypatch):
     )
 
     assert relay.run_once() is False
+
+
+def test_relay_requires_receiver_persistence_confirmation(monkeypatch):
+    import scripts.push_sync_daemon as relay
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"ok": True, "received": 1, "history_authoritative": False}
+            ).encode()
+
+    monkeypatch.setattr(
+        relay.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    assert relay._push(
+        [{"id": "synthetic-live"}],
+        [],
+        source="live",
+        snapshot_ts=1_800_000_000.0,
+    ) is False

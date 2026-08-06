@@ -592,6 +592,15 @@ class TestConsumerApi:
                 ]
             },
         )
+        monkeypatch.setattr(
+            "app.routers.consumer.get_push_sync_status",
+            lambda: {
+                "authoritative": True,
+                "source": "relay",
+                "snapshotAt": "2026-04-09T09:30:10Z",
+                "snapshotAgeSeconds": 10.0,
+            },
+        )
 
     def test_render_candidates_use_exact_recommendations_api_contract(
         self, monkeypatch
@@ -727,6 +736,70 @@ class TestConsumerApi:
         finally:
             consumer_router._clear_recommendations_cache()
 
+    def test_cached_recommendations_refresh_live_push_state(self, monkeypatch):
+        import app.routers.consumer as consumer_router
+
+        consumer_router._clear_recommendations_cache()
+        article_calls = 0
+        live_calls = 0
+
+        def load_articles(**kwargs):
+            nonlocal article_calls
+            article_calls += 1
+            return {
+                "articles": [],
+                "livePushes": [{"id": "old-live-push"}],
+                "livePushCount": 1,
+                "livePushLookbackHours": 24,
+                "livePushStatus": {"authoritative": False},
+                "total": 0,
+                "count": 0,
+                "offset": kwargs["offset"],
+                "limit": kwargs["limit"],
+                "fetchedAt": "2026-08-05T12:00:01Z",
+            }
+
+        def load_live_pushes(_category):
+            nonlocal live_calls
+            live_calls += 1
+            return [{"id": "current-live-push"}]
+
+        monkeypatch.setattr(consumer_router, "_load_consumer_articles", load_articles)
+        monkeypatch.setattr(
+            consumer_router,
+            "_load_consumer_live_pushes",
+            load_live_pushes,
+        )
+        monkeypatch.setattr(
+            consumer_router,
+            "get_push_sync_status",
+            lambda: {"authoritative": True, "source": "relay"},
+        )
+
+        try:
+            first = consumer_router._load_consumer_recommendations(
+                offset=0,
+                limit=10,
+                category=None,
+                min_score=70,
+                include_explanations=False,
+            )
+            second = consumer_router._load_consumer_recommendations(
+                offset=0,
+                limit=10,
+                category=None,
+                min_score=70,
+                include_explanations=False,
+            )
+
+            assert article_calls == 1
+            assert live_calls == 1
+            assert first["livePushes"] == [{"id": "old-live-push"}]
+            assert second["livePushes"] == [{"id": "current-live-push"}]
+            assert second["livePushStatus"]["authoritative"] is True
+        finally:
+            consumer_router._clear_recommendations_cache()
+
     def test_consumer_articles_requires_configured_key(self, monkeypatch):
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "")
 
@@ -755,6 +828,8 @@ class TestConsumerApi:
         assert data["articles"][0]["flags"]["livePush"] is False
         assert data["livePushCount"] == 1
         assert data["livePushLookbackHours"] == 24
+        assert data["livePushStatus"]["authoritative"] is True
+        assert data["livePushStatus"]["source"] == "relay"
         assert data["livePushes"][0]["isLivePush"] is True
         assert data["livePushes"][0]["alreadySent"] is True
         assert data["livePushes"][0]["flags"] == {
@@ -792,6 +867,7 @@ class TestConsumerApi:
         assert data["livePushCount"] == 1
         assert data["livePushes"][0]["id"] == "synthetic-live-push-1"
         assert data["livePushes"][0]["score"] == 82.0
+        assert data["livePushStatus"]["authoritative"] is True
         assert set(data["scores"][0]) == {
             "articleId",
             "url",
@@ -1443,7 +1519,12 @@ class TestPushSyncEndpoint:
         )
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "received": 1}
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["received"] == 1
+        assert data["db_written"] == 1
+        assert data["history_authoritative"] is True
+        assert data["snapshot_age_seconds"] == pytest.approx(0, abs=1)
 
         pushes = client.get("/api/pushes?limit=10&days=1").json()["pushes"]
         persisted = next(push for push in pushes if push["id"] == "synthetic-relay-push-1")
@@ -1451,6 +1532,79 @@ class TestPushSyncEndpoint:
         assert persisted["recipients"] == 1000
         assert persisted["opened"] == 75
         assert persisted["openRate"] == pytest.approx(0.075)
+
+    def test_authoritative_push_sync_persists_before_acknowledging(self, monkeypatch):
+        import app.routers.push as push_router
+
+        now = 1_800_000_100.0
+        raw = [{"id": "live-1", "sendDate": 1_800_000_000, "headline": "Test"}]
+        parsed = [{"message_id": "live-1", "ts_num": 1_800_000_000}]
+        monkeypatch.setattr(push_router, "SYNC_SECRET", "test-sync-secret")
+        monkeypatch.setattr(push_router.time, "time", lambda: now)
+        monkeypatch.setattr(push_router, "_parse_bild_messages", lambda _messages: parsed)
+        persisted = []
+        monkeypatch.setattr(
+            push_router,
+            "push_db_upsert",
+            lambda messages: persisted.extend(messages) or len(messages),
+        )
+
+        resp = client.post(
+            "/api/pushes/sync",
+            json={
+                "secret": "test-sync-secret",
+                "messages": raw,
+                "channels": [],
+                "source": "live",
+                "snapshotTs": now - 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert persisted == parsed
+        assert resp.json() == {
+            "ok": True,
+            "received": 1,
+            "db_written": 1,
+            "history_authoritative": True,
+            "snapshot_age_seconds": 10.0,
+        }
+
+    def test_authoritative_push_sync_fails_when_persistence_fails(self, monkeypatch):
+        import app.routers.push as push_router
+
+        now = 1_800_000_100.0
+        monkeypatch.setattr(push_router, "SYNC_SECRET", "test-sync-secret")
+        monkeypatch.setattr(push_router.time, "time", lambda: now)
+        monkeypatch.setattr(
+            push_router,
+            "_parse_bild_messages",
+            lambda _messages: [{"message_id": "live-1", "ts_num": 1_800_000_000}],
+        )
+        monkeypatch.setattr(
+            push_router,
+            "push_db_upsert",
+            lambda _messages: (_ for _ in ()).throw(RuntimeError("synthetic db outage")),
+        )
+
+        resp = client.post(
+            "/api/pushes/sync",
+            json={
+                "secret": "test-sync-secret",
+                "messages": [{"id": "live-1", "sendDate": 1_800_000_000}],
+                "channels": [],
+                "source": "relay",
+                "snapshotTs": now - 10,
+            },
+        )
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Push relay persistence failed"
+
+    def test_push_timestamp_is_unambiguous_utc(self):
+        from app.routers.push import _iso_from_ts
+
+        assert _iso_from_ts(0) == "1970-01-01T00:00:00Z"
 
 
 class TestPushTitleGenerateEndpoint:

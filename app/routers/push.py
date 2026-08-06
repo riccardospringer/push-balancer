@@ -15,8 +15,9 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -34,6 +35,8 @@ _push_sync_cache: dict = {
     "source": "unknown",
 }
 _push_sync_lock = threading.Lock()
+_BERLIN_TZ = ZoneInfo("Europe/Berlin")
+_AUTHORITATIVE_SNAPSHOT_MAX_AGE_SECONDS = 300.0
 
 # ── SSL Context ────────────────────────────────────────────────────────────
 import ssl as _ssl_mod
@@ -103,7 +106,30 @@ class PushSyncRequest(BaseModel):
 
 def _iso_from_ts(ts_value: int | str | float) -> str:
     ts = int(float(ts_value))
-    return dt.datetime.fromtimestamp(ts).isoformat()
+    return (
+        dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def get_push_sync_status() -> dict[str, object]:
+    """Return redacted relay freshness metadata for API consumers."""
+    with _push_sync_lock:
+        snapshot_ts = float(_push_sync_cache.get("ts") or 0.0)
+        source = str(_push_sync_cache.get("source") or "unknown")
+    snapshot_age = max(0.0, time.time() - snapshot_ts) if snapshot_ts > 0 else None
+    authoritative = bool(
+        source in {"live", "relay"}
+        and snapshot_age is not None
+        and snapshot_age <= _AUTHORITATIVE_SNAPSHOT_MAX_AGE_SECONDS
+    )
+    return {
+        "authoritative": authoritative,
+        "source": source,
+        "snapshotAt": _iso_from_ts(snapshot_ts) if snapshot_ts > 0 else None,
+        "snapshotAgeSeconds": round(snapshot_age, 1) if snapshot_age is not None else None,
+    }
 
 
 def _ratio(value: float | int | None) -> float:
@@ -380,12 +406,13 @@ def _build_pushes_response(
     )
 
     pushes = []
-    today_key = dt.datetime.now().strftime("%Y-%m-%d")
+    today_date = dt.datetime.now(_BERLIN_TZ).date()
     today_rows = []
 
     for row in rows:
-        sent_at = _iso_from_ts(row.get("ts_num", row.get("ts", 0)))
-        if sent_at.startswith(today_key):
+        row_ts = int(float(row.get("ts_num", row.get("ts", 0))))
+        sent_at = _iso_from_ts(row_ts)
+        if dt.datetime.fromtimestamp(row_ts, tz=_BERLIN_TZ).date() == today_date:
             today_rows.append(row)
         predicted_or = prediction_map.get(str(row.get("message_id", "")))
         open_rate = round(_ratio(row.get("or")), 4)
@@ -527,11 +554,7 @@ def _build_refresh_response(
             return relay_result
     try:
         messages, channels = _fetch_live_push_snapshot(force=True)
-        with _push_sync_lock:
-            _push_sync_cache["messages"] = messages
-            _push_sync_cache["channels"] = channels
-            _push_sync_cache["ts"] = time.time()
-            _push_sync_cache["source"] = "live"
+        snapshot_ts = time.time()
         parsed_messages: list[dict] = []
         snapshot_authoritative = False
         persistence_ok = False
@@ -552,6 +575,12 @@ def _build_refresh_response(
         except Exception as persist_exc:
             log.warning("[refresh] DB-Upsert fehlgeschlagen: %s", persist_exc)
             n_written = 0
+        if snapshot_authoritative and persistence_ok:
+            with _push_sync_lock:
+                _push_sync_cache["messages"] = messages
+                _push_sync_cache["channels"] = channels
+                _push_sync_cache["ts"] = snapshot_ts
+                _push_sync_cache["source"] = "live"
         result = {
             "ok": True,
             "synced": len(messages),
@@ -608,12 +637,15 @@ def auto_seed_db_if_empty() -> int:
         return 0
     try:
         messages, channels = _fetch_live_push_snapshot(force=True)
+        parsed_messages = _parse_bild_messages(messages)
+        if not messages or len(parsed_messages) != len(messages):
+            raise ValueError("Live push snapshot is incomplete")
+        n = push_db_upsert(parsed_messages)
         with _push_sync_lock:
             _push_sync_cache["messages"] = messages
             _push_sync_cache["channels"] = channels
             _push_sync_cache["ts"] = time.time()
             _push_sync_cache["source"] = "live"
-        n = push_db_upsert(_parse_bild_messages(messages))
         log.info("[AutoSeed] %d Pushes von BILD-API in leere DB geseedet", n)
         return n
     except Exception as exc:
@@ -772,20 +804,8 @@ def export_pushes_csv(
     )
 
 
-def _persist_synced_pushes(raw_messages: list) -> None:
-    """Persist relay data after acknowledgement without changing relay behavior."""
-    try:
-        persisted = push_db_upsert(_parse_bild_messages(raw_messages))
-        log.info("[Sync] %d Pushes in Historie aktualisiert", persisted)
-    except Exception as exc:
-        log.warning("[Sync] Push-Historie konnte nicht aktualisiert werden: %s", exc)
-
-
 @router.post("/api/pushes/sync")
-def post_push_sync(
-    body: PushSyncRequest,
-    background_tasks: BackgroundTasks = None,
-) -> JSONResponse:
+def post_push_sync(body: PushSyncRequest) -> JSONResponse:
     """Empfängt Push-Daten von lokalem Server (Relay für Render).
 
     Authentifizierung via PUSH_SYNC_SECRET.
@@ -804,27 +824,77 @@ def post_push_sync(
     timestamp_is_valid = bool(
         math.isfinite(snapshot_ts) and snapshot_ts > 0 and snapshot_ts <= received_at
     )
-    with _push_sync_lock:
-        _push_sync_cache["messages"] = body.messages
-        _push_sync_cache["channels"] = body.channels
-        _push_sync_cache["ts"] = min(snapshot_ts, received_at) if timestamp_is_valid else 0.0
-        _push_sync_cache["source"] = (
-            "relay" if timestamp_is_valid and source in {"live", "relay"}
-            else "unknown"
-        )
+    source_is_authoritative = source in {"live", "relay"}
+    provenance_is_valid = bool(timestamp_is_valid and source_is_authoritative)
+    snapshot_age = max(0.0, received_at - snapshot_ts) if timestamp_is_valid else None
+    db_written = 0
+    persistence_ok = False
 
-    # Keep relay latency and acknowledgement independent from persistence. The
-    # snapshot remains immediately available in memory; durable history is
-    # updated only after the response has been sent.
-    if background_tasks is None:
-        # Preserve compatibility with the existing internal direct-call path.
-        _persist_synced_pushes(body.messages)
-    else:
-        background_tasks.add_task(_persist_synced_pushes, body.messages)
+    if provenance_is_valid and body.messages:
+        try:
+            parsed_messages = _parse_bild_messages(body.messages)
+        except Exception as exc:
+            log.warning(
+                "[Sync] Relay-Snapshot konnte nicht geparst werden: %s",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid push relay snapshot",
+            ) from exc
+        if len(parsed_messages) != len(body.messages):
+            log.warning(
+                "[Sync] Relay-Snapshot unvollstaendig: raw=%d parsed=%d",
+                len(body.messages),
+                len(parsed_messages),
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Incomplete push relay snapshot",
+            )
+        try:
+            db_written = push_db_upsert(parsed_messages)
+            persistence_ok = True
+        except Exception as exc:
+            log.warning(
+                "[Sync] Relay-Persistenz fehlgeschlagen: %s",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Push relay persistence failed",
+            ) from exc
 
-    log.info("[Sync] Empfangen: %d Messages, %d Channels",
-             len(body.messages), len(body.channels))
-    return JSONResponse(content={"ok": True, "received": len(body.messages)})
+    history_authoritative = bool(
+        provenance_is_valid
+        and body.messages
+        and persistence_ok
+        and snapshot_age is not None
+        and snapshot_age <= _AUTHORITATIVE_SNAPSHOT_MAX_AGE_SECONDS
+    )
+    if provenance_is_valid and persistence_ok:
+        with _push_sync_lock:
+            _push_sync_cache["messages"] = body.messages
+            _push_sync_cache["channels"] = body.channels
+            _push_sync_cache["ts"] = min(snapshot_ts, received_at)
+            _push_sync_cache["source"] = "relay"
+
+    log.info(
+        "[Sync] Empfangen und persistiert: %d Messages, %d Channels",
+        len(body.messages),
+        len(body.channels),
+    )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "received": len(body.messages),
+            "db_written": db_written,
+            "history_authoritative": history_authoritative,
+            "snapshot_age_seconds": round(snapshot_age, 1)
+            if snapshot_age is not None
+            else None,
+        }
+    )
 
 
 @router.post("/api/pushes/refresh")

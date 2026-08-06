@@ -22,7 +22,7 @@ RENDER = os.environ.get(
     "https://push-balancer.onrender.com",
 ).rstrip("/")
 SECRET = os.environ.get("PUSH_SYNC_SECRET", "")
-INTERVAL = max(30, int(os.environ.get("SYNC_INTERVAL", "90")))
+INTERVAL = max(30, int(os.environ.get("SYNC_INTERVAL", "30")))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [sync] %(message)s")
 log = logging.getLogger(__name__)
@@ -70,7 +70,10 @@ def _push(
             timeout=20,
             context=_TLS_CONTEXT,
         ) as response:
-            response.read()
+            result = json.loads(response.read())
+        if not isinstance(result, dict) or not result.get("history_authoritative"):
+            log.error("Sync failed: receiver did not confirm authoritative persistence")
+            return False
         log.info("Sync OK: %d messages, %d channels", len(messages), len(channels))
         return True
     except Exception as exc:

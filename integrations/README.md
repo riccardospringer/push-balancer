@@ -24,6 +24,8 @@ Every article response also contains the already-sent pushes from the last 24
 hours in `livePushes`. These entries are separate from recommendations and are
 marked with `isLivePush: true`, `alreadySent: true`, and
 `flags.livePush: true` so consumers cannot mistake them for unsent candidates.
+Check `livePushStatus.authoritative` before treating the collection as current;
+`snapshotAt` and `snapshotAgeSeconds` expose redacted freshness metadata.
 
 The API also works with plain `fetch`:
 

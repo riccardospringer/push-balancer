@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.auth import require_consumer_key
 from app.routers.feed import build_articles_payload
-from app.routers.push import _build_pushes_response
+from app.routers.push import _build_pushes_response, get_push_sync_status
 
 router = APIRouter()
 
@@ -154,6 +154,19 @@ def _load_consumer_live_pushes(category: str | None) -> list[dict[str, Any]]:
     return [_consumer_live_push(push) for push in payload.get("pushes", [])]
 
 
+def _with_current_live_pushes(
+    payload: dict[str, Any],
+    category: str | None,
+) -> dict[str, Any]:
+    """Attach live-push state without caching it with article scores."""
+    live_pushes = _load_consumer_live_pushes(category)
+    payload["livePushes"] = live_pushes
+    payload["livePushCount"] = len(live_pushes)
+    payload["livePushLookbackHours"] = _LIVE_PUSH_LOOKBACK_HOURS
+    payload["livePushStatus"] = get_push_sync_status()
+    return payload
+
+
 def _load_consumer_articles(
     offset: int,
     limit: int,
@@ -165,9 +178,7 @@ def _load_consumer_articles(
     source_payload = build_articles_payload(offset=0, limit=source_limit)
     filtered = _filter_articles(source_payload["articles"], category, min_score)
     selected = filtered[offset : offset + limit]
-    live_pushes = _load_consumer_live_pushes(category)
-
-    return {
+    payload = {
         "apiVersion": "v1",
         "advisoryOnly": True,
         "actionAllowed": False,
@@ -175,15 +186,13 @@ def _load_consumer_articles(
             _consumer_article(article, include_explanations=include_explanations)
             for article in selected
         ],
-        "livePushes": live_pushes,
-        "livePushCount": len(live_pushes),
-        "livePushLookbackHours": _LIVE_PUSH_LOOKBACK_HOURS,
         "total": len(filtered),
         "count": len(selected),
         "offset": offset,
         "limit": limit,
         "fetchedAt": source_payload["fetchedAt"],
     }
+    return _with_current_live_pushes(payload, category)
 
 
 def _load_consumer_recommendations(
@@ -207,7 +216,8 @@ def _load_consumer_recommendations(
         if cached is not None:
             age = now - float(cached["createdMonotonic"])
             if age < _RECOMMENDATIONS_RESPONSE_TTL_SECONDS:
-                return copy.deepcopy(cached["payload"])
+                payload = copy.deepcopy(cached["payload"])
+                return _with_current_live_pushes(payload, category)
 
         payload = _load_consumer_articles(
             offset=offset,
@@ -323,6 +333,7 @@ def get_consumer_scores(
             "livePushes": payload["livePushes"],
             "livePushCount": payload["livePushCount"],
             "livePushLookbackHours": payload["livePushLookbackHours"],
+            "livePushStatus": payload["livePushStatus"],
             "total": payload["total"],
             "count": len(scores),
             "offset": offset,

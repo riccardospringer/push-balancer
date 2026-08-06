@@ -266,6 +266,8 @@ Recommendation, article, and score responses include the last 24 hours of
 already-sent pushes in a separate `livePushes` array. Each entry is marked with
 `isLivePush=true`, `alreadySent=true`, and `flags.livePush=true`; unsent article
 candidates remain in `articles`/`scores` and are explicitly marked as not live.
+`livePushStatus.authoritative=true` confirms that the relay snapshot is trusted,
+persisted, and no more than five minutes old.
 
 The responses are read-only and advisory-only (`actionAllowed=false`). Production deployments should expose `/api/health` for platform checks and `/api/v1/*` for authenticated consumers only. Keep `/api/docs`, `/api/openapi.json`, and legacy `/api/*` routes behind the internal CIDR allowlist.
 
@@ -335,7 +337,7 @@ services:
 Because Render instances cannot reach the internal BILD Push Statistics API directly, a two-path strategy is used:
 
 1. **Direct fetch** (`_push_auto_fetch_worker`): The Render instance tries to fetch `PUSH_API_BASE` directly every 120 seconds.
-2. **Relay sync** (`POST /api/pushes/sync`): The local Mac server posts fresh push data to the Render instance every cycle, authenticated via `PUSH_SYNC_SECRET`. An authoritative relay payload must carry `source=live` or `source=relay` together with the original `snapshotTs`; receipt time on Render never renews an old snapshot. Set `RENDER_SYNC_URL` on the local server to enable this.
+2. **Relay sync** (`POST /api/pushes/sync`): The local Mac server posts fresh push data to the Render instance every 30 seconds, authenticated via `PUSH_SYNC_SECRET`. Render parses and persists the complete snapshot before acknowledging it; parse or database failures return a non-2xx response so the relay retries. An authoritative relay payload must carry `source=live` or `source=relay` together with the original `snapshotTs`; receipt time on Render never renews an old snapshot. Set `RENDER_SYNC_URL` on the local server to enable this.
 3. **Optional startup seed**: if you mount a sanitized snapshot file and point `PUSH_SNAPSHOT_PATH` at it, the service seeds SQLite at startup before any live fetch succeeds.
 
 ### Microsoft Teams Push Recommendations
