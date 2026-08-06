@@ -88,6 +88,9 @@ POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS = (
 # Backwards-compatible weekday alias for existing imports.
 POWER_AUTOMATE_TEAMS_SLOT_LABELS = POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
 _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS = 30
+_PUSH_BALANCER_CANDIDATES_URL = (
+    "https://editorial.one/push-balancer/bild/kandidaten"
+)
 _SLOT_ID_RE = re.compile(r"^teams-recommendation-(?P<timestamp>[0-9]{9,11})$")
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store",
@@ -327,11 +330,62 @@ def _article_payload(
     }
 
 
+def _scheduled_recommendations(evaluation: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return up to five technically valid candidates ordered by Push Score."""
+    recommendations: list[dict[str, Any]] = []
+    for item in evaluation.get("decisions") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("candidate")
+        decision = item.get("decision")
+        if not isinstance(candidate, dict) or not isinstance(decision, dict):
+            continue
+        blockers = [
+            str(reason)
+            for reason in (decision.get("blockingReasons") or [])
+            if not str(reason).startswith("Staerkerer Kandidat vorhanden:")
+        ]
+        if blockers:
+            continue
+        title = _title(candidate).strip()
+        url = _url(candidate).strip()
+        if not title or not url:
+            continue
+        recommendations.append(
+            {
+                "title": title,
+                "url": url,
+                "pushScore": round(float(decision.get("score") or _score(candidate)), 1),
+            }
+        )
+    recommendations.sort(key=lambda item: float(item["pushScore"]), reverse=True)
+    return recommendations[:5]
+
+
+def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
+    parts = [
+        "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>",
+        "<p>Das sind meine 5 Empfehlungen. Nichts dabei? Dann schau in den "
+        f'<a href="{html.escape(_PUSH_BALANCER_CANDIDATES_URL, quote=True)}">'
+        "Push Balancer</a>.</p>",
+    ]
+    for rank, recommendation in enumerate(recommendations, start=1):
+        title = html.escape(str(recommendation["title"]))
+        url = html.escape(str(recommendation["url"]), quote=True)
+        score = f"{float(recommendation['pushScore']):.1f}".replace(".", ",")
+        parts.append(
+            f'<p><strong>Top {rank}:</strong> <a href="{url}">{title}</a><br>'
+            f"<strong>Score:</strong> {score}/100</p>"
+        )
+    return "".join(parts)
+
+
 def _claim_response_payload(
     *,
     slot_ts: int,
     selected: dict[str, Any],
     message: dict[str, Any],
+    recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
     alternative = (
@@ -365,7 +419,7 @@ def _claim_response_payload(
         "expiresAt": _iso_at(slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS),
         "top": top,
         "alternative": alternative_payload,
-        "messageHtml": str(payload.get("messageHtml") or ""),
+        "messageHtml": _scheduled_message_html(recommendations),
     }
 
 
@@ -662,6 +716,7 @@ def claim_power_automate_teams_recommendation(
         slot_ts=binding_slot_ts,
         selected=selected,
         message=message,
+        recommendations=_scheduled_recommendations(evaluation),
     )
     article_key = candidate_key(selected)
     slot_claim = teams_recommendation_slot_try_claim(

@@ -1,6 +1,6 @@
 # Scheduled Power Automate Teams delivery
 
-This runbook configures Power Automate as the only production scheduler and Microsoft Teams transport for Push Balancer recommendations. Push Balancer keeps ownership of the absolute internal-API Top-1 ranking, the opposite Sport/non-Sport alternative, exact duplicate protection, and the durable per-slot claim.
+This runbook configures Power Automate as the only production scheduler and Microsoft Teams transport for Push Balancer recommendations. Push Balancer keeps ownership of the absolute internal-API ranking, the five displayed recommendations, exact duplicate protection, and the durable per-slot claim.
 
 ## Production contract
 
@@ -143,7 +143,7 @@ Ready response (synthetic example):
     "pushScore": 88.2,
     "isSport": true
   },
-  "messageHtml": "<h2>🔵 PUSH-EMPFEHLUNG</h2><p>Synthetische Top-Meldung</p>"
+  "messageHtml": "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2><p>Das sind meine 5 Empfehlungen.</p>"
 }
 ```
 
@@ -330,4 +330,4 @@ The integration's purpose is to deliver an editorial recommendation, not to send
 - rendered `messageHtml`;
 - non-personal `slotId` and Power Automate `requestId` for idempotency.
 
-It excludes raw push history, the full candidate list, audience or recipient data, employee identities or activity, model prompts, reviewer scorecards, connection tokens, and API secrets. Backend Teams recommendation and slot state is retained for 45 days. Microsoft 365 run-history and message retention remain subject to the approved tenant policy, controller/processor roles, transfer path, and deletion process documented in the project privacy record.
+It excludes raw push history, candidates outside the five displayed recommendations, audience or recipient data, employee identities or activity, model prompts, reviewer scorecards, connection tokens, and API secrets. Backend Teams recommendation and slot state is retained for 45 days. Microsoft 365 run-history and message retention remain subject to the approved tenant policy, controller/processor roles, transfer path, and deletion process documented in the project privacy record.

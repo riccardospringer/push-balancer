@@ -108,7 +108,16 @@ def _patch_successful_claim(
     decision = {
         "candidateId": top["url"],
         "shouldNotify": True,
+        "score": top["score"],
         "summary": "Verbindlicher Push-Balancer-Top-1 im festen Slot",
+    }
+    alternative_decision = {
+        "candidateId": alternative["url"],
+        "shouldNotify": False,
+        "score": alternative["score"],
+        "blockingReasons": [
+            "Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"
+        ],
     }
     message_html = (
         "<h2>🔵 PUSH-EMPFEHLUNG</h2>"
@@ -170,7 +179,14 @@ def _patch_successful_claim(
         "evaluate_teams_alert_candidates",
         lambda *_args, **_kwargs: {
             "selectedCandidate": top,
-            "decisions": [{"candidate": top, "decision": decision}],
+            "decisions": [
+                {"candidate": top, "decision": decision},
+                *(
+                    [{"candidate": alternative, "decision": alternative_decision}]
+                    if include_alternative
+                    else []
+                ),
+            ],
         },
     )
     monkeypatch.setattr(
@@ -192,6 +208,48 @@ def test_claim_requires_dedicated_auth_and_never_allows_caching(monkeypatch):
     assert response.status_code == 401
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["vary"] == "X-Power-Automate-Key"
+
+
+def test_scheduled_message_uses_the_five_highest_valid_push_scores():
+    import app.routers.power_automate as power_automate
+
+    decisions = []
+    for index, score in enumerate((82.1, 91.4, 76.0, 88.2, 79.5, 84.7), start=1):
+        candidate = {
+            "title": f"Synthetische Meldung {index}",
+            "url": f"https://www.bild.de/news/synthetic-{index}",
+            "score": score,
+        }
+        decisions.append(
+            {
+                "candidate": candidate,
+                "decision": {
+                    "score": score,
+                    "blockingReasons": (
+                        []
+                        if index == 2
+                        else [
+                            "Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"
+                        ]
+                    ),
+                },
+            }
+        )
+
+    recommendations = power_automate._scheduled_recommendations(
+        {"decisions": decisions}
+    )
+    message_html = power_automate._scheduled_message_html(recommendations)
+
+    assert [item["pushScore"] for item in recommendations] == [
+        91.4,
+        88.2,
+        84.7,
+        82.1,
+        79.5,
+    ]
+    assert message_html.count("<strong>Top ") == 5
+    assert "<strong>Top 5:</strong>" in message_html
 
 
 def test_headline_command_returns_three_v14_pairs(monkeypatch):
@@ -354,7 +412,24 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
         "pushScore": 88.2,
         "isSport": True,
     }
-    assert payload["messageHtml"].startswith("<h2>🔵 PUSH-EMPFEHLUNG</h2>")
+    assert payload["messageHtml"].startswith(
+        "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>"
+    )
+    assert "Das sind meine 5 Empfehlungen" in payload["messageHtml"]
+    assert (
+        '<a href="https://editorial.one/push-balancer/bild/kandidaten">Push Balancer</a>'
+        in payload["messageHtml"]
+    )
+    assert (
+        f'<strong>Top 1:</strong> <a href="{top["url"]}">{top["title"]}</a>'
+        in payload["messageHtml"]
+    )
+    assert "<strong>Score:</strong> 91,4/100" in payload["messageHtml"]
+    assert (
+        f'<strong>Top 2:</strong> <a href="{alternative["url"]}">'
+        f'{alternative["title"]}</a>' in payload["messageHtml"]
+    )
+    assert "<strong>Score:</strong> 88,2/100" in payload["messageHtml"]
     assert "webhook" not in response.text.casefold()
     assert "power-automate-key" not in response.text.casefold()
 
