@@ -257,6 +257,34 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     assert "(03.08.2026, 14:15 Uhr)" in message_html
 
 
+def test_scheduled_candidates_exclude_articles_already_live_pushed():
+    import app.routers.power_automate as power_automate
+
+    top, alternative = _synthetic_candidates(SLOT_TS)
+    same_title_new_article = {
+        **top,
+        "id": "synthetic-news-follow-up",
+        "url": "https://www.bild.de/news/synthetic-news-follow-up",
+    }
+    eligible = power_automate._exclude_already_live_pushed_articles(
+        [top, alternative, same_title_new_article],
+        history=[
+            {
+                "url": top["url"],
+                "title": top["title"],
+                "ts_num": SLOT_TS - 60,
+            }
+        ],
+        now_ts=SLOT_TS,
+        config=power_automate.TeamsAlertConfig(),
+    )
+
+    assert [candidate["url"] for candidate in eligible] == [
+        alternative["url"],
+        same_title_new_article["url"],
+    ]
+
+
 def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp_db):
     import app.routers.power_automate as power_automate
 
@@ -829,7 +857,7 @@ def test_claim_fails_closed_when_final_live_dedup_refresh_is_unavailable(
     assert slot is None
 
 
-def test_claim_uses_durable_cloud_fallback_without_live_push_history(
+def test_claim_fails_closed_without_authoritative_live_push_history(
     monkeypatch,
     tmp_db,
 ):
@@ -838,20 +866,11 @@ def test_claim_uses_durable_cloud_fallback_without_live_push_history(
     now_ts = SLOT_TS + 30
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     _patch_successful_claim(monkeypatch, now_ts=now_ts)
-    monkeypatch.setattr(power_automate, "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY", False)
     monkeypatch.setattr(
         power_automate,
         "_refresh_push_history_for_dedup",
         lambda: {"history": [], "history_authoritative": False},
     )
-    monkeypatch.setattr(
-        power_automate,
-        "_dispatch_live_push_comparison",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("live comparison must not run without authoritative history")
-        ),
-    )
-
     with monkeypatch.context() as db_patch:
         db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
         response = client.post(
@@ -860,8 +879,8 @@ def test_claim_uses_durable_cloud_fallback_without_live_push_history(
             json={"requestId": "synthetic-cloud-only-run"},
         )
 
-    assert response.status_code == 200
-    assert response.json()["ready"] is True
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_expected_selection_no_ops_stay_http_200(monkeypatch, tmp_db):
