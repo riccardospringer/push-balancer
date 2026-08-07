@@ -454,9 +454,9 @@ def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
             f"({publication_label})<br>"
             f"<strong>Score:</strong> {score}/100</p>"
         )
-    # Teams collapses paragraph margins inconsistently. An explicit line break
-    # between blocks keeps the introduction and each recommendation readable.
-    return "<br>".join(parts)
+    # Teams removes paragraph margins. Two explicit breaks preserve one visible
+    # blank line between headline, introduction, and every recommendation.
+    return "<br><br>".join(parts)
 
 
 def _claim_response_payload(

@@ -252,7 +252,7 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     ]
     assert message_html.count("<strong>Top ") == 5
     assert "<strong>Top 5:</strong>" in message_html
-    assert message_html.count("</p><br><p>") == 5
+    assert message_html.count("</p><br><br><p>") == 5
     assert "(03.08.2026, 10:15 Uhr)" in message_html
     assert "(03.08.2026, 14:15 Uhr)" in message_html
 
@@ -569,6 +569,9 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert payload["messageHtml"].startswith(
         "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>"
     )
+    assert "</h2><br><br><p>Das sind meine 5 Empfehlungen" in payload["messageHtml"]
+    assert "</p><br><br><p><strong>Top 1:</strong>" in payload["messageHtml"]
+    assert "</p><br><br><p><strong>Top 2:</strong>" in payload["messageHtml"]
     assert "Das sind meine 5 Empfehlungen" in payload["messageHtml"]
     assert (
         '<a href="https://editorial.one/push-balancer/bild/kandidaten">Push Balancer</a>'
