@@ -288,6 +288,14 @@ def _iso_at(slot_ts: int) -> str:
     return dt.datetime.fromtimestamp(int(slot_ts), _BERLIN).isoformat()
 
 
+def _utc_iso_at(slot_ts: int) -> str:
+    return (
+        dt.datetime.fromtimestamp(int(slot_ts), dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
 def power_automate_slot_labels_for_date(local_date: dt.date) -> tuple[str, ...]:
     """Use a two-hour-later morning block on Saturday and Sunday."""
     return (
@@ -487,6 +495,7 @@ def _claim_response_payload(
         "ready": True,
         "slotId": _slot_id(slot_ts),
         "scheduledAt": _iso_at(slot_ts),
+        "scheduledAtUtc": _utc_iso_at(slot_ts),
         "expiresAt": _iso_at(slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS),
         "top": top,
         "alternative": alternative_payload,

@@ -303,6 +303,7 @@ def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp
     assert response.status_code == 200
     assert response.json()["ready"] is True
     assert response.json()["scheduledAt"] == "2026-08-03T12:30:00+02:00"
+    assert response.json()["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
 
 
 def test_claim_does_not_prepare_more_than_two_minutes_early(monkeypatch, tmp_db):
@@ -540,6 +541,7 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
         "ready",
         "slotId",
         "scheduledAt",
+        "scheduledAtUtc",
         "expiresAt",
         "top",
         "alternative",
@@ -548,6 +550,7 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert payload["ready"] is True
     assert payload["slotId"] == f"teams-recommendation-{SLOT_TS}"
     assert payload["scheduledAt"] == "2026-08-03T12:30:00+02:00"
+    assert payload["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
     assert payload["expiresAt"] == "2026-08-03T12:35:00+02:00"
     assert payload["top"] == {
         "title": top["title"],
