@@ -252,8 +252,48 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     ]
     assert message_html.count("<strong>Top ") == 5
     assert "<strong>Top 5:</strong>" in message_html
+    assert message_html.count("</p><br><p>") == 5
     assert "(03.08.2026, 10:15 Uhr)" in message_html
     assert "(03.08.2026, 14:15 Uhr)" in message_html
+
+
+def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp_db):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS - 120
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-early-preparation-run"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["scheduledAt"] == "2026-08-03T12:30:00+02:00"
+
+
+def test_claim_does_not_prepare_more_than_two_minutes_early(monkeypatch, tmp_db):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS - 121
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-too-early-run"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": False, "reason": "outside_window"}
 
 
 def test_headline_command_returns_three_v14_pairs(monkeypatch):

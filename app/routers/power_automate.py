@@ -92,6 +92,7 @@ POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS = (
 # Backwards-compatible weekday alias for existing imports.
 POWER_AUTOMATE_TEAMS_SLOT_LABELS = POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
 _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS = 30
+_POWER_AUTOMATE_PREPARE_LEAD_SECONDS = 2 * 60
 _PUSH_BALANCER_CANDIDATES_URL = (
     "https://editorial.one/push-balancer/bild/kandidaten"
 )
@@ -302,7 +303,11 @@ def _power_automate_binding_slot(now_ts: int) -> dict[str, Any] | None:
         hour, minute = (int(part) for part in label.split(":"))
         slot_dt = berlin_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         slot_ts = int(slot_dt.timestamp())
-        if slot_ts <= now < slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS:
+        if (
+            slot_ts - _POWER_AUTOMATE_PREPARE_LEAD_SECONDS
+            <= now
+            < slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+        ):
             return {
                 "ts": slot_ts,
                 "label": label,
@@ -415,7 +420,9 @@ def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
             f"({publication_label})<br>"
             f"<strong>Score:</strong> {score}/100</p>"
         )
-    return "".join(parts)
+    # Teams collapses paragraph margins inconsistently. An explicit line break
+    # between blocks keeps the introduction and each recommendation readable.
+    return "<br>".join(parts)
 
 
 def _claim_response_payload(
@@ -676,12 +683,16 @@ def claim_power_automate_teams_recommendation(
             detail="Live-push duplicate protection is temporarily unavailable.",
         )
 
-    decision_now = int(time.time())
+    actual_decision_now = int(time.time())
     if not _power_automate_slot_open(
-        decision_now,
+        actual_decision_now,
         expected_slot_ts=binding_slot_ts,
     ):
         return _no_op("slot_closed")
+    # The cloud flow may prepare the recommendation up to two minutes early.
+    # Evaluate against the official slot so the fixed-slot policy remains the
+    # same; Power Automate waits until scheduledAt before posting to Teams.
+    decision_now = max(actual_decision_now, binding_slot_ts)
 
     candidates, _ = _memory_eligible_candidates(
         candidates,

@@ -4,7 +4,9 @@ This runbook configures Power Automate as the only production scheduler and Micr
 
 ## Production contract
 
-The flow uses these fixed Europe/Berlin slots Monday through Friday:
+The flow prepares each recommendation two minutes before these fixed
+Europe/Berlin delivery slots and waits until `scheduledAt` before posting it to
+Teams. Monday through Friday:
 
 | Slot | Recurrence/claim-attempt window |
 |---|---|
@@ -34,7 +36,7 @@ On Saturday and Sunday, only the six morning slots move two hours later:
 
 The common `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, and `22:45` slots remain unchanged on weekends.
 
-All windows are half-open (`slot <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed or the claim API is temporarily unavailable before a slot is reserved. The backend slot claim makes those repeated runs idempotent.
+All claim windows are half-open (`slot - 2 minutes <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed or the claim API is temporarily unavailable before a slot is reserved. A successful early claim is held by a Power Automate **Delay until** action using `scheduledAt`; the Teams action therefore still starts at the official slot. The backend slot claim makes repeated runs idempotent.
 
 The weekday/weekend labels above are the entire Power Automate schedule. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the five-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
 
