@@ -117,17 +117,18 @@ class TestStableFrontendContracts:
         assert "experiments" in data
 
     def test_articles_contract_returns_collection(self, monkeypatch):
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/politik/test-artikel</loc>
     <news:news>
       <news:title>Breaking Test Artikel</news:title>
-      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
         monkeypatch.setattr(
@@ -204,24 +205,25 @@ class TestStableFrontendContracts:
         payload = build_articles_payload(include_teams_decisions=False)
 
         assert payload["articles"][0]["title"].startswith("Bund beschliesst")
-        assert payload["articles"][0]["score"] == pytest.approx(91.0)
+        assert payload["articles"][0]["score"] == 91.0
         assert payload["articles"][0]["scoreSource"] == "captured_push_balancer"
-        assert payload["articles"][0]["serverEditorialScore"] == pytest.approx(76.0)
-        assert payload["articles"][1]["score"] == pytest.approx(78.0)
-        assert payload["articles"][1]["serverEditorialScore"] == pytest.approx(96.0)
+        assert payload["articles"][0]["serverEditorialScore"] == 76.0
+        assert payload["articles"][1]["score"] == 78.0
+        assert payload["articles"][1]["serverEditorialScore"] == 96.0
 
     def test_articles_contract_marks_video_items(self, monkeypatch):
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/sport/video/test-artikel</loc>
     <news:news>
       <news:title>Das sind die Szenen im Video</news:title>
-      <news:publication_date>2026-04-13T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
         monkeypatch.setattr(
@@ -366,17 +368,18 @@ class TestStableFrontendContracts:
     def test_articles_skip_prediction_enrichment_when_disabled(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/politik/test-artikel</loc>
     <news:news>
       <news:title>Breaking Test Artikel</news:title>
-      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         monkeypatch.setattr(feed_router, "ARTICLE_PREDICTION_ENRICHMENT_ENABLED", False)
         monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
@@ -393,17 +396,18 @@ class TestStableFrontendContracts:
     def test_articles_prediction_enrichment_uses_runtime_cache(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/politik/cache-artikel</loc>
     <news:news>
       <news:title>Cache Test Artikel</news:title>
-      <news:publication_date>2026-04-10T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         calls = {"count": 0}
 
@@ -428,17 +432,18 @@ class TestStableFrontendContracts:
     def test_articles_prediction_enrichment_hides_global_average_fallback(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/digital/fallback-artikel</loc>
     <news:news>
       <news:title>Fallback Test Artikel</news:title>
-      <news:publication_date>2026-04-10T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         feed_router._article_prediction_cache.clear()
         monkeypatch.setattr(feed_router, "ARTICLE_PREDICTION_ENRICHMENT_ENABLED", True)
@@ -550,24 +555,25 @@ class TestConsumerApi:
         from app.routers.consumer import _clear_recommendations_cache
 
         _clear_recommendations_cache()
-        sitemap = b"""<?xml version='1.0' encoding='UTF-8'?>
+        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
   <url>
     <loc>https://www.bild.de/politik/consumer-test</loc>
     <news:news>
       <news:title>Eilmeldung: Consumer Test Artikel</news:title>
-      <news:publication_date>2026-04-09T08:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
   <url>
     <loc>https://www.bild.de/sport/consumer-sport-test</loc>
     <news:news>
       <news:title>FC Bayern gewinnt Consumer Test</news:title>
-      <news:publication_date>2026-04-09T09:00:00+00:00</news:publication_date>
+      <news:publication_date>{published}</news:publication_date>
     </news:news>
   </url>
-</urlset>"""
+</urlset>""".encode()
 
         monkeypatch.setattr("app.config.CONSUMER_API_KEY", "consumer-test-key")
         monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)

@@ -47,6 +47,10 @@ class FrozenDateTime(datetime.datetime):
 
 
 def _synthetic_sitemap() -> bytes:
+    published_at = datetime.datetime.fromtimestamp(
+        FrozenDateTime.now().timestamp() - 30 * 60,
+        tz=datetime.timezone.utc,
+    ).isoformat()
     return f"""<?xml version='1.0' encoding='UTF-8'?>
     <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
             xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -54,7 +58,7 @@ def _synthetic_sitemap() -> bytes:
         <loc>{ARTICLE_URL}</loc>
         <news:news>
           <news:title>Warnung: Synthetischer Testartikel mit neuer Entwicklung</news:title>
-          <news:publication_date>2026-07-15T11:30:00</news:publication_date>
+          <news:publication_date>{published_at}</news:publication_date>
         </news:news>
       </url>
     </urlset>""".encode()

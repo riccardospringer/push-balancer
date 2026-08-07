@@ -3398,6 +3398,54 @@ function extractCategory(link) {
   return 'Sonstiges';
 }
 
+// ── Verbindliche Frische-Policy fuer Push-Kandidaten ─────────────────────
+// Bis drei Stunden bleibt der Score nahezu stabil, danach sinkt er
+// kontinuierlich. Nach mehr als zwoelf Stunden ist ein Artikel kein
+// Push-Kandidat mehr – unabhaengig von Ressort, Breaking oder Exklusivitaet.
+const MAX_PUSH_ARTICLE_AGE_HOURS = 12;
+const MAX_PUSH_PUBLICATION_FUTURE_SKEW_SECONDS = 30;
+const _PUSH_FRESHNESS_SCORE_CURVE = Object.freeze([
+  [0, 1.00],
+  [1, 1.00],
+  [3, 0.95],
+  [6, 0.80],
+  [9, 0.55],
+  [12, 0.30],
+]);
+
+function _articleAgeHours(articleDate) {
+  if (!(articleDate instanceof Date) || isNaN(articleDate.getTime())) return null;
+  const ageHours = (Date.now() - articleDate.getTime()) / 3600000;
+  if (!Number.isFinite(ageHours)) return null;
+  if (ageHours < -(MAX_PUSH_PUBLICATION_FUTURE_SKEW_SECONDS / 3600)) return null;
+  return Math.max(0, ageHours);
+}
+
+function _pushFreshnessMultiplier(ageHours) {
+  if (!Number.isFinite(ageHours) || ageHours < 0 || ageHours > MAX_PUSH_ARTICLE_AGE_HOURS) return 0;
+  for (let i = 1; i < _PUSH_FRESHNESS_SCORE_CURVE.length; i++) {
+    const [rightAge, rightMultiplier] = _PUSH_FRESHNESS_SCORE_CURVE[i];
+    if (ageHours <= rightAge) {
+      const [leftAge, leftMultiplier] = _PUSH_FRESHNESS_SCORE_CURVE[i - 1];
+      const span = rightAge - leftAge;
+      if (span <= 0) return rightMultiplier;
+      const position = (ageHours - leftAge) / span;
+      return leftMultiplier + (rightMultiplier - leftMultiplier) * position;
+    }
+  }
+  return 0;
+}
+
+function _articleFreshnessPolicy(articleDate) {
+  const ageHours = _articleAgeHours(articleDate);
+  const eligible = ageHours != null && ageHours <= MAX_PUSH_ARTICLE_AGE_HOURS;
+  return {
+    ageHours,
+    eligible,
+    multiplier: eligible ? _pushFreshnessMultiplier(ageHours) : 0,
+  };
+}
+
 // ── Zeitreferenz-Analyse: Ist der Titel-Text noch korrekt pushbar? ──
 // Kernprinzip: Der TITELTEXT muss zum PUSH-ZEITPUNKT stimmen.
 // "Morgen erster Flug" von gestern → Titel sagt "Morgen" aber Event ist HEUTE → irreführend!
@@ -3409,6 +3457,15 @@ function getTemporalRelevance(title, articleDate, category) {
   const daysDiff = Math.floor((today - articleDay) / 86400000); // Tage seit Artikel
   const ageHours = (now - articleDate) / 3600000;
   const lc = title.toLowerCase();
+
+  if (!Number.isFinite(ageHours) || ageHours > MAX_PUSH_ARTICLE_AGE_HOURS) {
+    const ageDisplay = Number.isFinite(ageHours) ? `${Math.round(ageHours)} Std.` : 'unbekannt alt';
+    return {
+      outdated: true,
+      penalty: 0,
+      reason: `Artikel ist ${ageDisplay} — globales Push-Limit: ${MAX_PUSH_ARTICLE_AGE_HOURS}h`,
+    };
+  }
 
   // ── "morgen" im Titel ──
   // Tag 0 (Artikel von heute): "Morgen" = tatsächlich morgen → OK
@@ -3483,9 +3540,12 @@ function getTemporalRelevance(title, articleDate, category) {
     ratgeber: 48, auto: 48, digital: 36, lifestyle: 48, reise: 72
   };
   const catLower = (category || '').toLowerCase();
-  let staleThreshold = 18; // Default: 18 Stunden
+  let staleThreshold = MAX_PUSH_ARTICLE_AGE_HOURS;
   for (const [cat, hrs] of Object.entries(_staleHours)) {
-    if (catLower.includes(cat)) { staleThreshold = hrs; break; }
+    if (catLower.includes(cat)) {
+      staleThreshold = Math.min(hrs, MAX_PUSH_ARTICLE_AGE_HOURS);
+      break;
+    }
   }
   if (ageHours > staleThreshold) {
     const ageDisplay = ageHours >= 24
@@ -3651,13 +3711,11 @@ function calculatePushScore(article) {
   if (!scaleMap) return calculateFallbackScore(article);
   let baseScore = Math.max(1, Math.min(100, mapORToScore(prediction.or, scaleMap)));
 
-  // Alters-Penalty: Push-Nachrichten sind zeitkritisch
-  // >6h: -30%, >12h: -60%, >24h: -80%, >48h: minimal
-  const articleAge = article.date ? (Date.now() - article.date.getTime()) / 3600000 : 0; // Stunden
-  if (articleAge > 48) baseScore = Math.min(baseScore, 10);
-  else if (articleAge > 24) baseScore = Math.round(baseScore * 0.2);
-  else if (articleAge > 12) baseScore = Math.round(baseScore * 0.4);
-  else if (articleAge > 6) baseScore = Math.round(baseScore * 0.7);
+  // Dieselbe verbindliche Frischekurve wie beim sichtbaren/captured Score.
+  const freshnessPolicy = _articleFreshnessPolicy(article.date);
+  baseScore = freshnessPolicy.eligible
+    ? Math.round(baseScore * freshnessPolicy.multiplier * 10) / 10
+    : 0;
 
   // 4. Breakdown in 6 datengetriebene Komponenten
   const breakdown = decomposePushScore(baseScore, prediction, article);
@@ -4091,16 +4149,27 @@ function calculateFallbackScore(article) {
   // Spekulativ: Cap bei 65 (kann immer noch wichtig sein)
   if (titleStruct.isSpeculative && rawTotal > 65) rawTotal = 65;
 
-  const total = Math.min(100, Math.round(rawTotal * 10) / 10);
+  const freshnessPolicy = _articleFreshnessPolicy(date);
+  breakdown.articleAgeHours = freshnessPolicy.ageHours == null
+    ? null
+    : Math.round(freshnessPolicy.ageHours * 100) / 100;
+  breakdown.freshnessMultiplier = Math.round(freshnessPolicy.multiplier * 1000) / 1000;
+  breakdown.freshnessEligible = freshnessPolicy.eligible;
+  const total = freshnessPolicy.eligible
+    ? Math.min(100, Math.max(0, Math.round(rawTotal * freshnessPolicy.multiplier * 10) / 10))
+    : 0;
   return { total, breakdown };
 }
 
 // ── Sport-spezifische Score-Formel (4 Dimensionen, klare Trennung) ──
 function calculateSportScore(article) {
   const title = article.title || '';
-  const date = article.date || new Date();
+  const date = article.date;
   const fullText = (title + ' ' + (article.description || '')).toUpperCase();
   const breakdown = { sportRelevanz:0, timing:0, dramatik:0, frische:0 };
+  if (!date || isNaN(date.getTime())) {
+    return { total: 0, breakdown: { ...breakdown, freshnessEligible: false } };
+  }
 
   // ═══ 1. SPORT-RELEVANZ (max 35) — Topic-Type-Scoring ═══
   const SPORT_TOPICS = [
@@ -4191,7 +4260,15 @@ function calculateSportScore(article) {
   breakdown.frische = Math.max(0, Math.round(10 * Math.exp(-Math.pow(ageMin / sportWB.l, sportWB.k)) * 10) / 10);
 
   const rawTotal = breakdown.sportRelevanz + breakdown.timing + breakdown.dramatik + breakdown.frische;
-  const total = Math.min(100, Math.max(0, Math.round(rawTotal * 10) / 10));
+  const freshnessPolicy = _articleFreshnessPolicy(date);
+  breakdown.articleAgeHours = freshnessPolicy.ageHours == null
+    ? null
+    : Math.round(freshnessPolicy.ageHours * 100) / 100;
+  breakdown.freshnessMultiplier = Math.round(freshnessPolicy.multiplier * 1000) / 1000;
+  breakdown.freshnessEligible = freshnessPolicy.eligible;
+  const total = freshnessPolicy.eligible
+    ? Math.min(100, Math.max(0, Math.round(rawTotal * freshnessPolicy.multiplier * 10) / 10))
+    : 0;
   return { total, breakdown };
 }
 
@@ -4343,6 +4420,8 @@ function applyFilterAndSort(forceInvalidate) {
   });
 
   filteredArticles = articles.filter(a => {
+    // Unbekannte oder mehr als 12h alte Artikel nie vorschlagen.
+    if (!_articleFreshnessPolicy(a.date).eligible) return false;
     // 0. Exclude live tickers (not pushable standalone content)
     if (/live-ticker|liveblog|liveticker/i.test(a.title) || /live-ticker|liveblog|liveticker/i.test(a.link)) return false;
     // 1. Exclude by exact article ID match
@@ -4389,6 +4468,12 @@ function applyFilterAndSort(forceInvalidate) {
     let aktualitätNeu = Math.max(0, 20 * Math.exp(-Math.pow(ageMin / wb.l, wb.k)));
     if (a.scoreBreakdown.temporalOutdated) aktualitätNeu *= 0.1;
     a.scoreBreakdown.aktualität = Math.round(aktualitätNeu * 10) / 10;
+    const freshnessPolicy = _articleFreshnessPolicy(a.date);
+    a.scoreBreakdown.articleAgeHours = freshnessPolicy.ageHours == null
+      ? null
+      : Math.round(freshnessPolicy.ageHours * 100) / 100;
+    a.scoreBreakdown.freshnessMultiplier = Math.round(freshnessPolicy.multiplier * 1000) / 1000;
+    a.scoreBreakdown.freshnessEligible = freshnessPolicy.eligible;
   });
 
   // Push-Historie: Thema heute schon gepusht? OR einfliessen lassen
@@ -4420,12 +4505,11 @@ function applyFilterAndSort(forceInvalidate) {
       // TV-Show-Preview-Penalty anwenden (aus initialem Scoring übernehmen)
       if (bd.tvShowPenalty) rawTotal = Math.max(5, rawTotal - 35);
 
-      // Stale-Penalty: nur fuer alte Artikel (>24h), aktualität handelt 0-24h
-      const ageH = a.date ? (Date.now() - a.date.getTime()) / 3600000 : 0;
-      let ageMult = 1.0;
-      if (ageH > 48) ageMult = 0.25;
-      else if (ageH > 24) ageMult = 0.50;
-      a.score = Math.min(100, Math.max(0, Math.round(rawTotal * ageMult * 10) / 10));
+      // Frische wirkt auf den Gesamtwert, nicht nur auf die 20-Punkte-Komponente.
+      const freshnessPolicy = _articleFreshnessPolicy(a.date);
+      a.score = freshnessPolicy.eligible
+        ? Math.min(100, Math.max(0, Math.round(rawTotal * freshnessPolicy.multiplier * 10) / 10))
+        : 0;
     }
   });
 
@@ -7023,12 +7107,13 @@ async function _captureArticleScores(articles) {
   const now = Date.now();
   if (!articles || articles.length === 0) return;
   const payload = articles
-    .filter(a => a.link && a.score > 0)
+    .filter(a => a.link && a.score > 0 && _articleFreshnessPolicy(a.date).eligible)
     .map(a => {
       const item = {
         url: a.link,
         score: Math.round(a.score * 10) / 10,
         ts: Math.floor(now / 1000),
+        articlePublishedAt: Math.floor(a.date.getTime() / 1000),
       };
       const enrichment = _captureScoreEnrichment(a);
       return enrichment ? { ...item, ...enrichment } : item;
@@ -7042,6 +7127,7 @@ async function _captureArticleScores(articles) {
     .map(item => JSON.stringify({
       url: item.url,
       score: item.score,
+      articlePublishedAt: item.articlePublishedAt,
       scoreBreakdown: item.scoreBreakdown || null,
       orFactor: item.orFactor == null ? null : item.orFactor,
     }))

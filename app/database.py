@@ -12,6 +12,10 @@ import time
 import hashlib
 
 from app.config import PUSH_DB_PATH, IS_RENDER, PUSH_DB_MAX_DAYS, PUSH_DB_MAX_ROWS
+from app.scoring.freshness import (
+    is_publication_eligible,
+    parse_publication_timestamp,
+)
 
 log = logging.getLogger("push-balancer")
 
@@ -105,7 +109,7 @@ def get_article_score_snapshot_from_db(
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
         row = conn.execute(
             """SELECT score, captured_at, score_breakdown_json, or_factor,
-                      enrichment_captured_at
+                      enrichment_captured_at, article_published_at
                FROM article_score_log WHERE url_hash = ?""",
             (key,),
         ).fetchone()
@@ -113,11 +117,17 @@ def get_article_score_snapshot_from_db(
         if row:
             captured_at = int(row[1])
             age_seconds = max(0, now - captured_at)
-            if age_seconds < max_age:
+            article_published_at = parse_publication_timestamp(row[5])
+            if age_seconds < max_age and is_publication_eligible(
+                article_published_at,
+                now_ts=now,
+                max_future_skew_seconds=30,
+            ):
                 snapshot: dict[str, object] = {
                     "score": float(row[0]),
                     "captured_at": captured_at,
                     "age_seconds": age_seconds,
+                    "article_published_at": int(article_published_at),
                 }
                 enrichment = _load_article_score_enrichment(
                     row[2],
@@ -168,7 +178,7 @@ def get_article_score_snapshots_by_cms_ids_from_db(
         conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
         rows = conn.execute(
             """SELECT url, score, captured_at, score_breakdown_json, or_factor,
-                      enrichment_captured_at
+                      enrichment_captured_at, article_published_at
                FROM article_score_log
                WHERE captured_at > ?
                ORDER BY captured_at DESC""",
@@ -189,13 +199,21 @@ def get_article_score_snapshots_by_cms_ids_from_db(
             score_breakdown_json,
             or_factor,
             enrichment_captured_at,
+            article_published_at,
         ) in rows:
+            if not is_publication_eligible(
+                article_published_at,
+                now_ts=now,
+                max_future_skew_seconds=30,
+            ):
+                continue
             for cms_id in _cms_ids_in_trusted_url(url).intersection(requested):
                 if cms_id in snapshots:
                     continue
                 snapshot: dict[str, object] = {
                     "score": float(score),
                     "captured_at": int(captured_at),
+                    "article_published_at": int(article_published_at),
                 }
                 enrichment = _load_article_score_enrichment(
                     score_breakdown_json,
@@ -250,6 +268,7 @@ def save_article_score_to_db(
     url: str,
     score: float,
     *,
+    article_published_at: object,
     captured_at: int | None = None,
     score_breakdown: dict | None = None,
     or_factor: float | None = None,
@@ -260,8 +279,15 @@ def save_article_score_to_db(
 
     if (score_breakdown is None) != (or_factor is None):
         raise ValueError("score_breakdown and or_factor must be provided together")
-    key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
     captured_at_value = int(time.time()) if captured_at is None else int(captured_at)
+    article_published_at_value = parse_publication_timestamp(article_published_at)
+    if article_published_at_value is None or not is_publication_eligible(
+        article_published_at_value,
+        now_ts=captured_at_value,
+        max_future_skew_seconds=30,
+    ):
+        return
+    key = hashlib.md5(_normalize_url(url).encode()).hexdigest()
     score_breakdown_json = (
         json.dumps(score_breakdown, ensure_ascii=False, separators=(",", ":"))
         if score_breakdown is not None
@@ -276,13 +302,14 @@ def save_article_score_to_db(
             conn = sqlite3.connect(PUSH_DB_PATH, timeout=5)
             conn.execute(
                 """INSERT INTO article_score_log (
-                       url_hash, url, score, captured_at, score_breakdown_json, or_factor,
-                       enrichment_captured_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                       url_hash, url, score, captured_at, article_published_at,
+                       score_breakdown_json, or_factor, enrichment_captured_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(url_hash) DO UPDATE SET
                        url = excluded.url,
                        score = excluded.score,
                        captured_at = excluded.captured_at,
+                       article_published_at = excluded.article_published_at,
                        score_breakdown_json = excluded.score_breakdown_json,
                        or_factor = excluded.or_factor,
                        enrichment_captured_at = excluded.enrichment_captured_at
@@ -292,6 +319,7 @@ def save_article_score_to_db(
                     url[:500],
                     score,
                     captured_at_value,
+                    article_published_at_value,
                     score_breakdown_json,
                     or_factor,
                     enrichment_captured_at,
@@ -405,11 +433,13 @@ def init_db() -> None:
         url TEXT NOT NULL,
         score REAL NOT NULL,
         captured_at INTEGER NOT NULL,
+        article_published_at INTEGER,
         score_breakdown_json TEXT,
         or_factor REAL,
         enrichment_captured_at INTEGER
     )""")
     for _col, _type in [
+        ("article_published_at", "INTEGER"),
         ("score_breakdown_json", "TEXT"),
         ("or_factor", "REAL"),
         ("enrichment_captured_at", "INTEGER"),

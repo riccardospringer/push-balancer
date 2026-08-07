@@ -16,6 +16,97 @@ from app.routers import score_capture
 # ── _push_db_upsert ──────────────────────────────────────────────────────────
 
 
+class TestArticleScoreSnapshots:
+    def test_memory_url_lookup_rechecks_publication_age(self, monkeypatch):
+        now = 1_800_000_000
+        url = "https://example.invalid/news/stale-memory-publication"
+        key = score_capture.hashlib.md5(
+            score_capture._normalize_url(url).encode()
+        ).hexdigest()
+        monkeypatch.setattr(score_capture.time, "time", lambda: now)
+
+        with score_capture._lock:
+            previous_cache = dict(score_capture._score_cache)
+            score_capture._score_cache.clear()
+            score_capture._score_cache[key] = {
+                "score": 99.0,
+                "ts": now,
+                "url": url,
+                "articlePublishedAt": now - 12 * 3600 - 1,
+            }
+        try:
+            snapshot = score_capture.get_score_snapshot_for_url(
+                url,
+                allow_db_fallback=False,
+            )
+        finally:
+            with score_capture._lock:
+                score_capture._score_cache.clear()
+                score_capture._score_cache.update(previous_cache)
+
+        assert snapshot is None
+
+    def test_database_save_ignores_article_older_than_twelve_hours(self, tmp_db):
+        now = 1_800_000_000
+        url = "https://example.invalid/news/stale-publication"
+
+        database.save_article_score_to_db(
+            url,
+            99.0,
+            captured_at=now,
+            article_published_at=now - 12 * 3600 - 1,
+        )
+
+        conn = sqlite3.connect(tmp_db)
+        count = conn.execute("SELECT COUNT(*) FROM article_score_log").fetchone()[0]
+        conn.close()
+        assert count == 0
+
+    def test_single_database_lookup_rechecks_exact_twelve_hour_boundary(self, tmp_db):
+        now = 1_800_000_000
+        url = "https://example.invalid/news/twelve-hour-boundary"
+        database.save_article_score_to_db(
+            url,
+            88.0,
+            captured_at=now,
+            article_published_at=now - 12 * 3600,
+        )
+
+        with patch.object(database.time, "time", return_value=now):
+            exact_boundary = database.get_article_score_snapshot_from_db(
+                url,
+                max_age_seconds=60,
+            )
+        with patch.object(database.time, "time", return_value=now + 1):
+            over_boundary = database.get_article_score_snapshot_from_db(
+                url,
+                max_age_seconds=60,
+            )
+
+        assert exact_boundary is not None
+        assert exact_boundary["article_published_at"] == now - 12 * 3600
+        assert over_boundary is None
+
+    def test_single_database_lookup_fails_closed_for_legacy_row(self, tmp_db):
+        now = 1_800_000_000
+        url = "https://example.invalid/news/legacy-publication"
+        normalized_url = score_capture._normalize_url(url)
+        url_hash = score_capture.hashlib.md5(normalized_url.encode()).hexdigest()
+        conn = sqlite3.connect(tmp_db)
+        conn.execute(
+            """INSERT INTO article_score_log (url_hash, url, score, captured_at)
+               VALUES (?, ?, ?, ?)""",
+            (url_hash, url, 88.0, now),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch.object(database.time, "time", return_value=now):
+            snapshot = database.get_article_score_snapshot_from_db(url)
+
+        assert snapshot is None
+
+
 class TestTeamsAlertHistory:
     def test_memory_score_snapshot_is_used_only_inside_the_fresh_window(self, monkeypatch):
         url = "https://example.invalid/news/memory-rating"
@@ -30,6 +121,7 @@ class TestTeamsAlertHistory:
                 "score": 89.0,
                 "ts": now - 120,
                 "url": url,
+                "articlePublishedAt": now - 3600,
             }
         try:
             fresh = score_capture.get_score_snapshot_for_url(
@@ -50,13 +142,18 @@ class TestTeamsAlertHistory:
         assert fresh is not None
         assert fresh["score"] == pytest.approx(89.0)
         assert fresh["ageSeconds"] == 120
+        assert fresh["articlePublishedAt"] == now - 3600
         assert stale is None
 
     def test_article_score_snapshot_respects_the_requested_freshness(self, tmp_db):
         url = "https://example.invalid/news/synthetic-rating"
         now = int(time.time())
         with patch.object(database, "PUSH_DB_PATH", tmp_db):
-            database.save_article_score_to_db(url, 88.0)
+            database.save_article_score_to_db(
+                url,
+                88.0,
+                article_published_at=now - 3600,
+            )
             conn = sqlite3.connect(tmp_db)
             conn.execute(
                 "UPDATE article_score_log SET captured_at = ?",
@@ -77,6 +174,7 @@ class TestTeamsAlertHistory:
         assert stale is None
         assert fresh_enough is not None
         assert fresh_enough["score"] == pytest.approx(88.0)
+        assert fresh_enough["article_published_at"] == now - 3600
         assert 199 <= fresh_enough["age_seconds"] <= 202
     def test_daily_schedule_claim_is_restart_safe_without_recommendation_cooldown(self, tmp_db):
         now_ts = 1_800_000_100

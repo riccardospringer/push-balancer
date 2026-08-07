@@ -56,8 +56,12 @@ X-Score-Key: <injected-secret>
   adjustments can prevent a naive sum of the explanation values from matching
   the total. The API forwards values exactly and never sums or recalculates
   them. Legacy snapshots return `scoreBreakdown: null` and `orFactor: null`.
-- The latest captured value remains available for up to eight hours; use
-  `scoredAt` when the consumer needs a stricter business freshness rule.
+- Article freshness is applied to the total score with a shared, monotonic
+  curve (100% at 0–1h, 95% at 3h, 80% at 6h, 55% at 9h, and 30% at 12h).
+  Articles older than 12 hours are ineligible and are never returned as found.
+- The latest eligible captured value remains available for up to eight hours,
+  but the publication-time check is repeated for every lookup. The workday
+  capture window therefore never extends the 12-hour article-age limit.
 - The response intentionally excludes article title, URL, prose explanations,
   model metadata, and predicted opening-rate data.
 - The service returns no zero or alternate fallback score.
@@ -106,10 +110,11 @@ characters. Duplicates remain in their original positions; found/not-found
 counts are position-based, while `uniqueCount` is case-insensitive. Any source,
 network, ordering, size, or contract failure fails the whole call with `502`.
 The service makes exactly one deduplicated Render batch request and never fans
-out to single source requests. `notFound` means that no fresh candidate-UI
-snapshot exists in Render's eight-hour window; it does not mean that the article
-itself does not exist. A valid batch in which every item is `notFound` still
-returns HTTP `200`.
+out to single source requests. `notFound` means that no eligible candidate
+score exists: there may be no candidate-UI snapshot in Render's eight-hour
+window, the publication time may be missing or invalid, or the article may be
+older than 12 hours. It does not mean that the article itself does not exist. A
+valid batch in which every item is `notFound` still returns HTTP `200`.
 
 ## Server-side use only
 
@@ -148,7 +153,7 @@ example deliberately avoids placing either value in shell history.
 |---|---|---|
 | `200` | Current score returned | Validate the v1 shape and use `score` |
 | `401` | Key missing or invalid | Do not retry; check secret injection/rotation |
-| `404` | No Render UI score captured within the workday window exists for this ID, or hidden network denial | Treat as no score; do not invent a fallback |
+| `404` | No eligible score exists (including article age over 12h), or hidden network denial | Treat as no score; do not invent a fallback |
 | `422` | Invalid CMS-ID format | Do not retry; fix the caller |
 | `429` | Two batch calls are already running on this worker | Honor `Retry-After`; retry with jitter |
 | `500` | Unexpected runtime failure | Retry at most twice with backoff and jitter |

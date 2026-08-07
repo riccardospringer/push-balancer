@@ -35,10 +35,15 @@ from pydantic import (
     model_validator,
 )
 
+from app.scoring.freshness import (
+    is_publication_eligible,
+    parse_publication_timestamp,
+)
+
 router = APIRouter()
 
 _lock = threading.Lock()
-# url_hash → {score, ts, url}
+# url_hash → {score, ts, url, articlePublishedAt}
 _score_cache: dict[str, dict] = {}
 _CACHE_TTL = 8 * 3600  # 8 Stunden (ein Arbeitstag)
 _CMS_ID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
@@ -106,10 +111,20 @@ def _validated_enrichment(entry: dict) -> tuple[dict, float] | None:
 
 
 def _cleanup():
-    cutoff = time.time() - _CACHE_TTL
-    dead = [k for k, v in _score_cache.items() if v["ts"] < cutoff]
-    for k in dead:
-        del _score_cache[k]
+    now = int(time.time())
+    cutoff = now - _CACHE_TTL
+    dead = [
+        key
+        for key, entry in _score_cache.items()
+        if entry["ts"] < cutoff
+        or not is_publication_eligible(
+            entry.get("articlePublishedAt", entry.get("article_published_at")),
+            now_ts=now,
+            max_future_skew_seconds=_MAX_FUTURE_SKEW_SECONDS,
+        )
+    ]
+    for key in dead:
+        del _score_cache[key]
 
 
 def _normalize_url(url: str) -> str:
@@ -167,6 +182,10 @@ def _fresh_minimal_snapshot(
     """Validiert einen Capture-Eintrag und reduziert ihn auf den Consumer-Vertrag."""
     score_raw = entry.get("score")
     captured_at_raw = entry.get("ts", entry.get("captured_at"))
+    article_published_at_raw = entry.get(
+        "articlePublishedAt",
+        entry.get("article_published_at"),
+    )
     if isinstance(score_raw, bool) or isinstance(captured_at_raw, bool):
         return None
     try:
@@ -180,6 +199,11 @@ def _fresh_minimal_snapshot(
         or captured_at <= 0
         or captured_at > now + _MAX_FUTURE_SKEW_SECONDS
         or now - captured_at >= max_age_seconds
+        or not is_publication_eligible(
+            article_published_at_raw,
+            now_ts=now,
+            max_future_skew_seconds=_MAX_FUTURE_SKEW_SECONDS,
+        )
     ):
         return None
     snapshot: dict[str, object] = {"score": score, "capturedAt": captured_at}
@@ -209,13 +233,22 @@ def get_score_snapshot_for_url(
         if entry:
             captured_at = int(entry["ts"])
             age_seconds = max(0, now - captured_at)
-            if age_seconds < max_age:
-                return {
+            article_published_at = parse_publication_timestamp(
+                entry.get("articlePublishedAt", entry.get("article_published_at"))
+            )
+            if age_seconds < max_age and is_publication_eligible(
+                article_published_at,
+                now_ts=now,
+                max_future_skew_seconds=_MAX_FUTURE_SKEW_SECONDS,
+            ):
+                snapshot: dict[str, float | int | str] = {
                     "score": float(entry["score"]),
                     "capturedAt": captured_at,
                     "ageSeconds": age_seconds,
                     "source": "memory",
                 }
+                snapshot["articlePublishedAt"] = int(article_published_at)
+                return snapshot
     if not allow_db_fallback:
         return None
 
@@ -228,12 +261,18 @@ def get_score_snapshot_for_url(
             max_age_seconds=max_age,
         )
         if snapshot:
-            return {
+            resolved: dict[str, float | int | str] = {
                 "score": float(snapshot["score"]),
                 "capturedAt": int(snapshot["captured_at"]),
                 "ageSeconds": int(snapshot["age_seconds"]),
                 "source": "database",
             }
+            article_published_at = parse_publication_timestamp(
+                snapshot.get("article_published_at")
+            )
+            if article_published_at is not None:
+                resolved["articlePublishedAt"] = article_published_at
+            return resolved
     except Exception:
         pass
     return None
@@ -357,6 +396,12 @@ def _get_server_candidate_score_snapshots(
     for article in payload.get("articles") or []:
         if not isinstance(article, dict):
             continue
+        if not is_publication_eligible(
+            article.get("pubDate") or article.get("publishedAt"),
+            now_ts=captured_at,
+            max_future_skew_seconds=_MAX_FUTURE_SKEW_SECONDS,
+        ):
+            continue
         try:
             score = float(article.get("score"))
         except (TypeError, ValueError, OverflowError):
@@ -381,8 +426,17 @@ class ScoreCaptureItem(BaseModel):
     url: str = Field(min_length=1)
     score: float = Field(gt=0, le=100)
     ts: int = Field(gt=0)
+    article_published_at: int = Field(alias="articlePublishedAt", gt=0)
     score_breakdown: ScoreBreakdown | None = Field(default=None, alias="scoreBreakdown")
     or_factor: float | None = Field(default=None, alias="orFactor", ge=0.6, le=1.5)
+
+    @field_validator("article_published_at", mode="before")
+    @classmethod
+    def require_unambiguous_publication_timestamp(cls, value: object) -> int:
+        timestamp = parse_publication_timestamp(value)
+        if timestamp is None:
+            raise ValueError("articlePublishedAt must be a timezone-aware timestamp")
+        return timestamp
 
     @model_validator(mode="after")
     def require_complete_enrichment_pair(self) -> ScoreCaptureItem:
@@ -594,9 +648,26 @@ def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
     now = int(time.time())
     if any(item.ts > now + _MAX_FUTURE_SKEW_SECONDS for item in body.scores):
         raise HTTPException(status_code=422, detail="Capture timestamp is too far in the future.")
+    if any(
+        item.article_published_at > now + _MAX_FUTURE_SKEW_SECONDS
+        for item in body.scores
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Article publication timestamp is too far in the future.",
+        )
+    eligible_scores = [
+        item
+        for item in body.scores
+        if is_publication_eligible(
+            item.article_published_at,
+            now_ts=now,
+            max_future_skew_seconds=_MAX_FUTURE_SKEW_SECONDS,
+        )
+    ]
     stored = 0
     with _lock:
-        for item in body.scores:
+        for item in eligible_scores:
             key = hashlib.md5(_normalize_url(item.url).encode()).hexdigest()
             existing = _score_cache.get(key)
             if not existing or item.ts >= existing["ts"]:
@@ -604,6 +675,7 @@ def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
                     "score": round(item.score, 1),
                     "ts": item.ts,
                     "url": item.url,
+                    "articlePublishedAt": item.article_published_at,
                 }
                 if item.score_breakdown is not None and item.or_factor is not None:
                     entry["scoreBreakdown"] = item.score_breakdown.model_dump()
@@ -613,7 +685,7 @@ def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
         _cleanup()
     # Persistent in DB schreiben (überlebt Render-Restarts)
     try:
-        for item in body.scores:
+        for item in eligible_scores:
             score_breakdown = (
                 item.score_breakdown.model_dump()
                 if item.score_breakdown is not None
@@ -622,6 +694,7 @@ def post_score_capture(body: ScoreCaptureRequest) -> JSONResponse:
             save_article_score_to_db(
                 item.url,
                 round(item.score, 1),
+                article_published_at=item.article_published_at,
                 captured_at=item.ts,
                 score_breakdown=score_breakdown,
                 or_factor=item.or_factor,

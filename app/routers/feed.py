@@ -45,6 +45,11 @@ from app.config import (
     SPORT_GLOBAL_FEEDS,
 )
 from app.research.worker import _xor_perf_cache, _xor_perf_lock, get_cached_feeds
+from app.scoring.freshness import (
+    freshness_score_multiplier,
+    is_publication_eligible,
+    publication_age_hours,
+)
 
 # ── Outlet-Farben für Konkurrenz-Tab ──────────────────────────────────────
 _OUTLET_COLORS: dict[str, str] = {
@@ -412,6 +417,74 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
     return articles
 
 
+def _fresh_article_candidates(
+    articles: list[dict[str, Any]],
+    *,
+    now_ts: int | float,
+) -> list[dict[str, Any]]:
+    """Keep only candidates whose publication time proves they are at most 12h old."""
+    return [
+        article
+        for article in articles
+        if is_publication_eligible(
+            article.get("pubDate"),
+            now_ts=now_ts,
+            max_future_skew_seconds=30,
+        )
+    ]
+
+
+def _apply_server_score_freshness_weight(
+    articles: list[dict[str, Any]],
+    *,
+    now_ts: int | float,
+) -> list[dict[str, Any]]:
+    """Apply the final age multiplier where the upstream score has not done so.
+
+    New browser captures already contain the same multiplier and carry their
+    publication timestamp. Server fallbacks and legacy captures do not, so the
+    backend adds it exactly once before exposing those scores.
+    """
+    for article in articles:
+        age_hours = publication_age_hours(article.get("pubDate"), now_ts=now_ts)
+        if age_hours is None or not is_publication_eligible(
+            article.get("pubDate"),
+            now_ts=now_ts,
+            max_future_skew_seconds=30,
+        ):
+            article["score"] = 0.0
+            article["freshnessEligible"] = False
+            article["freshnessScoreMultiplier"] = 0.0
+            article["scoreSource"] = "article_freshness_cutoff"
+            article["scoreReason"] = "Artikel ist aelter als das globale 12h-Push-Limit"
+            continue
+
+        multiplier = freshness_score_multiplier(age_hours)
+        article["articleAgeHours"] = round(max(0.0, age_hours), 2)
+        article["freshnessEligible"] = True
+        article["freshnessScoreMultiplier"] = round(multiplier, 3)
+
+        score_source = str(article.get("scoreSource") or "")
+        capture_tracks_publication = article.get(
+            "pushBalancerScoreArticlePublishedAt"
+        ) is not None
+        needs_weight = score_source in {
+            "server_editorial_fallback",
+            "server_editorial_corp_announcement",
+        } or (score_source == "captured_push_balancer" and not capture_tracks_publication)
+        if not needs_weight:
+            continue
+
+        score = max(0.0, min(float(article.get("score") or 0.0), 100.0))
+        article["score"] = round(score * multiplier, 1)
+        reason = str(article.get("scoreReason") or "").strip()
+        freshness_reason = (
+            f"Frischefaktor {multiplier:.2f} bei {max(0.0, age_hours):.1f}h Artikelalter"
+        )
+        article["scoreReason"] = f"{reason}. {freshness_reason}" if reason else freshness_reason
+    return articles
+
+
 def _apply_canonical_push_balancer_scores(
     articles: list[dict[str, Any]],
     *,
@@ -429,6 +502,7 @@ def _apply_canonical_push_balancer_scores(
         article["pushBalancerScore"] = None
         article["pushBalancerScoreCapturedAt"] = None
         article["pushBalancerScoreAgeSeconds"] = None
+        article["pushBalancerScoreArticlePublishedAt"] = None
         article["scoreSource"] = "server_editorial_fallback"
 
         snapshot = get_score_snapshot_for_url(
@@ -454,6 +528,9 @@ def _apply_canonical_push_balancer_scores(
             tz=datetime.timezone.utc,
         ).isoformat().replace("+00:00", "Z")
         article["pushBalancerScoreAgeSeconds"] = int(snapshot["ageSeconds"])
+        article["pushBalancerScoreArticlePublishedAt"] = snapshot.get(
+            "articlePublishedAt"
+        )
         article["scoreSource"] = "captured_push_balancer"
         article["scoreReason"] = "Frisches Rating aus der Push-Balancer-Kandidatenansicht"
 
@@ -595,13 +672,14 @@ def build_articles_payload(
     if data is None:
         raise HTTPException(status_code=502, detail="BILD sitemap is not reachable")
 
+    now = datetime.datetime.now()
+    now_ts = int(now.timestamp())
+
     try:
         articles = _extract_sitemap_articles(data, max_items=max(offset + limit, 120))
     except ET.ParseError as exc:
         raise HTTPException(status_code=502, detail=f"Invalid sitemap XML: {exc}") from exc
-
-    now = datetime.datetime.now()
-    now_ts = int(now.timestamp())
+    articles = _fresh_article_candidates(articles, now_ts=now_ts)
     history: list[dict[str, Any]] = []
     research_state: dict[str, Any] = {}
 
@@ -682,6 +760,11 @@ def build_articles_payload(
     articles = _apply_canonical_push_balancer_scores(articles)
     if use_internal_score_api:
         articles = _apply_internal_score_api_scores(articles)
+    articles = _apply_server_score_freshness_weight(articles, now_ts=now_ts)
+    articles.sort(
+        key=lambda article: (float(article.get("score") or 0.0), article.get("pubDate") or ""),
+        reverse=True,
+    )
 
     selected = articles[offset : offset + limit]
 

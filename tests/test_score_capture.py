@@ -13,6 +13,7 @@ from app import database
 from app import main as main_module
 from app.main import app
 from app.routers import score_capture
+from app.scoring.freshness import MAX_ARTICLE_AGE_SECONDS
 
 
 CMS_ID = "0123456789abcdef01234567"
@@ -21,7 +22,9 @@ CMS_ID_2 = "89abcdef0123456701234567"
 ARTICLE_URL_2 = f"https://www.bild.de/sport/synthetic-score-{CMS_ID_2}"
 MISSING_CMS_ID = "aaaaaaaaaaaaaaaaaaaaaaaa"
 NOW = 1_800_000_000
+ARTICLE_PUBLISHED_AT = NOW - 3600
 client = TestClient(app, raise_server_exceptions=True)
+SERVER_CANDIDATE_FALLBACK = score_capture._get_server_candidate_score_snapshots
 ENGAGEMENT_BREAKDOWN = {
     "kind": "engagement",
     "relevance": 30.0,
@@ -47,6 +50,7 @@ SPORT_BREAKDOWN = {
 @pytest.fixture(autouse=True)
 def isolated_score_cache(tmp_db, monkeypatch):
     del tmp_db
+    monkeypatch.setattr(database.time, "time", lambda: NOW)
     monkeypatch.setattr(
         score_capture,
         "_get_server_candidate_score_snapshots",
@@ -70,14 +74,22 @@ def _cache_score(
     url: str = ARTICLE_URL,
     score_breakdown: dict | None = None,
     or_factor: float | None = None,
+    article_published_at: int | None = ARTICLE_PUBLISHED_AT,
 ) -> None:
     key = score_capture.hashlib.md5(score_capture._normalize_url(url).encode()).hexdigest()
     entry = {"score": score, "ts": ts, "url": url}
+    if article_published_at is not None:
+        entry["articlePublishedAt"] = article_published_at
     if score_breakdown is not None and or_factor is not None:
         entry["scoreBreakdown"] = score_breakdown
         entry["orFactor"] = or_factor
     with score_capture._lock:
         score_capture._score_cache[key] = entry
+
+
+def _save_score(url: str, score: float, **kwargs) -> None:
+    kwargs.setdefault("article_published_at", ARTICLE_PUBLISHED_AT)
+    database.save_article_score_to_db(url, score, **kwargs)
 
 
 def test_endpoint_returns_only_newest_fresh_memory_score(monkeypatch):
@@ -183,7 +195,7 @@ def test_batch_returns_found_and_not_found_in_input_order(tmp_db, monkeypatch):
         score_breakdown=ENGAGEMENT_BREAKDOWN,
         or_factor=1.06,
     )
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL_2,
         75.6,
         captured_at=NOW - 10,
@@ -262,7 +274,7 @@ def test_batch_newest_snapshot_wins_without_recalculation(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
     monkeypatch.setattr(database.time, "time", lambda: NOW)
     _cache_score(score=40.0, ts=NOW - 20)
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         58.3,
         captured_at=NOW - 5,
@@ -421,7 +433,7 @@ def test_score_capture_health_is_minimal_and_not_cacheable():
 def test_endpoint_uses_persistent_db_fallback(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
     monkeypatch.setattr(database.time, "time", lambda: NOW)
-    database.save_article_score_to_db(ARTICLE_URL, 55.1)
+    _save_score(ARTICLE_URL, 55.1)
 
     response = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
 
@@ -431,7 +443,7 @@ def test_endpoint_uses_persistent_db_fallback(tmp_db, monkeypatch):
 
 def test_endpoint_uses_enriched_persistent_db_fallback(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         58.3,
         captured_at=NOW - 5,
@@ -454,7 +466,7 @@ def test_endpoint_uses_enriched_persistent_db_fallback(tmp_db, monkeypatch):
 
 def test_db_never_exposes_a_partial_enrichment_pair(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    database.save_article_score_to_db(ARTICLE_URL, 55.1, captured_at=NOW - 5)
+    _save_score(ARTICLE_URL, 55.1, captured_at=NOW - 5)
     conn = sqlite3.connect(tmp_db)
     conn.execute(
         "UPDATE article_score_log SET score_breakdown_json = ?",
@@ -473,14 +485,14 @@ def test_db_never_exposes_a_partial_enrichment_pair(tmp_db, monkeypatch):
 
 def test_database_newest_capture_wins_atomically(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         58.3,
         captured_at=NOW - 5,
         score_breakdown=ENGAGEMENT_BREAKDOWN,
         or_factor=1.06,
     )
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         40.0,
         captured_at=NOW - 10,
@@ -500,7 +512,7 @@ def test_database_newest_capture_wins_atomically(tmp_db, monkeypatch):
 
 def test_newer_database_capture_wins_over_stale_memory_replay(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         58.3,
         captured_at=NOW - 5,
@@ -544,7 +556,12 @@ def test_database_migrates_legacy_score_table(tmp_path):
     conn = sqlite3.connect(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(article_score_log)")}
     conn.close()
-    assert {"score_breakdown_json", "or_factor", "enrichment_captured_at"} <= columns
+    assert {
+        "article_published_at",
+        "score_breakdown_json",
+        "or_factor",
+        "enrichment_captured_at",
+    } <= columns
 
 
 def test_legacy_upsert_cannot_attach_stale_enrichment_to_a_newer_score(
@@ -552,7 +569,7 @@ def test_legacy_upsert_cannot_attach_stale_enrichment_to_a_newer_score(
     monkeypatch,
 ):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         58.3,
         captured_at=NOW - 10,
@@ -592,7 +609,7 @@ def test_legacy_upsert_cannot_attach_stale_enrichment_to_a_newer_score(
     assert rolled_forward.status_code == 200
     assert rolled_forward.json() == {"score": 61.2, "capturedAt": NOW - 5}
 
-    database.save_article_score_to_db(
+    _save_score(
         ARTICLE_URL,
         62.4,
         captured_at=NOW,
@@ -622,6 +639,7 @@ def test_post_persists_complete_enrichment_pair(tmp_db, monkeypatch):
                     "url": ARTICLE_URL,
                     "score": 58.3,
                     "ts": NOW - 5,
+                    "articlePublishedAt": ARTICLE_PUBLISHED_AT,
                     "scoreBreakdown": ENGAGEMENT_BREAKDOWN,
                     "orFactor": 1.06,
                 }
@@ -642,6 +660,178 @@ def test_post_persists_complete_enrichment_pair(tmp_db, monkeypatch):
     assert read.json()["orFactor"] == 1.06
 
 
+def test_post_requires_a_valid_article_publication_timestamp():
+    missing = client.post(
+        "/api/score-capture",
+        json={
+            "scores": [
+                {
+                    "url": ARTICLE_URL,
+                    "score": 58.3,
+                    "ts": NOW - 5,
+                }
+            ]
+        },
+    )
+    ambiguous = client.post(
+        "/api/score-capture",
+        json={
+            "scores": [
+                {
+                    "url": ARTICLE_URL,
+                    "score": 58.3,
+                    "ts": NOW - 5,
+                    "articlePublishedAt": "2027-01-15T09:00:00",
+                }
+            ]
+        },
+    )
+
+    assert missing.status_code == 422
+    assert ambiguous.status_code == 422
+
+
+def test_post_ignores_article_older_than_twelve_hours(tmp_db, monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+
+    response = client.post(
+        "/api/score-capture",
+        json={
+            "scores": [
+                {
+                    "url": ARTICLE_URL,
+                    "score": 99.0,
+                    "ts": NOW,
+                    "articlePublishedAt": NOW - MAX_ARTICLE_AGE_SECONDS - 1,
+                }
+            ]
+        },
+    )
+    read = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "stored": 0}
+    assert read.status_code == 404
+    conn = sqlite3.connect(tmp_db)
+    count = conn.execute("SELECT COUNT(*) FROM article_score_log").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_post_accepts_article_at_exactly_twelve_hours(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+
+    response = client.post(
+        "/api/score-capture",
+        json={
+            "scores": [
+                {
+                    "url": ARTICLE_URL,
+                    "score": 58.3,
+                    "ts": NOW,
+                    "articlePublishedAt": NOW - MAX_ARTICLE_AGE_SECONDS,
+                }
+            ]
+        },
+    )
+    read = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "stored": 1}
+    assert read.status_code == 200
+    assert read.json() == {"score": 58.3, "capturedAt": NOW}
+
+
+def test_post_rejects_article_publication_too_far_in_the_future(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+
+    response = client.post(
+        "/api/score-capture",
+        json={
+            "scores": [
+                {
+                    "url": ARTICLE_URL,
+                    "score": 58.3,
+                    "ts": NOW,
+                    "articlePublishedAt": (
+                        NOW + score_capture._MAX_FUTURE_SKEW_SECONDS + 1
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Article publication timestamp is too far in the future."
+    )
+
+
+def test_memory_lookup_fails_closed_for_stale_and_legacy_entries(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _cache_score(
+        score=99.0,
+        ts=NOW,
+        article_published_at=NOW - MAX_ARTICLE_AGE_SECONDS - 1,
+    )
+    stale = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+    _cache_score(score=99.0, ts=NOW, article_published_at=None)
+    legacy = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert stale.status_code == 404
+    assert legacy.status_code == 404
+
+
+def test_cleanup_removes_stale_and_legacy_memory_entries(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _cache_score(
+        score=99.0,
+        ts=NOW,
+        article_published_at=NOW - MAX_ARTICLE_AGE_SECONDS - 1,
+    )
+    _cache_score(
+        score=98.0,
+        ts=NOW,
+        url=ARTICLE_URL_2,
+        article_published_at=None,
+    )
+
+    with score_capture._lock:
+        score_capture._cleanup()
+        assert score_capture._score_cache == {}
+
+
+def test_server_candidate_fallback_skips_missing_and_stale_publications(monkeypatch):
+    from app.routers import feed
+
+    monkeypatch.setattr(
+        feed,
+        "build_articles_payload",
+        lambda **_kwargs: {
+            "articles": [
+                {"url": ARTICLE_URL, "score": 99.0},
+                {
+                    "url": ARTICLE_URL,
+                    "score": 98.0,
+                    "pubDate": "2027-01-14T19:59:59Z",
+                },
+                {
+                    "url": ARTICLE_URL,
+                    "score": 64.2,
+                    "pubDate": "2027-01-15T07:00:00Z",
+                },
+            ]
+        },
+    )
+
+    snapshots = SERVER_CANDIDATE_FALLBACK(
+        [CMS_ID],
+        now=NOW,
+    )
+
+    assert snapshots == {CMS_ID: {"score": 64.2, "capturedAt": NOW}}
+
+
 def test_post_rejects_future_timestamp_before_memory_or_database_write(
     tmp_db,
     monkeypatch,
@@ -656,6 +846,7 @@ def test_post_rejects_future_timestamp_before_memory_or_database_write(
                     "url": ARTICLE_URL,
                     "score": 58.3,
                     "ts": NOW + score_capture._MAX_FUTURE_SKEW_SECONDS + 1,
+                    "articlePublishedAt": ARTICLE_PUBLISHED_AT,
                 }
             ]
         },
@@ -686,6 +877,7 @@ def test_post_reports_storage_failure_so_browser_can_retry(monkeypatch):
                     "url": ARTICLE_URL,
                     "score": 58.3,
                     "ts": NOW - 5,
+                    "articlePublishedAt": ARTICLE_PUBLISHED_AT,
                 }
             ]
         },
@@ -711,6 +903,7 @@ def test_post_rejects_incomplete_or_invalid_enrichment_pair(tmp_db, patch_data):
         "url": ARTICLE_URL,
         "score": 58.3,
         "ts": NOW - 5,
+        "articlePublishedAt": ARTICLE_PUBLISHED_AT,
         "scoreBreakdown": ENGAGEMENT_BREAKDOWN,
         "orFactor": 1.06,
     }
@@ -734,8 +927,8 @@ def test_endpoint_keeps_original_ui_score_after_previous_three_minute_cutoff(mon
 def test_db_fallback_skips_newer_untrusted_url(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
     monkeypatch.setattr(database.time, "time", lambda: NOW)
-    database.save_article_score_to_db(ARTICLE_URL, 55.1)
-    database.save_article_score_to_db(f"https://evil.example/news/{CMS_ID}", 99.0)
+    _save_score(ARTICLE_URL, 55.1)
+    _save_score(f"https://evil.example/news/{CMS_ID}", 99.0)
 
     response = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
 
@@ -746,11 +939,32 @@ def test_db_fallback_skips_newer_untrusted_url(tmp_db, monkeypatch):
 def test_endpoint_rejects_stale_db_score(tmp_db, monkeypatch):
     monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
     monkeypatch.setattr(database.time, "time", lambda: NOW)
-    database.save_article_score_to_db(ARTICLE_URL, 55.1)
+    _save_score(ARTICLE_URL, 55.1)
     conn = sqlite3.connect(tmp_db)
     conn.execute(
         "UPDATE article_score_log SET captured_at = ?",
         (NOW - score_capture._CACHE_TTL - 1,),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(f"/api/score-capture/by-cms-id/{CMS_ID}")
+
+    assert response.status_code == 404
+
+
+def test_endpoint_rejects_legacy_db_score_without_publication_time(
+    tmp_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    normalized_url = score_capture._normalize_url(ARTICLE_URL)
+    url_hash = score_capture.hashlib.md5(normalized_url.encode()).hexdigest()
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        """INSERT INTO article_score_log (url_hash, url, score, captured_at)
+           VALUES (?, ?, ?, ?)""",
+        (url_hash, ARTICLE_URL, 99.0, NOW),
     )
     conn.commit()
     conn.close()
