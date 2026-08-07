@@ -118,7 +118,7 @@ The adaptive post-send threshold uses the timestamp of the last successfully sen
 - Local Germany-relevance metadata: article-level class, score adjustment, minimum score, and blocking reason derived from existing public article metadata; the `germany_people` class records only the public-role/event classification, not identity-trait inferences
 - Synthetic shadow-study metadata: invented article cases, situational verdict counts, qualitative drivers/barriers, and an explicitly non-OR scenario-coverage index
 - Daily Teams schedule delivery metadata: calendar date, claim/send timestamp, item count, status, and truncated error text
-- Existing candidate-view score capture: normalized public article URL, article-level score, numeric displayed/applied components, OR sorting factor, and capture timestamp
+- Existing candidate-view score capture: normalized public article URL, public article publication timestamp, article-level score, numeric displayed/applied components, OR sorting factor, and capture timestamp
 - Internal score lookup metadata: CMS document ID sent to the internal service; returned article-level score and calculation timestamp
 - Adaptive-threshold metadata: current/base/peak article-score threshold, decay phase, elapsed time since the last Teams recommendation, and aggregate count of waived soft gates
 - Optional Adobe Analytics traffic aggregates
@@ -222,7 +222,7 @@ The final TBD above remains applicable to unapproved or broader integrations. Fo
 - Full title-jury and final-jury scorecards are evaluated in memory and are not added to the local recommendation-retention schema by this change. Their minimized verdicts follow the local 45-day recommendation retention and the destination tenant's Teams/Power Automate retention and deletion policy, which must be confirmed before activation.
 - Synthetic panel results are not persisted by the panel. The checked-in example report contains dummy cases only and follows repository retention; any future real-user study would need a separately approved retention and deletion design.
 - Daily plan suggestion snapshots are persisted for retrospective analysis and should be reviewed when retention needs change.
-- Candidate-view scores are logically ignored after the existing eight-hour cache TTL and after 180 seconds for Teams selection. On 2026-07-23 the task owner recorded that physical deletion ownership and handling for the pre-existing `article_score_log` table are arranged by the responsible owners. This change adds no table or longer retention.
+- Candidate-view scores and their public article publication timestamps are logically ignored after the existing eight-hour cache TTL and after 180 seconds for Teams selection. On 2026-07-23 the task owner recorded that physical deletion ownership and handling for the pre-existing `article_score_log` table are arranged by the responsible owners. This change adds no table or longer retention.
 - Internal API results are held only in process memory for at most 45 seconds by this consumer and are not added to a new persistence table. The selected score and timestamp follow the existing 45-day Teams recommendation retention and the destination tenant's retention policy.
 - The adaptive-threshold phase and minimized high-score override verdict are stored only inside the existing Teams recommendation decision snapshot and follow its 45-day cleanup; no new table or identifier is introduced.
 - Any new persisted data category should document retention and deletion behavior in the corresponding handover or PR note.

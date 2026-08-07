@@ -2,14 +2,19 @@
   "sourceRepository": "https://github.com/riccardospringer/push-balancer",
   "sourceCommit": "3b212fcdfb5339d8bffbfe55ae79ffb7f0ee6808",
   "calibrationCommit": "8fe5472f00d9254ea0ae09647601bee2f1127b5a",
-  "purpose": "Frozen Render scoring base plus the deployed A-list People calibration overlay",
+  "purpose": "Frozen Render scoring base plus the deployed A-list People calibration and global article-freshness overlays",
+  "freshnessPolicyOverlay": {
+    "maxArticleAgeHours": 12,
+    "publicationTimestampRequired": true,
+    "scoreCurve": [[0, 1.0], [1, 1.0], [3, 0.95], [6, 0.8], [9, 0.55], [12, 0.3]]
+  },
   "runtimeParity": {
     "status": "pending",
     "reason": "The deployed Render image, dependency versions, architecture, active model and live scoring state are not derivable from git and must be validated before cutover."
   },
   "sha256": {
     "app/cost_controls.py": "abd70355ef39329bf40318d1aca374d44fdf944d10c06fe171f6e996c484e1fa",
-    "app/database.py": "e6eba82a85813decedf29f1c4940f75767af3ed6c194472d3af13dcd760ca31e",
+    "app/database.py": "279f0b581e4e98903e4aa9a01483e10f3c53e0ce6a0385302d7c3015434c8a31",
     "app/ml/features.py": "dc7af50c1f555f82424ff7217b7eb5cf86dc7c39a4d0afbc4d4305dbd6f550e9",
     "app/ml/heuristic.py": "5a085ea4ca80d4fc7f31e721e0fb47d21f61337b2cd70526df0f7d5c7e2a9439",
     "app/ml/lightgbm_model.py": "2dfaa4b9753ebf8152bfa3e239bde883bcece9988527dd4da8fbd709d416d526",
@@ -18,7 +23,7 @@
     "app/ml/stats.py": "eb1cc88cd6342e44dd4eff6f3a7f98f28fae1efa5c3cb586cd78b39fbe4eb41b",
     "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
     "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
-    "app/routers/feed.py": "85ac40434a9f561084565aedc4642aab7fefb7d21d2573cbac0676429584a21a",
+    "app/routers/feed.py": "4b201b5ac436b1702703645aa87826be5bf08719861ab850d6ae8b316dd09219",
     "app/scoring/editorial.py": "d507a5e45b0d0ac54ea4b2d8ed79fb258ea018470b2f6db3eef309a42d40ef18",
     "app/legacy_push_balancer.html": "1e8c7194944fa71fd56a33ada55c7528ac2a0f1bc3d0f6bd8b4d8ea0bf307279"
   }
