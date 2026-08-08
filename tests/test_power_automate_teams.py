@@ -863,7 +863,7 @@ def test_claim_fails_closed_when_final_live_dedup_refresh_is_unavailable(
     assert slot is None
 
 
-def test_claim_fails_closed_without_authoritative_live_push_history(
+def test_claim_uses_cloud_fallback_without_authoritative_live_push_history(
     monkeypatch,
     tmp_db,
 ):
@@ -872,6 +872,11 @@ def test_claim_fails_closed_without_authoritative_live_push_history(
     now_ts = SLOT_TS + 30
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    monkeypatch.setattr(
+        power_automate,
+        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+        False,
+    )
     monkeypatch.setattr(
         power_automate,
         "_refresh_push_history_for_dedup",
@@ -883,6 +888,39 @@ def test_claim_fails_closed_without_authoritative_live_push_history(
             "/api/v1/power-automate/teams/claim",
             headers=HEADERS,
             json={"requestId": "synthetic-cloud-only-run"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["ready"] is True
+
+
+def test_claim_can_still_require_authoritative_live_push_history(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    monkeypatch.setattr(
+        power_automate,
+        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "_refresh_push_history_for_dedup",
+        lambda: {"history": [], "history_authoritative": False},
+    )
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-explicit-failclosed-run"},
         )
 
     assert response.status_code == 503

@@ -78,6 +78,10 @@ services:
       # Code-Default ebenfalls fail-safe auf "false" gesetzt.
       - key: PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
         value: "false"
+      # Scheduled recommendations must keep working when the local Mac/AS relay
+      # is offline. Persisted history still filters known live-push duplicates.
+      - key: POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
+        value: "false"
       - key: POWER_AUTOMATE_API_KEY
         sync: false
       # Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04):

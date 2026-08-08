@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth import require_power_automate_key
+from app.config import POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
 from app.cms.article_context import fetch_public_article_context
 from app.cms.url_api import (
     UrlApiNotConfigured,
@@ -712,7 +713,7 @@ def claim_power_automate_teams_recommendation(
     )
     if not isinstance(history, list):
         history = []
-    if not history_authoritative:
+    if POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY and not history_authoritative:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Live-push duplicate protection is temporarily unavailable.",
@@ -749,7 +750,9 @@ def claim_power_automate_teams_recommendation(
     context = build_teams_alert_context(
         candidates,
         history=history,
-        history_authoritative=True,
+        history_authoritative=(
+            history_authoritative or not POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
+        ),
         now_ts=decision_now,
         config=dispatch_config,
     )
@@ -772,13 +775,17 @@ def claim_power_automate_teams_recommendation(
         return _no_op("candidate_not_approved")
 
     preclaim_now = int(time.time())
-    final_dedup = _dispatch_live_push_comparison(
-        selected,
-        now_ts=preclaim_now,
-        config=dispatch_config,
-        comparison_authoritative=True,
-        history=history,
-        refresh_live_history=False,
+    final_dedup = (
+        _dispatch_live_push_comparison(
+            selected,
+            now_ts=preclaim_now,
+            config=dispatch_config,
+            comparison_authoritative=True,
+            history=history,
+            refresh_live_history=False,
+        )
+        if history_authoritative
+        else {"blocked": False, "mode": "durable_claim_fallback"}
     )
     if final_dedup.get("blocked"):
         duplicate = str(final_dedup.get("code") or "") == "live_push_exact_article_duplicate"

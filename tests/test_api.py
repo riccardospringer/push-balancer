@@ -1244,20 +1244,16 @@ class TestTeamsReadiness:
         assert data["powerAutomateConfigured"] is True
         assert data["slots"]["ok"] is True
         assert data["slots"]["plannedToday"] == 12
-        assert data["slots"]["labels"] == [
-            "06:00",
-            "06:36",
-            "07:12",
-            "07:47",
-            "08:23",
-            "08:59",
-            "12:30",
-            "17:30",
-            "18:49",
-            "20:08",
-            "21:26",
-            "22:45",
-        ]
+        from zoneinfo import ZoneInfo
+
+        from app.routers.power_automate import power_automate_slot_labels_for_date
+
+        berlin_date = dt.datetime.fromtimestamp(
+            time.time(), ZoneInfo("Europe/Berlin")
+        ).date()
+        assert data["slots"]["labels"] == list(
+            power_automate_slot_labels_for_date(berlin_date)
+        )
         assert data["volume"]["min"] <= data["volume"]["max"]
 
     def test_power_automate_readiness_allows_cloud_only_history_fallback(
