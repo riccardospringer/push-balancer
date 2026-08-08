@@ -301,7 +301,7 @@ def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp
         )
 
     assert response.status_code == 200
-    assert response.json()["ready"] is True
+    assert response.json()["ready"] == "yes"
     assert response.json()["scheduledAt"] == "2026-08-03T12:30:00+02:00"
     assert response.json()["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
 
@@ -547,7 +547,7 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
         "alternative",
         "messageHtml",
     }
-    assert payload["ready"] is True
+    assert payload["ready"] == "yes"
     assert payload["slotId"] == f"teams-recommendation-{SLOT_TS}"
     assert payload["scheduledAt"] == "2026-08-03T12:30:00+02:00"
     assert payload["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
@@ -892,7 +892,7 @@ def test_claim_uses_cloud_fallback_without_authoritative_live_push_history(
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert response.json()["ready"] is True
+    assert response.json()["ready"] == "yes"
 
 
 def test_claim_can_still_require_authoritative_live_push_history(
@@ -1016,7 +1016,7 @@ def test_fixed_power_automate_slot_ignores_legacy_date_delay(monkeypatch, tmp_db
         )
 
     assert response.status_code == 200
-    assert response.json()["ready"] is True
+    assert response.json()["ready"] == "yes"
     assert observed_dispatch_config == {
         "slot_delay_date": "",
         "slot_delay_from": "",
@@ -1407,7 +1407,7 @@ def test_stale_replay_cannot_take_over_another_runs_reclaimed_slot(
         slot = teams_recommendation_slot_get(SLOT_TS)
 
     assert owner_b.status_code == 200
-    assert owner_b.json()["ready"] is True
+    assert owner_b.json()["ready"] == "yes"
     assert stale_a.status_code == 200
     assert stale_a.json() == {"ready": False, "reason": "slot_already_claimed"}
     assert slot is not None

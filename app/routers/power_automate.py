@@ -493,7 +493,9 @@ def _claim_response_payload(
         if proposed_alternative["isSport"] != top["isSport"]:
             alternative_payload = proposed_alternative
     return {
-        "ready": True,
+        # Power Automate compares this explicit text marker. This avoids the
+        # designer coercing a JSON boolean into a mismatched token type.
+        "ready": "yes",
         "slotId": _slot_id(slot_ts),
         "scheduledAt": _iso_at(slot_ts),
         "scheduledAtUtc": _utc_iso_at(slot_ts),
