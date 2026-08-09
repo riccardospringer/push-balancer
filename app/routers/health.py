@@ -1,6 +1,7 @@
 """app/routers/health.py — GET /api/health, GET /api/memory-stats"""
 import os
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -207,8 +208,7 @@ def get_memory_stats() -> JSONResponse:
     })
 
 
-@router.get("/api/teams-readiness", include_in_schema=False)
-def get_teams_readiness() -> JSONResponse:
+def build_teams_readiness_payload() -> dict[str, Any]:
     """Live-Nachweis: sind alle Voraussetzungen des Teams-Kanals erfuellt?
 
     Prueft die reale Kette (Kandidatenfeld inkl. Score-API, Push-Historie,
@@ -473,43 +473,47 @@ def get_teams_readiness() -> JSONResponse:
         and runtime.get("healthy", True)
         and not config_problems
     )
-    return JSONResponse(
-        content={
-            "ready": ready,
-            "berlinTime": berlin_now.strftime("%Y-%m-%d %H:%M"),
-            "teamsAlertsEnabled": bool(config.enabled),
-            "transportMode": transport_mode,
-            "backgroundSenderEnabled": bool(PUSH_TEAMS_BACKGROUND_SENDER_ENABLED),
-            "powerAutomateConfigured": power_automate_configured,
-            "durableStorage": durable_storage,
-            "webhookConfigured": bool(config.webhook_url),
-            "quietHoursActive": bool(quiet_reason),
-            "quietHoursReason": quiet_reason or None,
-            "volume": {
-                "min": int(config.min_alerts_per_day),
-                "max": int(config.max_alerts_per_day),
-                "sportMin": int(config.sport_min_per_day),
-                "sportMax": int(config.sport_max_per_day),
-            },
-            "scoreApi": score_api,
-            "exactFive": exact_five,
-            "pushHistory": history_info,
-            "slots": slots_info,
-            "runtime": {
-                "status": runtime.get("status"),
-                "reason": runtime.get("reason") or "",
-                "cycleAgeSeconds": runtime.get("cycleAgeSeconds"),
-                "cycleCount": runtime.get("cycleCount"),
-                "consecutiveCycleErrors": runtime.get("consecutiveCycleErrors"),
-                "consecutiveTransportFailures": runtime.get(
-                    "consecutiveTransportFailures"
-                ),
-                "workerRestarts": runtime.get("workerRestarts"),
-                "lastSendTs": runtime.get("lastSendTs"),
-            },
-            "configurationProblems": config_problems,
-        }
-    )
+    return {
+        "ready": ready,
+        "berlinTime": berlin_now.strftime("%Y-%m-%d %H:%M"),
+        "teamsAlertsEnabled": bool(config.enabled),
+        "transportMode": transport_mode,
+        "backgroundSenderEnabled": bool(PUSH_TEAMS_BACKGROUND_SENDER_ENABLED),
+        "powerAutomateConfigured": power_automate_configured,
+        "durableStorage": durable_storage,
+        "webhookConfigured": bool(config.webhook_url),
+        "quietHoursActive": bool(quiet_reason),
+        "quietHoursReason": quiet_reason or None,
+        "volume": {
+            "min": int(config.min_alerts_per_day),
+            "max": int(config.max_alerts_per_day),
+            "sportMin": int(config.sport_min_per_day),
+            "sportMax": int(config.sport_max_per_day),
+        },
+        "scoreApi": score_api,
+        "exactFive": exact_five,
+        "pushHistory": history_info,
+        "slots": slots_info,
+        "runtime": {
+            "status": runtime.get("status"),
+            "reason": runtime.get("reason") or "",
+            "cycleAgeSeconds": runtime.get("cycleAgeSeconds"),
+            "cycleCount": runtime.get("cycleCount"),
+            "consecutiveCycleErrors": runtime.get("consecutiveCycleErrors"),
+            "consecutiveTransportFailures": runtime.get(
+                "consecutiveTransportFailures"
+            ),
+            "workerRestarts": runtime.get("workerRestarts"),
+            "lastSendTs": runtime.get("lastSendTs"),
+        },
+        "configurationProblems": config_problems,
+    }
+
+
+@router.get("/api/teams-readiness", include_in_schema=False)
+def get_teams_readiness() -> JSONResponse:
+    """Return the complete internal Teams readiness diagnostic."""
+    return JSONResponse(content=build_teams_readiness_payload())
 
 
 @router.get("/api/ready", include_in_schema=False)

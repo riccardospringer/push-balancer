@@ -46,17 +46,19 @@ The operational endpoints are deliberately excluded from the public OpenAPI docu
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/api/teams-readiness` | Internal pre-cutover proof for transport, score source, configured history mode, and the fixed 12-slot plan |
+| `GET` | `/api/v1/power-automate/teams/readiness` | Authenticated, data-minimized proof with the same readiness calculation plus the latest due slot's delivery state |
 | `POST` | `/api/v1/power-automate/teams/claim` | Claim one Teams message containing exactly five recommendations for the current slot |
 | `POST` | `/api/v1/power-automate/teams/receipt` | Finalize a claimed slot as `sent`, `failed`, or `delivery_uncertain` |
 
-Every request must send:
+Every authenticated request must send:
 
 ```http
-Content-Type: application/json
 X-Power-Automate-Key: <protected secret reference>
 ```
 
-Claim and receipt require the dedicated header above. Do not use `CONSUMER_API_KEY`, `X-Consumer-Key`, a signed webhook URL, or a Teams connection token for them. `/api/teams-readiness` is not a public health route; access it only from the approved VPN/CIDR network.
+The two `POST` requests additionally send `Content-Type: application/json`.
+
+The authenticated readiness, claim, and receipt endpoints require the dedicated header above. Do not use `CONSUMER_API_KEY`, `X-Consumer-Key`, a signed webhook URL, or a Teams connection token for them. `/api/teams-readiness` remains a full internal diagnostic and is available only from the approved VPN/CIDR network. The authenticated readiness endpoint exposes only a fixed allowlist of booleans, modes, the 12 public slot labels, configuration enums, and `latestSlot`; it never returns candidates, article metadata, request IDs, account data, or secrets.
 
 ## Prerequisites and secrets
 
@@ -112,6 +114,10 @@ Add an **HTTP** action and rename it `Claim_recommendation`:
 | `Content-Type` header | `application/json` |
 | `X-Power-Automate-Key` header | Select the protected secret/configuration; never type a committed value |
 | Body | See below |
+| Timeout | `PT45S` |
+| Retry policy | `Fixed interval` |
+| Retry count | `2` |
+| Retry interval | `PT5S` |
 
 ```json
 {
@@ -171,20 +177,20 @@ Expected no-op response:
 
 In the configured cloud-only mode, the scheduled claim does not call the AS-network live-push feed. Durable exact Teams/article and per-slot claims remain available in that mode. When an approved fresh history relay is available elsewhere in the application it remains best-effort context, but it is not renewed or treated as an authoritative prerequisite by the cloud-only claim. With `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true`, the scheduled claim instead performs one approved refresh and fails closed unless the result is authoritative and fresh. Enable that mode only after its separate review; do not claim that it is active without runtime evidence.
 
-A retry of the claim action within the same Power Automate run uses the same `requestId` and can replay the original response only when contract version, slot ID, recommendation count, five rendered Top blocks, five pseudonymous group rows, and all five owned article claims still match. A legacy, short, incomplete, or orphaned replay is released fail-closed and cannot produce a one-item message. A different minute run cannot take over a live or completed claim and normally receives `ready=false`. Non-2xx responses are fail-closed: `401` means missing/wrong auth, `422` means an invalid request, and `503` means the integration or required input is unavailable. None of those responses may post to Teams.
+A retry of the claim action within the same Power Automate run uses the same `requestId` and can replay the original response only when contract version, slot ID, recommendation count, five rendered Top blocks, five pseudonymous group rows, and all five owned article claims still match. The fixed two-retry policy above is therefore bounded and idempotent; do not increase it or use an unbounded/custom retry loop. A legacy, short, incomplete, or orphaned replay is released fail-closed and cannot produce a one-item message. A different minute run cannot take over a live or completed claim and normally receives `ready=false`. Non-2xx responses are fail-closed: `401` means missing/wrong auth, `422` means an invalid request, and `503` means the integration or required input is unavailable. None of those responses may post to Teams.
 
 ## 3. Branch on the complete ready contract
 
-Add a **Condition** named `Recommendation_ready` with this expression:
+Add a **Condition** named `Exact_five_ready` with this complete expression:
 
 ```text
-@and(equals(body('Claim_recommendation')?['ready'],'yes'),equals(body('Claim_recommendation')?['contractVersion'],2),equals(body('Claim_recommendation')?['recommendationCount'],5))
+@and(equals(body('Claim_recommendation')?['ready'],'yes'),equals(body('Claim_recommendation')?['contractVersion'],2),equals(body('Claim_recommendation')?['recommendationCount'],5),not(empty(body('Claim_recommendation')?['slotId'])),not(empty(body('Claim_recommendation')?['messageHtml'])),contains(body('Claim_recommendation')?['messageHtml'],'<strong>Top 1:</strong>'),contains(body('Claim_recommendation')?['messageHtml'],'<strong>Top 2:</strong>'),contains(body('Claim_recommendation')?['messageHtml'],'<strong>Top 3:</strong>'),contains(body('Claim_recommendation')?['messageHtml'],'<strong>Top 4:</strong>'),contains(body('Claim_recommendation')?['messageHtml'],'<strong>Top 5:</strong>'))
 ```
 
-- **If no:** end successfully without a Teams action. A Terminate action with status `Succeeded` is optional.
+- **If no:** leave the branch completely empty. It must contain no Teams action, receipt, loop, fallback, or Terminate action.
 - **If yes:** continue with the Teams action below.
 
-Enable Secure Inputs/Outputs on the condition and on downstream actions that expose claim fields in their inputs or outputs.
+Keep Secure Outputs enabled on `Claim_recommendation`; do not copy its response into a Compose action, variable, log, or diagnostic branch. If the tenant UI offers Secure Inputs/Outputs for the condition, enable them there as well.
 
 ## 4. Post to Teams exactly once
 
@@ -196,6 +202,7 @@ In the **If yes** branch, add **Microsoft Teams → Post message in a chat or ch
 
 In the Teams action settings:
 
+- set **Timeout** to `PT30S`;
 - set **Retry policy** to `None`;
 - enable **Secure Inputs** and **Secure Outputs**;
 - do not add a second Teams action, connector fallback, or webhook retry;
@@ -205,37 +212,33 @@ A failed, timed-out, or skipped Teams action is acknowledgement-ambiguous: Micro
 
 ## 5. Record the delivery receipt
 
-Add two parallel HTTP actions after `Post_to_Teams`. Both use the same protected `X-Power-Automate-Key`, `Content-Type: application/json`, Secure Inputs/Outputs, the original claim `requestId`, and this URI:
+Add exactly one HTTP action after `Post_to_Teams` and name it `Receipt_delivery_result`. It uses the same protected `X-Power-Automate-Key`, `Content-Type: application/json`, Secure Inputs/Outputs, and this URI:
 
 ```text
 https://push-balancer.onrender.com/api/v1/power-automate/teams/receipt
 ```
 
-### Successful receipt
+Configure its settings exactly as follows:
 
-Name the first action `Receipt_sent`, configure **Run after** only for `Post_to_Teams` **is successful**, and use:
+| Setting | Value |
+|---|---|
+| Timeout | `PT30S` |
+| Retry policy | `Fixed interval` |
+| Retry count | `3` |
+| Retry interval | `PT5S` |
+| Run after `Post_to_Teams` | `is successful`, `has failed`, `has timed out`, and `is skipped` |
 
-```json
-{
-  "slotId": "@{body('Claim_recommendation')?['slotId']}",
-  "requestId": "@{workflow()?['run']?['name']}",
-  "status": "sent"
-}
-```
-
-### Uncertain-delivery receipt
-
-Name the second action `Receipt_delivery_uncertain`, configure **Run after** for `Post_to_Teams` **has failed**, **has timed out**, and **is skipped**, and use:
+Use one dynamic status in the body so those four mutually exclusive outcomes cannot race two parallel receipt branches:
 
 ```json
 {
   "slotId": "@{body('Claim_recommendation')?['slotId']}",
   "requestId": "@{workflow()?['run']?['name']}",
-  "status": "delivery_uncertain"
+  "status": "@{if(equals(actions('Post_to_Teams').status,'Succeeded'),'sent','delivery_uncertain')}"
 }
 ```
 
-All three non-success states are terminal because the connector outcome cannot prove that Teams did not accept the message. Every receipt is bound to the run that acquired the claim: its `requestId` must exactly match the claim request or the API returns HTTP 409 without changing delivery state. One transaction finalizes the parent slot, all five pseudonymous group rows, and all five article claims; a partial finalization is rolled back, repeated receipts are idempotent, and the group counts as one Teams message. The API also supports `status=failed` for a separately verified, definite pre-delivery failure, but the standard Teams action error branch must not infer that state.
+Only the literal Teams action status `Succeeded` maps to `sent`. Failed, timed-out, and skipped outcomes map to `delivery_uncertain` because the connector outcome cannot prove that Teams did not accept the message. Every receipt is bound to the run that acquired the claim: its `requestId` must exactly match the claim request or the API returns HTTP 409 without changing delivery state. One transaction finalizes the parent slot, all five pseudonymous group rows, and all five article claims; a partial finalization is rolled back, repeated receipts are idempotent, and the group counts as one Teams message. The fixed receipt retries are safe because the endpoint is idempotent. The API also supports `status=failed` for a separately verified, definite pre-delivery failure, but the standard Teams action must not infer that state.
 
 A successful receipt returns a minimized acknowledgement:
 
@@ -247,23 +250,37 @@ A successful receipt returns a minimized acknowledgement:
 }
 ```
 
-Repeated identical receipts are safe. A success can never be downgraded to failure.
+Repeated identical receipts are safe. A success can never be downgraded to failure, and a terminal `delivery_uncertain` receipt must not be rewritten as `sent` later.
 
-If an entire flow run terminates after the claim but before either receipt action can execute, the backend cannot know whether Teams accepted the post. The unresolved five-item group therefore remains fail-closed and none of its article identities may be recycled into a later slot merely because the five-minute lease elapsed. Reconcile that run in the protected Power Automate history and record `sent` or `delivery_uncertain` with the original `requestId`; never release it as definitely failed without evidence that the Teams action did not start. This trades availability for duplicate prevention and should be covered by the flow-owner's operational alerting.
+If an entire flow run terminates after the claim but before the receipt action can execute, the backend cannot know whether Teams accepted the post. The unresolved five-item group therefore remains fail-closed and none of its article identities may be recycled into a later slot merely because the five-minute lease elapsed. Reconcile that run in the protected Power Automate history and record `sent` only when `Post_to_Teams` is proven `Succeeded`; otherwise record `delivery_uncertain`, always with the original `requestId`. Never rerun the Teams action or release the group as definitely failed when delivery is ambiguous. This trades availability for duplicate prevention.
+
+## Monitoring and reconciliation
+
+Monitoring must be external to the delivery branch so an alerting failure cannot create another Teams post. Configure the Power Platform operations monitor to alert immediately when the flow is turned off or suspended, either connector loses authorization, a trigger/action is throttled, or any enabled run fails. After every five-minute slot window, reconcile the protected run history and minimized backend state against exactly one of these outcomes: one `sent` receipt for one five-item message, one terminal `delivery_uncertain` receipt, or no claim because every attempt returned `ready=false`.
+
+Use this checklist without exposing the API key, message body, article data, connection token, or raw run inputs/outputs:
+
+1. **Missing `sent` receipt:** if `Exact_five_ready` entered its true branch and `Post_to_Teams` is proven `Succeeded`, but `Receipt_delivery_result` has no successful acknowledgement by the end of the slot window, alert and replay only the receipt request with the original `slotId` and `requestId` obtained through the approved minimized reconciliation view. Never resubmit the Teams action, expose secured action payloads, or rerun the complete flow. If the Teams status is unavailable or ambiguous, record `delivery_uncertain` instead of `sent`.
+2. **`delivery_uncertain`:** alert immediately and treat all five identities as terminally delivered for duplicate prevention. Do not repost, release, or upgrade the receipt. An authorized operator may verify whether the message is visible in the target channel for the incident record, but absence from the current view is not proof that Microsoft never accepted it.
+3. **No exact five:** normal minute attempts may return `ready=false` and retry automatically until the window closes. If no run reaches the full Exact-5 condition during the whole window, record the missed slot and inspect only minimized readiness fields for candidate count, canonical Top-1, score API, durable storage, and configured history mode. Do not weaken the condition, fill fewer than five places, or manually create a message. Escalate repeated missed windows to the System Owner.
+4. **Connector authorization or suspension:** keep both the scheduled flow and legacy sender from posting while the approved flow owner restores the least-privilege HTTP/Teams connections and clears the suspension. Re-run the flow checker, confirm all secure settings and readiness gates, and resume only for a future slot; do not replay a past scheduled run.
+
+A run that claimed five items but remains in backend `sending` without a terminal receipt after its Power Automate run has ended is an incident even if a later slot succeeds. Preserve only the non-personal `slotId`, `requestId`, action statuses, and timestamps needed for reconciliation, subject to the approved retention period.
 
 ## Secure configuration checklist
 
 Before saving or enabling the flow, verify all of the following:
 
 - The API key comes from the approved protected secret/configuration and is sent only in `X-Power-Automate-Key`.
-- Secure Inputs and Secure Outputs are enabled on claim, condition, Teams, and both receipt actions.
-- The Teams retry policy is `None`.
+- Secure Inputs and Secure Outputs are enabled on claim, Teams, and the single receipt action (and on the condition when the tenant UI offers those settings).
+- Claim uses timeout `PT45S` and fixed retry count `2` at interval `PT5S`.
+- Teams uses timeout `PT30S` and retry policy `None`.
+- `Receipt_delivery_result` uses timeout `PT30S` and fixed retry count `3` at interval `PT5S`.
 - Recurrence concurrency is `1`.
 - An initial claim is accepted only with at least 30 seconds remaining in its slot window.
-- `Recommendation_ready` checks `ready="yes"`, `contractVersion=2`, and `recommendationCount=5` together.
-- The false branch contains no Teams action.
-- `Receipt_sent` and `Receipt_delivery_uncertain` both carry the original `requestId`.
-- `Receipt_delivery_uncertain` runs after failed, timed-out, and skipped Teams outcomes.
+- `Exact_five_ready` checks `ready="yes"`, `contractVersion=2`, `recommendationCount=5`, nonempty `slotId` and `messageHtml`, and all five `Top 1` through `Top 5` markers together.
+- The false branch is empty.
+- `Receipt_delivery_result` carries the original `requestId` and runs after successful, failed, timed-out, and skipped Teams outcomes.
 - The flow sends `messageHtml` directly and does not reconstruct a message from the full response.
 - The target chat/channel and bot identity are the approved production connection.
 - Run-history retention follows the approved tenant policy and is no longer than operationally necessary.
@@ -299,16 +316,26 @@ Never activate the scheduled flow while the legacy background sender is active f
    PY
    ```
 
-5. Choose a cutover before the next scheduled window and set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false` in the deployment. From the approved VPN/CIDR network, inspect only the minimized readiness fields:
+5. Choose a cutover before the next scheduled window and set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false` in the deployment. Prefer the authenticated, already minimized readiness route. Inject the key from the approved secret store; never type it into the command line, shell history, or URL:
+
+   ```bash
+   curl -fsS \
+     -H "X-Power-Automate-Key: ${POWER_AUTOMATE_API_KEY:?load from approved secret store}" \
+     "https://push-balancer.onrender.com/api/v1/power-automate/teams/readiness" | jq
+   ```
+
+   From an approved VPN/CIDR network, the complete internal diagnostic can still be reduced locally before display:
 
    ```bash
    curl -fsS "https://push-balancer.onrender.com/api/teams-readiness" | \
      python3 -c 'import json,sys; d=json.load(sys.stdin); h=d.get("pushHistory") or {}; x=d.get("exactFive") or {}; s=d.get("durableStorage") or {}; print(json.dumps({"ready":d.get("ready"),"teamsAlertsEnabled":d.get("teamsAlertsEnabled"),"transportMode":d.get("transportMode"),"backgroundSenderEnabled":d.get("backgroundSenderEnabled"),"powerAutomateConfigured":d.get("powerAutomateConfigured"),"durableStorageRequired":s.get("required"),"durableStorageOk":s.get("durable"),"durableStorageMode":s.get("mode"),"scoreApiOk":(d.get("scoreApi") or {}).get("ok"),"exactFiveContractOk":x.get("contractOk"),"exactFiveCount":x.get("recommendationCount"),"top1Canonical":x.get("top1Canonical"),"historyOk":h.get("ok"),"historyRequired":h.get("required"),"historyAuthoritative":h.get("historyAuthoritative"),"fallbackMode":h.get("fallbackMode"),"slotsOk":(d.get("slots") or {}).get("ok"),"plannedToday":(d.get("slots") or {}).get("plannedToday"),"labels":(d.get("slots") or {}).get("labels")},indent=2))'
    ```
 
-   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorageRequired=true`, `durableStorageOk=true`, `durableStorageMode=persistent_disk`, `scoreApiOk=true`, `exactFiveContractOk=true`, `exactFiveCount=5`, `top1Canonical=true`, `slotsOk=true`, `plannedToday=12`, and `labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
+   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorage.required=true`, `durableStorage.durable=true`, `durableStorage.mode=persistent_disk`, `scoreApi.ok=true`, `exactFive.contractOk=true`, `exactFive.recommendationCount=5`, `exactFive.top1Canonical=true`, `slots.ok=true`, `slots.plannedToday=12`, and `slots.labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `pushHistory.historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
+
+   `latestSlot.state=sent` with `receiptRecorded=true` proves the latest due slot reached a successful receipt. `delivery_uncertain` requires human reconciliation and must never be retried automatically through Teams. `sending` after the five-minute lease or `unclaimed` after the window indicates a missing receipt or no successful Exact-5 claim and must alert the operator.
 6. Confirm the old incoming-webhook Power Automate flow is off, then turn on the new scheduled flow.
-7. At the next slot, verify exactly one claim with `ready="yes"`, `contractVersion=2`, and `recommendationCount=5`; one Teams message containing Top 1 through Top 5; one successful Teams action; and one `Receipt_sent`. The other minute runs should be normal `ready=false` no-ops. A contract mismatch must take the no branch and send nothing.
+7. At the next slot, verify exactly one claim with `ready="yes"`, `contractVersion=2`, and `recommendationCount=5`; one Teams message containing Top 1 through Top 5; one successful Teams action; and one `Receipt_delivery_result` acknowledgement with `status=sent`. The other minute runs should be normal `ready=false` no-ops. A contract mismatch must take the empty no branch and send nothing.
 8. Observe at least the agreed validation period before retiring the protected `PUSH_TEAMS_WEBHOOK_URL` rollback secret. Rotate/remove it afterward according to the approved secret process.
 
 Production state after cutover:
