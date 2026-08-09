@@ -1,6 +1,8 @@
 # Scheduled Power Automate Teams delivery
 
-This runbook configures Power Automate as the only production scheduler and Microsoft Teams transport for Push Balancer recommendations. Push Balancer keeps ownership of the absolute internal-API ranking, the five displayed recommendations, exact duplicate protection, and the durable per-slot claim.
+This runbook configures Power Automate as the only production scheduler and Microsoft Teams transport for Push Balancer recommendations. Push Balancer keeps ownership of the absolute internal-API Top-1, the exactly five displayed recommendations, exact duplicate protection, and the durable per-slot claim.
+
+> **Approval record:** On 2026-08-09, the Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal approval for this exactly-five contract and `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false` cloud-only mode was recorded in `PRIVACY.md`. The scoped backend rollout is approved. Keep the new flow off until the legacy transport is proven unable to race and production readiness is green.
 
 ## Production contract
 
@@ -35,7 +37,7 @@ On Saturday and Sunday, only the six morning slots move two hours later:
 
 The common `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, and `22:45` slots remain unchanged on weekends.
 
-All claim windows are half-open (`slot <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed or the claim API is temporarily unavailable before a slot is reserved. The first successful claim posts immediately; the backend slot claim makes repeated runs idempotent. Do not use a **Delay until** action.
+All claim windows are half-open (`slot <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed, the claim API is temporarily unavailable, or fewer than five safe recommendations exist before a slot is reserved. The first successful exactly-five claim posts immediately; the backend slot claim makes repeated runs idempotent. Do not use a **Delay until** action.
 
 The weekday/weekend labels above are the entire Power Automate schedule. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the five-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
 
@@ -43,8 +45,8 @@ The operational endpoints are deliberately excluded from the public OpenAPI docu
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/teams-readiness` | Internal pre-cutover proof for transport, score source, authoritative history, and the fixed 12-slot plan |
-| `POST` | `/api/v1/power-automate/teams/claim` | Claim the one recommendation for the current slot |
+| `GET` | `/api/teams-readiness` | Internal pre-cutover proof for transport, score source, configured history mode, and the fixed 12-slot plan |
+| `POST` | `/api/v1/power-automate/teams/claim` | Claim one Teams message containing exactly five recommendations for the current slot |
 | `POST` | `/api/v1/power-automate/teams/receipt` | Finalize a claimed slot as `sent`, `failed`, or `delivery_uncertain` |
 
 Every request must send:
@@ -59,6 +61,7 @@ Claim and receipt require the dedicated header above. Do not use `CONSUMER_API_K
 ## Prerequisites and secrets
 
 - The deployment has `PUSH_TEAMS_ALERTS_ENABLED=true`.
+- The deployment uses the mounted persistent disk with `DB_PATH=/data/.push_history.db` and `PUSH_DB_DURABILITY_REQUIRED=true`; an ephemeral `/tmp` database is forbidden for this flow.
 - The deployment has a strong random `POWER_AUTOMATE_API_KEY` in its secret store. It is an opaque shared secret, not a derived key or KDF output.
 - The flow can use the HTTP connector and the Microsoft Teams action **Post message in a chat or channel**.
 - The flow has a tenant-approved protected secret/configuration for the same API key. A solution secret backed by Azure Key Vault is preferred.
@@ -120,13 +123,14 @@ The Power Automate run name is a non-personal, per-run idempotency value. Do not
 
 Enable **Secure Inputs** and **Secure Outputs** in this HTTP action's settings. The claim response has `Cache-Control: no-store` and one of two normal shapes.
 
-For the scheduled path, `top` always means the candidate with the absolute highest fresh, technically valid `internal_score_api` score after exact live-push and Teams-article duplicate removal. Sport quota, Sport corridor, Breaking, section mix, OR, quality models, pacing, and legacy daily targets cannot promote a lower API score; secondary signals may only break an exact API-score tie. The separate `alternative` field never changes `top`.
+For the scheduled path, `top` always means the candidate with the absolute highest fresh, technically valid `internal_score_api` score after Teams-article duplicate removal. Exact live-push duplicate removal is additionally mandatory only when `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true`; the approved cloud-only mode does not claim that comparison. Sport quota, Sport corridor, Breaking, section mix, OR, quality models, pacing, and legacy daily targets cannot promote a lower API score; secondary signals may only break an exact API-score tie. The separate `alternative` field never changes `top`.
 
 Ready response (synthetic example):
 
 ```json
 {
-  "ready": true,
+  "ready": "yes",
+  "contractVersion": 2,
   "slotId": "teams-recommendation-1785753000",
   "scheduledAt": "2026-08-03T12:30:00+02:00",
   "scheduledAtUtc": "2026-08-03T10:30:00Z",
@@ -145,11 +149,14 @@ Ready response (synthetic example):
     "pushScore": 88.2,
     "isSport": true
   },
-  "messageHtml": "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2><p>Das sind meine 5 Empfehlungen.</p>"
+  "recommendationCount": 5,
+  "messageHtml": "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2><p>Das sind meine 5 Empfehlungen.</p><p><strong>Top 1:</strong> Synthetisch</p><p><strong>Top 2:</strong> Synthetisch</p><p><strong>Top 3:</strong> Synthetisch</p><p><strong>Top 4:</strong> Synthetisch</p><p><strong>Top 5:</strong> Synthetisch</p>"
 }
 ```
 
 `alternative` is the highest valid Sport candidate when `top.isSport=false`, or the highest valid non-Sport candidate when `top.isSport=true`. It is `null` when no safe opposite alternative is available. It is a display alternative only, does not implement a Sport quota, and does not claim to be the overall second-ranked article.
+
+The ready contract is all-or-nothing. Top 1 always has a fresh canonical `internal_score_api` score. Places 2–5 first use further technically valid canonical candidates. A place may be filled from the current, publication-age-weighted article field only when its sole technical blocker is the missing fresh canonical score; promotional/fiction, publication, URL, exact Teams-duplicate, and every other hard blocker still exclude it. URL and CMS identity are both deduplicated. The backend-only fallback value orders display places but is never returned or rendered as a numeric Push Score; the message instead says `Kanonischer Push Score steht noch aus.` If fewer than five safe unique articles exist, no slot/article-group claim is created and the next minute run may retry inside the same window. A ready response atomically reserves the slot and all five visible identities; one conflicting identity rolls back the complete group.
 
 Expected no-op response:
 
@@ -160,18 +167,18 @@ Expected no-op response:
 }
 ```
 
-`outside_window`, `slot_closed`, `no_candidate`, `candidate_not_approved`, `already_live_pushed`, `slot_already_claimed`, `article_already_claimed`, and `article_claim_unavailable` are operational reasons, not Teams content. `slot_closed` also covers an initial request with less than the required 30-second delivery budget. Expected no-send outcomes use HTTP 200 with `ready=false`. Branch only on `ready`; do not build flow behavior around a particular reason string.
+`outside_window`, `slot_closed`, `no_candidate`, `candidate_not_approved`, `already_live_pushed`, `live_history_unavailable`, `insufficient_recommendations`, `claim_contract_stale`, `slot_already_claimed`, `article_already_claimed`, and `article_claim_unavailable` are operational reasons, not Teams content. `slot_closed` also covers an initial request with less than the required 30-second delivery budget. Expected no-send outcomes use HTTP 200 with the JSON boolean `ready=false`. Do not build flow behavior around a particular reason string; verify the complete ready contract below.
 
-Each claim attempt loads authoritative live-push history once, then reuses that same immutable decision snapshot for selection and its final exact-duplicate comparison. It deliberately performs no second network refresh during the claim. Direct live data is authoritative; relayed data is authoritative only when the complete snapshot parses and persists, its transmitted `source` is `live` or `relay`, and its age is below 300 seconds using the original `snapshotTs`. Render receipt time must never reset that age.
+In the configured cloud-only mode, the scheduled claim does not call the AS-network live-push feed. Durable exact Teams/article and per-slot claims remain available in that mode. When an approved fresh history relay is available elsewhere in the application it remains best-effort context, but it is not renewed or treated as an authoritative prerequisite by the cloud-only claim. With `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true`, the scheduled claim instead performs one approved refresh and fails closed unless the result is authoritative and fresh. Enable that mode only after its separate review; do not claim that it is active without runtime evidence.
 
-A retry of the claim action within the same Power Automate run uses the same `requestId` and can replay the original response. A different minute run cannot take over a live or completed claim and normally receives `ready=false`. Non-2xx responses are fail-closed: `401` means missing/wrong auth, `422` means an invalid request, and `503` means the integration or authoritative input is unavailable. None of those responses may post to Teams.
+A retry of the claim action within the same Power Automate run uses the same `requestId` and can replay the original response only when contract version, slot ID, recommendation count, five rendered Top blocks, five pseudonymous group rows, and all five owned article claims still match. A legacy, short, incomplete, or orphaned replay is released fail-closed and cannot produce a one-item message. A different minute run cannot take over a live or completed claim and normally receives `ready=false`. Non-2xx responses are fail-closed: `401` means missing/wrong auth, `422` means an invalid request, and `503` means the integration or required input is unavailable. None of those responses may post to Teams.
 
-## 3. Branch on `ready`
+## 3. Branch on the complete ready contract
 
 Add a **Condition** named `Recommendation_ready` with this expression:
 
 ```text
-@equals(body('Claim_recommendation')?['ready'], true)
+@and(equals(body('Claim_recommendation')?['ready'],'yes'),equals(body('Claim_recommendation')?['contractVersion'],2),equals(body('Claim_recommendation')?['recommendationCount'],5))
 ```
 
 - **If no:** end successfully without a Teams action. A Terminate action with status `Succeeded` is optional.
@@ -228,7 +235,7 @@ Name the second action `Receipt_delivery_uncertain`, configure **Run after** for
 }
 ```
 
-All three non-success states are terminal because the connector outcome cannot prove that Teams did not accept the message. Every receipt is bound to the run that acquired the claim: its `requestId` must exactly match the claim request or the API returns HTTP 409 without changing delivery state. The API also supports `status=failed` for a separately verified, definite pre-delivery failure, but the standard Teams action error branch must not infer that state.
+All three non-success states are terminal because the connector outcome cannot prove that Teams did not accept the message. Every receipt is bound to the run that acquired the claim: its `requestId` must exactly match the claim request or the API returns HTTP 409 without changing delivery state. One transaction finalizes the parent slot, all five pseudonymous group rows, and all five article claims; a partial finalization is rolled back, repeated receipts are idempotent, and the group counts as one Teams message. The API also supports `status=failed` for a separately verified, definite pre-delivery failure, but the standard Teams action error branch must not infer that state.
 
 A successful receipt returns a minimized acknowledgement:
 
@@ -242,6 +249,8 @@ A successful receipt returns a minimized acknowledgement:
 
 Repeated identical receipts are safe. A success can never be downgraded to failure.
 
+If an entire flow run terminates after the claim but before either receipt action can execute, the backend cannot know whether Teams accepted the post. The unresolved five-item group therefore remains fail-closed and none of its article identities may be recycled into a later slot merely because the five-minute lease elapsed. Reconcile that run in the protected Power Automate history and record `sent` or `delivery_uncertain` with the original `requestId`; never release it as definitely failed without evidence that the Teams action did not start. This trades availability for duplicate prevention and should be covered by the flow-owner's operational alerting.
+
 ## Secure configuration checklist
 
 Before saving or enabling the flow, verify all of the following:
@@ -251,6 +260,7 @@ Before saving or enabling the flow, verify all of the following:
 - The Teams retry policy is `None`.
 - Recurrence concurrency is `1`.
 - An initial claim is accepted only with at least 30 seconds remaining in its slot window.
+- `Recommendation_ready` checks `ready="yes"`, `contractVersion=2`, and `recommendationCount=5` together.
 - The false branch contains no Teams action.
 - `Receipt_sent` and `Receipt_delivery_uncertain` both carry the original `requestId`.
 - `Receipt_delivery_uncertain` runs after failed, timed-out, and skipped Teams outcomes.
@@ -265,14 +275,14 @@ Never activate the scheduled flow while the legacy background sender is active f
 
 1. Deploy the claim/receipt endpoints with `POWER_AUTOMATE_API_KEY` configured, while the new flow remains off.
 2. Keep `PUSH_TEAMS_ALERTS_ENABLED=true`; this is the overall recommendation and claim-API gate.
-3. Update and restart the approved Mac/Next relay before enabling the flow. The outgoing relay body must send `source=live` or `source=relay` plus the original `snapshotTs`; receipt time must never renew stale data. For the existing macOS LaunchAgents:
+3. Only when the separately reviewed `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true` mode is intentionally enabled, update and restart the approved Mac/Next relay before enabling the flow. The outgoing relay body must send `source=live` or `source=relay` plus the original `snapshotTs`; receipt time must never renew stale data. For the existing macOS LaunchAgents:
 
    ```bash
    launchctl kickstart -k "gui/$(id -u)/com.bild.push-balancer"
    launchctl kickstart -k "gui/$(id -u)/com.bild.push-sync"
    ```
 
-4. Verify locally, without printing messages or secrets, that the refresh is authoritative and the age derived from the original snapshot is below 300 seconds. A relay-backed response is reported as `source=cache->db`; it can be authoritative only after the receiver validated the transmitted `live`/`relay` lineage, original timestamp, complete parse, and persistence:
+4. In that fail-closed live-history mode only, verify locally, without printing messages or secrets, that the refresh is authoritative and the age derived from the original snapshot is below 300 seconds. A relay-backed response is reported as `source=cache->db`; it can be authoritative only after the receiver validated the transmitted `live`/`relay` lineage, original timestamp, complete parse, and persistence. Skip steps 3–4 when readiness deliberately reports `required=false` with the durable fallback mode:
 
    ```bash
    python3 - <<'PY'
@@ -293,12 +303,12 @@ Never activate the scheduled flow while the legacy background sender is active f
 
    ```bash
    curl -fsS "https://push-balancer.onrender.com/api/teams-readiness" | \
-     python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"ready":d.get("ready"),"teamsAlertsEnabled":d.get("teamsAlertsEnabled"),"transportMode":d.get("transportMode"),"backgroundSenderEnabled":d.get("backgroundSenderEnabled"),"powerAutomateConfigured":d.get("powerAutomateConfigured"),"scoreApiOk":(d.get("scoreApi") or {}).get("ok"),"historyAuthoritative":(d.get("pushHistory") or {}).get("historyAuthoritative"),"slotsOk":(d.get("slots") or {}).get("ok"),"plannedToday":(d.get("slots") or {}).get("plannedToday"),"labels":(d.get("slots") or {}).get("labels")},indent=2))'
+     python3 -c 'import json,sys; d=json.load(sys.stdin); h=d.get("pushHistory") or {}; x=d.get("exactFive") or {}; s=d.get("durableStorage") or {}; print(json.dumps({"ready":d.get("ready"),"teamsAlertsEnabled":d.get("teamsAlertsEnabled"),"transportMode":d.get("transportMode"),"backgroundSenderEnabled":d.get("backgroundSenderEnabled"),"powerAutomateConfigured":d.get("powerAutomateConfigured"),"durableStorageRequired":s.get("required"),"durableStorageOk":s.get("durable"),"durableStorageMode":s.get("mode"),"scoreApiOk":(d.get("scoreApi") or {}).get("ok"),"exactFiveContractOk":x.get("contractOk"),"exactFiveCount":x.get("recommendationCount"),"top1Canonical":x.get("top1Canonical"),"historyOk":h.get("ok"),"historyRequired":h.get("required"),"historyAuthoritative":h.get("historyAuthoritative"),"fallbackMode":h.get("fallbackMode"),"slotsOk":(d.get("slots") or {}).get("ok"),"plannedToday":(d.get("slots") or {}).get("plannedToday"),"labels":(d.get("slots") or {}).get("labels")},indent=2))'
    ```
 
-   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `scoreApiOk=true`, `historyAuthoritative=true`, `slotsOk=true`, `plannedToday=12`, and `labels` exactly matches the 12 slots in this document. A partial green check is not sufficient.
+   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorageRequired=true`, `durableStorageOk=true`, `durableStorageMode=persistent_disk`, `scoreApiOk=true`, `exactFiveContractOk=true`, `exactFiveCount=5`, `top1Canonical=true`, `slotsOk=true`, `plannedToday=12`, and `labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
 6. Confirm the old incoming-webhook Power Automate flow is off, then turn on the new scheduled flow.
-7. At the next slot, verify exactly one `ready=true` run, one successful Teams action, and one `Receipt_sent`. The other minute runs should be normal `ready=false` no-ops.
+7. At the next slot, verify exactly one claim with `ready="yes"`, `contractVersion=2`, and `recommendationCount=5`; one Teams message containing Top 1 through Top 5; one successful Teams action; and one `Receipt_sent`. The other minute runs should be normal `ready=false` no-ops. A contract mismatch must take the no branch and send nothing.
 8. Observe at least the agreed validation period before retiring the protected `PUSH_TEAMS_WEBHOOK_URL` rollback secret. Rotate/remove it afterward according to the approved secret process.
 
 Production state after cutover:
@@ -327,9 +337,10 @@ Do not enable both senders as a temporary test. The durable slot claim reduces r
 The integration's purpose is to deliver an editorial recommendation, not to send a push notification or monitor employees. Its Microsoft 365 payload is limited to:
 
 - non-personal slot and delivery timestamps;
-- public article title and URL;
-- section, Sport/non-Sport marker, latest publication time, and advisory Push Score;
+- exactly five public article titles, URLs, and latest publication times;
+- section and Sport/non-Sport marker, plus an advisory Push Score only when it is canonical and fresh;
+- non-personal `contractVersion` and `recommendationCount` fields;
 - rendered `messageHtml`;
 - non-personal `slotId` and Power Automate `requestId` for idempotency.
 
-It excludes raw push history, candidates outside the five displayed recommendations, audience or recipient data, employee identities or activity, model prompts, reviewer scorecards, connection tokens, and API secrets. Backend Teams recommendation and slot state is retained for 45 days. Microsoft 365 run-history and message retention remain subject to the approved tenant policy, controller/processor roles, transfer path, and deletion process documented in the project privacy record.
+For display-only fillers, the local pre-API ordering value remains in the backend and Teams receives only the pending-score text. The payload excludes raw push history, candidates outside the five displayed recommendations, audience or recipient data, employee identities or activity, model prompts, reviewer scorecards, connection tokens, and API secrets. Backend Teams recommendation and slot state is retained for 45 days. Microsoft 365 run-history and message retention remain subject to the approved tenant policy, controller/processor roles, transfer path, and deletion process documented in the project privacy record.

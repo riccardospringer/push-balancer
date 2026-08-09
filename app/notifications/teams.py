@@ -144,7 +144,9 @@ from app.database import (
     teams_recommendation_list_recent,
     teams_recommendation_record,
 )
+from app.article_identity import canonical_article_url_identity
 from app.notifications.teams_review import add_agent_review_veto, run_agent_review_network
+from app.power_automate_schedule import is_power_automate_binding_slot
 from app.score_api_client import resolve_cms_id
 from app.scoring.editorial import (
     assess_germany_relevance,
@@ -2032,13 +2034,14 @@ def _mandatory_slot_top1_binding_slot(
     """Return the fixed slot that requires one fresh Balancer Top-1 recommendation."""
     if not config.slot_gate_enabled:
         return None
-    local_date = dt.datetime.fromtimestamp(
-        int(now_ts), ZoneInfo("Europe/Berlin")
-    ).date()
+    local_date = dt.datetime.fromtimestamp(int(now_ts), ZoneInfo("Europe/Berlin")).date()
     return _active_binding_slot(
         _daily_runtime_opportunities(local_date, config),
         int(now_ts),
     )
+
+
+MANDATORY_BLOCKER_MISSING_CANONICAL_SCORE = "missing_canonical_score"
 
 
 def _mandatory_slot_top1_technical_blockers(
@@ -2049,21 +2052,29 @@ def _mandatory_slot_top1_technical_blockers(
 ) -> list[str]:
     """Keep only technical and exact-duplicate blockers for a mandatory slot."""
     blockers: list[str] = []
+    blocker_codes: list[str] = []
+
+    def block(code: str, message: str) -> None:
+        if message not in blockers:
+            blockers.append(message)
+        if code not in blocker_codes:
+            blocker_codes.append(code)
+
     if not config.enabled:
-        blockers.append("Teams Alerts deaktiviert")
+        block("alerts_disabled", "Teams Alerts deaktiviert")
     if not _title(candidate).strip():
-        blockers.append("Keine Teams-Handlungsempfehlung ohne Headline")
+        block("missing_title", "Keine Teams-Handlungsempfehlung ohne Headline")
     if not _url(candidate).strip():
-        blockers.append("Keine Teams-Handlungsempfehlung ohne Artikel-Link")
+        block("missing_url", "Keine Teams-Handlungsempfehlung ohne Artikel-Link")
     elif not _article_identity_url(_url(candidate)):
-        blockers.append("Artikel-Link ist technisch nicht gueltig")
+        block("invalid_url", "Artikel-Link ist technisch nicht gueltig")
 
     promotional_reason = _promotional_article_reason(candidate)
     if promotional_reason:
-        blockers.append(promotional_reason)
+        block("promotional_article", promotional_reason)
     fiction_reason = _fiction_tv_teaser_reason(candidate)
     if fiction_reason:
-        blockers.append(fiction_reason)
+        block("fiction_teaser", fiction_reason)
 
     raw_score = candidate.get("score")
     try:
@@ -2071,29 +2082,41 @@ def _mandatory_slot_top1_technical_blockers(
     except (TypeError, ValueError):
         rankable_score = float("nan")
     if not math.isfinite(rankable_score):
-        blockers.append("Kanonischer Push-Balancer-Score ist nicht numerisch rankbar")
+        block(
+            "unrankable_score",
+            "Kanonischer Push-Balancer-Score ist nicht numerisch rankbar",
+        )
 
     publication = decision.get("publicationReview")
     publication = publication if isinstance(publication, dict) else {}
     if publication.get("status") != "valid":
-        blockers.append("Veroeffentlichungszeit ist technisch nicht belastbar")
+        block(
+            "invalid_publication",
+            "Veroeffentlichungszeit ist technisch nicht belastbar",
+        )
 
     if (
         config.require_internal_score_api
         and str(decision.get("scoreSource") or "") != "internal_score_api"
     ):
-        blockers.append("Kein frischer kanonischer Push-Balancer-Score fuer die Rangfolge")
+        block(
+            MANDATORY_BLOCKER_MISSING_CANONICAL_SCORE,
+            "Kein frischer kanonischer Push-Balancer-Score fuer die Rangfolge",
+        )
 
     live_comparison = decision.get("livePushComparison")
     live_comparison = live_comparison if isinstance(live_comparison, dict) else {}
-    if not (
-        live_comparison.get("available")
-        and live_comparison.get("authoritative")
-    ):
+    if not (live_comparison.get("available") and live_comparison.get("authoritative")):
         if not config.allow_durable_live_history_fallback:
-            blockers.append("Live-Push-Dublettenpruefung nicht belastbar verfuegbar")
+            block(
+                "live_history_unavailable",
+                "Live-Push-Dublettenpruefung nicht belastbar verfuegbar",
+            )
     elif live_comparison.get("matchType") == "exact_article":
-        blockers.append("Identische Artikel-URL oder CMS-ID wurde bereits live gepusht")
+        block(
+            "live_article_duplicate",
+            "Identische Artikel-URL oder CMS-ID wurde bereits live gepusht",
+        )
 
     alert_state = (context.get("alertState") or {}).get(candidate_key(candidate))
     if isinstance(alert_state, dict) and str(alert_state.get("status") or "") in {
@@ -2101,7 +2124,10 @@ def _mandatory_slot_top1_technical_blockers(
         "sending",
         "delivery_uncertain",
     }:
-        blockers.append("Identischer Artikel wurde bereits per Teams empfohlen")
+        block(
+            "teams_article_duplicate",
+            "Identischer Artikel wurde bereits per Teams empfohlen",
+        )
 
     candidate_identity = _article_identity_url(_url(candidate))
     candidate_cms_id = _article_identity_cms_id(candidate)
@@ -2111,25 +2137,36 @@ def _mandatory_slot_top1_technical_blockers(
         if (identity := _article_identity_url(str(configured_url)))
     }
     if candidate_identity and candidate_identity in external_identities:
-        blockers.append("Identischer Artikel wurde bereits extern per Teams empfohlen")
+        block(
+            "external_teams_article_duplicate",
+            "Identischer Artikel wurde bereits extern per Teams empfohlen",
+        )
     for recent in context.get("recentTeamsAlerts") or []:
         recent_key = str(recent.get("key") or recent.get("url") or "")
         recent_identity = _article_identity_url(recent_key)
         recent_cms_id = str(recent.get("articleId") or "").strip().casefold()
-        if (
-            candidate_identity
-            and recent_identity
-            and candidate_identity == recent_identity
-        ) or (candidate_cms_id and recent_cms_id and candidate_cms_id == recent_cms_id):
-            blockers.append("Identischer Artikel wurde bereits per Teams empfohlen")
+        if (candidate_identity and recent_identity and candidate_identity == recent_identity) or (
+            candidate_cms_id and recent_cms_id and candidate_cms_id == recent_cms_id
+        ):
+            block(
+                "teams_article_duplicate",
+                "Identischer Artikel wurde bereits per Teams empfohlen",
+            )
             break
 
     context_available = context.get("contextAvailable") or {}
     if not context_available.get("alertState"):
-        blockers.append("Teams-Dublettenhistorie nicht belastbar verfuegbar")
+        block(
+            "teams_history_unavailable",
+            "Teams-Dublettenhistorie nicht belastbar verfuegbar",
+        )
     if not context_available.get("recentTeamsAlerts"):
-        blockers.append("Teams-Dublettenhistorie nicht belastbar verfuegbar")
-    return _dedupe(blockers)
+        block(
+            "teams_history_unavailable",
+            "Teams-Dublettenhistorie nicht belastbar verfuegbar",
+        )
+    decision["mandatoryTechnicalBlockerCodes"] = blocker_codes
+    return blockers
 
 
 def evaluate_teams_alert_candidates(
@@ -2142,6 +2179,8 @@ def evaluate_teams_alert_candidates(
     context = context or build_teams_alert_context(candidates, config=config)
     base_context = dict(context)
     base_context.pop("strongerCandidate", None)
+    base_context.pop("_mandatorySlotOverride", None)
+    base_context.pop("_scheduledReadinessProbe", None)
 
     top_limit = max(1, int(config.dashboard_top_limit or PUSH_TEAMS_CANDIDATE_LIMIT))
     base_decisions = []
@@ -2151,13 +2190,46 @@ def evaluate_teams_alert_candidates(
         decision_context["dashboardTopLimit"] = top_limit
         base_decisions.append((candidate, should_notify_teams(candidate, decision_context, config)))
 
-    mandatory_slot = (
-        _mandatory_slot_top1_binding_slot(
-            int(context.get("nowTs") or time.time()),
-            config,
+    mandatory_override = context.get("_mandatorySlotOverride")
+    decision_now = int(context.get("nowTs") or time.time())
+    raw_override_ts = mandatory_override.get("ts") if isinstance(mandatory_override, dict) else None
+    override_ts = (
+        raw_override_ts
+        if isinstance(raw_override_ts, int) and not isinstance(raw_override_ts, bool)
+        else 0
+    )
+    override_label = (
+        str(mandatory_override.get("label") or "").strip()
+        if isinstance(mandatory_override, dict)
+        else ""
+    )
+    override_is_valid = bool(
+        config.slot_gate_enabled
+        and isinstance(mandatory_override, dict)
+        and mandatory_override.get("slotRole") == "power_automate_fixed"
+        and is_power_automate_binding_slot(override_ts, override_label)
+        and (
+            context.get("_scheduledReadinessProbe") is True
+            or override_ts
+            <= decision_now
+            < override_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS
         )
-        if isinstance(context.get("contextAvailable"), dict)
-        else None
+    )
+    mandatory_slot = (
+        {
+            "ts": override_ts,
+            "label": override_label,
+            "slotRole": "power_automate_fixed",
+        }
+        if override_is_valid
+        else (
+            _mandatory_slot_top1_binding_slot(
+                decision_now,
+                config,
+            )
+            if isinstance(context.get("contextAvailable"), dict)
+            else None
+        )
     )
     if mandatory_slot is not None:
         mandatory_decisions: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -12635,18 +12707,7 @@ def _normalize_url(url: str) -> str:
 
 def _article_identity_url(url: str) -> str:
     """Canonical URL identity for real-push deduplication only."""
-    from urllib.parse import urlsplit
-
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
-    host = (parsed.hostname or "").casefold()
-    if host == "bild.de" or host.endswith(".bild.de"):
-        host = "bild.de"
-    path = re.sub(r"/+", "/", parsed.path or "").rstrip("/").casefold()
-    path = re.sub(r"/(?:amp|amphtml)$", "", path).rstrip("/")
-    return f"{host}{path}" if host else path
+    return canonical_article_url_identity(url)
 
 
 def _article_identity_cms_id(article: dict[str, Any]) -> str:

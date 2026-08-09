@@ -18,6 +18,13 @@ def test_frozen_render_score_files_match_source_manifest():
 
     assert manifest["sourceCommit"] == "3b212fcdfb5339d8bffbfe55ae79ffb7f0ee6808"
     assert manifest["calibrationCommit"] == "8fe5472f00d9254ea0ae09647601bee2f1127b5a"
+    scheduled_top5 = manifest["scheduledTop5Overlay"]
+    assert scheduled_top5["approvalStatus"] == "approved"
+    assert scheduled_top5["approvalRecordedAt"] == "2026-08-09"
+    assert scheduled_top5["historyMode"] == "cloud_only_durable_slot_and_receipt_dedup"
+    assert scheduled_top5["livePushHistoryRequired"] is False
+    assert scheduled_top5["contractVersion"] == 2
+    assert scheduled_top5["recommendationCount"] == 5
     assert manifest["runtimeParity"]["status"] == "pending"
     for relative_path, expected_digest in manifest["sha256"].items():
         actual_digest = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()

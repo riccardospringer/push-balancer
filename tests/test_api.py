@@ -20,6 +20,34 @@ client = TestClient(_test_app, raise_server_exceptions=True)
 # ── /api/health ──────────────────────────────────────────────────────────────
 
 class TestHealthEndpoint:
+    def test_durable_db_path_never_falls_back_when_required(self, tmp_path):
+        from app import config
+
+        blocked_parent = tmp_path / "not-a-directory"
+        blocked_parent.write_text("synthetic blocker", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="ephemerer Fallback ist deaktiviert"):
+            config._resolve_writable_db_path(
+                str(blocked_parent / "push.db"),
+                require_durable=True,
+            )
+
+        assert config._db_path_is_durable(
+            "/data/.push_history.db",
+            is_render=True,
+            render_disk_mounted=True,
+        ) is True
+        assert config._db_path_is_durable(
+            "/tmp/.push_history.db",
+            is_render=True,
+            render_disk_mounted=True,
+        ) is False
+        assert config._db_path_is_durable(
+            "/data/.push_history.db",
+            is_render=True,
+            render_disk_mounted=False,
+        ) is False
+
     def test_health_returns_200(self):
         """GET /api/health → HTTP 200."""
         resp = client.get("/api/health")
@@ -210,6 +238,60 @@ class TestStableFrontendContracts:
         assert payload["articles"][0]["serverEditorialScore"] == 76.0
         assert payload["articles"][1]["score"] == 78.0
         assert payload["articles"][1]["serverEditorialScore"] == 96.0
+
+    def test_internal_overlay_preserves_weighted_fallback_provenance(self, monkeypatch):
+        published = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=6)).isoformat()
+        sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
+        xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
+  <url>
+    <loc>https://example.invalid/news/synthetic-without-cms-id</loc>
+    <news:news>
+      <news:title>Synthetische Meldung ohne kanonischen Score</news:title>
+      <news:publication_date>{published}</news:publication_date>
+    </news:news>
+  </url>
+</urlset>""".encode()
+
+        monkeypatch.setattr("app.routers.feed._fetch_url", lambda _url: sitemap)
+        monkeypatch.setattr("app.routers.feed.ARTICLE_PREDICTION_ENRICHMENT_ENABLED", False)
+        monkeypatch.setattr(
+            "app.scoring.editorial.score_push_candidate",
+            lambda *_args, **_kwargs: {
+                "score": 80.0,
+                "scoreSource": "server_editorial_fallback",
+                "scoreReason": "synthetischer Server-Gegencheck",
+            },
+        )
+        monkeypatch.setattr(
+            "app.scoring.editorial.rebalance_push_mix",
+            lambda candidates, **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "app.routers.score_capture.get_score_snapshot_for_url",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "app.routers.feed._get_internal_score_api_client",
+            lambda: object(),
+        )
+        monkeypatch.setattr(
+            "app.score_api_client.fetch_score_lookups",
+            lambda *_args, **_kwargs: {},
+        )
+
+        from app.routers.feed import build_articles_payload
+
+        article = build_articles_payload(
+            include_teams_decisions=False,
+            use_internal_score_api=True,
+        )["articles"][0]
+
+        assert article["score"] == 0.0
+        assert article["scoreSource"] == "internal_score_api_missing"
+        assert article["scoreBeforeInternalApi"] == 64.0
+        assert article["scoreSourceBeforeInternalApi"] == "server_editorial_fallback"
+        assert article["freshnessScoreMultiplier"] == 0.8
 
     def test_articles_contract_marks_video_items(self, monkeypatch):
         published = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -1232,16 +1314,19 @@ class TestTeamsReadiness:
             "transportMode",
             "backgroundSenderEnabled",
             "powerAutomateConfigured",
+            "durableStorage",
             "webhookConfigured",
             "quietHoursActive",
             "volume",
             "scoreApi",
+            "exactFive",
             "pushHistory",
             "slots",
         }
         assert data["transportMode"] == "power_automate_scheduled"
         assert data["backgroundSenderEnabled"] is False
         assert data["powerAutomateConfigured"] is True
+        assert data["durableStorage"]["durable"] is True
         assert data["slots"]["ok"] is True
         assert data["slots"]["plannedToday"] == 12
         from zoneinfo import ZoneInfo
@@ -1255,6 +1340,104 @@ class TestTeamsReadiness:
             power_automate_slot_labels_for_date(berlin_date)
         )
         assert data["volume"]["min"] <= data["volume"]["max"]
+
+    @pytest.mark.parametrize(
+        ("recommendation_count", "contract_ok"),
+        [(4, False), (5, True)],
+    )
+    def test_power_automate_readiness_is_gated_by_the_exact_five_probe(
+        self,
+        monkeypatch,
+        recommendation_count,
+        contract_ok,
+    ):
+        import app.notifications.teams as teams_module
+        import app.routers.feed as feed_router
+        import app.routers.health as health_router
+        import app.routers.power_automate as power_automate
+
+        monkeypatch.setattr(health_router, "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED", False)
+        monkeypatch.setattr(health_router, "POWER_AUTOMATE_API_KEY", "synthetic-pa-key")
+        monkeypatch.setattr(health_router, "PUSH_DB_DURABLE", True)
+        monkeypatch.setattr(
+            health_router,
+            "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+            False,
+        )
+        candidates = [
+            {
+                "url": f"https://www.bild.de/news/readiness-exact-five-{index}",
+                "title": f"Synthetische Readiness-Meldung {index}",
+                "score": 95.0 - index,
+                "scoreSource": "internal_score_api",
+            }
+            for index in range(5)
+        ]
+        monkeypatch.setattr(
+            feed_router,
+            "build_articles_payload",
+            lambda **_kwargs: {"articles": candidates},
+        )
+        monkeypatch.setattr(
+            teams_module,
+            "_refresh_push_history_for_dedup",
+            lambda: {
+                "history": [],
+                "history_authoritative": False,
+                "source": "db-fallback",
+                "snapshot_age_seconds": None,
+            },
+        )
+        monkeypatch.setattr(
+            power_automate,
+            "_prepare_scheduled_recommendation_field",
+            lambda *_args, **_kwargs: {
+                "ready": contract_ok,
+                "reason": "ready" if contract_ok else "insufficient_recommendations",
+                "recommendations": candidates[:recommendation_count],
+                "decision": {"scoreSource": "internal_score_api"},
+            },
+        )
+
+        response = client.get("/api/teams-readiness")
+        data = response.json()
+
+        assert response.status_code == 200
+        assert data["exactFive"] == {
+            "required": True,
+            "contractVersion": 2,
+            "recommendationCount": recommendation_count,
+            "top1Canonical": True,
+            "contractOk": contract_ok,
+            "reason": "ready" if contract_ok else "insufficient_recommendations",
+        }
+        assert data["scoreApi"]["exactFiveCandidateCount"] == recommendation_count
+        assert data["scoreApi"]["exactFiveContractOk"] is contract_ok
+        assert data["scoreApi"]["ok"] is contract_ok
+        if not contract_ok:
+            assert data["ready"] is False
+
+    def test_power_automate_readiness_fails_closed_without_durable_storage(
+        self,
+        monkeypatch,
+    ):
+        import app.routers.health as health_router
+
+        monkeypatch.setattr(health_router, "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED", False)
+        monkeypatch.setattr(health_router, "POWER_AUTOMATE_API_KEY", "synthetic-pa-key")
+        monkeypatch.setattr(health_router, "PUSH_DB_DURABILITY_REQUIRED", True)
+        monkeypatch.setattr(health_router, "PUSH_DB_DURABLE", False)
+
+        response = client.get("/api/teams-readiness")
+        data = response.json()
+
+        assert response.status_code == 200
+        assert data["ready"] is False
+        assert data["durableStorage"] == {
+            "required": True,
+            "durable": False,
+            "mode": "ephemeral_or_unverified",
+        }
 
     def test_power_automate_readiness_allows_cloud_only_history_fallback(
         self,

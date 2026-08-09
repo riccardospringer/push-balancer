@@ -56,6 +56,16 @@ def test_container_starts_the_configured_score_app_without_path_access_logs():
     assert "uvicorn app.main:app" in render_dockerfile
 
 
+def test_render_exactly_once_storage_is_persistent_and_fail_closed():
+    blueprint = _load_yaml("render.yaml")
+    service = blueprint["services"][0]
+    env = {item["key"]: item.get("value") for item in service["envVars"]}
+
+    assert service["disk"]["mountPath"] == "/data"
+    assert env["DB_PATH"] == "/data/.push_history.db"
+    assert env["PUSH_DB_DURABILITY_REQUIRED"] == "true"
+
+
 def test_release_workflow_publishes_matching_image_and_chart():
     workflow = _read(".github/workflows/docker-build.yaml")
 

@@ -250,13 +250,16 @@ _PREFERRED_DB_PATH: str = os.environ.get(
 )
 
 
-def _resolve_writable_db_path(preferred: str) -> str:
+def _resolve_writable_db_path(
+    preferred: str,
+    *,
+    require_durable: bool = False,
+) -> str:
     """Stellt sicher, dass der DB-Pfad beschreibbar ist.
 
-    Auf Render kann `/data` (persistent disk) bei einem Container-Start
-    nicht-beschreibbar sein (Permission-Race nach Mount). In dem Fall
-    fallen wir auf `/tmp` zurück, damit der Server überhaupt startet.
-    Daten sind dort nicht persistent, aber der Service läuft.
+    Ein lokaler Diagnosebetrieb darf weiterhin auf `/tmp` ausweichen. Wenn
+    dauerhafte Speicherung verlangt ist, bleibt der Start dagegen fail-closed:
+    ein ephemerer Fallback würde Zustell-Claims nach einem Restart verlieren.
     """
     parent = os.path.dirname(preferred) or "."
     try:
@@ -273,6 +276,11 @@ def _resolve_writable_db_path(preferred: str) -> str:
             pass
         return preferred
     except (OSError, PermissionError) as exc:
+        if require_durable:
+            raise RuntimeError(
+                "Der konfigurierte dauerhafte DB-Pfad ist nicht beschreibbar; "
+                "ephemerer Fallback ist deaktiviert."
+            ) from exc
         fallback = os.path.join("/tmp", os.path.basename(preferred) or ".push_history.db")
         log.warning(
             "DB-Pfad %s nicht beschreibbar (%s) — Fallback auf %s. Daten sind nicht persistent!",
@@ -289,7 +297,53 @@ def _resolve_writable_db_path(preferred: str) -> str:
             return preferred
 
 
-PUSH_DB_PATH: str = _resolve_writable_db_path(_PREFERRED_DB_PATH)
+def _db_path_is_durable(
+    path: str,
+    *,
+    is_render: bool,
+    render_disk_mounted: bool | None = None,
+) -> bool:
+    """Classify configured storage without exposing the raw path in APIs."""
+    resolved = os.path.realpath(str(path or ""))
+    if not resolved:
+        return False
+    if is_render:
+        on_data_path = resolved == "/data" or resolved.startswith("/data/")
+        mounted = (
+            os.path.ismount("/data")
+            if render_disk_mounted is None
+            else bool(render_disk_mounted)
+        )
+        return bool(on_data_path and mounted)
+    ephemeral_roots = ("/tmp", "/private/tmp", "/var/tmp")
+    return not any(
+        resolved == root or resolved.startswith(f"{root}/")
+        for root in ephemeral_roots
+    )
+
+
+PUSH_DB_DURABILITY_REQUIRED: bool = _env_flag(
+    "PUSH_DB_DURABILITY_REQUIRED",
+    IS_RENDER,
+)
+PUSH_DB_PATH: str = _resolve_writable_db_path(
+    _PREFERRED_DB_PATH,
+    require_durable=PUSH_DB_DURABILITY_REQUIRED,
+)
+PUSH_DB_DURABLE: bool = _db_path_is_durable(PUSH_DB_PATH, is_render=IS_RENDER)
+if PUSH_DB_DURABILITY_REQUIRED and not PUSH_DB_DURABLE:
+    raise RuntimeError(
+        "Dauerhafte DB-Speicherung ist erforderlich; auf Render muss DB_PATH "
+        "auf den eingebundenen /data-Datentraeger zeigen."
+    )
+
+
+def durable_db_storage_available() -> bool:
+    """Recheck the mount for every scheduled claim and readiness request."""
+    return bool(
+        PUSH_DB_DURABLE
+        and _db_path_is_durable(PUSH_DB_PATH, is_render=IS_RENDER)
+    )
 PUSH_DB_MAX_DAYS: int = int(os.environ.get("PUSH_DB_MAX_DAYS", "1460"))
 PUSH_DB_MAX_ROWS: int = int(
     os.environ.get("PUSH_DB_MAX_ROWS", "5000" if IS_RENDER else "15000")
@@ -460,9 +514,9 @@ PUSH_TEAMS_BACKGROUND_SENDER_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED",
     False,
 )
-# Power Automate must remain operational without an AS-network relay. When the
-# live push history is reachable it is still used for exact duplicate checks;
-# otherwise the durable slot and Teams receipt claims prevent repeated posts.
+# Power Automate can remain operational without an AS-network relay by relying
+# on durable slot/article/receipt claims. Enable the flag to require a fresh,
+# authoritative live/relay snapshot and fail closed on unavailable history.
 POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY: bool = _env_flag(
     "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
     False,

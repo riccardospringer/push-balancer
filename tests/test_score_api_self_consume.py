@@ -93,8 +93,12 @@ def test_render_defaults_enable_self_consume_and_disable_live_push_posts():
          "import app.config as c; print(int(c.PUSH_BALANCER_SCORE_API_ENABLED),"
          " int(c.PUSH_TEAMS_LIVE_PUSH_POSTS_ENABLED), c.PUSH_BALANCER_SCORE_API_BASE_URL)"],
         capture_output=True, text=True, cwd=root, timeout=60,
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root,
-             "RENDER": "true", "PORT": "8050"},
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": root,
+                 "RENDER": "true", "PORT": "8050",
+                 # This subprocess isolates score defaults and has no mounted
+                 # Render disk; durability fail-closed behavior is tested
+                 # separately with the real /data contract.
+                 "PUSH_DB_DURABILITY_REQUIRED": "false"},
     )
     assert out.returncode == 0, out.stderr
     parts = out.stdout.split()

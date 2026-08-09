@@ -586,6 +586,7 @@ def _apply_internal_score_api_scores(
     for article in articles:
         cms_id = resolve_cms_id(article)
         article["scoreBeforeInternalApi"] = float(article.get("score") or 0.0)
+        article["scoreSourceBeforeInternalApi"] = str(article.get("scoreSource") or "")
         article["cmsId"] = cms_id
         article["score"] = 0.0
         article["pushBalancerScore"] = None
@@ -758,9 +759,13 @@ def build_articles_payload(
         articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
 
     articles = _apply_canonical_push_balancer_scores(articles)
+    # Preserve the final, publication-age-weighted fallback value before the
+    # internal API overlay resets missing canonical scores to zero. The value
+    # is used only to order display-only slots and is never presented as a
+    # canonical Push Score.
+    articles = _apply_server_score_freshness_weight(articles, now_ts=now_ts)
     if use_internal_score_api:
         articles = _apply_internal_score_api_scores(articles)
-    articles = _apply_server_score_freshness_weight(articles, now_ts=now_ts)
     articles.sort(
         key=lambda article: (float(article.get("score") or 0.0), article.get("pubDate") or ""),
         reverse=True,
