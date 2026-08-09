@@ -55,6 +55,47 @@ def test_weekend_morning_slots_start_two_hours_later():
     )[0] == "06:00"
 
 
+def test_durable_history_fallback_keeps_mandatory_slot_sendable():
+    from app.notifications.teams import (
+        TeamsAlertConfig,
+        _mandatory_slot_top1_technical_blockers,
+    )
+
+    candidate = {
+        "id": "synthetic-durable-fallback",
+        "url": "https://www.bild.de/news/synthetic-durable-fallback",
+        "title": "Synthetische belastbare Meldung",
+        "score": 91.4,
+    }
+    decision = {
+        "scoreSource": "internal_score_api",
+        "publicationReview": {"status": "valid"},
+        "livePushComparison": {
+            "available": False,
+            "authoritative": False,
+            "matchType": "",
+        },
+    }
+    context = {
+        "alertState": {},
+        "recentTeamsAlerts": [],
+        "contextAvailable": {"alertState": True, "recentTeamsAlerts": True},
+    }
+    config = replace(
+        TeamsAlertConfig(),
+        enabled=True,
+        require_internal_score_api=True,
+        allow_durable_live_history_fallback=True,
+    )
+
+    assert _mandatory_slot_top1_technical_blockers(
+        candidate,
+        decision,
+        context,
+        config,
+    ) == []
+
+
 def _synthetic_candidates(
     now_ts: int,
     *,
@@ -882,6 +923,20 @@ def test_claim_uses_cloud_fallback_without_authoritative_live_push_history(
         "_refresh_push_history_for_dedup",
         lambda: {"history": [], "history_authoritative": False},
     )
+    captured_config = {}
+    original_evaluate = power_automate.evaluate_teams_alert_candidates
+
+    def evaluate_with_durable_fallback(candidates, context, config):
+        captured_config["allow_durable_live_history_fallback"] = (
+            config.allow_durable_live_history_fallback
+        )
+        return original_evaluate(candidates, context, config)
+
+    monkeypatch.setattr(
+        power_automate,
+        "evaluate_teams_alert_candidates",
+        evaluate_with_durable_fallback,
+    )
     with monkeypatch.context() as db_patch:
         db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
         response = client.post(
@@ -893,6 +948,7 @@ def test_claim_uses_cloud_fallback_without_authoritative_live_push_history(
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["ready"] == "yes"
+    assert captured_config["allow_durable_live_history_fallback"] is True
 
 
 def test_claim_can_still_require_authoritative_live_push_history(

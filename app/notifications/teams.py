@@ -510,6 +510,10 @@ class TeamsAlertConfig:
     enabled: bool = PUSH_TEAMS_ALERTS_ENABLED
     webhook_url: str = PUSH_TEAMS_WEBHOOK_URL
     require_internal_score_api: bool = PUSH_BALANCER_SCORE_API_ENABLED
+    # Scheduled Power Automate delivery has durable per-slot and per-article
+    # claims, so it can remain available when the internal live-push feed is
+    # temporarily unreachable. Other notification paths stay fail-closed.
+    allow_durable_live_history_fallback: bool = False
     min_score: float = PUSH_TEAMS_MIN_SCORE
     min_alert_score: float = PUSH_TEAMS_MIN_ALERT_SCORE
     score_only_mode: bool = PUSH_TEAMS_SCORE_ONLY_MODE
@@ -1771,10 +1775,16 @@ def should_notify_teams(
             "der Artikel darf nicht erneut per Teams vorgeschlagen werden"
         )
     elif not live_comparison_available:
-        blockers.append(
-            "Live-Push-Dublettenpruefung nicht belastbar verfuegbar; "
-            "Empfehlung wird sicherheitshalber gestoppt"
-        )
+        if config.allow_durable_live_history_fallback:
+            positive.append(
+                "Live-Push-Historie aktuell nicht erreichbar; "
+                "dauerhafter Teams-Duplikatschutz ist aktiv"
+            )
+        else:
+            blockers.append(
+                "Live-Push-Dublettenpruefung nicht belastbar verfuegbar; "
+                "Empfehlung wird sicherheitshalber gestoppt"
+            )
     elif live_push_match_reason:
         positive.append(
             "Live-Vergleich: verwandte Meldung erkannt, aber keine identische Artikel-URL"
@@ -2080,7 +2090,8 @@ def _mandatory_slot_top1_technical_blockers(
         live_comparison.get("available")
         and live_comparison.get("authoritative")
     ):
-        blockers.append("Live-Push-Dublettenpruefung nicht belastbar verfuegbar")
+        if not config.allow_durable_live_history_fallback:
+            blockers.append("Live-Push-Dublettenpruefung nicht belastbar verfuegbar")
     elif live_comparison.get("matchType") == "exact_article":
         blockers.append("Identische Artikel-URL oder CMS-ID wurde bereits live gepusht")
 
@@ -2782,10 +2793,12 @@ def build_teams_push_recommendation(
         and (mandatory_slot_top1 or context_available.get("recentTeamsAlerts"))
     )
     live_push_dedup_approved = bool(
-        live_push_comparison.get("available")
-        and live_push_comparison.get("authoritative")
-        and live_push_comparison.get("matchType") != "exact_article"
-    )
+        (
+            live_push_comparison.get("available")
+            and live_push_comparison.get("authoritative")
+        )
+        or config.allow_durable_live_history_fallback
+    ) and live_push_comparison.get("matchType") != "exact_article"
     quality_approved = bool(
         mandatory_slot_top1
         or (

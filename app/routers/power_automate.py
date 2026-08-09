@@ -687,6 +687,7 @@ def claim_power_automate_teams_recommendation(
     dispatch_config = replace(
         config,
         require_internal_score_api=True,
+        allow_durable_live_history_fallback=not POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY,
         mandatory_sport_quota_enabled=False,
         slot_delay_date="",
         slot_delay_from="",
@@ -727,10 +728,10 @@ def claim_power_automate_teams_recommendation(
         expected_slot_ts=binding_slot_ts,
     ):
         return _no_op("slot_closed")
-    # The cloud flow may prepare the recommendation up to two minutes early.
-    # Evaluate against the official slot so the fixed-slot policy remains the
-    # same; Power Automate waits until scheduledAt before posting to Teams.
-    decision_now = max(actual_decision_now, binding_slot_ts)
+    # Delivery starts when the fixed slot opens. Do not prepare or hold a
+    # message in Power Automate: that added a second failure mode without
+    # improving the recommendation.
+    decision_now = actual_decision_now
 
     candidates = _exclude_already_live_pushed_articles(
         candidates,
