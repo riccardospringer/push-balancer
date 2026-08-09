@@ -8,6 +8,7 @@ from dataclasses import replace
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, database
@@ -441,6 +442,40 @@ def test_claim_fails_closed_when_only_ephemeral_storage_is_available(
     assert response.headers["cache-control"] == "no-store"
     assert "Durable recommendation storage" in response.text
     assert teams_recommendation_slot_get(SLOT_TS) is None
+
+
+def test_claim_fails_closed_when_legacy_background_sender_is_enabled(monkeypatch):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    config = replace(power_automate.TeamsAlertConfig(), enabled=True)
+    monkeypatch.setattr(
+        power_automate,
+        "TeamsAlertConfig",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "build_articles_payload",
+        lambda **_kwargs: pytest.fail(
+            "a conflicting transport must fail before selection"
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/power-automate/teams/claim",
+        headers=HEADERS,
+        json={"requestId": "synthetic-conflicting-owner-run"},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["detail"] == auth.config.TEAMS_TRANSPORT_OWNER_CONFLICT
 
 
 def test_scheduled_message_uses_the_five_highest_valid_push_scores():

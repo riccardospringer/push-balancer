@@ -108,6 +108,7 @@ _SAFE_READINESS_CONFIGURATION_PROBLEMS = frozenset(
             "POWER_AUTOMATE_API_KEY fehlt - der geplante Claim-Endpunkt ist "
             "deaktiviert."
         ),
+        app_config.TEAMS_TRANSPORT_OWNER_CONFLICT,
     }
 )
 _SAFE_LATEST_SLOT_STATES = {
@@ -1057,6 +1058,11 @@ def claim_power_automate_teams_recommendation(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Teams recommendation claims are disabled.",
+        )
+    if app_config.PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=app_config.TEAMS_TRANSPORT_OWNER_CONFLICT,
         )
     if not app_config.durable_db_storage_available():
         raise HTTPException(

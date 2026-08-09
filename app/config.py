@@ -514,6 +514,34 @@ PUSH_TEAMS_BACKGROUND_SENDER_ENABLED: bool = _env_flag(
     "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED",
     False,
 )
+TEAMS_TRANSPORT_OWNER_CONFLICT = (
+    "Power Automate Exact-5 und der alte Teams-Hintergrundsender sind gleichzeitig "
+    "konfiguriert - genau ein Transport-Eigentuemer ist erlaubt."
+)
+
+
+def teams_transport_owner_conflict(
+    *,
+    alerts_enabled: bool,
+    background_sender_enabled: bool,
+    power_automate_api_key: str,
+) -> bool:
+    """Reject two live transport owners before either can send a message."""
+    return bool(
+        alerts_enabled
+        and background_sender_enabled
+        and str(power_automate_api_key or "").strip()
+    )
+
+
+if teams_transport_owner_conflict(
+    alerts_enabled=PUSH_TEAMS_ALERTS_ENABLED,
+    background_sender_enabled=PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
+    power_automate_api_key=POWER_AUTOMATE_API_KEY,
+):
+    raise RuntimeError(TEAMS_TRANSPORT_OWNER_CONFLICT)
+
+
 # Power Automate can remain operational without an AS-network relay by relying
 # on durable slot/article/receipt claims. Enable the flag to require a fresh,
 # authoritative live/relay snapshot and fail closed on unavailable history.

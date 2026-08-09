@@ -78,7 +78,7 @@ To generate one new key on macOS and copy it directly to the clipboard without p
 python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | pbcopy
 ```
 
-`render.yaml` declares `POWER_AUTOMATE_API_KEY` with `sync: false`; create or update it manually in the Render dashboard. Paste the same value into that deployment secret and the protected Power Automate secret/configuration. Then clear the clipboard:
+`render.yaml` declares `POWER_AUTOMATE_API_KEY` with `sync: false`; create or update it manually in the Render dashboard. After every rotation, update the `X-Power-Automate-Key` header in both `Claim_recommendation` and `Receipt_delivery_result` with the **classic Power Automate designer**. The new designer can display the edited HTTP header and appear to save it but reload the value as empty. Save in the classic designer, fully reload/reopen the flow and both HTTP actions, and verify that both protected header values remain populated and match the deployment secret without displaying or logging the value. Only then clear the clipboard:
 
 ```bash
 pbcopy </dev/null
@@ -276,6 +276,10 @@ Use this checklist without exposing the API key, message body, article data, con
    under Cutover; disabling that flow alone is not a durable authorization
    boundary.
 
+A `401` from `Claim_recommendation` is a failed slot and must alert immediately.
+Correct and persist both HTTP headers for a future slot; never replay or
+manually resend the past slot.
+
 A run that claimed five items but remains in backend `sending` without a terminal receipt after its Power Automate run has ended is an incident even if a later slot succeeds. Preserve only the non-personal `slotId`, `requestId`, action statuses, and timestamps needed for reconciliation, subject to the approved retention period.
 
 ## Secure configuration checklist
@@ -299,6 +303,10 @@ Before saving or enabling the flow, verify all of the following:
   flow are **Off**, and the canonical Exact-5 flow is the only active scheduler.
 - The current `POWER_AUTOMATE_API_KEY` is present only in the deployment secret
   store and the canonical Exact-5 flow; legacy/shared flows retain stale keys.
+- After a key rotation, both HTTP headers were saved with the classic designer,
+  then the flow and both actions were fully reloaded and reopened to prove the
+  protected values remained populated and matched; the clipboard was cleared
+  only after that proof.
 - Run-history retention follows the approved tenant policy and is no longer than operationally necessary.
 - Test data, screenshots, and support cases use synthetic articles and `example.invalid` URLs.
 
@@ -387,9 +395,14 @@ Rollback changes the transport owner; it must not bypass ranking, duplicate prot
 1. Turn off the scheduled Power Automate flow.
 2. Confirm no scheduled run or Teams action is still executing.
 3. Restore the protected legacy `PUSH_TEAMS_WEBHOOK_URL` if it was removed.
-4. Set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=true` and deploy.
-5. Confirm the service is healthy before the next slot and that only the legacy sender is active.
-6. Record the rollback reason and inspect the failed flow using only secured/minimized run history.
+4. Remove `POWER_AUTOMATE_API_KEY` from the deployment secret store so no
+   scheduled flow remains an authorized claim owner. Do not expose its former
+   value while removing it.
+5. Set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=true` and deploy. Startup fails
+   closed if the Power Automate key is still configured, and the claim endpoint
+   independently returns HTTP 503 while the legacy sender is enabled.
+6. Confirm the service is healthy before the next slot and that only the legacy sender is active.
+7. Record the rollback reason and inspect the failed flow using only secured/minimized run history.
 
 Do not enable both senders as a temporary test. The durable slot claim reduces races, but a single explicit transport owner is the operational invariant.
 
