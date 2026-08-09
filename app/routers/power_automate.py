@@ -46,6 +46,7 @@ from app.notifications.teams import (
     title_hash,
 )
 from app.power_automate_schedule import (
+    POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS,
     POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS,
     power_automate_slot_labels_for_date,
 )
@@ -83,12 +84,209 @@ _NO_STORE_HEADERS = {
     "Cache-Control": "no-store",
     "Vary": "X-Power-Automate-Key",
 }
+_SAFE_READINESS_CONFIGURATION_PROBLEMS = frozenset(
+    {
+        (
+            "PUSH_TEAMS_WEBHOOK_URL fehlt - ohne Webhook kann keine Nachricht "
+            "zugestellt werden."
+        ),
+        (
+            "PUSH_BALANCER_SCORE_API_ENABLED=1, aber "
+            "PUSH_BALANCER_SCORE_API_BASE_URL fehlt - fail-closed, kein "
+            "kanonischer Score, keine Empfehlung."
+        ),
+        (
+            "PUSH_BALANCER_SCORE_API_ENABLED=1, aber "
+            "PUSH_BALANCER_SCORE_API_KEY fehlt - fail-closed, der Kanal "
+            "bleibt stumm, bis der Key gesetzt ist."
+        ),
+        (
+            "PUSH_TEAMS_MAX_ALERTS_PER_DAY liegt unter MIN - das Tagesziel ist "
+            "widerspruechlich."
+        ),
+        (
+            "POWER_AUTOMATE_API_KEY fehlt - der geplante Claim-Endpunkt ist "
+            "deaktiviert."
+        ),
+    }
+)
+_SAFE_LATEST_SLOT_STATES = {
+    "sending": "sending",
+    "sent": "sent",
+    "delivery_uncertain": "delivery_uncertain",
+}
+_SAFE_READINESS_TRANSPORT_MODES = frozenset(
+    {"legacy_background_sender", "power_automate_scheduled"}
+)
+_SAFE_READINESS_STORAGE_MODES = frozenset(
+    {"persistent_disk", "ephemeral_or_unverified"}
+)
+_SAFE_READINESS_FALLBACK_MODES = frozenset(
+    {None, "durable_slot_and_receipt_dedup"}
+)
+_SAFE_READINESS_SLOT_LABELS = frozenset(
+    POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
+    + POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS
+)
 
 
 def _no_op(reason: str) -> JSONResponse:
     """Return an expected no-send outcome without failing the scheduled flow."""
     return JSONResponse(
         content={"ready": False, "reason": str(reason or "not_ready")},
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+def _latest_due_power_automate_slot(now_ts: int | None = None) -> dict[str, Any] | None:
+    """Return only the safe state of today's most recent due fixed slot."""
+    stamp = int(now_ts or time.time())
+    berlin_now = dt.datetime.fromtimestamp(stamp, _BERLIN)
+    due_slots: list[tuple[int, str]] = []
+    for label in power_automate_slot_labels_for_date(berlin_now.date()):
+        hour, minute = (int(part) for part in label.split(":"))
+        slot_ts = int(
+            berlin_now.replace(
+                hour=hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            ).timestamp()
+        )
+        if slot_ts <= stamp:
+            due_slots.append((slot_ts, label))
+    if not due_slots:
+        return None
+
+    latest_ts, latest_label = max(due_slots, key=lambda item: item[0])
+    try:
+        from app.teams_slot_claims import (
+            teams_recommendation_slot_delivery_state_read_only,
+        )
+
+        delivery = teams_recommendation_slot_delivery_state_read_only(latest_ts)
+    except Exception:  # pragma: no cover - fail-closed operational probe
+        return {"label": latest_label, "state": "other"}
+    if delivery is None:
+        return {
+            "label": latest_label,
+            "state": "unclaimed",
+            "receiptRecorded": False,
+        }
+
+    raw_status = str(delivery.get("status") or "")
+    state = _SAFE_LATEST_SLOT_STATES.get(raw_status, "other")
+    result: dict[str, Any] = {"label": latest_label, "state": state}
+    if state != "other":
+        result["receiptRecorded"] = bool(delivery.get("receiptRecorded"))
+    return result
+
+
+def _minimal_power_automate_readiness_payload(
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Project the full readiness result through an explicit safe allowlist."""
+    durable_storage = readiness.get("durableStorage")
+    durable_storage = durable_storage if isinstance(durable_storage, dict) else {}
+    score_api = readiness.get("scoreApi")
+    score_api = score_api if isinstance(score_api, dict) else {}
+    exact_five = readiness.get("exactFive")
+    exact_five = exact_five if isinstance(exact_five, dict) else {}
+    push_history = readiness.get("pushHistory")
+    push_history = push_history if isinstance(push_history, dict) else {}
+    slots = readiness.get("slots")
+    slots = slots if isinstance(slots, dict) else {}
+    labels = slots.get("labels")
+    labels = labels if isinstance(labels, list) else []
+    raw_problems = readiness.get("configurationProblems")
+    raw_problems = raw_problems if isinstance(raw_problems, list) else []
+    safe_problems = [
+        problem
+        for problem in raw_problems
+        if isinstance(problem, str)
+        and problem in _SAFE_READINESS_CONFIGURATION_PROBLEMS
+    ]
+    transport_mode = readiness.get("transportMode")
+    transport_mode = (
+        transport_mode
+        if transport_mode in _SAFE_READINESS_TRANSPORT_MODES
+        else "unknown"
+    )
+    storage_mode = durable_storage.get("mode")
+    storage_mode = (
+        storage_mode if storage_mode in _SAFE_READINESS_STORAGE_MODES else "unknown"
+    )
+    fallback_mode = push_history.get("fallbackMode")
+    fallback_mode = (
+        fallback_mode
+        if fallback_mode in _SAFE_READINESS_FALLBACK_MODES
+        else None
+    )
+    try:
+        recommendation_count = int(exact_five.get("recommendationCount") or 0)
+    except (TypeError, ValueError):
+        recommendation_count = 0
+    if not 0 <= recommendation_count <= _SCHEDULED_RECOMMENDATION_COUNT:
+        recommendation_count = 0
+    try:
+        planned_today = int(slots.get("plannedToday") or 0)
+    except (TypeError, ValueError):
+        planned_today = 0
+    if not 0 <= planned_today <= 17:
+        planned_today = 0
+    safe_labels = [
+        label
+        for label in labels[:17]
+        if isinstance(label, str) and label in _SAFE_READINESS_SLOT_LABELS
+    ]
+    result: dict[str, Any] = {
+        "ready": bool(readiness.get("ready")),
+        "teamsAlertsEnabled": bool(readiness.get("teamsAlertsEnabled")),
+        "transportMode": transport_mode,
+        "backgroundSenderEnabled": bool(readiness.get("backgroundSenderEnabled")),
+        "powerAutomateConfigured": bool(readiness.get("powerAutomateConfigured")),
+        "durableStorage": {
+            "required": bool(durable_storage.get("required")),
+            "durable": bool(durable_storage.get("durable")),
+            "mode": storage_mode,
+        },
+        "scoreApi": {"ok": bool(score_api.get("ok"))},
+        "exactFive": {
+            "contractOk": bool(exact_five.get("contractOk")),
+            "recommendationCount": recommendation_count,
+            "top1Canonical": bool(exact_five.get("top1Canonical")),
+        },
+        "pushHistory": {
+            "ok": bool(push_history.get("ok")),
+            "required": bool(push_history.get("required")),
+            "historyAuthoritative": bool(push_history.get("historyAuthoritative")),
+            "fallbackMode": fallback_mode,
+        },
+        "slots": {
+            "ok": bool(slots.get("ok")),
+            "plannedToday": planned_today,
+            "labels": safe_labels,
+        },
+        "configurationProblems": safe_problems,
+    }
+    latest_slot = _latest_due_power_automate_slot()
+    if latest_slot is not None:
+        result["latestSlot"] = latest_slot
+    return result
+
+
+@router.get(
+    "/api/v1/power-automate/teams/readiness",
+    dependencies=[Depends(require_power_automate_key)],
+    include_in_schema=False,
+)
+def get_power_automate_teams_readiness() -> JSONResponse:
+    """Return the authenticated, data-minimized cutover readiness proof."""
+    from app.routers.health import build_teams_readiness_payload
+
+    readiness = build_teams_readiness_payload()
+    return JSONResponse(
+        content=_minimal_power_automate_readiness_payload(readiness),
         headers=_NO_STORE_HEADERS,
     )
 

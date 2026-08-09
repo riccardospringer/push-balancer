@@ -8,6 +8,7 @@ import math
 import sqlite3
 import threading
 import time
+from pathlib import Path
 
 from app import database
 from app.article_identity import canonical_article_id, canonical_article_url_identity
@@ -1063,6 +1064,54 @@ def teams_recommendation_slot_get(binding_slot_ts: int) -> dict | None:
         finally:
             conn.close()
     return dict(row) if row else None
+
+
+def teams_recommendation_slot_delivery_state_read_only(
+    binding_slot_ts: int,
+) -> dict | None:
+    """Read only the non-identifying delivery state for one fixed slot.
+
+    The connection is opened in SQLite read-only mode and deliberately avoids
+    schema creation, retention cleanup, claim payloads, request references, and
+    article references. This makes it safe for the authenticated cutover probe.
+    """
+    slot_ts = int(binding_slot_ts or 0)
+    if slot_ts <= 0:
+        return None
+    db_path = Path(str(database.PUSH_DB_PATH or ""))
+    if not db_path.is_file():
+        return None
+    try:
+        db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        with database._push_db_lock:
+            conn = sqlite3.connect(db_uri, timeout=30, uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                table_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'teams_recommendation_slot_claims'"
+                ).fetchone()
+                if table_exists is None:
+                    return None
+                row = conn.execute(
+                    "SELECT status, sent_at FROM teams_recommendation_slot_claims "
+                    "WHERE binding_slot_ts = ?",
+                    (slot_ts,),
+                ).fetchone()
+            finally:
+                conn.close()
+    except (OSError, sqlite3.Error):
+        return {"status": "unavailable", "receiptRecorded": False}
+    if row is None:
+        return None
+    raw_status = str(row["status"] or "")
+    return {
+        "status": raw_status,
+        "receiptRecorded": bool(
+            raw_status in {"sent", "delivery_uncertain"}
+            and int(row["sent_at"] or 0) > 0
+        ),
+    }
 
 
 def teams_alert_get_by_ref(article_ref: str) -> dict | None:
