@@ -198,16 +198,6 @@ def _patch_successful_claim(
     )
     monkeypatch.setattr(
         power_automate,
-        "_refresh_push_history_for_dedup",
-        lambda: {"history": [], "history_authoritative": True},
-    )
-    monkeypatch.setattr(
-        power_automate,
-        "_dispatch_live_push_comparison",
-        lambda *_args, **_kwargs: {"blocked": False},
-    )
-    monkeypatch.setattr(
-        power_automate,
         "_memory_eligible_candidates",
         lambda candidates, **_kwargs: (candidates, {}),
     )
@@ -296,34 +286,6 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     assert message_html.count("</p><br><br><p>") == 5
     assert "(03.08.2026, 10:15 Uhr)" in message_html
     assert "(03.08.2026, 14:15 Uhr)" in message_html
-
-
-def test_scheduled_candidates_exclude_articles_already_live_pushed():
-    import app.routers.power_automate as power_automate
-
-    top, alternative = _synthetic_candidates(SLOT_TS)
-    same_title_new_article = {
-        **top,
-        "id": "synthetic-news-follow-up",
-        "url": "https://www.bild.de/news/synthetic-news-follow-up",
-    }
-    eligible = power_automate._exclude_already_live_pushed_articles(
-        [top, alternative, same_title_new_article],
-        history=[
-            {
-                "url": top["url"],
-                "title": top["title"],
-                "ts_num": SLOT_TS - 60,
-            }
-        ],
-        now_ts=SLOT_TS,
-        config=power_automate.TeamsAlertConfig(),
-    )
-
-    assert [candidate["url"] for candidate in eligible] == [
-        alternative["url"],
-        same_title_new_article["url"],
-    ]
 
 
 def test_claim_does_not_prepare_before_the_official_slot(monkeypatch, tmp_db):
@@ -632,43 +594,6 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert "power-automate-key" not in response.text.casefold()
 
 
-def test_claim_reuses_its_authoritative_snapshot_for_final_dedup(monkeypatch, tmp_db):
-    import app.routers.power_automate as power_automate
-
-    now_ts = SLOT_TS + 30
-    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
-    _patch_successful_claim(monkeypatch, now_ts=now_ts)
-    history = [{"message_id": "synthetic-live-push", "ts_num": now_ts - 60}]
-    refresh_calls = 0
-    comparison_kwargs: dict = {}
-
-    def refresh_once():
-        nonlocal refresh_calls
-        refresh_calls += 1
-        return {"history": history, "history_authoritative": True}
-
-    def compare_once(*_args, **kwargs):
-        comparison_kwargs.update(kwargs)
-        return {"blocked": False}
-
-    monkeypatch.setattr(power_automate, "_refresh_push_history_for_dedup", refresh_once)
-    monkeypatch.setattr(power_automate, "_dispatch_live_push_comparison", compare_once)
-
-    with monkeypatch.context() as db_patch:
-        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
-        response = client.post(
-            "/api/v1/power-automate/teams/claim",
-            headers=HEADERS,
-            json={"requestId": "synthetic-single-refresh-run"},
-        )
-
-    assert response.status_code == 200
-    assert refresh_calls == 1
-    assert comparison_kwargs["history"] is history
-    assert comparison_kwargs["comparison_authoritative"] is True
-    assert comparison_kwargs["refresh_live_history"] is False
-
-
 def test_claim_supports_sport_top_with_non_sport_alternative(monkeypatch, tmp_db):
     now_ts = SLOT_TS + 30
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
@@ -869,117 +794,6 @@ def test_uncertain_receipt_is_terminal_and_prevents_a_duplicate(monkeypatch, tmp
     assert alert["status"] == "delivery_uncertain"
     assert slot is not None
     assert slot["status"] == "delivery_uncertain"
-
-
-def test_claim_fails_closed_when_final_live_dedup_refresh_is_unavailable(
-    monkeypatch,
-    tmp_db,
-):
-    import app.routers.power_automate as power_automate
-
-    now_ts = SLOT_TS + 30
-    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
-    _patch_successful_claim(monkeypatch, now_ts=now_ts)
-    monkeypatch.setattr(
-        power_automate,
-        "_dispatch_live_push_comparison",
-        lambda *_args, **_kwargs: {
-            "blocked": True,
-            "code": "live_push_dedup_unavailable_failclosed",
-        },
-    )
-
-    with monkeypatch.context() as db_patch:
-        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
-        response = client.post(
-            "/api/v1/power-automate/teams/claim",
-            headers=HEADERS,
-            json={"requestId": "synthetic-dedup-outage-run"},
-        )
-        slot = teams_recommendation_slot_get(SLOT_TS)
-
-    assert response.status_code == 503
-    assert response.headers["cache-control"] == "no-store"
-    assert slot is None
-
-
-def test_claim_uses_cloud_fallback_without_authoritative_live_push_history(
-    monkeypatch,
-    tmp_db,
-):
-    import app.routers.power_automate as power_automate
-
-    now_ts = SLOT_TS + 30
-    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
-    _patch_successful_claim(monkeypatch, now_ts=now_ts)
-    monkeypatch.setattr(
-        power_automate,
-        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
-        False,
-    )
-    monkeypatch.setattr(
-        power_automate,
-        "_refresh_push_history_for_dedup",
-        lambda: {"history": [], "history_authoritative": False},
-    )
-    captured_config = {}
-    original_evaluate = power_automate.evaluate_teams_alert_candidates
-
-    def evaluate_with_durable_fallback(candidates, context, config):
-        captured_config["allow_durable_live_history_fallback"] = (
-            config.allow_durable_live_history_fallback
-        )
-        return original_evaluate(candidates, context, config)
-
-    monkeypatch.setattr(
-        power_automate,
-        "evaluate_teams_alert_candidates",
-        evaluate_with_durable_fallback,
-    )
-    with monkeypatch.context() as db_patch:
-        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
-        response = client.post(
-            "/api/v1/power-automate/teams/claim",
-            headers=HEADERS,
-            json={"requestId": "synthetic-cloud-only-run"},
-        )
-
-    assert response.status_code == 200
-    assert response.headers["cache-control"] == "no-store"
-    assert response.json()["ready"] == "yes"
-    assert captured_config["allow_durable_live_history_fallback"] is True
-
-
-def test_claim_can_still_require_authoritative_live_push_history(
-    monkeypatch,
-    tmp_db,
-):
-    import app.routers.power_automate as power_automate
-
-    now_ts = SLOT_TS + 30
-    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
-    _patch_successful_claim(monkeypatch, now_ts=now_ts)
-    monkeypatch.setattr(
-        power_automate,
-        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
-        True,
-    )
-    monkeypatch.setattr(
-        power_automate,
-        "_refresh_push_history_for_dedup",
-        lambda: {"history": [], "history_authoritative": False},
-    )
-
-    with monkeypatch.context() as db_patch:
-        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
-        response = client.post(
-            "/api/v1/power-automate/teams/claim",
-            headers=HEADERS,
-            json={"requestId": "synthetic-explicit-failclosed-run"},
-        )
-
-    assert response.status_code == 503
-    assert response.headers["cache-control"] == "no-store"
 
 
 def test_expected_selection_no_ops_stay_http_200(monkeypatch, tmp_db):

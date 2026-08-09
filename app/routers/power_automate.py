@@ -17,7 +17,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth import require_power_automate_key
-from app.config import POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
 from app.cms.article_context import fetch_public_article_context
 from app.cms.url_api import (
     UrlApiNotConfigured,
@@ -30,14 +29,9 @@ from app.notifications.teams import (
     _BINDING_SLOT_DISPATCH_GRACE_SECONDS,
     _MANDATORY_TOP1_CANDIDATE_LIMIT,
     _candidate_updated_ts,
-    _dispatch_live_push_comparison,
     _is_breaking,
     _is_sport_item,
-    _live_push_comparison_reason,
-    _live_push_match_type,
     _memory_eligible_candidates,
-    _push_history_review_index,
-    _refresh_push_history_for_dedup,
     _score,
     _title,
     _url,
@@ -405,30 +399,6 @@ def _scheduled_recommendations(evaluation: dict[str, Any]) -> list[dict[str, Any
     return recommendations[:5]
 
 
-def _exclude_already_live_pushed_articles(
-    candidates: list[dict[str, Any]],
-    *,
-    history: list[dict[str, Any]],
-    now_ts: int,
-    config: TeamsAlertConfig,
-) -> list[dict[str, Any]]:
-    """Remove exact URL/CMS matches before selecting any scheduled recommendation."""
-    history_index = _push_history_review_index(history, now_ts, config)
-    eligible: list[dict[str, Any]] = []
-    for candidate in candidates:
-        match_reason = _live_push_comparison_reason(
-            candidate,
-            history,
-            now_ts,
-            config,
-            history_index=history_index,
-        )
-        if _live_push_match_type(match_reason) == "exact_article":
-            continue
-        eligible.append(candidate)
-    return eligible
-
-
 def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
     parts = [
         "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>",
@@ -685,7 +655,9 @@ def claim_power_automate_teams_recommendation(
     dispatch_config = replace(
         config,
         require_internal_score_api=True,
-        allow_durable_live_history_fallback=not POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY,
+        # The scheduled delivery path deliberately does not call the live-push
+        # feed. Durable slot and article claims are its only duplicate guard.
+        allow_durable_live_history_fallback=True,
         mandatory_sport_quota_enabled=False,
         slot_delay_date="",
         slot_delay_from="",
@@ -707,19 +679,6 @@ def claim_power_automate_teams_recommendation(
             detail="The current recommendation field is unavailable.",
         )
 
-    refresh = _refresh_push_history_for_dedup()
-    history = refresh.get("history")
-    history_authoritative = bool(
-        refresh.get("history_authoritative") and isinstance(history, list)
-    )
-    if not isinstance(history, list):
-        history = []
-    if POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY and not history_authoritative:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Live-push duplicate protection is temporarily unavailable.",
-        )
-
     actual_decision_now = int(time.time())
     if not _power_automate_slot_open(
         actual_decision_now,
@@ -731,15 +690,6 @@ def claim_power_automate_teams_recommendation(
     # improving the recommendation.
     decision_now = actual_decision_now
 
-    candidates = _exclude_already_live_pushed_articles(
-        candidates,
-        history=history,
-        now_ts=decision_now,
-        config=dispatch_config,
-    )
-    if not candidates:
-        return _no_op("no_candidate")
-
     candidates, _ = _memory_eligible_candidates(
         candidates,
         now_ts=decision_now,
@@ -750,10 +700,8 @@ def claim_power_automate_teams_recommendation(
     candidates = candidates[:_MANDATORY_TOP1_CANDIDATE_LIMIT]
     context = build_teams_alert_context(
         candidates,
-        history=history,
-        history_authoritative=(
-            history_authoritative or not POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
-        ),
+        history=[],
+        history_authoritative=False,
         now_ts=decision_now,
         config=dispatch_config,
     )
@@ -776,26 +724,6 @@ def claim_power_automate_teams_recommendation(
         return _no_op("candidate_not_approved")
 
     preclaim_now = int(time.time())
-    final_dedup = (
-        _dispatch_live_push_comparison(
-            selected,
-            now_ts=preclaim_now,
-            config=dispatch_config,
-            comparison_authoritative=True,
-            history=history,
-            refresh_live_history=False,
-        )
-        if history_authoritative
-        else {"blocked": False, "mode": "durable_claim_fallback"}
-    )
-    if final_dedup.get("blocked"):
-        duplicate = str(final_dedup.get("code") or "") == "live_push_exact_article_duplicate"
-        if duplicate:
-            return _no_op("already_live_pushed")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Live-push duplicate protection is temporarily unavailable.",
-        )
     if not _power_automate_slot_open(
         preclaim_now,
         expected_slot_ts=binding_slot_ts,
