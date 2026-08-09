@@ -326,7 +326,7 @@ def test_scheduled_candidates_exclude_articles_already_live_pushed():
     ]
 
 
-def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp_db):
+def test_claim_does_not_prepare_before_the_official_slot(monkeypatch, tmp_db):
     import app.routers.power_automate as power_automate
 
     now_ts = SLOT_TS - 120
@@ -342,12 +342,11 @@ def test_claim_can_prepare_two_minutes_before_the_official_slot(monkeypatch, tmp
         )
 
     assert response.status_code == 200
-    assert response.json()["ready"] == "yes"
-    assert response.json()["scheduledAt"] == "2026-08-03T12:30:00+02:00"
-    assert response.json()["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
+    assert response.json()["ready"] is False
+    assert response.json()["reason"] == "outside_window"
 
 
-def test_claim_does_not_prepare_more_than_two_minutes_early(monkeypatch, tmp_db):
+def test_claim_does_not_prepare_before_the_official_slot_by_any_amount(monkeypatch, tmp_db):
     import app.routers.power_automate as power_automate
 
     now_ts = SLOT_TS - 121

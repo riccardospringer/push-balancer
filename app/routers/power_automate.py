@@ -95,7 +95,6 @@ POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS = (
 # Backwards-compatible weekday alias for existing imports.
 POWER_AUTOMATE_TEAMS_SLOT_LABELS = POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
 _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS = 30
-_POWER_AUTOMATE_PREPARE_LEAD_SECONDS = 2 * 60
 _PUSH_BALANCER_CANDIDATES_URL = (
     "https://editorial.one/push-balancer/bild/kandidaten"
 )
@@ -314,11 +313,10 @@ def _power_automate_binding_slot(now_ts: int) -> dict[str, Any] | None:
         hour, minute = (int(part) for part in label.split(":"))
         slot_dt = berlin_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         slot_ts = int(slot_dt.timestamp())
-        if (
-            slot_ts - _POWER_AUTOMATE_PREPARE_LEAD_SECONDS
-            <= now
-            < slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS
-        ):
+        # A recommendation is generated only once its actual delivery slot is
+        # open.  Do not claim or prepare messages in advance: that couples
+        # delivery to a second, unnecessary wait step in Power Automate.
+        if slot_ts <= now < slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS:
             return {
                 "ts": slot_ts,
                 "label": label,
