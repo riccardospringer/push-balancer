@@ -29,7 +29,9 @@ from app.config import (
     PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
     PUSH_LIVE_FETCH_ENABLED,
     RESEARCH_EXTERNAL_CONTEXT_ENABLED,
+    TEAMS_TRANSPORT_OWNER_CONFLICT,
     durable_db_storage_available,
+    teams_transport_owner_conflict,
 )
 from app.research.worker import _health_state, _research_state
 
@@ -447,6 +449,12 @@ def build_teams_readiness_payload() -> dict[str, Any]:
         }
     )
     config_problems = channel_configuration_problems(config)
+    if teams_transport_owner_conflict(
+        alerts_enabled=bool(config.enabled),
+        background_sender_enabled=PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
+        power_automate_api_key=POWER_AUTOMATE_API_KEY,
+    ) and TEAMS_TRANSPORT_OWNER_CONFLICT not in config_problems:
+        config_problems.append(TEAMS_TRANSPORT_OWNER_CONFLICT)
     if not PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
         config_problems = [
             problem

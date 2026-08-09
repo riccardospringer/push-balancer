@@ -197,6 +197,89 @@ def test_readiness_returns_only_the_allowlisted_shared_values(monkeypatch):
     assert "example.invalid" not in serialized
 
 
+def test_readiness_allowlists_the_transport_owner_conflict(monkeypatch):
+    import app.routers.health as health_router
+    import app.routers.power_automate as power_automate
+
+    full = _full_readiness_fixture()
+    full["ready"] = False
+    full["configurationProblems"] = [auth.config.TEAMS_TRANSPORT_OWNER_CONFLICT]
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(health_router, "build_teams_readiness_payload", lambda: full)
+    monkeypatch.setattr(power_automate, "_latest_due_power_automate_slot", lambda: None)
+
+    response = client.get(READINESS_PATH, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["configurationProblems"] == [
+        auth.config.TEAMS_TRANSPORT_OWNER_CONFLICT
+    ]
+
+
+def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
+    from dataclasses import replace
+
+    import app.notifications.teams as teams_module
+    import app.routers.feed as feed_router
+    import app.routers.health as health_router
+
+    config = replace(
+        teams_module.TeamsAlertConfig(),
+        enabled=True,
+        webhook_url="https://example.invalid/synthetic-webhook",
+    )
+    now_ts = int(dt.datetime(2026, 8, 9, 18, 50, tzinfo=BERLIN).timestamp())
+    monkeypatch.setattr(health_router, "PUSH_TEAMS_BACKGROUND_SENDER_ENABLED", True)
+    monkeypatch.setattr(health_router, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(health_router, "PUSH_DB_DURABLE", True)
+    monkeypatch.setattr(health_router, "durable_db_storage_available", lambda: True)
+    monkeypatch.setattr(health_router.time, "time", lambda: now_ts)
+    monkeypatch.setattr(teams_module, "TeamsAlertConfig", lambda: config)
+    monkeypatch.setattr(
+        feed_router,
+        "build_articles_payload",
+        lambda **_kwargs: {"articles": []},
+    )
+    monkeypatch.setattr(
+        teams_module,
+        "_refresh_push_history_for_dedup",
+        lambda: {
+            "history": [],
+            "history_authoritative": True,
+            "source": "synthetic",
+            "snapshot_age_seconds": 0,
+        },
+    )
+    monkeypatch.setattr(
+        teams_module,
+        "build_teams_alert_context",
+        lambda *_args, **_kwargs: {"lastPushTs": 0},
+    )
+    monkeypatch.setattr(
+        teams_module,
+        "_daily_runtime_opportunities",
+        lambda *_args, **_kwargs: [
+            {"ts": now_ts + index * 60, "label": f"synthetic-{index}"}
+            for index in range(12)
+        ],
+    )
+    monkeypatch.setattr(teams_module, "_quiet_hours_reason", lambda *_args: "")
+    monkeypatch.setattr(teams_module, "channel_configuration_problems", lambda _config: [])
+    monkeypatch.setattr(
+        teams_module,
+        "channel_health",
+        lambda *_args, **_kwargs: {"healthy": True, "status": "synthetic"},
+    )
+
+    result = health_router.build_teams_readiness_payload()
+
+    assert result["ready"] is False
+    assert result["configurationProblems"] == [
+        auth.config.TEAMS_TRANSPORT_OWNER_CONFLICT
+    ]
+
+
 @pytest.mark.parametrize(
     ("delivery", "expected"),
     [
