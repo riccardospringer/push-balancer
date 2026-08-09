@@ -67,6 +67,9 @@ The authenticated readiness, claim, and receipt endpoints require the dedicated 
 - The deployment has a strong random `POWER_AUTOMATE_API_KEY` in its secret store. It is an opaque shared secret, not a derived key or KDF output.
 - The flow can use the HTTP connector and the Microsoft Teams action **Post message in a chat or channel**.
 - The flow has a tenant-approved protected secret/configuration for the same API key. A solution secret backed by Azure Key Vault is preferred.
+- The dedicated key is authorized only for the canonical Exact-5 flow. Legacy,
+  copied, and shared flows retain stale credentials after a transport-owner
+  cutover and therefore cannot claim a slot even if someone re-enables them.
 - Only the minimum necessary owners can edit the flow or its connections.
 
 To generate one new key on macOS and copy it directly to the clipboard without printing it, run:
@@ -264,6 +267,14 @@ Use this checklist without exposing the API key, message body, article data, con
 2. **`delivery_uncertain`:** alert immediately and treat all five identities as terminally delivered for duplicate prevention. Do not repost, release, or upgrade the receipt. An authorized operator may verify whether the message is visible in the target channel for the incident record, but absence from the current view is not proof that Microsoft never accepted it.
 3. **No exact five:** normal minute attempts may return `ready=false` and retry automatically until the window closes. If no run reaches the full Exact-5 condition during the whole window, record the missed slot and inspect only minimized readiness fields for candidate count, canonical Top-1, score API, durable storage, and configured history mode. Do not weaken the condition, fill fewer than five places, or manually create a message. Escalate repeated missed windows to the System Owner.
 4. **Connector authorization or suspension:** keep both the scheduled flow and legacy sender from posting while the approved flow owner restores the least-privilege HTTP/Teams connections and clears the suspension. Re-run the flow checker, confirm all secure settings and readiness gates, and resume only for a future slot; do not replay a past scheduled run.
+5. **Unexpected claim owner:** audit both **Meine Flows → Cloud-Flows** and
+   **Für mich freigegeben** (tenant labels may appear in English). A shared
+   scheduled flow can claim the slot before the visible owned flow and make the
+   canonical run look like a harmless `ready=false` no-op. Keep the legacy
+   instant-webhook flow and every shared or copied scheduled flow **Off**. If an
+   unexpected flow has ever held the current key, rotate the key as described
+   under Cutover; disabling that flow alone is not a durable authorization
+   boundary.
 
 A run that claimed five items but remains in backend `sending` without a terminal receipt after its Power Automate run has ended is an incident even if a later slot succeeds. Preserve only the non-personal `slotId`, `requestId`, action statuses, and timestamps needed for reconciliation, subject to the approved retention period.
 
@@ -283,23 +294,43 @@ Before saving or enabling the flow, verify all of the following:
 - `Receipt_delivery_result` carries the original `requestId` and runs after successful, failed, timed-out, and skipped Teams outcomes.
 - The flow sends `messageHtml` directly and does not reconstruct a message from the full response.
 - The target chat/channel and bot identity are the approved production connection.
+- Both **Meine Flows → Cloud-Flows** and **Für mich freigegeben** have been
+  audited: the legacy instant-webhook flow and every legacy/shared scheduled
+  flow are **Off**, and the canonical Exact-5 flow is the only active scheduler.
+- The current `POWER_AUTOMATE_API_KEY` is present only in the deployment secret
+  store and the canonical Exact-5 flow; legacy/shared flows retain stale keys.
 - Run-history retention follows the approved tenant policy and is no longer than operationally necessary.
 - Test data, screenshots, and support cases use synthetic articles and `example.invalid` URLs.
 
 ## Cutover
 
-Never activate the scheduled flow while the legacy background sender is active for the same slot.
+Never activate the scheduled flow while any other transport owner can claim or
+post for the same slot. Power Automate's owned Cloud-Flows view is not a complete
+inventory: shared scheduled flows appear under **Für mich freigegeben** and can
+race the canonical flow.
 
-1. Deploy the claim/receipt endpoints with `POWER_AUTOMATE_API_KEY` configured, while the new flow remains off.
-2. Keep `PUSH_TEAMS_ALERTS_ENABLED=true`; this is the overall recommendation and claim-API gate.
-3. Only when the separately reviewed `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true` mode is intentionally enabled, update and restart the approved Mac/Next relay before enabling the flow. The outgoing relay body must send `source=live` or `source=relay` plus the original `snapshotTs`; receipt time must never renew stale data. For the existing macOS LaunchAgents:
+1. Audit both **Meine Flows → Cloud-Flows** and **Für mich freigegeben**. Keep
+   the canonical Exact-5 flow off during preparation; turn off the legacy
+   instant-webhook flow and every other owned, copied, or shared scheduled flow,
+   and confirm that none has a run or Teams action still executing. The required
+   steady state is exactly one enabled scheduler after cutover.
+2. Treat the transport-owner change as a credential rotation. Generate a new
+   random `POWER_AUTOMATE_API_KEY`, place it in the deployment secret store and
+   only the canonical Exact-5 flow's protected Claim and Receipt configuration,
+   and leave every legacy/shared flow with its old stale value. Never distribute
+   the rotated key to a fallback flow. Complete the update outside a scheduled
+   window while the canonical flow remains off, clear the clipboard, and verify
+   that the secret was not exposed in run history or screenshots.
+3. Deploy the claim/receipt endpoints with the rotated key configured, while the canonical flow remains off.
+4. Keep `PUSH_TEAMS_ALERTS_ENABLED=true`; this is the overall recommendation and claim-API gate.
+5. Only when the separately reviewed `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true` mode is intentionally enabled, update and restart the approved Mac/Next relay before enabling the flow. The outgoing relay body must send `source=live` or `source=relay` plus the original `snapshotTs`; receipt time must never renew stale data. For the existing macOS LaunchAgents:
 
    ```bash
    launchctl kickstart -k "gui/$(id -u)/com.bild.push-balancer"
    launchctl kickstart -k "gui/$(id -u)/com.bild.push-sync"
    ```
 
-4. In that fail-closed live-history mode only, verify locally, without printing messages or secrets, that the refresh is authoritative and the age derived from the original snapshot is below 300 seconds. A relay-backed response is reported as `source=cache->db`; it can be authoritative only after the receiver validated the transmitted `live`/`relay` lineage, original timestamp, complete parse, and persistence. Skip steps 3–4 when readiness deliberately reports `required=false` with the durable fallback mode:
+6. In that fail-closed live-history mode only, verify locally, without printing messages or secrets, that the refresh is authoritative and the age derived from the original snapshot is below 300 seconds. A relay-backed response is reported as `source=cache->db`; it can be authoritative only after the receiver validated the transmitted `live`/`relay` lineage, original timestamp, complete parse, and persistence. Skip steps 5–6 when readiness deliberately reports `required=false` with the durable fallback mode:
 
    ```bash
    python3 - <<'PY'
@@ -316,7 +347,7 @@ Never activate the scheduled flow while the legacy background sender is active f
    PY
    ```
 
-5. Choose a cutover before the next scheduled window and set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false` in the deployment. Prefer the authenticated, already minimized readiness route. Inject the key from the approved secret store; never type it into the command line, shell history, or URL:
+7. Choose a cutover before the next scheduled window and set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false` in the deployment. Prefer the authenticated, already minimized readiness route. Inject the rotated key from the approved secret store; never type it into the command line, shell history, or URL:
 
    ```bash
    curl -fsS \
@@ -334,9 +365,12 @@ Never activate the scheduled flow while the legacy background sender is active f
    Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorage.required=true`, `durableStorage.durable=true`, `durableStorage.mode=persistent_disk`, `scoreApi.ok=true`, `exactFive.contractOk=true`, `exactFive.recommendationCount=5`, `exactFive.top1Canonical=true`, `slots.ok=true`, `slots.plannedToday=12`, and `slots.labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `pushHistory.historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
 
    `latestSlot.state=sent` with `receiptRecorded=true` proves the latest due slot reached a successful receipt. `delivery_uncertain` requires human reconciliation and must never be retried automatically through Teams. `sending` after the five-minute lease or `unclaimed` after the window indicates a missing receipt or no successful Exact-5 claim and must alert the operator.
-6. Confirm the old incoming-webhook Power Automate flow is off, then turn on the new scheduled flow.
-7. At the next slot, verify exactly one claim with `ready="yes"`, `contractVersion=2`, and `recommendationCount=5`; one Teams message containing Top 1 through Top 5; one successful Teams action; and one `Receipt_delivery_result` acknowledgement with `status=sent`. The other minute runs should be normal `ready=false` no-ops. A contract mismatch must take the empty no branch and send nothing.
-8. Observe at least the agreed validation period before retiring the protected `PUSH_TEAMS_WEBHOOK_URL` rollback secret. Rotate/remove it afterward according to the approved secret process.
+8. Recheck both Power Automate inventories immediately before activation. The
+   legacy instant-webhook flow and every shared/legacy scheduled flow must show
+   **Off**. Turn on only the canonical Exact-5 flow and confirm that it is the
+   sole active scheduled transport owner.
+9. At the next slot, verify exactly one claim with `ready="yes"`, `contractVersion=2`, and `recommendationCount=5`; one Teams message containing Top 1 through Top 5; one successful Teams action; and one `Receipt_delivery_result` acknowledgement with `status=sent`. The other minute runs should be normal `ready=false` no-ops. Confirm that no disabled shared/legacy flow created a run in that window. A contract mismatch must take the empty no branch and send nothing.
+10. Observe at least the agreed validation period before retiring the protected `PUSH_TEAMS_WEBHOOK_URL` rollback secret. Rotate/remove it afterward according to the approved secret process.
 
 Production state after cutover:
 

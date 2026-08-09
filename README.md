@@ -365,6 +365,16 @@ Only when the claim returns `ready="yes"`, `contractVersion=2`, and `recommendat
 
 Keep `PUSH_TEAMS_ALERTS_ENABLED=true` so recommendation claims remain enabled, and set `PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false` at cutover so the legacy webhook worker cannot race the scheduled flow. `PUSH_TEAMS_WEBHOOK_URL` is needed only for the legacy rollback path. Never run both transport owners at the same time.
 
+At every transport-owner cutover, audit both **Meine Flows → Cloud-Flows** and
+**Für mich freigegeben** in Power Automate; the owned-flow list alone does not
+show shared schedulers that can claim a slot first. The legacy instant-webhook
+flow and every legacy/shared scheduled flow must be **Off**, leaving exactly one
+active scheduler: the canonical Exact-5 flow. Rotate `POWER_AUTOMATE_API_KEY`
+for the owner change and distribute the new value only to the deployment secret
+store and that canonical flow's protected Claim/Receipt configuration. Legacy
+and shared flows must retain stale credentials so re-enabling one cannot make it
+an authorized claim owner.
+
 The adaptive schedule, cooldown, deadline, delay, Sport-quota, and daily-plan environment variables below remain available to the legacy worker and internal diagnostics. They do not affect or replace the fixed 12-slot Power Automate schedule.
 
 Before cutover, `/api/v1/power-automate/teams/readiness` (or the complete internal `/api/teams-readiness` diagnostic) must report top-level `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorage.required=true`, `durableStorage.durable=true`, `durableStorage.mode=persistent_disk`, `scoreApi.ok=true`, `exactFive.contractOk=true`, `exactFive.recommendationCount=5`, `exactFive.top1Canonical=true`, `pushHistory.ok=true`, `slots.ok=true`, `slots.plannedToday=12`, and the exact weekday or weekend labels above. The Exact-5 probe runs the same read-only filter/evaluation path as the claim and creates no slot/article claim. The claim returns 503, and Render startup fails, instead of falling back to ephemeral storage when the `/data` disk is missing or unwritable. `pushHistory.historyAuthoritative=false` together with `fallbackMode=durable_slot_and_receipt_dedup` is the expected cloud-only state when no AS-network relay is available. The protected route additionally exposes only the latest due slot's safe state: `sent` plus `receiptRecorded=true` is the successful delivery proof; `delivery_uncertain`, a stale `sending`, or an expired `unclaimed` slot requires reconciliation.
