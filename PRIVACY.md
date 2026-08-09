@@ -2,21 +2,25 @@
 
 This project processes editorial and analytics-related data in an Axel Springer context and therefore follows privacy-by-design and privacy-by-default principles.
 
-## PRIVACY NOTE — Scheduled Top-5 display (2026-08-06)
+## PRIVACY NOTE — Exact scheduled Top-5 contract (2026-08-09)
 
-- **Purpose:** Show editors up to five current Push Balancer recommendations in the existing scheduled Teams message.
-- **Data categories / subjects:** Public article titles and URLs may name public persons; latest article publication times and article-level Push Scores are non-personal editorial metadata. No reader, employee, device, or audience data is added.
-- **Legal basis / roles:** Unchanged from the approved scheduled Power Automate delivery; Axel Springer remains controller and the existing Microsoft 365 roles apply.
-- **Recipients / transfers:** The existing Microsoft Power Automate and Teams destination receives up to five recommendations instead of two. No new provider, destination, or transfer path is introduced.
-- **Retention:** Existing 45-day backend cleanup and approved Microsoft 365 retention continue to apply.
-- **Safeguards:** Only title, article URL, latest publication time, and one-decimal Push Score are displayed; raw histories, other candidates, prompts, secrets, and user activity remain excluded.
-- **Required approvals:** Product/System Owner must confirm the five-item display remains within the existing scheduled-delivery approval; Privacy Manager/DPO/Legal reassessment is required before adding another destination, data category, tracking purpose, or broader candidate payload.
+- **Purpose:** Show editors exactly five current Push Balancer recommendations in one existing scheduled Teams message; an incomplete list is not sent and remains retryable only inside the open five-minute slot.
+- **Data categories:** Exactly five public article titles, URLs, and latest publication times; canonical article-level Push Scores where available; non-personal slot/contract/count and delivery metadata. A display-only filler carries pending-score text instead of a fallback number.
+- **Data subjects:** Persons incidentally named or described in already-public editorial headlines. No reader, employee, recipient, device, session, or audience data is added or scored.
+- **Legal basis:** Unchanged from the approved scheduled editorial-support delivery documented below; no new purpose, profiling, tracking, or automated reader-push decision is introduced.
+- **Roles:** Axel Springer remains controller and the existing approved Microsoft 365 processor/subprocessor roles remain unchanged.
+- **Recipients / transfers:** The same approved Microsoft Power Automate environment and Teams conversation receive exactly five recommendations. No new provider, destination, recipient class, or international transfer path is introduced.
+- **Retention / deletion:** The 45-day backend limit is enforced at service startup, during hourly health maintenance, and whenever the scheduled ledger is accessed, including when the flow is later disabled. The approved Microsoft 365 run-history/message retention, access, export, correction, and deletion handling continue to apply.
+- **Safeguards:** Top 1 still requires the highest fresh canonical internal score. Places 2–5 may use a current, publication-age-weighted local value only when the missing canonical score is their sole technical blocker; that value never authorizes Top 1, never appears in the API/Teams payload, and is replaced by pending-score text. All other hard blockers remain effective. CMS identity and canonical BILD URL aliases, including host/query/AMP variants, are deduplicated before ranking and rechecked atomically at claim time. Fewer than five unique safe candidates produces a no-op without a slot/article-group claim. A ready claim atomically reserves all five identities on the mounted persistent disk; Render startup and the claim fail closed instead of falling back to `/tmp` when that storage is absent or unwritable. The child ledger stores only SHA-256 references, visible order, state, and timestamps, while titles/URLs for the five displayed recommendations remain in the existing `teams_alerts` operational ledger for at most 45 days and in the required Teams HTML. One receipt atomically finalizes all five and counts the group as one Teams message. A completely missing receipt leaves the group unresolved and prevents its five identities from being recycled without reconciliation; the legacy single-article writer cannot mutate a group. `contractVersion=2`, `recommendationCount=5`, slot binding, five rendered Top blocks, durable storage, and ownership of all five group claims are checked before send/replay. The readiness endpoint uses the same preparation path without creating a claim. Raw histories, candidates outside the rendered five, prompts, secrets, and user activity remain excluded.
+- **Required approvals / rollout status:** On 2026-08-09, the task owner recorded approval from the Product/System Owner, Privacy Manager, Data Protection Officer, and Legal/Group Legal for this exactly-five payload and for `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false`. This approved cloud-only mode keeps durable slot, five-article-group, request, and receipt deduplication, but it does not claim an authoritative comparison with freshly live-pushed articles. The local implementation and tests use synthetic data only. Reassessment is required before enabling authoritative live-history mode or adding a new destination/provider, personal-data category, tracking purpose, employee data, or transfer change.
 
-## Rollout hold and incident escalation
+This activation record is a scoped extension of the historical 2026-08-04 closure. It does not rewrite that evidence or broaden approval beyond the existing Teams destination, the exactly-five payload, and the cloud-only history mode described above.
 
-A metadata-only repository check found that a file named `push-snapshot.json` is reachable in the Git history of the production branch and multiple remotes. Its contents were deliberately not opened or copied. This is a potential privacy/security incident because the file name indicates that production analytics data may have entered version control. A signed Power Automate trigger URL was also shared in the task conversation; its signature must be treated as exposed and regenerated by the flow owner before further production use.
+## Historical incident record and scoped closures
 
-Until the incident owner closes the assessment:
+A metadata-only repository check found that a file named `push-snapshot.json` is reachable in the Git history of the production branch and multiple remotes. Its contents were deliberately not opened or copied. This was escalated as a potential privacy/security incident because the file name indicates that production analytics data may have entered version control. A signed Power Automate trigger URL was also shared in the task conversation; its signature remains treated as exposed and must not be restored as an anonymous bearer transport without rotation.
+
+The original hold, before the scoped closure records below, required the team to:
 
 - do not enable `PUSH_TEAMS_AGENT_REVIEW_ENABLED`
 - do not commit, push, deploy, rewrite history, or delete evidence as part of this change
@@ -24,7 +28,7 @@ Until the incident owner closes the assessment:
 - let repository/security administrators determine exposure, access, clone/cache scope, credential rotation needs, preservation duties, coordinated history cleanup, and any notification obligation
 - let the Power Automate owner regenerate the signed HTTP trigger URL and update only the approved runtime secret store; never commit or repost it
 
-The review network remains `false` by default and explicitly disabled in `render.yaml`. The statement that the existing production Teams flow was not changed records the original review-network scope. For the scheduled Power Automate cutover only, it is superseded by the scoped closure record below; it remains applicable to unrelated review-network work.
+The review network remains `false` by default and explicitly disabled in `render.yaml`. The statement that the existing production Teams flow was not changed records the original review-network scope. For the scheduled Power Automate cutover only, it is superseded by the scoped closure records below; it remains applicable to unrelated review-network work.
 
 ### Scoped closure record for the score API (2026-07-23)
 
@@ -87,11 +91,32 @@ secrets in Power Automate or Teams.
   broader payload, a different Teams destination, new tracking, or a new
   provider.
 
+### Scoped closure record for the Exact-5 cloud-only extension (2026-08-09)
+
+The task owner confirmed that Product/System Owner, Privacy Manager, Data
+Protection Officer, and Legal/Group Legal approval is recorded for one
+scheduled Teams message containing exactly five recommendations and for
+`POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false`. The previously shared signed
+legacy webhook value remains treated as exposed and is not reproduced here.
+Its trigger was restricted from anonymous `Jeder` access to authenticated
+tenant users, preserving the flow and run-history evidence while containing
+anonymous bearer use. This containment is not recorded as credential rotation
+or proof that the legacy flow is off.
+
+The repository/incident evidence above remains preserved. The accountable
+functions' 2026-08-09 confirmation lifts the commit and backend-deployment hold
+for this scoped Exact-5 change. It does not permit parallel transports: the new
+scheduled flow must remain off until the legacy transport is visibly disabled
+or otherwise proven unable to race, production readiness is green, and the
+single Teams action plus both terminal receipt paths are verified. Enabling a
+new provider, recipient, history source, tracking purpose, employee data, raw
+production logs, or authoritative live-history mode requires a new review.
+
 ## Purpose
 
 The service supports editorial planning for push notifications. It predicts opening-rate trends, analyses historical push performance, and provides decision support for editors.
 
-For the scheduled Power Automate cutover, the scoped closure record above governs ranking, cadence, relay freshness, transport, and approval status. The broader paragraphs below continue to document other or historical modes and must not be used to reintroduce their legacy ranking or timing controls into that scheduled path.
+For the scheduled Power Automate cutover, the scoped closure records above govern ranking, cadence, history mode, transport, and approval status. The broader paragraphs below continue to document other or historical modes and must not be used to reintroduce their legacy ranking or timing controls into that scheduled path.
 
 The local Teams-review network has the defined purpose of preventing repeated Teams suggestions, stale, unverified, badly timed, or low-evidence article recommendations in the existing legacy/review-network workflow. Actual live pushes are processed as a hard exact-article duplicate gate and as retrospective comparison context: a canonical article URL or CMS document ID already present in live-push history is ineligible, while live-push count, density, and timing do not control Teams pacing or ranking. Its title jury additionally selects a fact-grounded push title with a concrete reader-information promise while rejecting manipulative bait and unsupported facts. A final CvD jury uses raw Push Score as its strongest direct dimension and also considers article strength, OR evidence, weekday/slot fit, title quality, the selection margin, and reviewer consensus only when that optional review is enabled, to decide whether the complete recommendation is strong enough to send. It scores articles, titles, and editorial timing, not employees or individual end users. In the scoped scheduled path these quality signals are advisory and cannot replace a technically valid absolute API Top-1.
 
@@ -101,7 +126,7 @@ The Germany-relevance gate has the defined editorial purpose of prioritising sto
 
 The offline synthetic reader-mode panel is a non-personal editorial stress test. Its 144 cells are combinations of topic interest, attention state, and usage motive, not representations of recruited or observed BILD users. The bundled study uses invented headlines and `example.invalid` URLs only. The panel cannot estimate opening rate, does not read production history, and is technically marked shadow-only and not permitted for production decisions. Using real response data, demographic attributes, identifiers, or the panel as an automated Teams gate remains outside the approved scope and requires a new review.
 
-The score-driven Teams mode queries the internal Push Balancer score projection for the current article field in one approved batch of at most 200 unique CMS document IDs (within the source API's approved 500-ID ceiling). Its defined purpose is to make the already calculated article score the canonical ranking signal at each binding editorial slot. In this mode a source-valid workday API score is mandatory: a missing result, data at or beyond the source's eight-hour boundary, timeout, malformed data, missing configuration, or rejected credentials can never fall back to a locally invented score. Secondary article models only break an exact API-score tie after the existing factual, freshness, section, Germany-relevance, title, cooldown, and Teams-dedup gates. It adds no reader, device, session, employee, or Adobe data and does not infer reader sentiment. For the scoped Power Automate path, the closure record narrows those pre-ranking blockers to technical validity and exact live/Teams article duplicates; section, Germany-relevance, title quality, cooldown, Sport balance, and the other local models remain advisory and cannot displace a higher valid API score.
+The score-driven Teams mode queries the internal Push Balancer score projection for the current article field in one approved batch of at most 200 unique CMS document IDs (within the source API's approved 500-ID ceiling). Its defined purpose is to make the already calculated article score the canonical ranking signal at each binding editorial slot. In this mode a source-valid workday API score is mandatory for Top 1 and send authorization: a missing result, data at or beyond the source's eight-hour boundary, timeout, malformed data, missing configuration, or rejected credentials can never promote a fallback into Top 1. Under the exact-five note above, a current article whose sole blocker is that missing canonical score may occupy a display-only place 2–5; its publication-age-weighted local value stays backend-only and is never represented as a canonical score. Secondary article models only break an exact API-score tie after the existing factual, freshness, section, Germany-relevance, title, cooldown, and Teams-dedup gates. It adds no reader, device, session, employee, or Adobe data and does not infer reader sentiment. For the scoped Power Automate path, the closure records narrow those pre-ranking blockers to technical validity and exact Teams/article duplicates; exact live-push duplicates join those blockers only when `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true`. Section, Germany-relevance, title quality, cooldown, Sport balance, and the other local models remain advisory and cannot displace a higher valid API score.
 
 The adaptive post-send threshold uses the timestamp of the last successfully sent Teams recommendation to raise the next article's raw-score floor to at most 80 and decay it back to the configured baseline. A canonical article score strictly above 80 may waive only local soft quality and pacing gates. Quiet hours, slot timing, publication/factual integrity, section and event rules, Teams cooldown, daily cap, exact live-push and Teams article/topic deduplication, title approval, and transport checks remain hard. The calculation does not use actual live-push timing, recipient behavior, identifiers, or employee activity and introduces no external call. This paragraph describes the legacy adaptive sender and does not add a score floor, daily cap, or cooldown reordering rule to the scheduled Power Automate Top-1 path.
 
@@ -144,7 +169,7 @@ No employee monitoring or individual recipient profiling is introduced by the re
 - Processor/subprocessor roles: Microsoft Power Automate/Teams tenant roles and any transfer path must be confirmed before activation.
 - The local deterministic reviewers are application code, not a new external processor or recipient.
 
-These TBD statements remain the gate for the broader reviewer/scoring scopes. For the scheduled Power Automate delivery described in the 2026-08-04 scoped closure only, the recorded Legal/DPO/controller/processor decision supersedes them; no approval is inferred for any other scope.
+These TBD statements remain the gate for the broader reviewer/scoring scopes. For the scheduled Power Automate delivery described in the 2026-08-04 and 2026-08-09 scoped closures only, the recorded Legal/DPO/controller/processor decision supersedes them; no approval is inferred for any other scope.
 
 ## External systems
 
@@ -157,7 +182,7 @@ These TBD statements remain the gate for the broader reviewer/scoring scopes. Fo
 
 ## Runtime safeguards in this repository
 
-Unless a bullet explicitly names the scheduled Power Automate path, references below to webhook delivery, the 15–18-slot cadence, `:15`/`:45` decisions, adaptive thresholds, Breaking priority, daily Sport targets, or pre-webhook refreshes describe the legacy background sender. They are superseded only for the scoped 2026-08-04 Power Automate cutover and remain documentation for their original scopes.
+Unless a bullet explicitly names the scheduled Power Automate path, references below to webhook delivery, the 15–18-slot cadence, `:15`/`:45` decisions, adaptive thresholds, Breaking priority, daily Sport targets, or pre-webhook refreshes describe the legacy background sender. They are superseded only for the scheduled Power Automate scope recorded on 2026-08-04 and extended to Exact-5 cloud-only delivery on 2026-08-09, and remain documentation for their original scopes.
 
 - Production snapshots and raw analytics dumps must not be committed to git or baked into the Docker image.
 - `PUSH_SNAPSHOT_PATH` is only for sanitized startup seed files mounted at runtime.
@@ -174,11 +199,11 @@ Unless a bullet explicitly names the scheduled Power Automate path, references b
 - In the legacy webhook path, the final CvD jury runs before any in-memory reservation or durable send claim and missing or failed final approval blocks fail-closed. When the optional reviewer network is disabled, its weight is removed and the remaining dimensions are normalized instead of inventing a positive consensus score. In the scoped scheduled path, the CvD result remains advisory and cannot displace the technically valid absolute API Top-1.
 - The morning-fit gate runs locally before slot and deadline fallback. Its veto cannot be waived by daily pacing or the `:45` fallback, and it introduces no model or network call.
 - The Germany-relevance gate runs locally from existing public article metadata. Its pure-US-story veto and international score floors cannot be waived by pacing, OR, reach, or the `:45` fallback; worldwide verified breaking remains subject to all other hard gates. The People exception requires a named German public role and explicit confirmed parenthood wording, ignores partner/identity traits, remains subject to the raw Push Score 75 floor, and cannot bypass Teams duplicate, factual, publication-time, slot, cooldown, or quiet-hour gates.
-- When the internal score mode is disabled, the pre-existing candidate-view alignment remains unchanged. When it is enabled, only an authenticated score no older than the configured 900-second ceiling is canonical; missing, stale, unauthorized, or unavailable responses fail closed. The prior local score remains process-local countercheck metadata and cannot authorize a Teams send. Teams receives the chosen article score, non-personal score-source label, and score timestamp, never the API key or local comparison score.
+- When the internal score mode is disabled, the pre-existing candidate-view alignment remains unchanged. When it is enabled, only an authenticated score no older than the configured 900-second ceiling is canonical; missing, stale, unauthorized, or unavailable responses fail closed for Top 1 and send authorization. The prior local score remains process-local countercheck metadata: it may order only display places 2–5 under the exact-five safeguards above and cannot become a transmitted score or authorize Top 1. Teams never receives the API key or local comparison score.
 - The synthetic reader-mode panel has no runtime import in the Teams worker, performs no I/O, and persists nothing itself. Every result states that it represents no observed users, cannot estimate OR, and is forbidden for production use.
 - Full final-jury dimensions and blockers stay in process memory. Teams receives only approval, total score, confidence, and the minimized send window; the local 45-day recommendation record receives the same compact verdict, not the seven-dimensional scorecard.
 - A direct live refresh makes exact-article deduplication authoritative. A relay does so only when its transmitted lineage is `source=live` or `source=relay`, its complete snapshot parses and persists, and its age from the original `snapshotTs` is no more than five minutes; relay receipt time never renews that age. Stale, empty, unknown-source, incomplete, unpersisted, or unavailable history blocks recommendation delivery fail-closed.
-- The legacy webhook path performs a second pre-dispatch history refresh. The scheduled Power Automate claim instead loads one authoritative snapshot and reuses that same immutable snapshot for selection and its final exact-duplicate comparison; it performs no second network refresh during that claim. Exact canonical article identity affects eligibility only as a duplicate veto; live-push timing and volume do not affect cadence or ranking.
+- The legacy webhook path performs a second pre-dispatch history refresh. The scheduled Power Automate claim deliberately performs no AS-network live-history call and relies on durable exact Teams/article and per-slot claims in its current cloud-only mode. A separately reviewed fail-closed mode may require a fresh authoritative relay, but it must not be described as active without runtime evidence. Live-push timing and volume do not affect scheduled cadence or ranking.
 - Exact article uniqueness is enforced from the retained Teams send state both during evaluation and by an atomic database claim. A changed title, score, forecast, or later breaking flag cannot make the same article eligible again. Teams topic similarity suppresses different articles about the same event inside the configured topic window.
 - Process-local duplicate state is checked before ranking so a blocked article cannot starve the candidate field. Rejected durable claims and failed webhook attempts release only their ephemeral reservation; aggregate diagnostics retain reason counts without adding titles, URLs, CMS IDs, or personal data.
 - The legacy weekday runtime plan creates 15-18 executable decisions. `06:15` and `06:45` are always binding; every red/yellow matrix hour is evaluated at both `:15` and `:45`, with a fresh API re-ranking for the second decision. Strong non-peak `:45` slots fill the day to at least 15, avoiding the 10/11 o'clock dead zone where possible. The independent Teams cooldown is 30 minutes. The separate 05:45 planning message does not enter that cooldown. None of those cadence, catch-up, or delay rules alters the scheduled Power Automate plan of exactly 12 fixed slots. Empty-cycle diagnostics contain aggregate counts and blocker categories, never article titles, URLs, CMS IDs, or raw histories.
@@ -212,7 +237,7 @@ Unless a bullet explicitly names the scheduled Power Automate path, references b
 - These integrations should be treated as external recipients and reviewed when payload scope, tenant routing, or transfer conditions change.
 - International transfer status is **TBD** until Microsoft tenant geography, contractual roles, and subprocessors are documented by the responsible owners.
 
-The final TBD above remains applicable to unapproved or broader integrations. For the exact scheduled Power Automate destination and minimized payload in the 2026-08-04 scoped closure, the recorded Legal/DPO transfer decision is authoritative.
+The final TBD above remains applicable to unapproved or broader integrations. For the exact scheduled Power Automate destination and minimized payload in the 2026-08-04 and 2026-08-09 scoped closures, the recorded Legal/DPO transfer decision is authoritative.
 
 ## Retention and deletion
 
@@ -329,7 +354,7 @@ into source control.
 
 ## Required approvals before activation
 
-This generic gate applies to new or broader activations. The exact scheduled Power Automate cutover is covered only to the extent recorded in the 2026-08-04 scoped closure; that closure does not waive this gate for another destination, payload, provider, tracking purpose, or review-network activation.
+This generic gate applies to new or broader activations. The exact scheduled Power Automate cutover is covered only to the extent recorded in the 2026-08-04 and 2026-08-09 scoped closures; those closures do not waive this gate for another destination, payload, provider, tracking purpose, authoritative live-history mode, or review-network activation.
 
 - Privacy Manager: purpose limitation, title/final-recommendation scoring, payload minimization, retention, and incident closure
 - Product Owner/System Owner: controller, operational ownership, editorial policy, and deletion/access ownership
@@ -340,7 +365,7 @@ No approval is inferred from successful technical tests.
 
 ## PRIVACY NOTE: internal score Top-1 and golden-hour cadence
 
-This is a historical pre-activation note for the broader score-driven/golden-hour mode. Its TBD legal, role, transfer, and approval statements are superseded only for the fixed 12-slot scheduled Power Automate cutover by the 2026-08-04 scoped closure. They remain open for every other activation or expansion.
+This is a historical pre-activation note for the broader score-driven/golden-hour mode. Its TBD legal, role, transfer, and approval statements are superseded only for the fixed 12-slot scheduled Power Automate cutover by the 2026-08-04 and 2026-08-09 scoped closures. They remain open for every other activation or expansion.
 
 - Purpose: rank current editorial articles by the existing internal Push Balancer score at binding Teams recommendation times and prevent local/fake-score substitution.
 - Data categories: public article title/URL/section, CMS document ID, article-level score and score timestamp, compact recommendation and delivery metadata.
@@ -519,7 +544,7 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 
 ## PRIVACY NOTE: mandatory Teams slot claim and People-story calibration
 
-This historical note combines a legacy slot-claim change with a separate People-story calibration. For scheduled Power Automate cadence, ranking, relay, and transport only, the 2026-08-04 scoped closure supersedes the legacy statements below. The People-story scope and every unrelated approval remain unchanged.
+This historical note combines a legacy slot-claim change with a separate People-story calibration. For scheduled Power Automate cadence, ranking, history mode, and transport only, the 2026-08-04 and 2026-08-09 scoped closures supersede the legacy statements below. The People-story scope and every unrelated approval remain unchanged.
 
 - Purpose: deliver exactly one highest-ranked technically valid editorial article recommendation per calculated legacy Teams slot, prevent duplicate slot delivery across worker cycles/restarts, and correct the existing article-level score for a concrete high-interest A-list People development. In the scoped scheduled path, this means the absolute highest technically valid fresh internal-API score at each of the 12 fixed slots; Sport quota and legacy delay settings cannot change that winner or schedule.
 - Data categories: existing public article title, canonical URL, CMS ID, section, publication time, article-level Push Score, exact duplicate status, binding-slot timestamp, delivery status, and truncated technical error. The slot table stores only a SHA-256 article reference, not the URL or title.
@@ -528,8 +553,8 @@ This historical note combines a legacy slot-claim change with a separate People-
 - Roles: unchanged Axel Springer editorial controller/system-owner roles and existing internal score-service ownership.
 - External recipients / international transfer: no new service, recipient, or transfer. Microsoft Power Automate/Teams receives the existing minimized recommendation plus a non-personal deterministic `slotId`; raw history and slot-claim state stay local.
 - Retention / deletion: the new slot claim is deleted by the existing cleanup after 45 days. Internal score results remain memory-only under the existing short cache; existing recommendation and Teams-tenant retention remain unchanged.
-- Safeguards: one atomic `PRIMARY KEY(binding_slot_ts)` claim, hashed article reference, stable slot ID, five-minute wall-clock revalidation, fresh internal score requirement, authoritative exact live/Teams duplicate checks, promo/fiction rejection, quiet hours, no secret or raw-history payload, and original-headline fallback when optional quality generation fails. The scheduled path additionally requires 30 seconds of remaining delivery budget, Teams retry policy `None`, and a terminal `delivery_uncertain` receipt for failed, timed-out, or skipped Teams outcomes; the old no-repeat-webhook wording applies only to the legacy sender.
-- Required documentation / approvals: no new personal-data category, behavioral profiling, provider, or processing purpose is introduced. For the exact scheduled Power Automate cutover, the Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal record is the 2026-08-04 scoped closure. They must reassess before adding new personal attributes, observed-user data, employee data, recipients, transfer paths, destinations, or payload fields; the separate People-story scope is not broadened by that closure.
+- Safeguards: one atomic slot plus five-article group claim, hashed article references, stable slot ID, five-minute wall-clock revalidation, fresh internal score requirement, and durable exact Teams/article/request/receipt deduplication. Exact live-push duplicate checks are additionally mandatory only when `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=true`; the approved cloud-only mode does not claim them. Promo/fiction rejection, quiet hours, no secret or raw-history payload, and original-headline fallback when optional quality generation fails remain in place. The scheduled path additionally requires 30 seconds of remaining delivery budget, Teams retry policy `None`, and a terminal `delivery_uncertain` receipt for failed, timed-out, or skipped Teams outcomes; the old no-repeat-webhook wording applies only to the legacy sender.
+- Required documentation / approvals: no new personal-data category, behavioral profiling, provider, or processing purpose is introduced. For the exact scheduled Power Automate cutover, the Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal record is the 2026-08-04 closure plus the 2026-08-09 Exact-5 cloud-only extension. They must reassess before adding new personal attributes, observed-user data, employee data, recipients, transfer paths, destinations, payload fields, or authoritative live-history mode; the separate People-story scope is not broadened by those closures.
 
 ## PR / handover template
 

@@ -14,8 +14,9 @@ from app import auth, database
 from app.main import app
 from app.notifications.teams import candidate_key
 from app.teams_slot_claims import (
+    teams_recommendation_slot_group_get,
     teams_recommendation_slot_get,
-    teams_recommendation_slot_record,
+    teams_recommendation_slot_record_group_receipt,
     teams_recommendation_slot_try_claim,
 )
 
@@ -50,9 +51,142 @@ def test_weekend_morning_slots_start_two_hours_later():
 
     assert power_automate.power_automate_slot_labels_for_date(saturday) == expected
     assert power_automate.power_automate_slot_labels_for_date(sunday) == expected
-    assert power_automate.power_automate_slot_labels_for_date(
-        dt.date(2026, 8, 10)
-    )[0] == "06:00"
+    assert power_automate.power_automate_slot_labels_for_date(dt.date(2026, 8, 10))[0] == "06:00"
+
+
+def test_power_automate_slot_override_applies_only_inside_its_live_window(
+    monkeypatch,
+):
+    import app.notifications.teams as teams
+
+    now_ts = int(dt.datetime(2026, 8, 9, 10, 59, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    candidate = {
+        "id": "000000000000000000000021",
+        "url": "https://www.bild.de/news/synthetic-weekend-override",
+        "title": "Synthetische Wochenendmeldung",
+        "category": "news",
+        "score": 90.0,
+        "scoreSource": "internal_score_api",
+        "pubDate": "2026-08-09T10:50:00+02:00",
+    }
+    config = replace(
+        teams.TeamsAlertConfig(),
+        enabled=True,
+        require_internal_score_api=True,
+        allow_durable_live_history_fallback=True,
+        slot_gate_enabled=True,
+    )
+    monkeypatch.setattr(
+        teams,
+        "should_notify_teams",
+        lambda item, _context, _config: {
+            "candidateId": teams.candidate_key(item),
+            "shouldNotify": False,
+            "score": item["score"],
+            "scoreSource": "internal_score_api",
+            "publicationReview": {"status": "valid"},
+            "livePushComparison": {"available": False, "authoritative": False},
+            "blockingReasons": ["Nur redaktioneller Hinweis"],
+            "slotGate": {"enabled": True, "approved": False},
+        },
+    )
+    base_context = {
+        "nowTs": now_ts,
+        "alertState": {},
+        "recentTeamsAlerts": [],
+        "contextAvailable": {"alertState": True, "recentTeamsAlerts": True},
+    }
+    live_context = {
+        **base_context,
+        "_mandatorySlotOverride": {
+            "ts": now_ts - 30,
+            "label": "10:59",
+            "slotRole": "power_automate_fixed",
+        },
+    }
+
+    live_evaluation = teams.evaluate_teams_alert_candidates(
+        [candidate],
+        live_context,
+        config,
+    )
+    live_decision = live_evaluation["decisions"][0]["decision"]
+
+    assert live_evaluation["selectedCandidate"] == candidate
+    assert live_decision["shouldNotify"] is True
+    assert live_decision["mandatorySlotTop1"] is True
+    assert live_decision["slotGate"]["slot"]["ts"] == now_ts - 30
+
+    expired_context = {
+        **base_context,
+        "_mandatorySlotOverride": {
+            "ts": now_ts - 301,
+            "label": "10:54",
+            "slotRole": "power_automate_fixed",
+        },
+    }
+    expired_evaluation = teams.evaluate_teams_alert_candidates(
+        [candidate],
+        expired_context,
+        config,
+    )
+
+    assert expired_evaluation["selectedCandidate"] is None
+    assert expired_evaluation["decisions"][0]["decision"].get("mandatorySlotTop1") is not True
+
+    future_ts = int(dt.datetime(2026, 8, 9, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    invalid_overrides = (
+        {"ts": "not-a-timestamp", "label": "10:59", "slotRole": "power_automate_fixed"},
+        {"ts": 10**100, "label": "10:59", "slotRole": "power_automate_fixed"},
+        {"ts": now_ts - 30, "label": "10:59", "slotRole": "unexpected_role"},
+        {"ts": now_ts - 30, "label": "10:23", "slotRole": "power_automate_fixed"},
+        {"ts": future_ts, "label": "12:30", "slotRole": "power_automate_fixed"},
+    )
+    for invalid_override in invalid_overrides:
+        invalid_evaluation = teams.evaluate_teams_alert_candidates(
+            [candidate],
+            {**base_context, "_mandatorySlotOverride": invalid_override},
+            config,
+        )
+        assert invalid_evaluation["selectedCandidate"] is None
+        assert invalid_evaluation["decisions"][0]["decision"].get("mandatorySlotTop1") is not True
+
+    readiness_probe = teams.evaluate_teams_alert_candidates(
+        [candidate],
+        {
+            **base_context,
+            "_mandatorySlotOverride": {
+                "ts": future_ts,
+                "label": "12:30",
+                "slotRole": "power_automate_fixed",
+            },
+            "_scheduledReadinessProbe": True,
+        },
+        config,
+    )
+    assert readiness_probe["selectedCandidate"] == candidate
+    assert readiness_probe["decisions"][0]["decision"]["mandatorySlotTop1"] is True
+
+
+def test_shared_power_automate_slot_validator_rejects_schedule_mismatches():
+    from app.power_automate_schedule import is_power_automate_binding_slot
+
+    sunday_valid = int(
+        dt.datetime(2026, 8, 9, 10, 59, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+    )
+    sunday_weekday_only = int(
+        dt.datetime(2026, 8, 9, 6, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+    )
+    sunday_unscheduled = int(
+        dt.datetime(2026, 8, 9, 11, 1, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+    )
+
+    assert is_power_automate_binding_slot(sunday_valid, "10:59") is True
+    assert is_power_automate_binding_slot(sunday_valid, "10:23") is False
+    assert is_power_automate_binding_slot(sunday_weekday_only, "06:00") is False
+    assert is_power_automate_binding_slot(sunday_unscheduled, "11:01") is False
+    assert is_power_automate_binding_slot("1786258740", "10:59") is False
+    assert is_power_automate_binding_slot(10**100, "10:59") is False
 
 
 def test_durable_history_fallback_keeps_mandatory_slot_sendable():
@@ -88,12 +222,15 @@ def test_durable_history_fallback_keeps_mandatory_slot_sendable():
         allow_durable_live_history_fallback=True,
     )
 
-    assert _mandatory_slot_top1_technical_blockers(
-        candidate,
-        decision,
-        context,
-        config,
-    ) == []
+    assert (
+        _mandatory_slot_top1_technical_blockers(
+            candidate,
+            decision,
+            context,
+            config,
+        )
+        == []
+    )
 
 
 def _synthetic_candidates(
@@ -147,20 +284,52 @@ def _patch_successful_claim(
         require_internal_score_api=True,
         slot_gate_enabled=True,
     )
+    binding_slot = power_automate._power_automate_binding_slot(now_ts)
+    binding_slot_ts = int((binding_slot or {}).get("ts") or SLOT_TS)
     decision = {
         "candidateId": top["url"],
         "shouldNotify": True,
         "score": top["score"],
+        "scoreSource": "internal_score_api",
+        "mandatorySlotTop1Candidate": True,
         "summary": "Verbindlicher Push-Balancer-Top-1 im festen Slot",
     }
     alternative_decision = {
         "candidateId": alternative["url"],
         "shouldNotify": False,
         "score": alternative["score"],
-        "blockingReasons": [
-            "Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"
-        ],
+        "scoreSource": "internal_score_api",
+        "mandatorySlotTop1Candidate": True,
+        "blockingReasons": ["Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"],
     }
+    extra_count = 3 if include_alternative else 4
+    extras = [
+        {
+            "id": f"synthetic-extra-{index}",
+            "url": f"https://www.bild.de/{top_category}/synthetic-extra-{index}",
+            "title": f"Synthetische Zusatzmeldung {index}",
+            "category": top_category,
+            "score": 84.0 - index,
+            "scoreSource": "internal_score_api",
+            "predictedOR": 0.05,
+            "pubDate": top["pubDate"],
+        }
+        for index in range(1, extra_count + 1)
+    ]
+    extra_decisions = [
+        {
+            "candidate": candidate,
+            "decision": {
+                "candidateId": candidate["url"],
+                "shouldNotify": False,
+                "score": candidate["score"],
+                "scoreSource": "internal_score_api",
+                "mandatorySlotTop1Candidate": True,
+                "blockingReasons": ["Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"],
+            },
+        }
+        for candidate in extras
+    ]
     message_html = (
         "<h2>🔵 PUSH-EMPFEHLUNG</h2>"
         "<p><strong>Top 1:</strong> Bund beschliesst synthetisches Hilfspaket</p>"
@@ -169,6 +338,7 @@ def _patch_successful_claim(
         "_dispatchApproved": True,
         "_slotGateApproved": True,
         "payload": {
+            "slotId": f"teams-recommendation-{binding_slot_ts}",
             "articleTitle": top["title"],
             "articleUrl": top["url"],
             "category": top["category"],
@@ -185,6 +355,7 @@ def _patch_successful_claim(
             ),
             "messageHtml": message_html,
         },
+        "_bindingSlotTs": binding_slot_ts,
     }
 
     monkeypatch.setattr(power_automate.time, "time", lambda: now_ts)
@@ -193,7 +364,11 @@ def _patch_successful_claim(
         power_automate,
         "build_articles_payload",
         lambda **_kwargs: {
-            "articles": [top, alternative] if include_alternative else [top]
+            "articles": [
+                top,
+                *([alternative] if include_alternative else []),
+                *extras,
+            ]
         },
     )
     monkeypatch.setattr(
@@ -218,6 +393,7 @@ def _patch_successful_claim(
                     if include_alternative
                     else []
                 ),
+                *extra_decisions,
             ],
         },
     )
@@ -242,6 +418,31 @@ def test_claim_requires_dedicated_auth_and_never_allows_caching(monkeypatch):
     assert response.headers["vary"] == "X-Power-Automate-Key"
 
 
+def test_claim_fails_closed_when_only_ephemeral_storage_is_available(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(power_automate.app_config, "PUSH_DB_DURABLE", False)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-ephemeral-storage-run"},
+        )
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert "Durable recommendation storage" in response.text
+    assert teams_recommendation_slot_get(SLOT_TS) is None
+
+
 def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     import app.routers.power_automate as power_automate
 
@@ -251,6 +452,7 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
             "title": f"Synthetische Meldung {index}",
             "url": f"https://www.bild.de/news/synthetic-{index}",
             "score": score,
+            "scoreSource": "internal_score_api",
             "pubDate": f"2026-08-03T{index + 8:02d}:15:00+02:00",
         }
         decisions.append(
@@ -258,19 +460,20 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
                 "candidate": candidate,
                 "decision": {
                     "score": score,
+                    "scoreSource": "internal_score_api",
+                    "mandatorySlotTop1Candidate": True,
+                    "shouldNotify": index == 2,
                     "blockingReasons": (
                         []
                         if index == 2
-                        else [
-                            "Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"
-                        ]
+                        else ["Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"]
                     ),
                 },
             }
         )
 
     recommendations = power_automate._scheduled_recommendations(
-        {"decisions": decisions}
+        {"selectedCandidate": decisions[1]["candidate"], "decisions": decisions}
     )
     message_html = power_automate._scheduled_message_html(recommendations)
 
@@ -286,6 +489,415 @@ def test_scheduled_message_uses_the_five_highest_valid_push_scores():
     assert message_html.count("</p><br><br><p>") == 5
     assert "(03.08.2026, 10:15 Uhr)" in message_html
     assert "(03.08.2026, 14:15 Uhr)" in message_html
+
+
+def test_scheduled_message_fills_four_safe_display_slots_without_fake_scores():
+    import app.routers.power_automate as power_automate
+
+    selected = {
+        "id": "000000000000000000000001",
+        "title": "Synthetische kanonische Meldung",
+        "url": "https://www.bild.de/news/synthetic-canonical",
+        "score": 91.4,
+        "scoreSource": "internal_score_api",
+        "pubDate": "2026-08-03T12:20:00+02:00",
+    }
+    decisions = [
+        {
+            "candidate": selected,
+            "decision": {
+                "candidateId": selected["url"],
+                "shouldNotify": True,
+                "score": selected["score"],
+                "scoreSource": "internal_score_api",
+                "mandatorySlotTop1Candidate": True,
+                "blockingReasons": [],
+            },
+        }
+    ]
+    fallback_specs = [
+        ("000000000000000000000002", "fallback-1", 88.0),
+        # Same CMS article under a second URL: must not occupy another slot.
+        ("000000000000000000000002", "fallback-1-duplicate", 87.0),
+        ("000000000000000000000003", "fallback-2", 86.0),
+        ("000000000000000000000004", "fallback-3", 84.0),
+        ("000000000000000000000005", "fallback-4", 82.0),
+        ("000000000000000000000006", "fallback-5", 80.0),
+    ]
+    for cms_id, slug, fallback_score in fallback_specs:
+        candidate = {
+            "id": cms_id,
+            "title": f"Synthetische Anzeigeempfehlung {slug}",
+            "url": f"https://www.bild.de/news/{slug}",
+            "score": 0.0,
+            "scoreSource": "internal_score_api_missing",
+            "scoreBeforeInternalApi": fallback_score,
+            "scoreSourceBeforeInternalApi": "server_editorial_fallback",
+            "pubDate": "2026-08-03T12:15:00+02:00",
+        }
+        decisions.append(
+            {
+                "candidate": candidate,
+                "decision": {
+                    "candidateId": candidate["url"],
+                    "shouldNotify": False,
+                    "score": 0.0,
+                    "scoreSource": "internal_score_api_missing",
+                    "mandatorySlotTop1Candidate": True,
+                    "mandatoryTechnicalBlockerCodes": ["missing_canonical_score"],
+                    "blockingReasons": [
+                        "Synthetischer geaenderter Anzeigetext fuer fehlenden Score"
+                    ],
+                },
+            }
+        )
+
+    recommendations = power_automate._scheduled_recommendations(
+        {"selectedCandidate": selected, "decisions": decisions}
+    )
+    message_html = power_automate._scheduled_message_html(recommendations)
+
+    assert len(recommendations) == 5
+    assert recommendations[0]["title"] == selected["title"]
+    assert recommendations[0]["pushScore"] == 91.4
+    assert all(item["pushScore"] is None for item in recommendations[1:])
+    assert len({item["url"] for item in recommendations}) == 5
+    assert not any(item["url"].endswith("/fallback-1-duplicate") for item in recommendations)
+    assert message_html.count("<strong>Top ") == 5
+    assert message_html.count("Kanonischer Push Score steht noch aus.") == 4
+    assert message_html.count("/100") == 1
+
+
+def test_scheduled_display_fallback_never_ignores_a_second_hard_blocker():
+    import app.routers.power_automate as power_automate
+
+    selected = {
+        "id": "000000000000000000000011",
+        "title": "Synthetische kanonische Meldung",
+        "url": "https://www.bild.de/news/synthetic-selected",
+        "score": 90.0,
+        "scoreSource": "internal_score_api",
+        "pubDate": "2026-08-03T12:20:00+02:00",
+    }
+    blocked = {
+        "id": "000000000000000000000012",
+        "title": "Synthetische gesperrte Meldung",
+        "url": "https://www.bild.de/news/synthetic-blocked",
+        "score": 0.0,
+        "scoreSource": "internal_score_api_missing",
+        "scoreBeforeInternalApi": 88.0,
+        "scoreSourceBeforeInternalApi": "server_editorial_fallback",
+        "pubDate": "2026-08-03T12:15:00+02:00",
+    }
+    recommendations = power_automate._scheduled_recommendations(
+        {
+            "selectedCandidate": selected,
+            "decisions": [
+                {
+                    "candidate": selected,
+                    "decision": {
+                        "shouldNotify": True,
+                        "score": 90.0,
+                        "scoreSource": "internal_score_api",
+                        "blockingReasons": [],
+                    },
+                },
+                {
+                    "candidate": blocked,
+                    "decision": {
+                        "shouldNotify": False,
+                        "scoreSource": "internal_score_api_missing",
+                        "mandatorySlotTop1Candidate": True,
+                        "mandatoryTechnicalBlockerCodes": [
+                            "missing_canonical_score",
+                            "teams_article_duplicate",
+                        ],
+                        "blockingReasons": [
+                            "Kein frischer kanonischer Push-Balancer-Score fuer die Rangfolge",
+                            "Identischer Artikel wurde bereits per Teams empfohlen",
+                        ],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert [item["url"] for item in recommendations] == [selected["url"]]
+
+
+def test_selected_top1_wins_cms_dedup_even_when_duplicate_appears_first():
+    import app.routers.power_automate as power_automate
+
+    selected = {
+        "id": "000000000000000000000031",
+        "title": "Synthetische ausgewaehlte Top-Meldung",
+        "url": "https://www.bild.de/news/synthetic-selected-cms",
+        "score": 91.0,
+        "scoreSource": "internal_score_api",
+        "pubDate": "2026-08-03T12:20:00+02:00",
+    }
+    duplicate = {
+        **selected,
+        "title": "Synthetischer URL-Doppelgaenger",
+        "url": "https://www.bild.de/news/synthetic-duplicate-cms",
+        "score": 92.0,
+    }
+    extras = [
+        {
+            "id": f"00000000000000000000003{index}",
+            "title": f"Synthetische eindeutige Meldung {index}",
+            "url": f"https://www.bild.de/news/synthetic-unique-{index}",
+            "score": 88.0 - index,
+            "scoreSource": "internal_score_api",
+            "pubDate": "2026-08-03T12:15:00+02:00",
+        }
+        for index in range(2, 6)
+    ]
+
+    def decision(candidate, *, selected_candidate=False):
+        return {
+            "candidate": candidate,
+            "decision": {
+                "candidateId": candidate["url"],
+                "shouldNotify": selected_candidate,
+                "score": candidate["score"],
+                "scoreSource": "internal_score_api",
+                "mandatorySlotTop1Candidate": True,
+                "blockingReasons": (
+                    []
+                    if selected_candidate
+                    else ["Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"]
+                ),
+            },
+        }
+
+    recommendations = power_automate._scheduled_recommendations(
+        {
+            "selectedCandidate": selected,
+            "decisions": [
+                decision(duplicate),
+                decision(selected, selected_candidate=True),
+                *(decision(candidate) for candidate in extras),
+            ],
+        }
+    )
+
+    assert len(recommendations) == 5
+    assert recommendations[0]["url"] == selected["url"]
+    assert duplicate["url"] not in {item["url"] for item in recommendations}
+
+
+def test_scheduled_recommendations_collapse_bild_url_aliases_without_cms_id():
+    import app.routers.power_automate as power_automate
+
+    selected = {
+        "title": "Synthetische ausgewaehlte URL",
+        "url": "https://www.bild.de/news/synthetic-url-alias",
+        "score": 91.0,
+        "scoreSource": "internal_score_api",
+        "pubDate": "2026-08-03T12:20:00+02:00",
+    }
+    alias = {
+        **selected,
+        "title": "Synthetischer AMP-Doppelgaenger",
+        "url": "https://bild.de/news/synthetic-url-alias/amp?output=1",
+        "score": 90.0,
+    }
+    extras = [
+        {
+            "title": f"Synthetische eindeutige URL {index}",
+            "url": f"https://www.bild.de/news/synthetic-url-unique-{index}",
+            "score": 89.0 - index,
+            "scoreSource": "internal_score_api",
+            "pubDate": "2026-08-03T12:15:00+02:00",
+        }
+        for index in range(1, 5)
+    ]
+
+    def item(candidate, *, winner=False):
+        return {
+            "candidate": candidate,
+            "decision": {
+                "shouldNotify": winner,
+                "score": candidate["score"],
+                "scoreSource": "internal_score_api",
+                "mandatorySlotTop1Candidate": True,
+                "blockingReasons": (
+                    []
+                    if winner
+                    else ["Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"]
+                ),
+            },
+        }
+
+    recommendations = power_automate._scheduled_recommendations(
+        {
+            "selectedCandidate": selected,
+            "decisions": [
+                item(alias),
+                item(selected, winner=True),
+                *(item(candidate) for candidate in extras),
+            ],
+        }
+    )
+
+    assert len(recommendations) == 5
+    assert recommendations[0]["url"] == selected["url"]
+    assert alias["url"] not in {item["url"] for item in recommendations}
+
+
+def test_claim_payload_never_exposes_an_alternative_outside_rendered_five():
+    import app.routers.power_automate as power_automate
+
+    selected = {
+        "title": "Synthetische Top-Meldung",
+        "url": "https://www.bild.de/news/synthetic-top-five-only",
+        "category": "news",
+        "score": 91.0,
+    }
+    recommendations = [
+        {
+            "title": f"Synthetische Empfehlung {index}",
+            "url": (
+                selected["url"]
+                if index == 1
+                else f"https://www.bild.de/news/synthetic-five-{index}"
+            ),
+            "pushScore": 92.0 - index,
+            "publicationTs": SLOT_TS - 60,
+        }
+        for index in range(1, 6)
+    ]
+    outside_url = "https://www.bild.de/sport/synthetic-sixth-opposite"
+    message = {
+        "payload": {
+            "articleTitle": selected["title"],
+            "articleUrl": selected["url"],
+            "category": "news",
+            "pushScore": 91.0,
+            "alternativeRecommendation": {
+                "articleTitle": "Synthetische sechste Sportmeldung",
+                "articleUrl": outside_url,
+                "category": "sport",
+                "pushScore": 80.0,
+            },
+        }
+    }
+
+    payload = power_automate._claim_response_payload(
+        slot_ts=SLOT_TS,
+        selected=selected,
+        message=message,
+        recommendations=recommendations,
+    )
+
+    assert payload["recommendationCount"] == 5
+    assert payload["alternative"] is None
+    assert outside_url not in str(payload)
+    assert payload["messageHtml"].count("<strong>Top ") == 5
+
+
+def test_preparation_replaces_a_retained_cms_alias_with_the_sixth_candidate(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    candidates = [
+        {
+            "id": f"synthetic-candidate-{index}",
+            "url": f"https://www.bild.de/news/synthetic-prepared-{index}",
+            "title": f"Synthetische vorbereitete Meldung {index}",
+            "score": 96.0 - index,
+            "scoreSource": "internal_score_api",
+            "pubDate": "2026-08-03T12:20:00+02:00",
+        }
+        for index in range(1, 7)
+    ]
+    blocked = candidates[1]
+    database.teams_alert_record(
+        article_key="https://m.bild.de/news/synthetic-prepared-old-url",
+        article_id=blocked["id"],
+        article_url="https://m.bild.de/news/synthetic-prepared-old-url",
+        article_title="Synthetische bereits unklare Meldung",
+        title_hash="synthetic-retained-title-hash",
+        score=90.0,
+        predicted_or=0.05,
+        candidate_updated_at=now_ts - 120,
+        is_breaking=False,
+        reason="Synthetische unklare Zustellung",
+        status="delivery_uncertain",
+        decision_ts=now_ts - 60,
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "_memory_eligible_candidates",
+        lambda items, **_kwargs: (items, {"skippedCandidates": 0, "reasons": {}}),
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "build_teams_alert_context",
+        lambda items, **_kwargs: {"nowTs": now_ts},
+    )
+
+    def evaluate(items, *_args, **_kwargs):
+        selected = items[0]
+        return {
+            "selectedCandidate": selected,
+            "decisions": [
+                {
+                    "candidate": candidate,
+                    "decision": {
+                        "candidateId": candidate_key(candidate),
+                        "shouldNotify": candidate is selected,
+                        "score": candidate["score"],
+                        "scoreSource": "internal_score_api",
+                        "mandatorySlotTop1Candidate": True,
+                        "blockingReasons": (
+                            []
+                            if candidate is selected
+                            else [
+                                "Staerkerer Kandidat vorhanden: vollstaendig geprueftes Feld"
+                            ]
+                        ),
+                    },
+                }
+                for candidate in items
+            ],
+        }
+
+    monkeypatch.setattr(power_automate, "evaluate_teams_alert_candidates", evaluate)
+    config = replace(
+        power_automate.TeamsAlertConfig(),
+        enabled=True,
+        require_internal_score_api=True,
+        slot_gate_enabled=True,
+    )
+
+    prepared = power_automate._prepare_scheduled_recommendation_field(
+        candidates,
+        binding_slot={
+            "ts": SLOT_TS,
+            "label": "12:30",
+            "slotRole": "power_automate_fixed",
+        },
+        decision_now=now_ts,
+        config=config,
+        dedup_history=[],
+        dedup_history_authoritative=False,
+    )
+
+    assert prepared["ready"] is True, prepared
+    assert len(prepared["recommendations"]) == 5
+    assert candidate_key(blocked) in prepared["identityBlockers"]
+    assert blocked["url"] not in {
+        item["url"] for item in prepared["recommendations"]
+    }
+    assert candidates[-1]["url"] in {
+        item["url"] for item in prepared["recommendations"]
+    }
+    assert teams_recommendation_slot_get(SLOT_TS) is None
 
 
 def test_claim_does_not_prepare_before_the_official_slot(monkeypatch, tmp_db):
@@ -541,15 +1153,19 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     payload = response.json()
     assert set(payload) == {
         "ready",
+        "contractVersion",
         "slotId",
         "scheduledAt",
         "scheduledAtUtc",
         "expiresAt",
         "top",
         "alternative",
+        "recommendationCount",
         "messageHtml",
     }
     assert payload["ready"] == "yes"
+    assert payload["contractVersion"] == 2
+    assert payload["recommendationCount"] == 5
     assert payload["slotId"] == f"teams-recommendation-{SLOT_TS}"
     assert payload["scheduledAt"] == "2026-08-03T12:30:00+02:00"
     assert payload["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
@@ -568,12 +1184,12 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
         "pushScore": 88.2,
         "isSport": True,
     }
-    assert payload["messageHtml"].startswith(
-        "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>"
-    )
+    assert payload["messageHtml"].startswith("<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>")
     assert "</h2><br><br><p>Das sind meine 5 Empfehlungen" in payload["messageHtml"]
     assert "</p><br><br><p><strong>Top 1:</strong>" in payload["messageHtml"]
     assert "</p><br><br><p><strong>Top 2:</strong>" in payload["messageHtml"]
+    assert "</p><br><br><p><strong>Top 5:</strong>" in payload["messageHtml"]
+    assert payload["messageHtml"].count("<strong>Top ") == 5
     assert "Das sind meine 5 Empfehlungen" in payload["messageHtml"]
     assert (
         '<a href="https://editorial.one/push-balancer/bild/kandidaten">Push Balancer</a>'
@@ -592,6 +1208,136 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert "<strong>Score:</strong> 88,2/100" in payload["messageHtml"]
     assert "webhook" not in response.text.casefold()
     assert "power-automate-key" not in response.text.casefold()
+
+
+def test_claim_stays_retryable_until_exactly_five_recommendations_exist(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    top, _ = _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    monkeypatch.setattr(
+        power_automate,
+        "_scheduled_recommendations",
+        lambda _evaluation: [
+            {
+                "title": f"Synthetische Meldung {index}",
+                "url": f"https://www.bild.de/news/insufficient-{index}",
+                "pushScore": 90.0 - index,
+                "publicationTs": now_ts - 60,
+            }
+            for index in range(4)
+        ],
+    )
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-insufficient-run"},
+        )
+        slot = teams_recommendation_slot_get(SLOT_TS)
+        alert = database.teams_alert_get(top["url"])
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "reason": "insufficient_recommendations",
+    }
+    assert slot is None
+    assert alert is None
+
+
+def test_claim_honors_fail_closed_live_history_requirement(monkeypatch, tmp_db):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "_refresh_push_history_for_dedup",
+        lambda: {
+            "history": [],
+            "history_authoritative": False,
+            "source": "synthetic-unavailable",
+        },
+    )
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-history-unavailable-run"},
+        )
+        slot = teams_recommendation_slot_get(SLOT_TS)
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": False, "reason": "live_history_unavailable"}
+    assert slot is None
+
+
+def test_claim_passes_required_authoritative_history_to_decision_context(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
+        True,
+    )
+    synthetic_history = [
+        {
+            "message_id": "synthetic-live-history-entry",
+            "title": "Andere synthetische Live-Meldung",
+            "link": "https://www.bild.de/news/synthetic-other-live-item",
+            "ts_num": now_ts - 60,
+        }
+    ]
+    monkeypatch.setattr(
+        power_automate,
+        "_refresh_push_history_for_dedup",
+        lambda: {
+            "history": synthetic_history,
+            "history_authoritative": True,
+            "source": "synthetic-authoritative",
+        },
+    )
+    observed_context: dict = {}
+
+    def build_context(_candidates, **kwargs):
+        observed_context.update(kwargs)
+        return {"nowTs": now_ts}
+
+    monkeypatch.setattr(power_automate, "build_teams_alert_context", build_context)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-authoritative-history-run"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] == "yes"
+    assert observed_context["history"] == synthetic_history
+    assert observed_context["history_authoritative"] is True
 
 
 def test_claim_supports_sport_top_with_non_sport_alternative(monkeypatch, tmp_db):
@@ -690,6 +1436,9 @@ def test_claim_is_slot_idempotent_and_receipt_finalizes_article_dedup(
         )
         alert = database.teams_alert_get(top["url"])
         slot = teams_recommendation_slot_get(SLOT_TS)
+        group = teams_recommendation_slot_group_get(SLOT_TS)
+        grouped_alerts = database.teams_alert_list_recent(limit=10)
+        sent_message_count = database.teams_alert_sent_count_since(SLOT_TS)
 
     assert first.status_code == 200
     assert duplicate.status_code == 200
@@ -715,6 +1464,12 @@ def test_claim_is_slot_idempotent_and_receipt_finalizes_article_dedup(
     assert alert is not None
     assert alert["status"] == "sent"
     assert alert["alert_count"] == 1
+    assert [item["position"] for item in group] == [1, 2, 3, 4, 5]
+    assert {item["status"] for item in group} == {"sent"}
+    assert len(grouped_alerts) == 5
+    assert {item["status"] for item in grouped_alerts} == {"sent"}
+    assert {item["alert_count"] for item in grouped_alerts} == {1}
+    assert sent_message_count == 1
     assert slot is not None
     assert slot["status"] == "sent"
     assert slot["request_ref"] != "synthetic-idempotent-run"
@@ -854,7 +1609,7 @@ def test_fixed_power_automate_slot_ignores_legacy_date_delay(monkeypatch, tmp_db
     )
     observed_dispatch_config: dict = {}
 
-    def evaluate_with_config(_candidates, _context, config):
+    def evaluate_with_config(candidates, _context, config):
         observed_dispatch_config.update(
             {
                 "slot_delay_date": config.slot_delay_date,
@@ -862,15 +1617,28 @@ def test_fixed_power_automate_slot_ignores_legacy_date_delay(monkeypatch, tmp_db
                 "slot_delay_minutes": config.slot_delay_minutes,
             }
         )
-        top, _ = _synthetic_candidates(now_ts)
-        decision = {
-            "candidateId": top["url"],
-            "shouldNotify": True,
-            "summary": "Verbindlicher Push-Balancer-Top-1 im festen Slot",
-        }
+        top = candidates[0]
         return {
             "selectedCandidate": top,
-            "decisions": [{"candidate": top, "decision": decision}],
+            "decisions": [
+                {
+                    "candidate": candidate,
+                    "decision": {
+                        "candidateId": candidate["url"],
+                        "shouldNotify": index == 0,
+                        "score": candidate["score"],
+                        "scoreSource": "internal_score_api",
+                        "mandatorySlotTop1Candidate": True,
+                        "summary": ("Verbindlicher Push-Balancer-Top-1 im festen Slot"),
+                        "blockingReasons": (
+                            []
+                            if index == 0
+                            else ["Staerkerer Kandidat vorhanden: " "vollstaendig geprueftes Feld"]
+                        ),
+                    },
+                }
+                for index, candidate in enumerate(candidates)
+            ],
         }
 
     monkeypatch.setattr(power_automate, "TeamsAlertConfig", lambda: delayed_config)
@@ -1147,16 +1915,21 @@ def test_parallel_sent_receipts_increment_alert_count_once(monkeypatch, tmp_db):
     assert alert["alert_count"] == 1
 
 
-def test_replay_repairs_missing_article_claim_with_canonical_url(monkeypatch, tmp_db):
+def test_legacy_replay_releases_owned_orphan_before_a_fresh_group_claim(
+    monkeypatch,
+    tmp_db,
+):
     now_ts = SLOT_TS + 30
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     top, alternative = _patch_successful_claim(monkeypatch, now_ts=now_ts)
     raw_url = top["url"].upper() + "/?wtmc=synthetic"
     article_key = candidate_key({"url": raw_url})
     payload = {
-        "ready": True,
+        "ready": "yes",
+        "contractVersion": 2,
         "slotId": f"teams-recommendation-{SLOT_TS}",
         "scheduledAt": "2026-08-03T12:30:00+02:00",
+        "scheduledAtUtc": "2026-08-03T10:30:00Z",
         "expiresAt": "2026-08-03T12:35:00+02:00",
         "top": {
             "title": top["title"],
@@ -1172,7 +1945,11 @@ def test_replay_repairs_missing_article_claim_with_canonical_url(monkeypatch, tm
             "pushScore": alternative["score"],
             "isSport": True,
         },
-        "messageHtml": "<p>Synthetic replay</p>",
+        "recommendationCount": 5,
+        "messageHtml": "".join(
+            f"<p><strong>Top {index}:</strong> Synthetic replay {index}</p>"
+            for index in range(1, 6)
+        ),
     }
 
     with monkeypatch.context() as db_patch:
@@ -1184,18 +1961,120 @@ def test_replay_repairs_missing_article_claim_with_canonical_url(monkeypatch, tm
             claim_payload=payload,
             now_ts=now_ts,
         )
-        response = client.post(
+        article_claim = database.teams_alert_try_claim_send(
+            article_key=article_key,
+            article_id=article_key,
+            article_url=raw_url,
+            article_title=top["title"],
+            title_hash="synthetic-title-hash",
+            score=top["score"],
+            predicted_or=0.0,
+            candidate_updated_at=now_ts - 60,
+            is_breaking=False,
+            reason="synthetic legacy claim",
+            decision_ts=now_ts,
+            alert_cooldown_minutes=0,
+            global_cooldown_minutes=0,
+            in_progress_cooldown_minutes=5,
+            failed_cooldown_minutes=0,
+            transport_failure_cooldown_minutes=0,
+        )
+        stale_replay = client.post(
             "/api/v1/power-automate/teams/claim",
             headers=HEADERS,
             json={"requestId": "synthetic-repair-run"},
         )
-        alert = database.teams_alert_get(article_key)
+        released_slot = teams_recommendation_slot_get(SLOT_TS)
+        released_alert = database.teams_alert_get(article_key)
+        fresh_claim = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-fresh-group-run"},
+        )
+
+    assert slot_claim["claimed"] is True
+    assert article_claim["claimed"] is True
+    assert stale_replay.status_code == 200
+    assert stale_replay.json() == {
+        "ready": False,
+        "reason": "article_claim_unavailable",
+    }
+    assert released_slot is not None
+    assert released_slot["status"] == "failed"
+    assert released_alert is not None
+    assert released_alert["status"] == "claim_released"
+    assert fresh_claim.status_code == 200
+    assert fresh_claim.json()["ready"] == "yes"
+    assert fresh_claim.json()["recommendationCount"] == 5
+
+
+def test_replay_rejects_and_releases_a_legacy_short_contract(monkeypatch, tmp_db):
+    now_ts = SLOT_TS + 30
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    top, _ = _patch_successful_claim(monkeypatch, now_ts=now_ts)
+    article_key = candidate_key(top)
+    legacy_payload = {
+        "ready": True,
+        "slotId": f"teams-recommendation-{SLOT_TS}",
+        "top": {
+            "title": top["title"],
+            "url": top["url"],
+            "category": top["category"],
+            "pushScore": top["score"],
+            "isSport": False,
+        },
+        "alternative": None,
+        "messageHtml": "<p><strong>Top 1:</strong> Legacy replay</p>",
+    }
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        slot_claim = teams_recommendation_slot_try_claim(
+            SLOT_TS,
+            article_key=article_key,
+            request_id="synthetic-legacy-replay-run",
+            claim_payload=legacy_payload,
+            now_ts=now_ts,
+        )
+        response = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-legacy-replay-run"},
+        )
+        slot = teams_recommendation_slot_get(SLOT_TS)
 
     assert slot_claim["claimed"] is True
     assert response.status_code == 200
-    assert response.json() == payload
-    assert alert is not None
-    assert alert["status"] == "sending"
+    assert response.json() == {"ready": False, "reason": "claim_contract_stale"}
+    assert slot is not None
+    assert slot["status"] == "failed"
+    assert slot["request_ref"] == ""
+    assert slot["claim_payload_json"] == ""
+
+
+def test_replay_contract_validator_rejects_malformed_types_without_raising():
+    import app.routers.power_automate as power_automate
+
+    base_payload = {
+        "ready": "yes",
+        "contractVersion": 2,
+        "slotId": f"teams-recommendation-{SLOT_TS}",
+        "recommendationCount": 5,
+        "messageHtml": "".join(
+            f"<p><strong>Top {index}:</strong> Synthetic</p>" for index in range(1, 6)
+        ),
+    }
+    invalid_values = ("2", 2.0, True, {}, float("inf"))
+
+    for field in ("contractVersion", "recommendationCount"):
+        for value in invalid_values:
+            assert (
+                power_automate._valid_scheduled_replay_payload(
+                    {**base_payload, field: value},
+                    slot_ts=SLOT_TS,
+                )
+                is False
+            )
 
 
 def test_stale_replay_cannot_downgrade_a_sent_slot(monkeypatch, tmp_db):
@@ -1212,10 +2091,10 @@ def test_stale_replay_cannot_downgrade_a_sent_slot(monkeypatch, tmp_db):
             headers=HEADERS,
             json={"requestId": "synthetic-stale-replay-run"},
         )
-        teams_recommendation_slot_record(
+        teams_recommendation_slot_record_group_receipt(
             SLOT_TS,
-            article_key=candidate_key(top),
             status="sent",
+            request_id="synthetic-stale-replay-run",
             now_ts=now_ts,
         )
         db_patch.setattr(

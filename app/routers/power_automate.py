@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import html
 import json
+import math
 import re
 import time
 from dataclasses import replace
@@ -16,6 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app import config as app_config
+from app.article_identity import canonical_article_url_identity
 from app.auth import require_power_automate_key
 from app.cms.article_context import fetch_public_article_context
 from app.cms.url_api import (
@@ -23,8 +26,8 @@ from app.cms.url_api import (
     UrlApiUnavailable,
     get_canonical_article_url,
 )
-from app.database import teams_alert_get, teams_alert_try_claim_send
 from app.notifications.teams import (
+    MANDATORY_BLOCKER_MISSING_CANONICAL_SCORE,
     TeamsAlertConfig,
     _BINDING_SLOT_DISPATCH_GRACE_SECONDS,
     _MANDATORY_TOP1_CANDIDATE_LIMIT,
@@ -32,6 +35,7 @@ from app.notifications.teams import (
     _is_breaking,
     _is_sport_item,
     _memory_eligible_candidates,
+    _refresh_push_history_for_dedup,
     _score,
     _title,
     _url,
@@ -41,14 +45,21 @@ from app.notifications.teams import (
     evaluate_teams_alert_candidates,
     title_hash,
 )
+from app.power_automate_schedule import (
+    POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS,
+    power_automate_slot_labels_for_date,
+)
 from app.routers.feed import build_articles_payload
+from app.score_api_client import resolve_cms_id
 from app.teams_slot_claims import (
     teams_alert_get_by_ref,
+    teams_recommendation_article_identity_block_reasons,
+    teams_recommendation_slot_group_owned,
     teams_recommendation_slot_get,
     teams_recommendation_slot_fail_if_owned,
     teams_recommendation_slot_record_receipt,
     teams_recommendation_slot_replay,
-    teams_recommendation_slot_try_claim,
+    teams_recommendation_slot_try_claim_group,
 )
 
 router = APIRouter()
@@ -58,40 +69,15 @@ _HEADLINE_COMMAND_ARTICLE_ID_RE = re.compile(
     r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])",
     re.IGNORECASE,
 )
-POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS = (
-    "06:00",
-    "06:36",
-    "07:12",
-    "07:47",
-    "08:23",
-    "08:59",
-    "12:30",
-    "17:30",
-    "18:49",
-    "20:08",
-    "21:26",
-    "22:45",
-)
-POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS = (
-    "08:00",
-    "08:36",
-    "09:12",
-    "09:47",
-    "10:23",
-    "10:59",
-    "12:30",
-    "17:30",
-    "18:49",
-    "20:08",
-    "21:26",
-    "22:45",
-)
 # Backwards-compatible weekday alias for existing imports.
 POWER_AUTOMATE_TEAMS_SLOT_LABELS = POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
 _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS = 30
-_PUSH_BALANCER_CANDIDATES_URL = (
-    "https://editorial.one/push-balancer/bild/kandidaten"
+_SCHEDULED_RECOMMENDATION_COUNT = 5
+_SCHEDULED_CONTRACT_VERSION = 2
+_SCHEDULED_FALLBACK_SCORE_SOURCES = frozenset(
+    {"captured_push_balancer", "server_editorial_fallback"}
 )
+_PUSH_BALANCER_CANDIDATES_URL = "https://editorial.one/push-balancer/bild/kandidaten"
 _SLOT_ID_RE = re.compile(r"^teams-recommendation-(?P<timestamp>[0-9]{9,11})$")
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store",
@@ -290,15 +276,6 @@ def _utc_iso_at(slot_ts: int) -> str:
     )
 
 
-def power_automate_slot_labels_for_date(local_date: dt.date) -> tuple[str, ...]:
-    """Use a two-hour-later morning block on Saturday and Sunday."""
-    return (
-        POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS
-        if local_date.weekday() >= 5
-        else POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
-    )
-
-
 def _power_automate_binding_slot(now_ts: int) -> dict[str, Any] | None:
     """Resolve only the fixed Power Automate schedule, independent of legacy tuning."""
     now = int(now_ts)
@@ -367,36 +344,129 @@ def _article_payload(
 
 
 def _scheduled_recommendations(evaluation: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return up to five technically valid candidates ordered by Push Score."""
+    """Return five unique display candidates without weakening the canonical Top-1."""
     recommendations: list[dict[str, Any]] = []
-    for item in evaluation.get("decisions") or []:
-        if not isinstance(item, dict):
-            continue
+    seen_keys: set[str] = set()
+    seen_cms_ids: set[str] = set()
+    seen_url_identities: set[str] = set()
+    selected = evaluation.get("selectedCandidate")
+    selected_key = candidate_key(selected) if isinstance(selected, dict) else ""
+    selected_decision = next(
+        (
+            item.get("decision")
+            for item in evaluation.get("decisions") or []
+            if isinstance(item, dict)
+            and isinstance(item.get("candidate"), dict)
+            and candidate_key(item["candidate"]) == selected_key
+            and isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    selected_score_source = (
+        str(selected_decision.get("scoreSource") or selected.get("scoreSource") or "")
+        if isinstance(selected_decision, dict) and isinstance(selected, dict)
+        else ""
+    )
+    if (
+        not selected_key
+        or not isinstance(selected_decision, dict)
+        or not selected_decision.get("shouldNotify")
+        or selected_score_source != "internal_score_api"
+    ):
+        return []
+
+    decision_items = [item for item in evaluation.get("decisions") or [] if isinstance(item, dict)]
+    decision_items.sort(
+        key=lambda item: (
+            isinstance(item.get("candidate"), dict)
+            and candidate_key(item["candidate"]) == selected_key
+        ),
+        reverse=True,
+    )
+    for item in decision_items:
         candidate = item.get("candidate")
         decision = item.get("decision")
         if not isinstance(candidate, dict) or not isinstance(decision, dict):
             continue
-        blockers = [
-            str(reason)
-            for reason in (decision.get("blockingReasons") or [])
-            if not str(reason).startswith("Staerkerer Kandidat vorhanden:")
+        score_source = str(decision.get("scoreSource") or candidate.get("scoreSource") or "")
+        canonical_score = score_source == "internal_score_api"
+        raw_blockers = [str(reason) for reason in decision.get("blockingReasons") or []]
+        canonical_blockers = [
+            reason
+            for reason in raw_blockers
+            if not reason.startswith("Staerkerer Kandidat vorhanden:")
         ]
-        if blockers:
+        fallback_source = str(candidate.get("scoreSourceBeforeInternalApi") or "")
+        try:
+            fallback_rank = float(candidate.get("scoreBeforeInternalApi"))
+        except (TypeError, ValueError):
+            fallback_rank = float("nan")
+        fallback_only = bool(
+            not canonical_score
+            and decision.get("mandatorySlotTop1Candidate") is True
+            and decision.get("mandatoryTechnicalBlockerCodes")
+            == [MANDATORY_BLOCKER_MISSING_CANONICAL_SCORE]
+            and fallback_source in _SCHEDULED_FALLBACK_SCORE_SOURCES
+            and math.isfinite(fallback_rank)
+            and 0.0 < fallback_rank <= 100.0
+        )
+        if canonical_score:
+            if canonical_blockers:
+                continue
+        elif not fallback_only:
             continue
         title = _title(candidate).strip()
         url = _url(candidate).strip()
-        if not title or not url:
+        key = candidate_key(candidate)
+        cms_id = str(resolve_cms_id(candidate) or "")
+        url_identity = canonical_article_url_identity(url)
+        if (
+            not title
+            or not url
+            or not key
+            or not url_identity
+            or key in seen_keys
+            or (cms_id and cms_id in seen_cms_ids)
+            or url_identity in seen_url_identities
+        ):
             continue
+        seen_keys.add(key)
+        if cms_id:
+            seen_cms_ids.add(cms_id)
+        seen_url_identities.add(url_identity)
+        push_score = (
+            round(float(decision.get("score") or _score(candidate)), 1) if canonical_score else None
+        )
         recommendations.append(
             {
                 "title": title,
                 "url": url,
-                "pushScore": round(float(decision.get("score") or _score(candidate)), 1),
+                "pushScore": push_score,
                 "publicationTs": _candidate_updated_ts(candidate),
+                "_selected": key == selected_key,
+                "_canonical": canonical_score,
+                "_rank": float(push_score if push_score is not None else fallback_rank),
             }
         )
-    recommendations.sort(key=lambda item: float(item["pushScore"]), reverse=True)
-    return recommendations[:5]
+    recommendations.sort(
+        key=lambda item: (
+            bool(item["_selected"]),
+            bool(item["_canonical"]),
+            float(item["_rank"]),
+            int(item["publicationTs"] or 0),
+        ),
+        reverse=True,
+    )
+    if (
+        not recommendations
+        or recommendations[0]["_selected"] is not True
+        or recommendations[0]["_canonical"] is not True
+    ):
+        return []
+    return [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in recommendations[:_SCHEDULED_RECOMMENDATION_COUNT]
+    ]
 
 
 def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
@@ -409,23 +479,83 @@ def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
     for rank, recommendation in enumerate(recommendations, start=1):
         title = html.escape(str(recommendation["title"]))
         url = html.escape(str(recommendation["url"]), quote=True)
-        score = f"{float(recommendation['pushScore']):.1f}".replace(".", ",")
+        push_score = recommendation.get("pushScore")
+        score_html = (
+            "<strong>Score:</strong> " + f"{float(push_score):.1f}".replace(".", ",") + "/100"
+            if isinstance(push_score, (int, float)) and not isinstance(push_score, bool)
+            else "<em>Kanonischer Push Score steht noch aus.</em>"
+        )
         publication_ts = int(recommendation.get("publicationTs") or 0)
         publication_label = (
-            dt.datetime.fromtimestamp(publication_ts, _BERLIN).strftime(
-                "%d.%m.%Y, %H:%M Uhr"
-            )
+            dt.datetime.fromtimestamp(publication_ts, _BERLIN).strftime("%d.%m.%Y, %H:%M Uhr")
             if publication_ts > 0
             else "Publikationsdatum unbekannt"
         )
         parts.append(
             f'<p><strong>Top {rank}:</strong> <a href="{url}">{title}</a> '
             f"({publication_label})<br>"
-            f"<strong>Score:</strong> {score}/100</p>"
+            f"{score_html}</p>"
         )
     # Teams removes paragraph margins. Two explicit breaks preserve one visible
     # blank line between headline, introduction, and every recommendation.
     return "<br><br>".join(parts)
+
+
+def _scheduled_claim_articles(
+    evaluation: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    *,
+    selected: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Bind the exact five rendered identities without expanding the API payload."""
+    if len(recommendations) != _SCHEDULED_RECOMMENDATION_COUNT:
+        return []
+    decisions_by_key: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for item in evaluation.get("decisions") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("candidate")
+        decision = item.get("decision")
+        if not isinstance(candidate, dict) or not isinstance(decision, dict):
+            continue
+        key = candidate_key(candidate)
+        if key and key not in decisions_by_key:
+            decisions_by_key[key] = (candidate, decision)
+
+    claims: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for rank, recommendation in enumerate(recommendations, start=1):
+        article_key = candidate_key(recommendation)
+        pair = decisions_by_key.get(article_key)
+        if not article_key or article_key in seen_keys or pair is None:
+            return []
+        seen_keys.add(article_key)
+        candidate, decision = pair
+        claims.append(
+            {
+                "article_key": article_key,
+                "article_id": str(
+                    resolve_cms_id(candidate)
+                    or candidate.get("cmsId")
+                    or candidate.get("id")
+                    or article_key
+                ),
+                "article_url": _url(candidate),
+                "article_title": _title(candidate),
+                "title_hash": title_hash(candidate),
+                "score": float(recommendation.get("pushScore") or 0.0),
+                "predicted_or": float(candidate.get("predictedOR") or 0.0),
+                "candidate_updated_at": _candidate_updated_ts(candidate),
+                "is_breaking": _is_breaking(candidate),
+                "reason": str(
+                    decision.get("summary")
+                    or f"Teams Top {rank} Anzeigeempfehlung"
+                ),
+            }
+        )
+    if not claims or claims[0]["article_key"] != candidate_key(selected):
+        return []
+    return claims
 
 
 def _claim_response_payload(
@@ -449,6 +579,11 @@ def _claim_response_payload(
         push_score=float(payload.get("pushScore") or _score(selected)),
     )
     alternative_payload = None
+    rendered_url_identities = {
+        identity
+        for recommendation in recommendations
+        if (identity := canonical_article_url_identity(recommendation.get("url")))
+    }
     if str(alternative.get("articleTitle") or "").strip() and str(
         alternative.get("articleUrl") or ""
     ).strip():
@@ -458,20 +593,50 @@ def _claim_response_payload(
             category=str(alternative.get("category") or "news").strip() or "news",
             push_score=float(alternative.get("pushScore") or 0.0),
         )
-        if proposed_alternative["isSport"] != top["isSport"]:
+        if (
+            proposed_alternative["isSport"] != top["isSport"]
+            and canonical_article_url_identity(proposed_alternative["url"])
+            in rendered_url_identities
+        ):
             alternative_payload = proposed_alternative
     return {
         # Power Automate compares this explicit text marker. This avoids the
         # designer coercing a JSON boolean into a mismatched token type.
         "ready": "yes",
+        "contractVersion": _SCHEDULED_CONTRACT_VERSION,
         "slotId": _slot_id(slot_ts),
         "scheduledAt": _iso_at(slot_ts),
         "scheduledAtUtc": _utc_iso_at(slot_ts),
         "expiresAt": _iso_at(slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS),
         "top": top,
         "alternative": alternative_payload,
+        "recommendationCount": len(recommendations),
         "messageHtml": _scheduled_message_html(recommendations),
     }
+
+
+def _valid_scheduled_replay_payload(
+    payload: dict[str, Any],
+    *,
+    slot_ts: int,
+) -> bool:
+    message_html = str(payload.get("messageHtml") or "")
+    contract_version = payload.get("contractVersion")
+    recommendation_count = payload.get("recommendationCount")
+    if (
+        not isinstance(contract_version, int)
+        or isinstance(contract_version, bool)
+        or not isinstance(recommendation_count, int)
+        or isinstance(recommendation_count, bool)
+    ):
+        return False
+    return bool(
+        payload.get("ready") == "yes"
+        and contract_version == _SCHEDULED_CONTRACT_VERSION
+        and str(payload.get("slotId") or "") == _slot_id(slot_ts)
+        and recommendation_count == _SCHEDULED_RECOMMENDATION_COUNT
+        and message_html.count("<strong>Top ") == _SCHEDULED_RECOMMENDATION_COUNT
+    )
 
 
 def _find_alert_by_ref(article_ref: str) -> dict[str, Any] | None:
@@ -511,67 +676,6 @@ def _alert_from_slot_state(slot_state: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _article_claim_owned_by_slot(article_key: str, *, claimed_at: int) -> bool:
-    alert = teams_alert_get(article_key)
-    return bool(
-        isinstance(alert, dict)
-        and str(alert.get("status") or "") == "sending"
-        and int(alert.get("last_decision_ts") or 0) == int(claimed_at or 0)
-    )
-
-
-def _ensure_replay_article_claim(
-    slot_state: dict[str, Any],
-    replay_payload: dict[str, Any],
-) -> bool:
-    """Repair the narrow crash gap between the durable slot and article claims."""
-    top = replay_payload.get("top")
-    if not isinstance(top, dict):
-        return False
-    article_url = str(top.get("url") or "").strip()
-    article_key = candidate_key({"url": article_url})
-    claimed_at = int(slot_state.get("claimed_at") or 0)
-    expected_ref = hashlib.sha256(article_key.encode("utf-8")).hexdigest()
-    if (
-        not article_key
-        or claimed_at <= 0
-        or expected_ref != str(slot_state.get("article_ref") or "")
-    ):
-        return False
-    existing = teams_alert_get(article_key)
-    if isinstance(existing, dict) and str(existing.get("status") or "") in {
-        "sent",
-        "delivery_uncertain",
-    }:
-        return False
-    if _article_claim_owned_by_slot(article_key, claimed_at=claimed_at):
-        return True
-
-    article_title = str(top.get("title") or "").strip()
-    claim = teams_alert_try_claim_send(
-        article_key=article_key,
-        article_id=article_key,
-        article_url=article_url,
-        article_title=article_title,
-        title_hash=hashlib.sha256(article_title.casefold().encode("utf-8")).hexdigest(),
-        score=float(top.get("pushScore") or 0.0),
-        predicted_or=0.0,
-        candidate_updated_at=0,
-        is_breaking=False,
-        reason="Push empfohlen",
-        decision_ts=claimed_at,
-        alert_cooldown_minutes=0,
-        global_cooldown_minutes=0,
-        in_progress_cooldown_minutes=5,
-        failed_cooldown_minutes=0,
-        transport_failure_cooldown_minutes=0,
-    )
-    return bool(
-        claim.get("claimed")
-        or _article_claim_owned_by_slot(article_key, claimed_at=claimed_at)
-    )
-
-
 def _safe_replay_response(
     *,
     slot_ts: int,
@@ -586,6 +690,14 @@ def _safe_replay_response(
     )
     if owned_payload is None:
         return _no_op("slot_already_claimed")
+    if not _valid_scheduled_replay_payload(owned_payload, slot_ts=slot_ts):
+        teams_recommendation_slot_fail_if_owned(
+            slot_ts,
+            request_id=request_id,
+            error="stale_scheduled_claim_contract",
+            now_ts=now_ts,
+        )
+        return _no_op("claim_contract_stale")
     slot_state = teams_recommendation_slot_get(slot_ts)
     request_ref = hashlib.sha256(request_id.strip().encode("utf-8")).hexdigest()
     if (
@@ -594,7 +706,12 @@ def _safe_replay_response(
         or str(slot_state.get("request_ref") or "") != request_ref
     ):
         return _no_op("slot_already_claimed")
-    if _ensure_replay_article_claim(slot_state, owned_payload):
+    group_state = teams_recommendation_slot_group_owned(
+        slot_ts,
+        request_id=request_id,
+        now_ts=now_ts,
+    )
+    if group_state.get("owned") and int(group_state.get("itemCount") or 0) == 5:
         confirmed_payload = teams_recommendation_slot_replay(
             slot_ts,
             request_id=request_id,
@@ -606,10 +723,126 @@ def _safe_replay_response(
     teams_recommendation_slot_fail_if_owned(
         slot_ts,
         request_id=request_id,
-        error="replay_article_claim_unavailable",
+        error=str(group_state.get("reason") or "replay_article_claim_unavailable"),
         now_ts=now_ts,
     )
     return _no_op("article_claim_unavailable")
+
+
+def _scheduled_dispatch_config(config: TeamsAlertConfig) -> TeamsAlertConfig:
+    """Return the one production policy used by claims and readiness probes."""
+    return replace(
+        config,
+        require_internal_score_api=True,
+        allow_durable_live_history_fallback=(
+            not app_config.POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
+        ),
+        mandatory_sport_quota_enabled=False,
+        slot_delay_date="",
+        slot_delay_from="",
+        slot_delay_minutes=0,
+    )
+
+
+def _prepare_scheduled_recommendation_field(
+    candidates: list[dict[str, Any]],
+    *,
+    binding_slot: dict[str, Any],
+    decision_now: int,
+    config: TeamsAlertConfig,
+    dedup_history: list[dict[str, Any]],
+    dedup_history_authoritative: bool,
+    readiness_probe: bool = False,
+) -> dict[str, Any]:
+    """Run the exact read-only candidate path shared by claim and readiness."""
+    dispatch_config = _scheduled_dispatch_config(config)
+    identity_inputs: list[dict[str, str]] = []
+    for candidate in candidates:
+        key = candidate_key(candidate)
+        if not key:
+            continue
+        identity_inputs.append(
+            {
+                "lookup_key": key,
+                "article_key": key,
+                "article_id": str(
+                    resolve_cms_id(candidate)
+                    or candidate.get("cmsId")
+                    or candidate.get("id")
+                    or ""
+                ),
+                "article_url": _url(candidate),
+            }
+        )
+    identity_blockers = teams_recommendation_article_identity_block_reasons(
+        identity_inputs,
+        now_ts=decision_now,
+        in_progress_seconds=_BINDING_SLOT_DISPATCH_GRACE_SECONDS,
+    )
+    identity_eligible = [
+        candidate
+        for candidate in candidates
+        if candidate_key(candidate) not in identity_blockers
+    ]
+    eligible, memory_review = _memory_eligible_candidates(
+        identity_eligible,
+        now_ts=decision_now,
+        config=dispatch_config,
+        bypass_global_cooldown=True,
+        allow_related_topic=True,
+    )
+    eligible = eligible[:_MANDATORY_TOP1_CANDIDATE_LIMIT]
+    if not eligible:
+        return {
+            "ready": False,
+            "reason": "no_candidate",
+            "recommendations": [],
+            "memoryReview": memory_review,
+            "identityBlockers": identity_blockers,
+        }
+    context = build_teams_alert_context(
+        eligible,
+        history=dedup_history,
+        history_authoritative=dedup_history_authoritative,
+        now_ts=decision_now,
+        config=dispatch_config,
+    )
+    context["_mandatorySlotOverride"] = dict(binding_slot)
+    if readiness_probe:
+        context["_scheduledReadinessProbe"] = True
+    evaluation = evaluate_teams_alert_candidates(eligible, context, dispatch_config)
+    try:
+        selected, decision = _selected_decision(evaluation)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return {
+                "ready": False,
+                "reason": "no_candidate",
+                "recommendations": [],
+                "context": context,
+                "evaluation": evaluation,
+                "dispatchConfig": dispatch_config,
+                "memoryReview": memory_review,
+                "identityBlockers": identity_blockers,
+            }
+        raise
+    recommendations = _scheduled_recommendations(evaluation)
+    return {
+        "ready": len(recommendations) == _SCHEDULED_RECOMMENDATION_COUNT,
+        "reason": (
+            "ready"
+            if len(recommendations) == _SCHEDULED_RECOMMENDATION_COUNT
+            else "insufficient_recommendations"
+        ),
+        "recommendations": recommendations,
+        "selected": selected,
+        "decision": decision,
+        "context": context,
+        "evaluation": evaluation,
+        "dispatchConfig": dispatch_config,
+        "memoryReview": memory_review,
+        "identityBlockers": identity_blockers,
+    }
 
 
 @router.post(
@@ -626,6 +859,11 @@ def claim_power_automate_teams_recommendation(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Teams recommendation claims are disabled.",
+        )
+    if not app_config.durable_db_storage_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Durable recommendation storage is unavailable.",
         )
 
     started_at = int(time.time())
@@ -652,18 +890,6 @@ def claim_power_automate_teams_recommendation(
         "delivery_uncertain",
     }:
         return _no_op("slot_already_claimed")
-    dispatch_config = replace(
-        config,
-        require_internal_score_api=True,
-        # The scheduled delivery path deliberately does not call the live-push
-        # feed. Durable slot and article claims are its only duplicate guard.
-        allow_durable_live_history_fallback=True,
-        mandatory_sport_quota_enabled=False,
-        slot_delay_date="",
-        slot_delay_from="",
-        slot_delay_minutes=0,
-    )
-
     article_payload = build_articles_payload(
         offset=0,
         limit=_MANDATORY_TOP1_CANDIDATE_LIMIT,
@@ -690,35 +916,49 @@ def claim_power_automate_teams_recommendation(
     # improving the recommendation.
     decision_now = actual_decision_now
 
-    candidates, _ = _memory_eligible_candidates(
+    dedup_history: list[dict[str, Any]] = []
+    dedup_history_authoritative = False
+    if app_config.POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY:
+        history_refresh = _refresh_push_history_for_dedup()
+        refreshed_history = history_refresh.get("history")
+        dedup_history = (
+            refreshed_history
+            if isinstance(refreshed_history, list)
+            and all(isinstance(item, dict) for item in refreshed_history)
+            else []
+        )
+        dedup_history_authoritative = bool(
+            history_refresh.get("history_authoritative")
+            and isinstance(refreshed_history, list)
+            and len(dedup_history) == len(refreshed_history)
+        )
+        if not dedup_history_authoritative:
+            return _no_op("live_history_unavailable")
+
+    prepared = _prepare_scheduled_recommendation_field(
         candidates,
-        now_ts=decision_now,
-        config=dispatch_config,
-        bypass_global_cooldown=True,
-        allow_related_topic=True,
+        binding_slot=binding_slot,
+        decision_now=decision_now,
+        config=config,
+        dedup_history=dedup_history,
+        dedup_history_authoritative=dedup_history_authoritative,
     )
-    candidates = candidates[:_MANDATORY_TOP1_CANDIDATE_LIMIT]
-    context = build_teams_alert_context(
-        candidates,
-        history=[],
-        history_authoritative=False,
-        now_ts=decision_now,
-        config=dispatch_config,
-    )
-    evaluation = evaluate_teams_alert_candidates(candidates, context, dispatch_config)
-    try:
-        selected, decision = _selected_decision(evaluation)
-    except HTTPException as exc:
-        if exc.status_code == status.HTTP_409_CONFLICT:
-            return _no_op("no_candidate")
-        raise
+    if not prepared.get("ready"):
+        return _no_op(str(prepared.get("reason") or "no_candidate"))
+    selected = prepared["selected"]
+    decision = prepared["decision"]
+    context = prepared["context"]
+    evaluation = prepared["evaluation"]
+    dispatch_config = prepared["dispatchConfig"]
+    recommendations = prepared["recommendations"]
+
     message = build_teams_push_recommendation(selected, context, decision, dispatch_config)
-    message_payload = (
-        message.get("payload") if isinstance(message.get("payload"), dict) else {}
-    )
+    message_payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
     if (
         not message.get("_dispatchApproved")
         or not message.get("_slotGateApproved")
+        or int(message.get("_bindingSlotTs") or 0) != binding_slot_ts
+        or str(message_payload.get("slotId") or "") != _slot_id(binding_slot_ts)
         or not str(message_payload.get("messageHtml") or "").strip()
     ):
         return _no_op("candidate_not_approved")
@@ -739,59 +979,34 @@ def claim_power_automate_teams_recommendation(
         slot_ts=binding_slot_ts,
         selected=selected,
         message=message,
-        recommendations=_scheduled_recommendations(evaluation),
+        recommendations=recommendations,
     )
-    article_key = candidate_key(selected)
-    slot_claim = teams_recommendation_slot_try_claim(
+    claim_articles = _scheduled_claim_articles(
+        evaluation,
+        recommendations,
+        selected=selected,
+    )
+    if len(claim_articles) != _SCHEDULED_RECOMMENDATION_COUNT:
+        return _no_op("candidate_not_approved")
+    slot_claim = teams_recommendation_slot_try_claim_group(
         binding_slot_ts,
-        article_key=article_key,
+        articles=claim_articles,
         request_id=claim_request.requestId,
         claim_payload=response_payload,
         now_ts=preclaim_now,
         lease_seconds=_BINDING_SLOT_DISPATCH_GRACE_SECONDS,
     )
-    if slot_claim.get("reason") == "replayed" and isinstance(
-        slot_claim.get("replayPayload"), dict
-    ):
+    if slot_claim.get("reason") == "replayed" and isinstance(slot_claim.get("replayPayload"), dict):
         return _safe_replay_response(
             slot_ts=binding_slot_ts,
             request_id=claim_request.requestId,
             now_ts=preclaim_now,
         )
     if not slot_claim.get("claimed"):
-        return _no_op("slot_already_claimed")
-
-    article_claim = teams_alert_try_claim_send(
-        article_key=article_key,
-        article_id=str(selected.get("id") or selected.get("cmsId") or article_key),
-        article_url=_url(selected),
-        article_title=_title(selected),
-        title_hash=title_hash(selected),
-        score=_score(selected),
-        predicted_or=float(selected.get("predictedOR") or 0.0),
-        candidate_updated_at=_candidate_updated_ts(selected),
-        is_breaking=_is_breaking(selected),
-        reason=str(decision.get("summary") or "Push empfohlen"),
-        decision_ts=preclaim_now,
-        alert_cooldown_minutes=0,
-        global_cooldown_minutes=0,
-        in_progress_cooldown_minutes=5,
-        failed_cooldown_minutes=0,
-        transport_failure_cooldown_minutes=0,
-    )
-    if not article_claim.get("claimed"):
-        slot_state = teams_recommendation_slot_get(binding_slot_ts) or {}
-        if not _article_claim_owned_by_slot(
-            article_key,
-            claimed_at=int(slot_state.get("claimed_at") or 0),
-        ):
-            teams_recommendation_slot_fail_if_owned(
-                binding_slot_ts,
-                request_id=claim_request.requestId,
-                error=str(article_claim.get("reason") or "article_claim_blocked"),
-                now_ts=preclaim_now,
-            )
-            return _no_op("article_already_claimed")
+        claim_reason = str(slot_claim.get("reason") or "")
+        if claim_reason.startswith("slot_"):
+            return _no_op("slot_already_claimed")
+        return _no_op("article_already_claimed")
 
     return JSONResponse(
         content=response_payload,

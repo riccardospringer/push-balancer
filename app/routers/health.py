@@ -23,9 +23,12 @@ from app.config import (
     PAID_EXTERNAL_APIS_ENABLED,
     POWER_AUTOMATE_API_KEY,
     POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY,
+    PUSH_DB_DURABILITY_REQUIRED,
+    PUSH_DB_DURABLE,
     PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
     PUSH_LIVE_FETCH_ENABLED,
     RESEARCH_EXTERNAL_CONTEXT_ENABLED,
+    durable_db_storage_available,
 )
 from app.research.worker import _health_state, _research_state
 
@@ -49,6 +52,16 @@ def _process_rss_mb() -> float:
 def get_health() -> JSONResponse:
     """Liefert Health- und Security-Status aller Endpunkte."""
     uptime = time.time() - _health_state.get("uptime_start", time.time())
+    durable_storage_now = bool(
+        PUSH_DB_DURABLE and durable_db_storage_available()
+    )
+    retention_cleanup = {"ok": True, "ran": False}
+    try:
+        from app.teams_slot_claims import teams_recommendation_slot_cleanup_if_due
+
+        retention_cleanup["ran"] = teams_recommendation_slot_cleanup_if_due()
+    except Exception as exc:  # pragma: no cover - reine Diagnose
+        retention_cleanup = {"ok": False, "ran": False, "error": type(exc).__name__}
     raw_status = _health_state.get("status", "starting")
     if not HEALTH_ACTIVE_CHECKS_ENABLED and raw_status in {"starting", "", None}:
         raw_status = "ok"
@@ -64,11 +77,15 @@ def get_health() -> JSONResponse:
             power_automate_configured = bool(str(POWER_AUTOMATE_API_KEY or "").strip())
             teams_channel = {
                 "status": "external_scheduler",
-                "healthy": power_automate_configured,
+                "healthy": bool(power_automate_configured and durable_storage_now),
                 "reason": (
-                    ""
-                    if power_automate_configured
-                    else "POWER_AUTOMATE_API_KEY ist nicht konfiguriert."
+                    "Dauerhafte Claim-Speicherung ist nicht verfuegbar."
+                    if not durable_storage_now
+                    else (
+                        ""
+                        if power_automate_configured
+                        else "POWER_AUTOMATE_API_KEY ist nicht konfiguriert."
+                    )
                 ),
             }
         else:
@@ -152,6 +169,7 @@ def get_health() -> JSONResponse:
             ),
             "lastSendTs": teams_channel.get("lastSendTs", 0),
         },
+        "scheduledTeamsRetentionCleanup": retention_cleanup,
     })
 
 
@@ -202,6 +220,7 @@ def get_teams_readiness() -> JSONResponse:
 
     from app.notifications.teams import (
         TeamsAlertConfig,
+        _MANDATORY_TOP1_CANDIDATE_LIMIT,
         _daily_runtime_opportunities,
         _quiet_hours_reason,
         build_teams_alert_context,
@@ -218,7 +237,7 @@ def get_teams_readiness() -> JSONResponse:
 
         payload = build_articles_payload(
             offset=0,
-            limit=12,
+            limit=_MANDATORY_TOP1_CANDIDATE_LIMIT,
             include_teams_decisions=False,
             use_internal_score_api=config.require_internal_score_api,
         )
@@ -242,6 +261,8 @@ def get_teams_readiness() -> JSONResponse:
         score_api["error"] = type(exc).__name__
 
     history_info: dict = {}
+    history_for_probe: list[dict] = []
+    history_authoritative_for_probe = False
     try:
         from app.notifications.teams import _refresh_push_history_for_dedup
 
@@ -250,6 +271,11 @@ def get_teams_readiness() -> JSONResponse:
         history_authoritative = bool(
             refresh.get("history_authoritative") and isinstance(history, list)
         )
+        if POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY and isinstance(history, list):
+            history_for_probe = [item for item in history if isinstance(item, dict)]
+            history_authoritative_for_probe = bool(
+                history_authoritative and len(history_for_probe) == len(history)
+            )
         history_required = bool(
             PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
             or POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
@@ -283,6 +309,7 @@ def get_teams_readiness() -> JSONResponse:
         history_info = {"ok": False, "error": type(exc).__name__}
 
     slots_info: dict = {}
+    slots: list[dict] = []
     try:
         if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
             slots = _daily_runtime_opportunities(berlin_now.date(), config)
@@ -327,10 +354,80 @@ def get_teams_readiness() -> JSONResponse:
     except Exception as exc:  # pragma: no cover - reine Diagnose
         slots_info = {"ok": False, "error": type(exc).__name__}
 
+    exact_five: dict = {
+        "required": not PUSH_TEAMS_BACKGROUND_SENDER_ENABLED,
+        "contractVersion": 2,
+        "recommendationCount": 0,
+        "top1Canonical": False,
+        "contractOk": bool(PUSH_TEAMS_BACKGROUND_SENDER_ENABLED),
+    }
+    if not PUSH_TEAMS_BACKGROUND_SENDER_ENABLED:
+        try:
+            from app.routers.power_automate import (
+                _prepare_scheduled_recommendation_field,
+            )
+
+            probe_slot = min(
+                slots,
+                key=lambda item: abs(int(item.get("ts") or 0) - now_ts),
+            )
+            prepared = _prepare_scheduled_recommendation_field(
+                candidates,
+                binding_slot=probe_slot,
+                decision_now=now_ts,
+                config=config,
+                dedup_history=history_for_probe,
+                dedup_history_authoritative=history_authoritative_for_probe,
+                readiness_probe=True,
+            )
+            recommendations = prepared.get("recommendations") or []
+            decision = prepared.get("decision")
+            decision = decision if isinstance(decision, dict) else {}
+            exact_five.update(
+                {
+                    "recommendationCount": len(recommendations),
+                    "top1Canonical": (
+                        str(decision.get("scoreSource") or "")
+                        == "internal_score_api"
+                    ),
+                    "contractOk": bool(
+                        prepared.get("ready")
+                        and len(recommendations) == 5
+                        and str(decision.get("scoreSource") or "")
+                        == "internal_score_api"
+                    ),
+                    "reason": str(prepared.get("reason") or "not_ready"),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - reine Diagnose
+            exact_five.update(
+                {
+                    "contractOk": False,
+                    "reason": "probe_unavailable",
+                    "error": type(exc).__name__,
+                }
+            )
+        score_api["exactFiveCandidateCount"] = exact_five["recommendationCount"]
+        score_api["exactFiveContractOk"] = exact_five["contractOk"]
+        score_api["top1Canonical"] = exact_five["top1Canonical"]
+        score_api["ok"] = bool(score_api.get("ok") and exact_five["contractOk"])
+
     quiet_reason = _quiet_hours_reason(now_ts, config)
     from app.notifications.teams import channel_configuration_problems, channel_health
 
     power_automate_configured = bool(str(POWER_AUTOMATE_API_KEY or "").strip())
+    durable_storage_now = bool(
+        PUSH_DB_DURABLE and durable_db_storage_available()
+    )
+    durable_storage = {
+        "required": bool(PUSH_DB_DURABILITY_REQUIRED),
+        "durable": durable_storage_now,
+        "mode": (
+            "persistent_disk"
+            if durable_storage_now
+            else "ephemeral_or_unverified"
+        ),
+    }
     transport_mode = (
         "legacy_background_sender"
         if PUSH_TEAMS_BACKGROUND_SENDER_ENABLED
@@ -368,7 +465,9 @@ def get_teams_readiness() -> JSONResponse:
     ready = bool(
         config.enabled
         and transport_configured
+        and durable_storage["durable"]
         and score_api.get("ok")
+        and exact_five.get("contractOk")
         and history_info.get("ok")
         and slots_info.get("ok")
         and runtime.get("healthy", True)
@@ -382,6 +481,7 @@ def get_teams_readiness() -> JSONResponse:
             "transportMode": transport_mode,
             "backgroundSenderEnabled": bool(PUSH_TEAMS_BACKGROUND_SENDER_ENABLED),
             "powerAutomateConfigured": power_automate_configured,
+            "durableStorage": durable_storage,
             "webhookConfigured": bool(config.webhook_url),
             "quietHoursActive": bool(quiet_reason),
             "quietHoursReason": quiet_reason or None,
@@ -392,6 +492,7 @@ def get_teams_readiness() -> JSONResponse:
                 "sportMax": int(config.sport_max_per_day),
             },
             "scoreApi": score_api,
+            "exactFive": exact_five,
             "pushHistory": history_info,
             "slots": slots_info,
             "runtime": {

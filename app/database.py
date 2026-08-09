@@ -647,6 +647,12 @@ def init_db() -> None:
     log.info("[PushDB] Initialized at %s", PUSH_DB_PATH)
     _backfill_weekday()
     _db_cleanup()
+    # The scheduled slot tables are intentionally owned by their small ledger
+    # module. Run its retention migration at startup as well as during health
+    # polling so disabled/decommissioned flows cannot retain payloads forever.
+    from app.teams_slot_claims import teams_recommendation_slot_cleanup
+
+    teams_recommendation_slot_cleanup()
 
 
 def _backfill_weekday() -> None:
@@ -1355,7 +1361,7 @@ def teams_alert_try_claim_send(
 
 
 def teams_alert_sent_count_since(start_ts: int) -> int:
-    """Count successfully sent Teams alerts since start_ts (for daily caps)."""
+    """Count sent Teams messages, collapsing each scheduled Top-5 group to one."""
     try:
         cutoff = int(start_ts or 0)
     except (TypeError, ValueError):
@@ -1369,11 +1375,27 @@ def teams_alert_sent_count_since(start_ts: int) -> int:
                 "SELECT COUNT(*) FROM teams_alerts WHERE status = 'sent' AND last_alert_ts >= ?",
                 (cutoff,),
             ).fetchone()
+            article_count = int((row[0] if row else 0) or 0)
+            group_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'teams_recommendation_slot_articles'"
+            ).fetchone()
+            if group_table is None:
+                return article_count
+            group_row = conn.execute(
+                """SELECT COUNT(*) AS article_count,
+                          COUNT(DISTINCT binding_slot_ts) AS message_count
+                   FROM teams_recommendation_slot_articles
+                   WHERE status = 'sent' AND finalized_at >= ?""",
+                (cutoff,),
+            ).fetchone()
+            grouped_articles = int((group_row[0] if group_row else 0) or 0)
+            grouped_messages = int((group_row[1] if group_row else 0) or 0)
         except sqlite3.Error:
             return 0
         finally:
             conn.close()
-    return int((row[0] if row else 0) or 0)
+    return max(0, article_count - grouped_articles + grouped_messages)
 
 
 def teams_alert_list_recent(limit: int = 20) -> list[dict]:
