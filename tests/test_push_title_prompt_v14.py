@@ -128,8 +128,16 @@ def test_parse_model_output_returns_three_linked_variants():
     assert result.review_point.startswith("Artikelvolltext fehlt")
 
 
-def test_parse_model_output_rejects_incorrect_character_count():
+def test_parse_model_output_recalculates_incorrect_declared_character_count():
     invalid = VALID_OUTPUT.replace("Maut-Regel (27)", "Maut-Regel (26)")
+
+    parsed = prompt_v14.parse_model_output(invalid)
+
+    assert parsed.variants[0].headline == "Bund stoppt neue Maut-Regel"
+
+
+def test_parse_model_output_still_requires_declared_character_count():
+    invalid = VALID_OUTPUT.replace("Bund stoppt neue Maut-Regel (27)", "Bund stoppt neue Maut-Regel")
 
     with pytest.raises(prompt_v14.PushHeadlinePromptError, match="character count"):
         prompt_v14.parse_model_output(invalid)
@@ -375,6 +383,10 @@ def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypa
     assert all(item["headline"] and item["line2"] for item in result["variants"])
     assert create.call_count == 2
     assert "KORREKTURLAUF" in create.call_args.kwargs["messages"][1]["content"]
+    assert (
+        "stage line does not match the v1.4 contract"
+        in create.call_args.kwargs["messages"][1]["content"]
+    )
 
 
 def test_generate_stays_local_when_either_opt_in_is_off(monkeypatch):
