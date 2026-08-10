@@ -509,31 +509,28 @@ def _headline_article_context(article_id: str) -> dict[str, str] | None:
 
 
 def _headline_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
-    winner = result.get("gewinner") if isinstance(result.get("gewinner"), dict) else {}
-    winner_title = str(winner.get("titel") or "").strip()
-    raw: list[dict[str, Any]] = []
-    for group in (result.get("alle_kandidaten") or {}).values():
-        if isinstance(group, list):
-            raw.extend(item for item in group if isinstance(item, dict))
-    raw.sort(key=lambda item: str(item.get("titel") or "") != winner_title)
-
+    raw = result.get("variants")
+    if not isinstance(raw, list) or len(raw) != 3:
+        return []
     candidates: list[dict[str, str]] = []
     seen: set[str] = set()
-    for item in raw:
-        headline = str(item.get("titel") or "").strip()
-        line_two = str(item.get("zeile2") or "").strip()
+    for expected_id, item in zip(("A", "B", "C"), raw, strict=True):
+        if not isinstance(item, dict) or str(item.get("id") or "") != expected_id:
+            return []
+        headline = str(item.get("headline") or "").strip()
+        line_two = str(item.get("line2") or "").strip()
         if not headline or not line_two or headline.casefold() in seen:
-            continue
+            return []
         seen.add(headline.casefold())
         candidates.append(
             {
-                "type": str(item.get("ansatz") or "FAKT").strip(),
+                "type": str(item.get("type") or "").strip(),
                 "headline": headline,
                 "line2": line_two,
             }
         )
-        if len(candidates) == 3:
-            break
+        if not candidates[-1]["type"]:
+            return []
     return candidates
 
 
@@ -544,8 +541,8 @@ def _headline_message_html(
     result: dict[str, Any],
     candidates: list[dict[str, str]],
 ) -> str:
-    level = int(result.get("stufe") or 2)
-    level_reason = html.escape(str(result.get("stufe_begruendung") or "").strip())
+    level = int(result.get("stage") or 2)
+    level_reason = html.escape(str(result.get("stageReason") or "").strip())
     parts = [
         "<h2>Headline-Vorschläge</h2>",
         f"<p><strong>Artikel:</strong> <a href=\"{html.escape(article_url, quote=True)}\">{html.escape(article_id)}</a></p>",
@@ -559,9 +556,20 @@ def _headline_message_html(
             f"{html.escape(item['line2'])} ({len(item['line2'])})</p>"
         )
     reason = str(result.get("reasoning") or "").strip()
-    warning = str(result.get("warnhinweis") or "").strip()
+    warning = str(result.get("reviewPoint") or "").strip()
+    recommendation = next(
+        (
+            str(item.get("id") or "A")
+            for item in (result.get("variants") or [])
+            if isinstance(item, dict) and item.get("selected") is True
+        ),
+        "A",
+    )
     if reason:
-        parts.append(f"<p><strong>Empfehlung:</strong> A · {html.escape(reason)}</p>")
+        parts.append(
+            f"<p><strong>Empfehlung:</strong> {html.escape(recommendation)} · "
+            f"{html.escape(reason)}</p>"
+        )
     if warning:
         parts.append(f"<p><strong>Prüfpunkt:</strong> {html.escape(warning)}</p>")
     parts.append("<p><em>Redaktioneller Vorschlag – bitte vor Versand prüfen.</em></p>")
@@ -1387,18 +1395,19 @@ def generate_power_automate_teams_headlines(
             headers=_NO_STORE_HEADERS,
         )
 
-    from app.routers.misc import PushTitleGenerateRequest, _build_push_title_response
+    from app.push_title_prompt_v14 import generate_push_headline_v14
+    from app.push_titles import infer_content_type
 
-    result = _build_push_title_response(
-        PushTitleGenerateRequest(
-            url=context["url"],
+    try:
+        result = generate_push_headline_v14(
             title=context["title"],
-            text=context.get("text", ""),
-            headline=context["title"],
             category=context.get("category", "news"),
-            force_llm=True,
+            content_type=infer_content_type(context["url"], context["title"]),
         )
-    )
+    except Exception:
+        result = None
+    if not isinstance(result, dict) or result.get("escalation") is True:
+        result = {}
     candidates = _headline_candidates(result)
     if len(candidates) < 3:
         return JSONResponse(

@@ -11,17 +11,18 @@ import time
 import re
 
 from app.cost_controls import allow_calls
+from app.title_generation_model import (
+    DEFAULT_TITLE_GENERATION_MODEL,
+    resolve_title_generation_model,
+)
 
 log = logging.getLogger("push-title-agent")
 
-DEFAULT_TITLE_MODEL = "gpt-5.6-luna"
+DEFAULT_TITLE_MODEL = DEFAULT_TITLE_GENERATION_MODEL
 
 
 def _resolve_title_model(configured_model: str) -> str:
-    candidate = (configured_model or "").strip()
-    if not candidate or candidate.lower() == "gpt-4o-mini":
-        return DEFAULT_TITLE_MODEL
-    return candidate
+    return resolve_title_generation_model(configured_model)
 
 
 MODEL = _resolve_title_model(os.environ.get("OPENAI_TITLE_GENERATION_MODEL", ""))

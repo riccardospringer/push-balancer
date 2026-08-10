@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from app import config
+from app.title_generation_model import resolve_title_generation_model
 
 SOURCE_PROMPT_VERSION = "1.4"
 SOURCE_PROMPT_SHA256 = "498f24582d23a0343741db9c1bde258782701f718120b8a6765de4a781edb2fd"
@@ -357,6 +358,34 @@ def _completion_token_argument(model: str) -> str:
     return "max_tokens"
 
 
+def _request_messages(
+    title: str,
+    category: str,
+    *,
+    content_type: str,
+    now: datetime | None,
+    retry: bool,
+) -> list[dict[str, str]]:
+    user_prompt = build_user_prompt(
+        title,
+        category,
+        content_type=content_type,
+        now=now,
+    )
+    if retry:
+        user_prompt = (
+            f"{user_prompt}\n\n"
+            "KORREKTURLAUF: Die erste Ausgabe verletzte den maschinenlesbaren "
+            "v1.4-Vertrag. Erzeuge den exakten vollständigen Output erneut: "
+            "genau A, B und C mit jeweils Headline und Zeile 2 samt korrekten "
+            "Zeichenzahlen."
+        )
+    return [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
 def _to_api_response(
     result: PushHeadlineResult,
     *,
@@ -511,46 +540,57 @@ def generate_push_headline_v14(
     if not is_prompt_generation_enabled():
         return None
 
-    model = config.OPENAI_TITLE_GENERATION_MODEL
-    if not _claim_call_budget():
-        return build_push_headline_escalation(
-            title,
-            content_type=content_type,
-            model=model,
-            reason="OpenAI-Aufruflimit erreicht; keine v1.4-Variante erzeugt.",
-        )
+    model = resolve_title_generation_model(config.OPENAI_TITLE_GENERATION_MODEL)
     token_argument = _completion_token_argument(model)
-    request: dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": load_system_prompt()},
-            {
-                "role": "user",
-                "content": build_user_prompt(
-                    title,
-                    category,
-                    content_type=content_type,
-                    now=now,
-                ),
-            },
-        ],
-        "timeout": config.OPENAI_TITLE_GENERATION_TIMEOUT_S,
-        "store": False,
-        token_argument: config.OPENAI_TITLE_GENERATION_MAX_TOKENS,
-    }
-    if token_argument == "max_tokens":
-        request["temperature"] = 0.2
+    last_error: Exception | None = None
+    for attempt in range(2):
+        if not _claim_call_budget():
+            return build_push_headline_escalation(
+                title,
+                content_type=content_type,
+                model=model,
+                reason="OpenAI-Aufruflimit erreicht; keine v1.4-Variante erzeugt.",
+            )
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": _request_messages(
+                title,
+                category,
+                content_type=content_type,
+                now=now,
+                retry=attempt == 1,
+            ),
+            "timeout": config.OPENAI_TITLE_GENERATION_TIMEOUT_S,
+            "store": False,
+            token_argument: config.OPENAI_TITLE_GENERATION_MAX_TOKENS,
+        }
+        if token_argument == "max_tokens":
+            request["temperature"] = 0.2
+        else:
+            request["extra_body"] = {
+                "reasoning_effort": config.OPENAI_TITLE_GENERATION_REASONING_EFFORT,
+                "verbosity": "low",
+            }
 
-    completion = _get_openai_client().chat.completions.create(**request)
-    choice = completion.choices[0]
-    if getattr(choice, "finish_reason", "stop") != "stop":
-        raise PushHeadlinePromptError("model response did not finish cleanly")
-    raw = choice.message.content
-    if (raw or "").strip() == "ESKALATION: CvD-Prüfung erforderlich":
-        return build_push_headline_escalation(
-            title,
-            content_type=content_type,
-            model=model,
-        )
-    parsed = parse_model_output(raw or "")
-    return _to_api_response(parsed, model=model, content_type=content_type)
+        try:
+            completion = _get_openai_client().chat.completions.create(**request)
+            choice = completion.choices[0]
+            if getattr(choice, "finish_reason", "stop") != "stop":
+                raise PushHeadlinePromptError("model response did not finish cleanly")
+            raw = choice.message.content
+            if (raw or "").strip() == "ESKALATION: CvD-Prüfung erforderlich":
+                return build_push_headline_escalation(
+                    title,
+                    content_type=content_type,
+                    model=model,
+                )
+            parsed = parse_model_output(raw or "")
+            return _to_api_response(parsed, model=model, content_type=content_type)
+        except Exception as exc:
+            last_error = exc
+            if attempt == 1:
+                raise
+
+    if last_error is not None:  # pragma: no cover - loop is intentionally exhaustive
+        raise last_error
+    raise PushHeadlinePromptError("model returned no validated v1.4 output")
