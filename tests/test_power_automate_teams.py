@@ -1137,32 +1137,36 @@ def test_headline_command_returns_three_v14_pairs(monkeypatch):
     )
     candidates = [
         {
-            "titel": "Bund startet neues Hilfspaket",
-            "zeile2": "Ab Montag gilt die neue Hilfe",
-            "ansatz": "FAKT",
+            "id": "A",
+            "headline": "Bund startet neues Hilfspaket",
+            "line2": "Ab Montag gilt die neue Hilfe",
+            "type": "FAKT",
+            "selected": True,
         },
         {
-            "titel": "Neue Hilfe erreicht Millionen",
-            "zeile2": "Bund setzt Paket am Montag um",
-            "ansatz": "BETROFFENHEIT",
+            "id": "B",
+            "headline": "Neue Hilfe erreicht Millionen",
+            "line2": "Bund setzt Paket am Montag um",
+            "type": "BETROFFENHEIT",
+            "selected": False,
         },
         {
-            "titel": "Hilfspaket gilt ab Montag",
-            "zeile2": "Diese Haushalte profitieren",
-            "ansatz": "FOLGE",
+            "id": "C",
+            "headline": "Hilfspaket gilt ab Montag",
+            "line2": "Diese Haushalte profitieren",
+            "type": "FOLGE",
+            "selected": False,
         },
     ]
     monkeypatch.setattr(
-        "app.routers.misc._build_push_title_response",
-        lambda _request: {
-            "gewinner": {
-                **candidates[0],
-                "warum_dieser": "Kern und Folge stehen sofort fest.",
-            },
-            "alle_kandidaten": {"v1.4": candidates},
+        "app.push_title_prompt_v14.generate_push_headline_v14",
+        lambda **_kwargs: {
+            "variants": candidates,
             "reasoning": "Kern und Folge stehen sofort fest.",
-            "stufe": 2,
-            "stufe_begruendung": "Entscheidung hat Zeit",
+            "reviewPoint": "Artikelvolltext redaktionell prüfen.",
+            "stage": 2,
+            "stageReason": "Entscheidung hat Zeit",
+            "escalation": False,
         },
     )
 
@@ -1184,6 +1188,60 @@ def test_headline_command_returns_three_v14_pairs(monkeypatch):
     }
     assert "Headline-Vorschläge" in payload["messageHtml"]
     assert "bitte vor Versand prüfen" in payload["messageHtml"]
+
+
+@pytest.mark.parametrize("invalid_field", ["line2", "headline"])
+def test_headline_command_fails_closed_for_incomplete_v14_pairs(
+    monkeypatch,
+    invalid_field,
+):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(
+        power_automate,
+        "_headline_article_context",
+        lambda _article_id: {
+            "url": "https://www.bild.de/politik/synthetischer-artikel",
+            "title": "Bund beschliesst synthetisches Hilfspaket",
+            "text": "",
+            "category": "politik",
+        },
+    )
+    variants = [
+        {
+            "id": identifier,
+            "headline": f"Synthetische Headline Nummer {index}",
+            "line2": f"Synthetische zweite Zeile {index}",
+            "type": structure,
+            "selected": index == 1,
+        }
+        for index, (identifier, structure) in enumerate(
+            (("A", "FAKT"), ("B", "BETROFFENHEIT"), ("C", "FOLGE")),
+            start=1,
+        )
+    ]
+    variants[1][invalid_field] = ""
+    monkeypatch.setattr(
+        "app.push_title_prompt_v14.generate_push_headline_v14",
+        lambda **_kwargs: {"variants": variants, "escalation": False},
+    )
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={"articleId": "0123456789abcdef01234567"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "reason": "headline_generator_unavailable",
+        "messageHtml": (
+            "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+            "Bitte den Befehl später erneut senden.</p>"
+        ),
+    }
 
 
 def test_headline_command_requires_auth_and_rejects_invalid_ids(monkeypatch):

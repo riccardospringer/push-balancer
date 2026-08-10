@@ -242,8 +242,14 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
 
     request = create.call_args.kwargs
     assert request["store"] is False
-    assert request["max_tokens"] == 320
-    assert request["temperature"] == 0.2
+    assert request["model"] == "gpt-5.6-luna"
+    assert request["max_completion_tokens"] == 320
+    assert request["extra_body"] == {
+        "reasoning_effort": "none",
+        "verbosity": "low",
+    }
+    assert "max_tokens" not in request
+    assert "temperature" not in request
     assert "13. VORSPANN VOR DEM DOPPELPUNKT" in request["messages"][0]["content"]
     assert "Testredaktion beschließt neue Regel" in request["messages"][1]["content"]
     assert "zeitfenster: ABENDS" in request["messages"][1]["content"]
@@ -322,6 +328,53 @@ def test_generate_rejects_truncated_model_output(monkeypatch):
             "politik",
             content_type="editorial",
         )
+
+    assert create.call_count == 2
+    assert "KORREKTURLAUF" in create.call_args.kwargs["messages"][1]["content"]
+
+
+def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypatch):
+    create = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="unvollständig"),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=VALID_OUTPUT),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+        ]
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    result = prompt_v14.generate_push_headline_v14(
+        "Testredaktion beschließt neue Regel",
+        "politik",
+        content_type="editorial",
+    )
+
+    assert result is not None
+    assert len(result["variants"]) == 3
+    assert all(item["headline"] and item["line2"] for item in result["variants"])
+    assert create.call_count == 2
+    assert "KORREKTURLAUF" in create.call_args.kwargs["messages"][1]["content"]
 
 
 def test_generate_stays_local_when_either_opt_in_is_off(monkeypatch):

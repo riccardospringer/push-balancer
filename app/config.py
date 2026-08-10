@@ -10,6 +10,8 @@ import logging
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
+from app.title_generation_model import resolve_title_generation_model
+
 log = logging.getLogger("push-balancer")
 TZ = ZoneInfo("Europe/Berlin")
 
@@ -140,9 +142,8 @@ OPENAI_TITLE_GENERATION_ENABLED: bool = _env_flag(
     "OPENAI_TITLE_GENERATION_ENABLED",
     False,
 )
-OPENAI_TITLE_GENERATION_MODEL: str = os.environ.get(
-    "OPENAI_TITLE_GENERATION_MODEL",
-    "gpt-5.6-luna",
+OPENAI_TITLE_GENERATION_MODEL: str = resolve_title_generation_model(
+    os.environ.get("OPENAI_TITLE_GENERATION_MODEL", "")
 )
 OPENAI_TITLE_GENERATION_TIMEOUT_S: float = float(
     os.environ.get("OPENAI_TITLE_GENERATION_TIMEOUT_S", "8.0")
