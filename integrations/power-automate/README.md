@@ -126,8 +126,11 @@ Under **Settings → Trigger conditions**, add this single condition:
 The delimiters make the string lookup exact. This condition intentionally
 contains all 15 minute labels for every slot; retaining the former five-minute
 condition disables automatic recovery even if the backend is configured for
-it. Do not replace the explicit time-zone conversion with the flow owner's
-local time zone.
+it. There must be exactly one trigger-condition row. In particular, never leave
+a temporary guard such as `@equals(1,0)` in the enabled production flow because
+Power Automate combines trigger conditions with AND and would silently suppress
+every scheduled run. Do not replace the explicit time-zone conversion with the
+flow owner's local time zone.
 
 ## 2. Claim the recommendation
 
@@ -182,9 +185,14 @@ Ready response (synthetic example):
     "isSport": true
   },
   "recommendationCount": 5,
-  "messageHtml": "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2><p>Das sind meine 5 Empfehlungen.</p><p><strong>Top 1:</strong> Synthetisch</p><p><strong>Top 2:</strong> Synthetisch</p><p><strong>Top 3:</strong> Synthetisch</p><p><strong>Top 4:</strong> Synthetisch</p><p><strong>Top 5:</strong> Synthetisch</p>"
+  "messageHtml": "<strong>🔵 JETZT MÜSSEN (!) WIR PUSHEN</strong><br><br>Das sind meine 5 Empfehlungen.<br><br><strong>Top 1:</strong> Synthetisch<br>Score: 91,4/100<br><br><strong>Top 2:</strong> Synthetisch<br>Score: 88,2/100<br><br><strong>Top 3:</strong> Synthetisch<br>Score: 84,7/100<br><br><strong>Top 4:</strong> Synthetisch<br>Score: 82,1/100<br><br><strong>Top 5:</strong> Synthetisch<br>Score: 79,5/100"
 }
 ```
+
+The backend deliberately avoids `<h2>` and `<p>` wrappers in this payload.
+Teams can add margins to those elements on top of explicit line breaks; the
+compact contract uses exactly two `<br>` tags between blocks (one visible blank
+line) and one `<br>` between article metadata and score.
 
 `alternative` is the highest valid Sport candidate when `top.isSport=false`, or the highest valid non-Sport candidate when `top.isSport=true`. It is `null` when no safe opposite alternative is available. It is a display alternative only, does not implement a Sport quota, and does not claim to be the overall second-ranked article.
 

@@ -795,10 +795,10 @@ def _scheduled_recommendations(evaluation: dict[str, Any]) -> list[dict[str, Any
 
 def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
     parts = [
-        "<h2>🔵 JETZT MÜSSEN (!) WIR PUSHEN</h2>",
-        "<p>Das sind meine 5 Empfehlungen. Nichts dabei? Dann schau in den "
+        "<strong>🔵 JETZT MÜSSEN (!) WIR PUSHEN</strong>",
+        "Das sind meine 5 Empfehlungen. Nichts dabei? Dann schau in den "
         f'<a href="{html.escape(_PUSH_BALANCER_CANDIDATES_URL, quote=True)}">'
-        "Push Balancer</a>.</p>",
+        "Push Balancer</a>.",
     ]
     for rank, recommendation in enumerate(recommendations, start=1):
         title = html.escape(str(recommendation["title"]))
@@ -816,12 +816,13 @@ def _scheduled_message_html(recommendations: list[dict[str, Any]]) -> str:
             else "Publikationsdatum unbekannt"
         )
         parts.append(
-            f'<p><strong>Top {rank}:</strong> <a href="{url}">{title}</a> '
+            f'<strong>Top {rank}:</strong> <a href="{url}">{title}</a> '
             f"({publication_label})<br>"
-            f"{score_html}</p>"
+            f"{score_html}"
         )
-    # Teams removes paragraph margins. Two explicit breaks preserve one visible
-    # blank line between headline, introduction, and every recommendation.
+    # Avoid h2/p margins because Teams combines them with explicit breaks and
+    # can render oversized gaps. Two plain breaks create exactly one empty line
+    # between compact blocks on the Teams HTML renderer.
     return "<br><br>".join(parts)
 
 

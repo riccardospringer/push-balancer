@@ -136,6 +136,11 @@ def get_health() -> JSONResponse:
         "liveFeedFallbackEnabled": LIVE_FEED_FALLBACK_ENABLED,
         "articlePredictionEnrichmentEnabled": ARTICLE_PREDICTION_ENRICHMENT_ENABLED,
     }
+    # Recalculate after the Teams probe. Otherwise a degraded channel mutates
+    # raw_status above while the response keeps the stale pre-probe status.
+    status = "healthy" if raw_status == "ok" else raw_status
+    if status not in {"healthy", "degraded", "unhealthy"}:
+        status = "unhealthy"
     return JSONResponse(content={
         "status": status,
         "uptime": int(uptime),
