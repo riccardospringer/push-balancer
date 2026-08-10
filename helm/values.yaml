@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image: ghcr.io/spring-media/next-push.balancer
-tag: 0.1.101
+tag: 0.1.102
 # Optional immutable release pin. It takes precedence over tag and is required
 # before the private score ingress can be enabled.
 digest: ""
