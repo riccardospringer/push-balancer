@@ -150,7 +150,13 @@ def test_readiness_returns_only_the_allowlisted_shared_values(monkeypatch):
     import app.routers.power_automate as power_automate
 
     full = _full_readiness_fixture()
-    latest_slot = {"label": "18:49", "state": "sent", "receiptRecorded": True}
+    latest_slot = {
+        "label": "18:49",
+        "state": "sent",
+        "receiptRecorded": True,
+        "timingState": "terminal",
+        "recoveryEligible": False,
+    }
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     monkeypatch.setattr(health_router, "build_teams_readiness_payload", lambda: full)
     monkeypatch.setattr(
@@ -188,6 +194,12 @@ def test_readiness_returns_only_the_allowlisted_shared_values(monkeypatch):
             key: full["slots"][key]
             for key in ("ok", "plannedToday", "labels")
         },
+        "recovery": {
+            "enabled": True,
+            "configurationValid": True,
+            "graceSeconds": 600,
+        },
+        "deliveryHealth": {"ok": True, "attentionRequired": False},
         "configurationProblems": [full["configurationProblems"][0]],
         "latestSlot": latest_slot,
     }
@@ -283,14 +295,35 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
 @pytest.mark.parametrize(
     ("delivery", "expected"),
     [
-        (None, {"label": "18:49", "state": "unclaimed", "receiptRecorded": False}),
+        (
+            None,
+            {
+                "label": "18:49",
+                "state": "unclaimed",
+                "receiptRecorded": False,
+                "timingState": "primary_open",
+                "recoveryEligible": False,
+            },
+        ),
         (
             {"status": "sending", "receiptRecorded": False},
-            {"label": "18:49", "state": "sending", "receiptRecorded": False},
+            {
+                "label": "18:49",
+                "state": "sending",
+                "receiptRecorded": False,
+                "timingState": "awaiting_receipt",
+                "recoveryEligible": False,
+            },
         ),
         (
             {"status": "sent", "receiptRecorded": True},
-            {"label": "18:49", "state": "sent", "receiptRecorded": True},
+            {
+                "label": "18:49",
+                "state": "sent",
+                "receiptRecorded": True,
+                "timingState": "terminal",
+                "recoveryEligible": False,
+            },
         ),
         (
             {"status": "delivery_uncertain", "receiptRecorded": True},
@@ -298,10 +331,29 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
                 "label": "18:49",
                 "state": "delivery_uncertain",
                 "receiptRecorded": True,
+                "timingState": "terminal",
+                "recoveryEligible": False,
             },
         ),
-        ({"status": "failed", "receiptRecorded": False}, {"label": "18:49", "state": "other"}),
-        ({"status": "unexpected", "receiptRecorded": True}, {"label": "18:49", "state": "other"}),
+        (
+            {"status": "failed", "receiptRecorded": False},
+            {
+                "label": "18:49",
+                "state": "failed",
+                "receiptRecorded": False,
+                "timingState": "primary_open",
+                "recoveryEligible": False,
+            },
+        ),
+        (
+            {"status": "unexpected", "receiptRecorded": True},
+            {
+                "label": "18:49",
+                "state": "other",
+                "timingState": "blocked",
+                "recoveryEligible": False,
+            },
+        ),
     ],
 )
 def test_latest_slot_uses_only_the_hard_state_enum(monkeypatch, delivery, expected):
@@ -319,3 +371,173 @@ def test_latest_slot_uses_only_the_hard_state_enum(monkeypatch, delivery, expect
 
     assert result == expected
     _assert_no_forbidden_keys(result)
+
+
+@pytest.mark.parametrize(
+    ("delivery", "offset_seconds", "timing_state", "recovery_eligible"),
+    [
+        (None, 300, "recovery_open", True),
+        (None, 899, "recovery_open", True),
+        (None, 900, "missed", False),
+        (
+            {"status": "sending", "receiptRecorded": False},
+            300,
+            "awaiting_receipt",
+            False,
+        ),
+        (
+            {"status": "sending", "receiptRecorded": False},
+            899,
+            "awaiting_receipt",
+            False,
+        ),
+        (
+            {"status": "sending", "receiptRecorded": False},
+            900,
+            "overdue_unresolved",
+            False,
+        ),
+    ],
+)
+def test_latest_slot_timing_boundaries_are_half_open(
+    monkeypatch,
+    delivery,
+    offset_seconds,
+    timing_state,
+    recovery_eligible,
+):
+    import app.routers.power_automate as power_automate
+    import app.teams_slot_claims as slot_claims
+
+    slot_ts = int(dt.datetime(2026, 8, 9, 18, 49, tzinfo=BERLIN).timestamp())
+    monkeypatch.setattr(
+        slot_claims,
+        "teams_recommendation_slot_delivery_state_read_only",
+        lambda _slot_ts: delivery,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS",
+        600,
+    )
+
+    result = power_automate._latest_due_power_automate_slot(
+        slot_ts + offset_seconds
+    )
+
+    assert result is not None
+    assert result["label"] == "18:49"
+    assert result["state"] == ("unclaimed" if delivery is None else "sending")
+    assert result["timingState"] == timing_state
+    assert result["recoveryEligible"] is recovery_eligible
+    assert result["receiptRecorded"] is False
+
+
+@pytest.mark.parametrize(
+    ("latest_slot", "expected_ready", "expected_health"),
+    [
+        (
+            {
+                "label": "18:49",
+                "state": "unclaimed",
+                "receiptRecorded": False,
+                "timingState": "missed",
+                "recoveryEligible": False,
+            },
+            False,
+            {"ok": False, "attentionRequired": True},
+        ),
+        (
+            {
+                "label": "18:49",
+                "state": "sending",
+                "receiptRecorded": False,
+                "timingState": "overdue_unresolved",
+                "recoveryEligible": False,
+            },
+            False,
+            {"ok": False, "attentionRequired": True},
+        ),
+        (
+            {
+                "label": "18:49",
+                "state": "delivery_uncertain",
+                "receiptRecorded": True,
+                "timingState": "terminal",
+                "recoveryEligible": False,
+            },
+            False,
+            {"ok": False, "attentionRequired": True},
+        ),
+        (
+            {
+                "label": "18:49",
+                "state": "sent",
+                "receiptRecorded": True,
+                "timingState": "terminal",
+                "recoveryEligible": False,
+            },
+            True,
+            {"ok": True, "attentionRequired": False},
+        ),
+        (
+            {
+                "label": "18:49",
+                "state": "unclaimed",
+                "receiptRecorded": False,
+                "timingState": "recovery_open",
+                "recoveryEligible": True,
+            },
+            True,
+            {"ok": True, "attentionRequired": False},
+        ),
+    ],
+    ids=(
+        "missed",
+        "overdue-unresolved",
+        "delivery-uncertain",
+        "sent",
+        "recoverable",
+    ),
+)
+def test_readiness_delivery_health_controls_top_level_ready(
+    monkeypatch,
+    latest_slot,
+    expected_ready,
+    expected_health,
+):
+    import app.routers.health as health_router
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS",
+        600,
+    )
+    monkeypatch.setattr(
+        health_router,
+        "build_teams_readiness_payload",
+        _full_readiness_fixture,
+    )
+    monkeypatch.setattr(
+        power_automate,
+        "_latest_due_power_automate_slot",
+        lambda: latest_slot,
+    )
+
+    response = client.get(READINESS_PATH, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is expected_ready
+    assert response.json()["deliveryHealth"] == expected_health

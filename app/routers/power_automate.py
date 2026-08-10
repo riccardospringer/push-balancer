@@ -29,7 +29,6 @@ from app.cms.url_api import (
 from app.notifications.teams import (
     MANDATORY_BLOCKER_MISSING_CANONICAL_SCORE,
     TeamsAlertConfig,
-    _BINDING_SLOT_DISPATCH_GRACE_SECONDS,
     _MANDATORY_TOP1_CANDIDATE_LIMIT,
     _candidate_updated_ts,
     _is_breaking,
@@ -46,8 +45,11 @@ from app.notifications.teams import (
     title_hash,
 )
 from app.power_automate_schedule import (
+    POWER_AUTOMATE_MAX_RECOVERY_GRACE_SECONDS,
+    POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS,
     POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS,
     POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS,
+    power_automate_dispatch_window_seconds as _bounded_dispatch_window_seconds,
     power_automate_slot_labels_for_date,
 )
 from app.routers.feed import build_articles_payload
@@ -112,10 +114,22 @@ _SAFE_READINESS_CONFIGURATION_PROBLEMS = frozenset(
     }
 )
 _SAFE_LATEST_SLOT_STATES = {
+    "failed": "failed",
     "sending": "sending",
     "sent": "sent",
     "delivery_uncertain": "delivery_uncertain",
 }
+_SAFE_LATEST_SLOT_TIMING_STATES = frozenset(
+    {
+        "primary_open",
+        "recovery_open",
+        "awaiting_receipt",
+        "missed",
+        "overdue_unresolved",
+        "terminal",
+        "blocked",
+    }
+)
 _SAFE_READINESS_TRANSPORT_MODES = frozenset(
     {"legacy_background_sender", "power_automate_scheduled"}
 )
@@ -137,6 +151,79 @@ def _no_op(reason: str) -> JSONResponse:
         content={"ready": False, "reason": str(reason or "not_ready")},
         headers=_NO_STORE_HEADERS,
     )
+
+
+def _power_automate_recovery_configuration() -> tuple[int, bool]:
+    """Return the validated recovery extension without trusting runtime mutation."""
+    configuration_valid = bool(
+        getattr(
+            app_config,
+            "POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID",
+            False,
+        )
+    )
+    raw_grace = getattr(app_config, "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS", 0)
+    if not isinstance(raw_grace, int) or isinstance(raw_grace, bool):
+        return 0, False
+    grace = raw_grace
+    if not 0 <= grace <= POWER_AUTOMATE_MAX_RECOVERY_GRACE_SECONDS:
+        return 0, False
+    return (grace if configuration_valid else 0), configuration_valid
+
+
+def _power_automate_dispatch_window_seconds() -> int:
+    grace, _configuration_valid = _power_automate_recovery_configuration()
+    return _bounded_dispatch_window_seconds(grace)
+
+
+def _latest_slot_timing_state(
+    *,
+    stamp: int,
+    slot_ts: int,
+    raw_status: str,
+) -> tuple[str, bool]:
+    """Classify one slot without returning article, account, or request data."""
+    primary_end = slot_ts + POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+    dispatch_end = slot_ts + _power_automate_dispatch_window_seconds()
+    if raw_status in {"sent", "delivery_uncertain"}:
+        return "terminal", False
+    if raw_status == "sending":
+        return (
+            "awaiting_receipt" if stamp < dispatch_end else "overdue_unresolved",
+            False,
+        )
+    recoverable = raw_status in {"", "failed"}
+    if stamp < primary_end:
+        return ("primary_open", False) if recoverable else ("blocked", False)
+    if stamp < dispatch_end:
+        return ("recovery_open", True) if recoverable else ("blocked", False)
+    if recoverable:
+        return "missed", False
+    return "overdue_unresolved", False
+
+
+def _latest_slot_delivery_health(
+    latest_slot: dict[str, Any] | None,
+) -> dict[str, bool]:
+    """Summarize whether the latest due slot still needs intervention."""
+    if latest_slot is None:
+        return {"ok": True, "attentionRequired": False}
+    state = str(latest_slot.get("state") or "")
+    timing_state = str(latest_slot.get("timingState") or "")
+    receipt_recorded = bool(latest_slot.get("receiptRecorded"))
+    healthy = bool(
+        (
+            state == "sent"
+            and receipt_recorded
+            and timing_state == "terminal"
+        )
+        or (
+            state in {"unclaimed", "failed"}
+            and timing_state in {"primary_open", "recovery_open"}
+        )
+        or (state == "sending" and timing_state == "awaiting_receipt")
+    )
+    return {"ok": healthy, "attentionRequired": not healthy}
 
 
 def _latest_due_power_automate_slot(now_ts: int | None = None) -> dict[str, Any] | None:
@@ -169,15 +256,35 @@ def _latest_due_power_automate_slot(now_ts: int | None = None) -> dict[str, Any]
     except Exception:  # pragma: no cover - fail-closed operational probe
         return {"label": latest_label, "state": "other"}
     if delivery is None:
+        timing_state, recovery_eligible = _latest_slot_timing_state(
+            stamp=stamp,
+            slot_ts=latest_ts,
+            raw_status="",
+        )
         return {
             "label": latest_label,
             "state": "unclaimed",
             "receiptRecorded": False,
+            "timingState": timing_state,
+            "recoveryEligible": recovery_eligible,
         }
 
     raw_status = str(delivery.get("status") or "")
     state = _SAFE_LATEST_SLOT_STATES.get(raw_status, "other")
-    result: dict[str, Any] = {"label": latest_label, "state": state}
+    timing_state, recovery_eligible = _latest_slot_timing_state(
+        stamp=stamp,
+        slot_ts=latest_ts,
+        raw_status=raw_status,
+    )
+    if timing_state not in _SAFE_LATEST_SLOT_TIMING_STATES:
+        timing_state = "blocked"
+        recovery_eligible = False
+    result: dict[str, Any] = {
+        "label": latest_label,
+        "state": state,
+        "timingState": timing_state,
+        "recoveryEligible": recovery_eligible,
+    }
     if state != "other":
         result["receiptRecorded"] = bool(delivery.get("receiptRecorded"))
     return result
@@ -240,8 +347,15 @@ def _minimal_power_automate_readiness_payload(
         for label in labels[:17]
         if isinstance(label, str) and label in _SAFE_READINESS_SLOT_LABELS
     ]
+    recovery_grace, recovery_configuration_valid = (
+        _power_automate_recovery_configuration()
+    )
+    latest_slot = _latest_due_power_automate_slot()
+    delivery_health = _latest_slot_delivery_health(latest_slot)
     result: dict[str, Any] = {
-        "ready": bool(readiness.get("ready")),
+        "ready": bool(readiness.get("ready"))
+        and recovery_configuration_valid
+        and delivery_health["ok"],
         "teamsAlertsEnabled": bool(readiness.get("teamsAlertsEnabled")),
         "transportMode": transport_mode,
         "backgroundSenderEnabled": bool(readiness.get("backgroundSenderEnabled")),
@@ -268,9 +382,14 @@ def _minimal_power_automate_readiness_payload(
             "plannedToday": planned_today,
             "labels": safe_labels,
         },
+        "recovery": {
+            "enabled": recovery_grace > 0,
+            "configurationValid": recovery_configuration_valid,
+            "graceSeconds": recovery_grace,
+        },
+        "deliveryHealth": delivery_health,
         "configurationProblems": safe_problems,
     }
-    latest_slot = _latest_due_power_automate_slot()
     if latest_slot is not None:
         result["latestSlot"] = latest_slot
     return result
@@ -479,18 +598,24 @@ def _power_automate_binding_slot(now_ts: int) -> dict[str, Any] | None:
     """Resolve only the fixed Power Automate schedule, independent of legacy tuning."""
     now = int(now_ts)
     berlin_now = dt.datetime.fromtimestamp(now, _BERLIN)
-    for label in power_automate_slot_labels_for_date(berlin_now.date()):
+    dispatch_window_seconds = _power_automate_dispatch_window_seconds()
+    for label in reversed(power_automate_slot_labels_for_date(berlin_now.date())):
         hour, minute = (int(part) for part in label.split(":"))
         slot_dt = berlin_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         slot_ts = int(slot_dt.timestamp())
         # A recommendation is generated only once its actual delivery slot is
         # open.  Do not claim or prepare messages in advance: that couples
         # delivery to a second, unnecessary wait step in Power Automate.
-        if slot_ts <= now < slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS:
+        if slot_ts <= now < slot_ts + dispatch_window_seconds:
             return {
                 "ts": slot_ts,
                 "label": label,
                 "slotRole": "power_automate_fixed",
+                "dispatchWindowSeconds": dispatch_window_seconds,
+                "recovery": (
+                    now
+                    >= slot_ts + POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+                ),
             }
     return None
 
@@ -763,6 +888,7 @@ def _claim_response_payload(
     selected: dict[str, Any],
     message: dict[str, Any],
     recommendations: list[dict[str, Any]],
+    dispatch_window_seconds: int | None = None,
 ) -> dict[str, Any]:
     payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
     alternative = (
@@ -806,7 +932,14 @@ def _claim_response_payload(
         "slotId": _slot_id(slot_ts),
         "scheduledAt": _iso_at(slot_ts),
         "scheduledAtUtc": _utc_iso_at(slot_ts),
-        "expiresAt": _iso_at(slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS),
+        "expiresAt": _iso_at(
+            slot_ts
+            + int(
+                dispatch_window_seconds
+                if dispatch_window_seconds is not None
+                else _power_automate_dispatch_window_seconds()
+            )
+        ),
         "top": top,
         "alternative": alternative_payload,
         "recommendationCount": len(recommendations),
@@ -976,7 +1109,10 @@ def _prepare_scheduled_recommendation_field(
     identity_blockers = teams_recommendation_article_identity_block_reasons(
         identity_inputs,
         now_ts=decision_now,
-        in_progress_seconds=_BINDING_SLOT_DISPATCH_GRACE_SECONDS,
+        in_progress_seconds=int(
+            binding_slot.get("dispatchWindowSeconds")
+            or POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+        ),
     )
     identity_eligible = [
         candidate
@@ -1075,6 +1211,10 @@ def claim_power_automate_teams_recommendation(
     if binding_slot is None:
         return _no_op("outside_window")
     binding_slot_ts = int(binding_slot.get("ts") or 0)
+    dispatch_window_seconds = int(
+        binding_slot.get("dispatchWindowSeconds")
+        or POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+    )
     replay_payload = teams_recommendation_slot_replay(
         binding_slot_ts,
         request_id=claim_request.requestId,
@@ -1175,7 +1315,7 @@ def claim_power_automate_teams_recommendation(
         return _no_op("slot_closed")
     if (
         preclaim_now + _POWER_AUTOMATE_MIN_DELIVERY_BUDGET_SECONDS
-        > binding_slot_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+        > binding_slot_ts + dispatch_window_seconds
     ):
         return _no_op("slot_closed")
 
@@ -1184,6 +1324,7 @@ def claim_power_automate_teams_recommendation(
         selected=selected,
         message=message,
         recommendations=recommendations,
+        dispatch_window_seconds=dispatch_window_seconds,
     )
     claim_articles = _scheduled_claim_articles(
         evaluation,
@@ -1192,13 +1333,17 @@ def claim_power_automate_teams_recommendation(
     )
     if len(claim_articles) != _SCHEDULED_RECOMMENDATION_COUNT:
         return _no_op("candidate_not_approved")
+    # A second run may have passed the earlier read before this expensive
+    # candidate preparation finished. Keep ownership for the complete slot
+    # window so that stale run can never recycle an acknowledgement-ambiguous
+    # exact-five group while the endpoint is still eligible.
     slot_claim = teams_recommendation_slot_try_claim_group(
         binding_slot_ts,
         articles=claim_articles,
         request_id=claim_request.requestId,
         claim_payload=response_payload,
         now_ts=preclaim_now,
-        lease_seconds=_BINDING_SLOT_DISPATCH_GRACE_SECONDS,
+        lease_seconds=dispatch_window_seconds,
     )
     if slot_claim.get("reason") == "replayed" and isinstance(slot_claim.get("replayPayload"), dict):
         return _safe_replay_response(

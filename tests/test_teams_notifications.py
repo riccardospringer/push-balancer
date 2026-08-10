@@ -2689,7 +2689,10 @@ def test_transport_rejects_unknown_payload_type_fail_closed():
     message, config = _fully_approved_transport_message(slot_gate_enabled=False)
     message["payload"]["type"] = "teams_recommendation"
 
-    with patch("app.notifications.teams.urllib.request.urlopen") as urlopen:
+    with (
+        patch("app.notifications.teams.time.time", return_value=NOW_TS),
+        patch("app.notifications.teams.urllib.request.urlopen") as urlopen,
+    ):
         result = sendTeamsNotification(message, config)
 
     assert result["ok"] is False
@@ -3162,9 +3165,12 @@ def test_teams_message_hides_global_average_prediction_fallback():
 def test_teams_webhook_error_is_logged_and_does_not_crash(caplog):
     caplog.set_level(logging.WARNING, logger="push-balancer")
 
-    with patch(
-        "app.notifications.teams.urllib.request.urlopen",
-        side_effect=urllib.error.URLError("webhook down"),
+    with (
+        patch("app.notifications.teams.time.time", return_value=NOW_TS),
+        patch(
+            "app.notifications.teams.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("webhook down"),
+        ),
     ):
         result = sendTeamsNotification(
             {"payload": {"type": "live_push_sent", "text": "test"}},
@@ -6587,7 +6593,10 @@ def test_push_dispatch_rejects_missing_agent_approval_before_webhook():
         },
     }
 
-    with patch("app.notifications.teams.urllib.request.urlopen") as urlopen:
+    with (
+        patch("app.notifications.teams.time.time", return_value=NOW_TS),
+        patch("app.notifications.teams.urllib.request.urlopen") as urlopen,
+    ):
         result = sendTeamsNotification(message, _config())
 
     assert result["ok"] is False
@@ -7143,7 +7152,10 @@ def test_sender_rejects_local_score_payload_when_internal_api_mode_is_required()
     message["payload"]["type"] = "push_recommendation"
     message["payload"]["dispatchApproved"] = True
 
-    with patch("app.notifications.teams.urllib.request.urlopen") as post:
+    with (
+        patch("app.notifications.teams.time.time", return_value=NOW_TS),
+        patch("app.notifications.teams.urllib.request.urlopen") as post,
+    ):
         result = sendTeamsNotification(
             message,
             _config(

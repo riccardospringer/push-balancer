@@ -78,7 +78,7 @@ def _ensure_schema(conn: sqlite3.Connection, *, now_ts: int) -> None:
     conn.execute(
         """UPDATE teams_recommendation_slot_claims
            SET claim_payload_json = ''
-           WHERE binding_slot_ts + ? <= ?
+           WHERE claimed_at + ? <= ?
              AND claim_payload_json != ''""",
         (_CLAIM_REPLAY_SECONDS, int(now_ts)),
     )
@@ -569,8 +569,6 @@ def teams_recommendation_slot_replay(
     if slot_ts <= 0 or not request_ref:
         return None
     now = int(now_ts or time.time())
-    if now >= slot_ts + _CLAIM_REPLAY_SECONDS:
-        return None
     with database._push_db_lock:
         conn = sqlite3.connect(database.PUSH_DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
@@ -583,7 +581,11 @@ def teams_recommendation_slot_replay(
             conn.commit()
         finally:
             conn.close()
-    if row is None or str(row["request_ref"] or "") != request_ref:
+    if (
+        row is None
+        or str(row["request_ref"] or "") != request_ref
+        or now >= int(row["claimed_at"] or 0) + _CLAIM_REPLAY_SECONDS
+    ):
         return None
     if str(row["status"] or "") != "sending":
         return None
@@ -694,7 +696,7 @@ def teams_recommendation_slot_try_claim_group(
                 if (
                     str(existing["request_ref"] or "") == request_ref
                     and existing_status == "sending"
-                    and now < slot_ts + _CLAIM_REPLAY_SECONDS
+                    and now < claimed_at + _CLAIM_REPLAY_SECONDS
                 ):
                     replay_payload = _decode_claim_payload(
                         str(existing["claim_payload_json"] or "")

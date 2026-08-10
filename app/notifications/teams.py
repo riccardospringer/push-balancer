@@ -146,7 +146,11 @@ from app.database import (
 )
 from app.article_identity import canonical_article_url_identity
 from app.notifications.teams_review import add_agent_review_veto, run_agent_review_network
-from app.power_automate_schedule import is_power_automate_binding_slot
+from app.power_automate_schedule import (
+    POWER_AUTOMATE_MAX_DISPATCH_WINDOW_SECONDS,
+    POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS,
+    is_power_automate_binding_slot,
+)
 from app.score_api_client import resolve_cms_id
 from app.scoring.editorial import (
     assess_germany_relevance,
@@ -170,7 +174,9 @@ _MANDATORY_QUIET_HOURS_END_MINUTE = 6 * 60
 _HARD_NORMAL_PUSH_SCORE_FLOOR = 75.0
 _HARD_BREAKING_PUSH_SCORE_FLOOR = 72.0
 _PUSH_SCORE_SELECTION_BAND = 3.0
-_BINDING_SLOT_DISPATCH_GRACE_SECONDS = 5 * 60
+_BINDING_SLOT_DISPATCH_GRACE_SECONDS = (
+    POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+)
 _MANDATORY_TOP1_CANDIDATE_LIMIT = 200
 
 
@@ -2203,6 +2209,20 @@ def evaluate_teams_alert_candidates(
         if isinstance(mandatory_override, dict)
         else ""
     )
+    raw_override_window = (
+        mandatory_override.get("dispatchWindowSeconds")
+        if isinstance(mandatory_override, dict)
+        else None
+    )
+    override_window = (
+        raw_override_window
+        if isinstance(raw_override_window, int)
+        and not isinstance(raw_override_window, bool)
+        and _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+        <= raw_override_window
+        <= POWER_AUTOMATE_MAX_DISPATCH_WINDOW_SECONDS
+        else _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+    )
     override_is_valid = bool(
         config.slot_gate_enabled
         and isinstance(mandatory_override, dict)
@@ -2212,7 +2232,7 @@ def evaluate_teams_alert_candidates(
             context.get("_scheduledReadinessProbe") is True
             or override_ts
             <= decision_now
-            < override_ts + _BINDING_SLOT_DISPATCH_GRACE_SECONDS
+            < override_ts + override_window
         )
     )
     mandatory_slot = (

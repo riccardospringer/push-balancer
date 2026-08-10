@@ -30,6 +30,43 @@ SLOT_TS = int(dt.datetime(2026, 8, 3, 12, 30, tzinfo=BERLIN).timestamp())
 client = TestClient(app, raise_server_exceptions=True)
 
 
+def test_bounded_recovery_env_uses_its_default_only_when_unset(monkeypatch):
+    import app.config as app_config
+
+    env_name = "SYNTHETIC_BOUNDED_RECOVERY_SECONDS"
+    monkeypatch.delenv(env_name, raising=False)
+
+    assert app_config._env_bounded_int_fail_closed(
+        env_name,
+        default=600,
+        maximum=600,
+    ) == (600, True)
+
+    monkeypatch.setenv(env_name, "0")
+    assert app_config._env_bounded_int_fail_closed(
+        env_name,
+        default=600,
+        maximum=600,
+    ) == (0, True)
+
+
+@pytest.mark.parametrize("raw_value", ["", "   ", "not-an-integer", "-1", "601"])
+def test_bounded_recovery_env_fails_closed_for_invalid_bounds(
+    monkeypatch,
+    raw_value,
+):
+    import app.config as app_config
+
+    env_name = "SYNTHETIC_BOUNDED_RECOVERY_SECONDS"
+    monkeypatch.setenv(env_name, raw_value)
+
+    assert app_config._env_bounded_int_fail_closed(
+        env_name,
+        default=600,
+        maximum=600,
+    ) == (0, False)
+
+
 def test_weekend_morning_slots_start_two_hours_later():
     import app.routers.power_automate as power_automate
 
@@ -53,6 +90,27 @@ def test_weekend_morning_slots_start_two_hours_later():
     assert power_automate.power_automate_slot_labels_for_date(saturday) == expected
     assert power_automate.power_automate_slot_labels_for_date(sunday) == expected
     assert power_automate.power_automate_slot_labels_for_date(dt.date(2026, 8, 10))[0] == "06:00"
+
+
+@pytest.mark.parametrize("schedule_name", ["weekday", "weekend"])
+def test_fixed_slots_are_spaced_beyond_the_maximum_dispatch_window(schedule_name):
+    import app.power_automate_schedule as schedule
+
+    labels = (
+        schedule.POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS
+        if schedule_name == "weekday"
+        else schedule.POWER_AUTOMATE_WEEKEND_TEAMS_SLOT_LABELS
+    )
+    minutes = [
+        int(label.split(":")[0]) * 60 + int(label.split(":")[1])
+        for label in labels
+    ]
+    maximum_window_minutes = schedule.POWER_AUTOMATE_MAX_DISPATCH_WINDOW_SECONDS // 60
+
+    assert all(
+        later - earlier > maximum_window_minutes
+        for earlier, later in zip(minutes, minutes[1:])
+    )
 
 
 def test_power_automate_slot_override_applies_only_inside_its_live_window(
@@ -135,6 +193,40 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
     assert expired_evaluation["selectedCandidate"] is None
     assert expired_evaluation["decisions"][0]["decision"].get("mandatorySlotTop1") is not True
 
+    recovery_slot_ts = now_ts - 30
+    recovery_evaluation = teams.evaluate_teams_alert_candidates(
+        [candidate],
+        {
+            **base_context,
+            "nowTs": recovery_slot_ts + 600,
+            "_mandatorySlotOverride": {
+                "ts": recovery_slot_ts,
+                "label": "10:59",
+                "slotRole": "power_automate_fixed",
+                "dispatchWindowSeconds": 900,
+            },
+        },
+        config,
+    )
+    expired_recovery = teams.evaluate_teams_alert_candidates(
+        [candidate],
+        {
+            **base_context,
+            "nowTs": recovery_slot_ts + 901,
+            "_mandatorySlotOverride": {
+                "ts": recovery_slot_ts,
+                "label": "10:59",
+                "slotRole": "power_automate_fixed",
+                "dispatchWindowSeconds": 900,
+            },
+        },
+        config,
+    )
+
+    assert recovery_evaluation["selectedCandidate"] == candidate
+    assert recovery_evaluation["decisions"][0]["decision"]["mandatorySlotTop1"] is True
+    assert expired_recovery["selectedCandidate"] is None
+
     future_ts = int(dt.datetime(2026, 8, 9, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     invalid_overrides = (
         {"ts": "not-a-timestamp", "label": "10:59", "slotRole": "power_automate_fixed"},
@@ -188,6 +280,58 @@ def test_shared_power_automate_slot_validator_rejects_schedule_mismatches():
     assert is_power_automate_binding_slot(sunday_unscheduled, "11:01") is False
     assert is_power_automate_binding_slot("1786258740", "10:59") is False
     assert is_power_automate_binding_slot(10**100, "10:59") is False
+
+
+def test_power_automate_recovery_window_is_bounded_and_preserves_slot_identity(
+    monkeypatch,
+):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS",
+        600,
+    )
+
+    recovered = power_automate._power_automate_binding_slot(SLOT_TS + 600)
+
+    assert recovered == {
+        "ts": SLOT_TS,
+        "label": "12:30",
+        "slotRole": "power_automate_fixed",
+        "dispatchWindowSeconds": 900,
+        "recovery": True,
+    }
+    assert power_automate._power_automate_binding_slot(SLOT_TS + 899) == recovered
+    assert power_automate._power_automate_binding_slot(SLOT_TS + 900) is None
+
+
+@pytest.mark.parametrize("raw_grace", [601, 600.0, "600", True])
+def test_invalid_recovery_configuration_fails_back_to_primary_window(
+    monkeypatch,
+    raw_grace,
+):
+    import app.routers.power_automate as power_automate
+
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID",
+        True,
+    )
+    monkeypatch.setattr(
+        power_automate.app_config,
+        "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS",
+        raw_grace,
+    )
+
+    assert power_automate._power_automate_recovery_configuration() == (0, False)
+    assert power_automate._power_automate_dispatch_window_seconds() == 300
+    assert power_automate._power_automate_binding_slot(SLOT_TS + 301) is None
 
 
 def test_durable_history_fallback_keeps_mandatory_slot_sendable():
@@ -1204,7 +1348,7 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert payload["slotId"] == f"teams-recommendation-{SLOT_TS}"
     assert payload["scheduledAt"] == "2026-08-03T12:30:00+02:00"
     assert payload["scheduledAtUtc"] == "2026-08-03T10:30:00Z"
-    assert payload["expiresAt"] == "2026-08-03T12:35:00+02:00"
+    assert payload["expiresAt"] == "2026-08-03T12:45:00+02:00"
     assert payload["top"] == {
         "title": top["title"],
         "url": top["url"],
@@ -1243,6 +1387,231 @@ def test_claim_returns_only_the_minimal_top_opposite_and_html_contract(
     assert "<strong>Score:</strong> 88,2/100" in payload["messageHtml"]
     assert "webhook" not in response.text.casefold()
     assert "power-automate-key" not in response.text.casefold()
+
+
+@pytest.mark.parametrize("terminal_status", ["sent", "delivery_uncertain"])
+def test_recovery_claim_replays_only_its_owner_and_never_reopens_terminal_group(
+    monkeypatch,
+    tmp_db,
+    terminal_status,
+):
+    import app.routers.power_automate as power_automate
+
+    recovery_now = SLOT_TS + 600
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=recovery_now)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        first = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-recovery-owner"},
+        )
+        owner_retry = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-recovery-owner"},
+        )
+        receipt = client.post(
+            "/api/v1/power-automate/teams/receipt",
+            headers=HEADERS,
+            json={
+                "slotId": first.json()["slotId"],
+                "requestId": "synthetic-recovery-owner",
+                "status": terminal_status,
+            },
+        )
+        db_patch.setattr(power_automate.time, "time", lambda: SLOT_TS + 700)
+        competing_run = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-recovery-competitor"},
+        )
+        slot = teams_recommendation_slot_get(SLOT_TS)
+
+    assert first.status_code == 200
+    assert first.json()["ready"] == "yes"
+    assert first.json()["slotId"] == f"teams-recommendation-{SLOT_TS}"
+    assert first.json()["expiresAt"] == "2026-08-03T12:45:00+02:00"
+    assert first.json()["recommendationCount"] == 5
+    assert first.json()["messageHtml"].count("<strong>Top ") == 5
+    assert owner_retry.json() == first.json()
+    assert receipt.status_code == 200
+    assert competing_run.json() == {
+        "ready": False,
+        "reason": "slot_already_claimed",
+    }
+    assert slot is not None
+    assert slot["binding_slot_ts"] == SLOT_TS
+    assert slot["status"] == terminal_status
+
+
+def test_stale_concurrent_recovery_run_cannot_recycle_an_unresolved_group(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    first_claim_now = SLOT_TS + 30
+    stale_run_now = first_claim_now + 301
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=first_claim_now)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        first = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-original-concurrent-run"},
+        )
+        original_slot = teams_recommendation_slot_get(SLOT_TS)
+        original_group = teams_recommendation_slot_group_get(SLOT_TS)
+
+        real_try_claim_group = (
+            power_automate.teams_recommendation_slot_try_claim_group
+        )
+        observed_lease_seconds = []
+
+        def observe_try_claim_group(*args, **kwargs):
+            observed_lease_seconds.append(kwargs.get("lease_seconds"))
+            return real_try_claim_group(*args, **kwargs)
+
+        # Model a distinct run that passed both read-only checks before the
+        # original run acquired its durable claim, then reached the atomic
+        # claim after the old five-minute lease would have elapsed.
+        db_patch.setattr(power_automate.time, "time", lambda: stale_run_now)
+        db_patch.setattr(
+            power_automate,
+            "teams_recommendation_slot_get",
+            lambda _slot_ts: None,
+        )
+        db_patch.setattr(
+            power_automate,
+            "teams_recommendation_article_identity_block_reasons",
+            lambda *_args, **_kwargs: {},
+        )
+        db_patch.setattr(
+            power_automate,
+            "teams_recommendation_slot_try_claim_group",
+            observe_try_claim_group,
+        )
+        stale_attempt = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-stale-concurrent-run"},
+        )
+        retained_slot = teams_recommendation_slot_get(SLOT_TS)
+        retained_group = teams_recommendation_slot_group_get(SLOT_TS)
+
+    assert first.status_code == 200
+    assert first.json()["ready"] == "yes"
+    assert stale_run_now < SLOT_TS + 900
+    assert stale_attempt.json() == {
+        "ready": False,
+        "reason": "slot_already_claimed",
+    }
+    assert observed_lease_seconds == [900]
+    assert retained_slot is not None
+    assert original_slot is not None
+    assert {
+        key: retained_slot[key]
+        for key in (
+            "binding_slot_ts",
+            "article_ref",
+            "request_ref",
+            "status",
+            "claimed_at",
+            "sent_at",
+        )
+    } == {
+        key: original_slot[key]
+        for key in (
+            "binding_slot_ts",
+            "article_ref",
+            "request_ref",
+            "status",
+            "claimed_at",
+            "sent_at",
+        )
+    }
+    assert retained_group == original_group
+    assert retained_slot["status"] == "sending"
+    assert len(retained_group) == 5
+    assert {item["status"] for item in retained_group} == {"sending"}
+
+
+def test_failed_primary_receipt_can_recover_once_and_then_becomes_terminal(
+    monkeypatch,
+    tmp_db,
+):
+    import app.routers.power_automate as power_automate
+
+    primary_now = SLOT_TS + 30
+    recovery_now = SLOT_TS + 600
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    _patch_successful_claim(monkeypatch, now_ts=primary_now)
+
+    with monkeypatch.context() as db_patch:
+        db_patch.setattr(database, "PUSH_DB_PATH", tmp_db)
+        primary_claim = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-primary-failure"},
+        )
+        failed_receipt = client.post(
+            "/api/v1/power-automate/teams/receipt",
+            headers=HEADERS,
+            json={
+                "slotId": primary_claim.json()["slotId"],
+                "requestId": "synthetic-primary-failure",
+                "status": "failed",
+            },
+        )
+
+        db_patch.setattr(power_automate.time, "time", lambda: recovery_now)
+        recovery_claim = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-recovery-success"},
+        )
+        sent_receipt = client.post(
+            "/api/v1/power-automate/teams/receipt",
+            headers=HEADERS,
+            json={
+                "slotId": recovery_claim.json()["slotId"],
+                "requestId": "synthetic-recovery-success",
+                "status": "sent",
+            },
+        )
+
+        db_patch.setattr(power_automate.time, "time", lambda: SLOT_TS + 700)
+        after_success = client.post(
+            "/api/v1/power-automate/teams/claim",
+            headers=HEADERS,
+            json={"requestId": "synthetic-after-recovery-success"},
+        )
+        slot = teams_recommendation_slot_get(SLOT_TS)
+        group = teams_recommendation_slot_group_get(SLOT_TS)
+        sent_message_count = database.teams_alert_sent_count_since(SLOT_TS)
+
+    assert primary_claim.status_code == 200
+    assert primary_claim.json()["ready"] == "yes"
+    assert failed_receipt.status_code == 200
+    assert recovery_claim.status_code == 200
+    assert recovery_claim.json()["ready"] == "yes"
+    assert recovery_claim.json()["slotId"] == primary_claim.json()["slotId"]
+    assert recovery_claim.json()["recommendationCount"] == 5
+    assert sent_receipt.status_code == 200
+    assert after_success.json() == {
+        "ready": False,
+        "reason": "slot_already_claimed",
+    }
+    assert slot is not None
+    assert slot["status"] == "sent"
+    assert len(group) == 5
+    assert {item["status"] for item in group} == {"sent"}
+    assert sent_message_count == 1
 
 
 def test_claim_stays_retryable_until_exactly_five_recommendations_exist(
@@ -1699,7 +2068,7 @@ def test_fixed_power_automate_slot_ignores_legacy_date_delay(monkeypatch, tmp_db
 def test_initial_claim_needs_delivery_budget_before_slot_expiry(monkeypatch, tmp_db):
     import app.routers.power_automate as power_automate
 
-    now_ts = SLOT_TS + 299
+    now_ts = SLOT_TS + 899
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     _patch_successful_claim(monkeypatch, now_ts=now_ts)
 
@@ -1710,7 +2079,7 @@ def test_initial_claim_needs_delivery_budget_before_slot_expiry(monkeypatch, tmp
             headers=HEADERS,
             json={"requestId": "synthetic-nearly-expired-run"},
         )
-        db_patch.setattr(power_automate.time, "time", lambda: SLOT_TS + 301)
+        db_patch.setattr(power_automate.time, "time", lambda: SLOT_TS + 901)
         after_window = client.post(
             "/api/v1/power-automate/teams/claim",
             headers=HEADERS,
@@ -1730,7 +2099,7 @@ def test_receipt_is_bound_to_the_claim_run_across_slot_expiry(monkeypatch, tmp_d
     import app.teams_slot_claims as slot_claims
 
     now_ts = SLOT_TS + 30
-    late_ts = SLOT_TS + 301
+    late_ts = SLOT_TS + 901
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     _patch_successful_claim(monkeypatch, now_ts=now_ts)
 
@@ -1779,7 +2148,7 @@ def test_late_receipt_lookup_is_not_limited_to_recent_dashboard_rows(
     import app.teams_slot_claims as slot_claims
 
     now_ts = SLOT_TS + 30
-    late_ts = SLOT_TS + 301
+    late_ts = SLOT_TS + 901
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
     top, _ = _patch_successful_claim(monkeypatch, now_ts=now_ts)
 

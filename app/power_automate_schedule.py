@@ -8,6 +8,13 @@ from zoneinfo import ZoneInfo
 
 BERLIN = ZoneInfo("Europe/Berlin")
 
+POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS = 5 * 60
+POWER_AUTOMATE_MAX_RECOVERY_GRACE_SECONDS = 10 * 60
+POWER_AUTOMATE_MAX_DISPATCH_WINDOW_SECONDS = (
+    POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS
+    + POWER_AUTOMATE_MAX_RECOVERY_GRACE_SECONDS
+)
+
 POWER_AUTOMATE_WEEKDAY_TEAMS_SLOT_LABELS = (
     "06:00",
     "06:36",
@@ -62,3 +69,19 @@ def is_power_automate_binding_slot(slot_ts: int, label: str) -> bool:
         and normalized_label == local.strftime("%H:%M")
         and normalized_label in power_automate_slot_labels_for_date(local.date())
     )
+
+
+def power_automate_dispatch_window_seconds(
+    recovery_grace_seconds: object,
+) -> int:
+    """Return the bounded total claim window; invalid extension means none."""
+    if isinstance(recovery_grace_seconds, bool):
+        recovery = 0
+    else:
+        try:
+            recovery = int(recovery_grace_seconds)
+        except (TypeError, ValueError, OverflowError):
+            recovery = 0
+    if not 0 <= recovery <= POWER_AUTOMATE_MAX_RECOVERY_GRACE_SECONDS:
+        recovery = 0
+    return POWER_AUTOMATE_PRIMARY_DISPATCH_WINDOW_SECONDS + recovery

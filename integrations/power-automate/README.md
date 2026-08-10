@@ -2,44 +2,59 @@
 
 This runbook configures Power Automate as the only production scheduler and Microsoft Teams transport for Push Balancer recommendations. Push Balancer keeps ownership of the absolute internal-API Top-1, the exactly five displayed recommendations, exact duplicate protection, and the durable per-slot claim.
 
-> **Approval record:** On 2026-08-09, the Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal approval for this exactly-five contract and `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false` cloud-only mode was recorded in `PRIVACY.md`. The scoped backend rollout is approved. Keep the new flow off until the legacy transport is proven unable to race and production readiness is green.
+> **Approval record:** On 2026-08-09, the Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal approval for this exactly-five contract and `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false` cloud-only mode was recorded in `PRIVACY.md`. The scoped backend rollout is approved. Production must modify only the existing canonical Exact-5 flow and must not create an additional scheduled flow. Keep every legacy transport off, and keep the canonical flow active only while production readiness is green.
 
 ## Production contract
 
 The flow claims and posts each recommendation as soon as its fixed
 Europe/Berlin slot opens. Monday through Friday:
 
-| Slot | Recurrence/claim-attempt window |
+| Slot | Recurrence/claim-attempt window (`+0` through `+14`) |
 |---|---|
-| `06:00` | `06:00`–`06:04` |
-| `06:36` | `06:36`–`06:40` |
-| `07:12` | `07:12`–`07:16` |
-| `07:47` | `07:47`–`07:51` |
-| `08:23` | `08:23`–`08:27` |
-| `08:59` | `08:59`–`09:03` |
-| `12:30` | `12:30`–`12:34` |
-| `17:30` | `17:30`–`17:34` |
-| `18:49` | `18:49`–`18:53` |
-| `20:08` | `20:08`–`20:12` |
-| `21:26` | `21:26`–`21:30` |
-| `22:45` | `22:45`–`22:49` |
+| `06:00` | `06:00`–`06:14` |
+| `06:36` | `06:36`–`06:50` |
+| `07:12` | `07:12`–`07:26` |
+| `07:47` | `07:47`–`08:01` |
+| `08:23` | `08:23`–`08:37` |
+| `08:59` | `08:59`–`09:13` |
+| `12:30` | `12:30`–`12:44` |
+| `17:30` | `17:30`–`17:44` |
+| `18:49` | `18:49`–`19:03` |
+| `20:08` | `20:08`–`20:22` |
+| `21:26` | `21:26`–`21:40` |
+| `22:45` | `22:45`–`22:59` |
 
 On Saturday and Sunday, only the six morning slots move two hours later:
 
-| Slot | Recurrence/claim-attempt window |
+| Slot | Recurrence/claim-attempt window (`+0` through `+14`) |
 |---|---|
-| `08:00` | `08:00`–`08:04` |
-| `08:36` | `08:36`–`08:40` |
-| `09:12` | `09:12`–`09:16` |
-| `09:47` | `09:47`–`09:51` |
-| `10:23` | `10:23`–`10:27` |
-| `10:59` | `10:59`–`11:03` |
+| `08:00` | `08:00`–`08:14` |
+| `08:36` | `08:36`–`08:50` |
+| `09:12` | `09:12`–`09:26` |
+| `09:47` | `09:47`–`10:01` |
+| `10:23` | `10:23`–`10:37` |
+| `10:59` | `10:59`–`11:13` |
 
 The common `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, and `22:45` slots remain unchanged on weekends.
 
-All claim windows are half-open (`slot <= now < slot + 5 minutes`). The explicit Berlin conversion below handles both CET and CEST. The flow runs once per minute inside each window, not just at the first minute: this provides bounded recovery opportunities when a Microsoft 365 trigger is delayed, the claim API is temporarily unavailable, or fewer than five safe recommendations exist before a slot is reserved. The first successful exactly-five claim posts immediately; the backend slot claim makes repeated runs idempotent. Do not use a **Delay until** action.
+Each claim window consists of the original five-minute primary interval and a
+bounded ten-minute recovery extension configured with
+`POWER_AUTOMATE_RECOVERY_GRACE_SECONDS=600`. The total window is half-open
+(`slot <= now < slot + 15 minutes`): minute `+14` is eligible and minute `+15`
+is not. Values above `600`, negative values, and malformed values disable only
+the extension and make authenticated readiness report an invalid recovery
+configuration; they can never widen delivery beyond 15 minutes.
 
-The weekday/weekend labels above are the entire Power Automate schedule. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the five-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
+The explicit Berlin conversion below handles both CET and CEST. The flow must
+run once per minute at `+0` through `+14`, not only during the primary five
+minutes. This provides bounded automatic recovery when a Microsoft 365 trigger
+is delayed, claim authentication is temporarily unavailable, the claim API is
+temporarily unavailable, or fewer than five safe recommendations exist before
+a slot is reserved. The first successful exactly-five claim posts immediately
+under the original slot ID; the backend slot/group claim makes repeated runs
+idempotent. Do not use a **Delay until** action.
+
+The weekday/weekend labels above are the entire Power Automate schedule. `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, legacy golden-hour/catch-up rules, and daily Sport quotas are ignored by the claim path. An initial claim additionally requires at least 30 seconds of delivery budget before the total 15-minute window expires. If fewer than 30 seconds remain, the API returns HTTP 200 with `{"ready":false,"reason":"slot_closed"}` even though the Recurrence trigger is still inside its listed minute.
 
 The operational endpoints are deliberately excluded from the public OpenAPI document:
 
@@ -58,11 +73,14 @@ X-Power-Automate-Key: <protected secret reference>
 
 The two `POST` requests additionally send `Content-Type: application/json`.
 
-The authenticated readiness, claim, and receipt endpoints require the dedicated header above. Do not use `CONSUMER_API_KEY`, `X-Consumer-Key`, a signed webhook URL, or a Teams connection token for them. `/api/teams-readiness` remains a full internal diagnostic and is available only from the approved VPN/CIDR network. The authenticated readiness endpoint exposes only a fixed allowlist of booleans, modes, the 12 public slot labels, configuration enums, and `latestSlot`; it never returns candidates, article metadata, request IDs, account data, or secrets.
+The authenticated readiness, claim, and receipt endpoints require the dedicated header above. Do not use `CONSUMER_API_KEY`, `X-Consumer-Key`, a signed webhook URL, or a Teams connection token for them. `/api/teams-readiness` remains a full internal diagnostic and is available only from the approved VPN/CIDR network. The authenticated readiness endpoint exposes only a fixed allowlist of booleans, modes, the 12 public slot labels, configuration enums, `deliveryHealth`, and `latestSlot`; it never returns candidates, article metadata, request IDs, account data, or secrets.
 
 ## Prerequisites and secrets
 
 - The deployment has `PUSH_TEAMS_ALERTS_ENABLED=true`.
+- The deployment has `POWER_AUTOMATE_RECOVERY_GRACE_SECONDS=600`. `0` disables
+  automatic recovery; no accepted value can make the total claim window exceed
+  15 minutes.
 - The deployment uses the mounted persistent disk with `DB_PATH=/data/.push_history.db` and `PUSH_DB_DURABILITY_REQUIRED=true`; an ephemeral `/tmp` database is forbidden for this flow.
 - The deployment has a strong random `POWER_AUTOMATE_API_KEY` in its secret store. It is an opaque shared secret, not a derived key or KDF output.
 - The flow can use the HTTP connector and the Microsoft Teams action **Post message in a chat or channel**.
@@ -88,7 +106,8 @@ Never commit the value, paste it into a URL or Teams message, or place it in a n
 
 ## 1. Configure the Recurrence trigger
 
-Create a **Scheduled cloud flow** and configure its **Recurrence** trigger:
+Open the existing canonical **Scheduled cloud flow** and configure its
+**Recurrence** trigger. Do not create another production flow:
 
 | Setting | Value |
 |---|---|
@@ -101,10 +120,14 @@ Create a **Scheduled cloud flow** and configure its **Recurrence** trigger:
 Under **Settings → Trigger conditions**, add this single condition:
 
 ```text
-@contains(if(or(equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),0),equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),6)),'|08:00|08:01|08:02|08:03|08:04|08:36|08:37|08:38|08:39|08:40|09:12|09:13|09:14|09:15|09:16|09:47|09:48|09:49|09:50|09:51|10:23|10:24|10:25|10:26|10:27|10:59|11:00|11:01|11:02|11:03|12:30|12:31|12:32|12:33|12:34|17:30|17:31|17:32|17:33|17:34|18:49|18:50|18:51|18:52|18:53|20:08|20:09|20:10|20:11|20:12|21:26|21:27|21:28|21:29|21:30|22:45|22:46|22:47|22:48|22:49|','|06:00|06:01|06:02|06:03|06:04|06:36|06:37|06:38|06:39|06:40|07:12|07:13|07:14|07:15|07:16|07:47|07:48|07:49|07:50|07:51|08:23|08:24|08:25|08:26|08:27|08:59|09:00|09:01|09:02|09:03|12:30|12:31|12:32|12:33|12:34|17:30|17:31|17:32|17:33|17:34|18:49|18:50|18:51|18:52|18:53|20:08|20:09|20:10|20:11|20:12|21:26|21:27|21:28|21:29|21:30|22:45|22:46|22:47|22:48|22:49|'),concat('|',formatDateTime(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time'),'HH:mm'),'|'))
+@contains(if(or(equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),0),equals(dayOfWeek(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time')),6)),'|08:00|08:01|08:02|08:03|08:04|08:05|08:06|08:07|08:08|08:09|08:10|08:11|08:12|08:13|08:14|08:36|08:37|08:38|08:39|08:40|08:41|08:42|08:43|08:44|08:45|08:46|08:47|08:48|08:49|08:50|09:12|09:13|09:14|09:15|09:16|09:17|09:18|09:19|09:20|09:21|09:22|09:23|09:24|09:25|09:26|09:47|09:48|09:49|09:50|09:51|09:52|09:53|09:54|09:55|09:56|09:57|09:58|09:59|10:00|10:01|10:23|10:24|10:25|10:26|10:27|10:28|10:29|10:30|10:31|10:32|10:33|10:34|10:35|10:36|10:37|10:59|11:00|11:01|11:02|11:03|11:04|11:05|11:06|11:07|11:08|11:09|11:10|11:11|11:12|11:13|12:30|12:31|12:32|12:33|12:34|12:35|12:36|12:37|12:38|12:39|12:40|12:41|12:42|12:43|12:44|17:30|17:31|17:32|17:33|17:34|17:35|17:36|17:37|17:38|17:39|17:40|17:41|17:42|17:43|17:44|18:49|18:50|18:51|18:52|18:53|18:54|18:55|18:56|18:57|18:58|18:59|19:00|19:01|19:02|19:03|20:08|20:09|20:10|20:11|20:12|20:13|20:14|20:15|20:16|20:17|20:18|20:19|20:20|20:21|20:22|21:26|21:27|21:28|21:29|21:30|21:31|21:32|21:33|21:34|21:35|21:36|21:37|21:38|21:39|21:40|22:45|22:46|22:47|22:48|22:49|22:50|22:51|22:52|22:53|22:54|22:55|22:56|22:57|22:58|22:59|','|06:00|06:01|06:02|06:03|06:04|06:05|06:06|06:07|06:08|06:09|06:10|06:11|06:12|06:13|06:14|06:36|06:37|06:38|06:39|06:40|06:41|06:42|06:43|06:44|06:45|06:46|06:47|06:48|06:49|06:50|07:12|07:13|07:14|07:15|07:16|07:17|07:18|07:19|07:20|07:21|07:22|07:23|07:24|07:25|07:26|07:47|07:48|07:49|07:50|07:51|07:52|07:53|07:54|07:55|07:56|07:57|07:58|07:59|08:00|08:01|08:23|08:24|08:25|08:26|08:27|08:28|08:29|08:30|08:31|08:32|08:33|08:34|08:35|08:36|08:37|08:59|09:00|09:01|09:02|09:03|09:04|09:05|09:06|09:07|09:08|09:09|09:10|09:11|09:12|09:13|12:30|12:31|12:32|12:33|12:34|12:35|12:36|12:37|12:38|12:39|12:40|12:41|12:42|12:43|12:44|17:30|17:31|17:32|17:33|17:34|17:35|17:36|17:37|17:38|17:39|17:40|17:41|17:42|17:43|17:44|18:49|18:50|18:51|18:52|18:53|18:54|18:55|18:56|18:57|18:58|18:59|19:00|19:01|19:02|19:03|20:08|20:09|20:10|20:11|20:12|20:13|20:14|20:15|20:16|20:17|20:18|20:19|20:20|20:21|20:22|21:26|21:27|21:28|21:29|21:30|21:31|21:32|21:33|21:34|21:35|21:36|21:37|21:38|21:39|21:40|22:45|22:46|22:47|22:48|22:49|22:50|22:51|22:52|22:53|22:54|22:55|22:56|22:57|22:58|22:59|'),concat('|',formatDateTime(convertTimeZone(utcNow(),'UTC','W. Europe Standard Time'),'HH:mm'),'|'))
 ```
 
-The delimiters make the string lookup exact. Do not replace the explicit time-zone conversion with the flow owner's local time zone.
+The delimiters make the string lookup exact. This condition intentionally
+contains all 15 minute labels for every slot; retaining the former five-minute
+condition disables automatic recovery even if the backend is configured for
+it. Do not replace the explicit time-zone conversion with the flow owner's
+local time zone.
 
 ## 2. Claim the recommendation
 
@@ -143,7 +166,7 @@ Ready response (synthetic example):
   "slotId": "teams-recommendation-1785753000",
   "scheduledAt": "2026-08-03T12:30:00+02:00",
   "scheduledAtUtc": "2026-08-03T10:30:00Z",
-  "expiresAt": "2026-08-03T12:35:00+02:00",
+  "expiresAt": "2026-08-03T12:45:00+02:00",
   "top": {
     "title": "Synthetische Top-Meldung",
     "url": "https://example.invalid/news/top",
@@ -255,17 +278,17 @@ A successful receipt returns a minimized acknowledgement:
 
 Repeated identical receipts are safe. A success can never be downgraded to failure, and a terminal `delivery_uncertain` receipt must not be rewritten as `sent` later.
 
-If an entire flow run terminates after the claim but before the receipt action can execute, the backend cannot know whether Teams accepted the post. The unresolved five-item group therefore remains fail-closed and none of its article identities may be recycled into a later slot merely because the five-minute lease elapsed. Reconcile that run in the protected Power Automate history and record `sent` only when `Post_to_Teams` is proven `Succeeded`; otherwise record `delivery_uncertain`, always with the original `requestId`. Never rerun the Teams action or release the group as definitely failed when delivery is ambiguous. This trades availability for duplicate prevention.
+If an entire flow run terminates after the claim but before the receipt action can execute, the backend cannot know whether Teams accepted the post. The full 15-minute claim-ownership lease prevents a stale concurrent run from recycling the slot while another run is still preparing or posting. Even after that lease elapses, the unresolved five-item group remains fail-closed and none of its article identities may be recycled into a later slot. The ten-minute recovery extension applies only before a slot has a claim; it never reopens an ambiguous `sending`, `sent`, or `delivery_uncertain` group. Reconcile that run in the protected Power Automate history and record `sent` only when `Post_to_Teams` is proven `Succeeded`; otherwise record `delivery_uncertain`, always with the original `requestId`. Never rerun the Teams action or release the group as definitely failed when delivery is ambiguous. This trades availability for duplicate prevention.
 
 ## Monitoring and reconciliation
 
-Monitoring must be external to the delivery branch so an alerting failure cannot create another Teams post. Configure the Power Platform operations monitor to alert immediately when the flow is turned off or suspended, either connector loses authorization, a trigger/action is throttled, or any enabled run fails. After every five-minute slot window, reconcile the protected run history and minimized backend state against exactly one of these outcomes: one `sent` receipt for one five-item message, one terminal `delivery_uncertain` receipt, or no claim because every attempt returned `ready=false`.
+Monitoring must be external to the delivery branch so an alerting failure cannot create another Teams post. Configure the Power Platform operations monitor to alert immediately when the flow is turned off or suspended, either connector loses authorization, a trigger/action is throttled, or any enabled run fails. After every total 15-minute slot window, reconcile the protected run history and minimized backend state against exactly one of these outcomes: one `sent` receipt for one five-item message, one terminal `delivery_uncertain` receipt, or no claim because every attempt returned `ready=false`.
 
 Use this checklist without exposing the API key, message body, article data, connection token, or raw run inputs/outputs:
 
 1. **Missing `sent` receipt:** if `Exact_five_ready` entered its true branch and `Post_to_Teams` is proven `Succeeded`, but `Receipt_delivery_result` has no successful acknowledgement by the end of the slot window, alert and replay only the receipt request with the original `slotId` and `requestId` obtained through the approved minimized reconciliation view. Never resubmit the Teams action, expose secured action payloads, or rerun the complete flow. If the Teams status is unavailable or ambiguous, record `delivery_uncertain` instead of `sent`.
 2. **`delivery_uncertain`:** alert immediately and treat all five identities as terminally delivered for duplicate prevention. Do not repost, release, or upgrade the receipt. An authorized operator may verify whether the message is visible in the target channel for the incident record, but absence from the current view is not proof that Microsoft never accepted it.
-3. **No exact five:** normal minute attempts may return `ready=false` and retry automatically until the window closes. If no run reaches the full Exact-5 condition during the whole window, record the missed slot and inspect only minimized readiness fields for candidate count, canonical Top-1, score API, durable storage, and configured history mode. Do not weaken the condition, fill fewer than five places, or manually create a message. Escalate repeated missed windows to the System Owner.
+3. **No exact five:** normal minute attempts may return `ready=false` and retry automatically through minute `+14`. If no run reaches the full Exact-5 condition during the whole 15-minute window, `latestSlot.timingState=missed`, `deliveryHealth.ok=false`, and `deliveryHealth.attentionRequired=true` record the missed slot and force top-level `ready=false`; inspect only minimized readiness fields for candidate count, canonical Top-1, score API, durable storage, configured history mode, and recovery configuration. Do not weaken the condition, fill fewer than five places, or manually create a message. Escalate repeated missed windows to the System Owner.
 4. **Connector authorization or suspension:** keep both the scheduled flow and legacy sender from posting while the approved flow owner restores the least-privilege HTTP/Teams connections and clears the suspension. Re-run the flow checker, confirm all secure settings and readiness gates, and resume only for a future slot; do not replay a past scheduled run.
 5. **Unexpected claim owner:** audit both **Meine Flows → Cloud-Flows** and
    **Für mich freigegeben** (tenant labels may appear in English). A shared
@@ -292,7 +315,15 @@ Before saving or enabling the flow, verify all of the following:
 - Teams uses timeout `PT30S` and retry policy `None`.
 - `Receipt_delivery_result` uses timeout `PT30S` and fixed retry count `3` at interval `PT5S`.
 - Recurrence concurrency is `1`.
-- An initial claim is accepted only with at least 30 seconds remaining in its slot window.
+- The trigger condition runs every minute from `+0` through `+14`; the old
+  five-minute condition is not present.
+- `POWER_AUTOMATE_RECOVERY_GRACE_SECONDS=600` and authenticated readiness shows
+  `recovery.enabled=true`, `recovery.configurationValid=true`, and
+  `recovery.graceSeconds=600`.
+- Authenticated readiness shows `deliveryHealth.ok=true` and
+  `deliveryHealth.attentionRequired=false`; missed, uncertain, blocked, or
+  overdue slots force both delivery health and top-level readiness red.
+- An initial claim is accepted only with at least 30 seconds remaining in its total slot window.
 - `Exact_five_ready` checks `ready="yes"`, `contractVersion=2`, `recommendationCount=5`, nonempty `slotId` and `messageHtml`, and all five `Top 1` through `Top 5` markers together.
 - The false branch is empty.
 - `Receipt_delivery_result` carries the original `requestId` and runs after successful, failed, timed-out, and skipped Teams outcomes.
@@ -370,9 +401,19 @@ race the canonical flow.
      python3 -c 'import json,sys; d=json.load(sys.stdin); h=d.get("pushHistory") or {}; x=d.get("exactFive") or {}; s=d.get("durableStorage") or {}; print(json.dumps({"ready":d.get("ready"),"teamsAlertsEnabled":d.get("teamsAlertsEnabled"),"transportMode":d.get("transportMode"),"backgroundSenderEnabled":d.get("backgroundSenderEnabled"),"powerAutomateConfigured":d.get("powerAutomateConfigured"),"durableStorageRequired":s.get("required"),"durableStorageOk":s.get("durable"),"durableStorageMode":s.get("mode"),"scoreApiOk":(d.get("scoreApi") or {}).get("ok"),"exactFiveContractOk":x.get("contractOk"),"exactFiveCount":x.get("recommendationCount"),"top1Canonical":x.get("top1Canonical"),"historyOk":h.get("ok"),"historyRequired":h.get("required"),"historyAuthoritative":h.get("historyAuthoritative"),"fallbackMode":h.get("fallbackMode"),"slotsOk":(d.get("slots") or {}).get("ok"),"plannedToday":(d.get("slots") or {}).get("plannedToday"),"labels":(d.get("slots") or {}).get("labels")},indent=2))'
    ```
 
-   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorage.required=true`, `durableStorage.durable=true`, `durableStorage.mode=persistent_disk`, `scoreApi.ok=true`, `exactFive.contractOk=true`, `exactFive.recommendationCount=5`, `exactFive.top1Canonical=true`, `slots.ok=true`, `slots.plannedToday=12`, and `slots.labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `pushHistory.historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
+   Continue only when `ready=true`, `teamsAlertsEnabled=true`, `transportMode=power_automate_scheduled`, `backgroundSenderEnabled=false`, `powerAutomateConfigured=true`, `durableStorage.required=true`, `durableStorage.durable=true`, `durableStorage.mode=persistent_disk`, `scoreApi.ok=true`, `exactFive.contractOk=true`, `exactFive.recommendationCount=5`, `exactFive.top1Canonical=true`, `recovery.enabled=true`, `recovery.configurationValid=true`, `recovery.graceSeconds=600`, `deliveryHealth.ok=true`, `deliveryHealth.attentionRequired=false`, `slots.ok=true`, `slots.plannedToday=12`, and `slots.labels` exactly matches the 12 slots in this document. The Exact-5 readiness probe uses the same read-only candidate preparation as the claim and creates no slot or article claim. A missing/unwritable persistent disk must stop startup or make the claim return 503; never accept a `/tmp` fallback. `pushHistory.historyAuthoritative=true` is acceptable; when live history is deliberately not required, `historyAuthoritative=false` is acceptable only together with `pushHistory.ok=true`, `pushHistory.required=false`, and `fallbackMode=durable_slot_and_receipt_dedup`. A partial green check is not sufficient.
 
-   `latestSlot.state=sent` with `receiptRecorded=true` proves the latest due slot reached a successful receipt. `delivery_uncertain` requires human reconciliation and must never be retried automatically through Teams. `sending` after the five-minute lease or `unclaimed` after the window indicates a missing receipt or no successful Exact-5 claim and must alert the operator.
+   `latestSlot.state=sent` with `receiptRecorded=true` and
+   `latestSlot.timingState=terminal` proves the latest due slot reached a
+   successful receipt. `delivery_uncertain` is also terminal and must never be
+   retried automatically through Teams. For an unclaimed slot,
+   `timingState=recovery_open` with `recoveryEligible=true` means minute polling
+   can still recover it; `timingState=missed` means the total window expired.
+   `awaiting_receipt` and `overdue_unresolved` indicate an ambiguous claimed
+   group and require reconciliation, never another Teams post.
+   `missed`, `overdue_unresolved`, `delivery_uncertain`, or an unknown/blocked
+   latest state makes `deliveryHealth.ok=false`,
+   `deliveryHealth.attentionRequired=true`, and top-level `ready=false`.
 8. Recheck both Power Automate inventories immediately before activation. The
    legacy instant-webhook flow and every shared/legacy scheduled flow must show
    **Off**. Turn on only the canonical Exact-5 flow and confirm that it is the
@@ -385,6 +426,7 @@ Production state after cutover:
 ```env
 PUSH_TEAMS_ALERTS_ENABLED=true
 PUSH_TEAMS_BACKGROUND_SENDER_ENABLED=false
+POWER_AUTOMATE_RECOVERY_GRACE_SECONDS=600
 POWER_AUTOMATE_API_KEY=<deployment secret; never commit>
 ```
 

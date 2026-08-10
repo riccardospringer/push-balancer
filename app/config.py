@@ -47,6 +47,39 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bounded_int_fail_closed(
+    name: str,
+    *,
+    default: int,
+    maximum: int,
+) -> tuple[int, bool]:
+    """Read a non-negative bounded integer, disabling the feature on errors.
+
+    Unlike ``_env_int``, an explicitly invalid value must not silently expand a
+    delivery window. The boolean lets authenticated readiness report the
+    configuration fault without returning the raw environment value.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return min(max(0, int(default)), max(0, int(maximum))), True
+    if not raw.strip():
+        log.warning("Blank bounded integer env %s; feature disabled", name)
+        return 0, False
+    try:
+        parsed = int(raw.strip())
+    except ValueError:
+        log.warning("Invalid bounded integer env %s; feature disabled", name)
+        return 0, False
+    if parsed < 0 or parsed > maximum:
+        log.warning(
+            "Out-of-range bounded integer env %s; feature disabled (maximum=%s)",
+            name,
+            maximum,
+        )
+        return 0, False
+    return parsed, True
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -548,6 +581,17 @@ if teams_transport_owner_conflict(
 POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY: bool = _env_flag(
     "POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY",
     False,
+)
+# Keep the original five-minute dispatch window and permit only a bounded ten-
+# minute automatic recovery extension. Invalid values disable the extension;
+# they can never widen the window beyond 15 minutes.
+(
+    POWER_AUTOMATE_RECOVERY_GRACE_SECONDS,
+    POWER_AUTOMATE_RECOVERY_CONFIGURATION_VALID,
+) = _env_bounded_int_fail_closed(
+    "POWER_AUTOMATE_RECOVERY_GRACE_SECONDS",
+    default=10 * 60,
+    maximum=10 * 60,
 )
 PUSH_TEAMS_WEBHOOK_URL: str = os.environ.get("PUSH_TEAMS_WEBHOOK_URL", "")
 # Kanonischer Push-Score fuer die Teams-Auswahl. In Produktion (render.yaml)

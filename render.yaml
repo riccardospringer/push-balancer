@@ -86,6 +86,10 @@ services:
       # the claim then fails closed when history is unavailable or stale.
       - key: POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY
         value: "false"
+      # Five-minute primary slot plus a bounded ten-minute recovery window.
+      # Invalid or >600 values disable only the extension (fail closed).
+      - key: POWER_AUTOMATE_RECOVERY_GRACE_SECONDS
+        value: "600"
       - key: POWER_AUTOMATE_API_KEY
         sync: false
       # Nur 🔵 PUSH-EMPFEHLUNGEN im Kanal (User-Vorgabe 2026-08-04):
