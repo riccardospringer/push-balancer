@@ -167,6 +167,38 @@ def test_parse_model_output_rejects_machine_checkable_prohibitions(replacement, 
         prompt_v14.parse_model_output(invalid)
 
 
+def test_parse_model_output_reports_line_two_punctuation_separately():
+    invalid = VALID_OUTPUT.replace(
+        "Pendler zahlen vorerst nicht (28)",
+        "Pendler zahlen vorerst nicht?! (30)",
+    )
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError) as exc_info:
+        prompt_v14.parse_model_output(invalid)
+
+    feedback = str(exc_info.value)
+    assert "variant A line 2 must not use a question" in feedback
+    assert "variant A line 2 must not use an exclamation" in feedback
+    assert "variant A headline must not" not in feedback
+
+
+def test_parse_model_output_reports_punctuation_in_both_fields():
+    invalid = VALID_OUTPUT.replace(
+        "Bund stoppt neue Maut-Regel (27)",
+        "Bund stoppt neue Maut-Regel? (28)",
+    ).replace(
+        "Pendler zahlen vorerst nicht (28)",
+        "Pendler zahlen vorerst nicht! (29)",
+    )
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError) as exc_info:
+        prompt_v14.parse_model_output(invalid)
+
+    feedback = str(exc_info.value)
+    assert "variant A headline must not use a question" in feedback
+    assert "variant A line 2 must not use an exclamation" in feedback
+
+
 def test_parse_model_output_rejects_duplicate_visible_headlines():
     invalid = VALID_OUTPUT.replace(
         "Neue Maut-Regel trifft Pendler (30)",
@@ -175,6 +207,23 @@ def test_parse_model_output_rejects_duplicate_visible_headlines():
 
     with pytest.raises(prompt_v14.PushHeadlinePromptError, match="headlines must be unique"):
         prompt_v14.parse_model_output(invalid)
+
+
+def test_parse_model_output_reports_all_machine_checkable_variant_errors():
+    invalid = VALID_OUTPUT.replace(
+        "Pendler zahlen vorerst nicht (28)",
+        "Zu kurz (8)",
+    ).replace(
+        "Neue Maut-Regel trifft Pendler (30)",
+        "Bund stoppt neue Maut-Regel (27)",
+    )
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError) as exc_info:
+        prompt_v14.parse_model_output(invalid)
+
+    feedback = str(exc_info.value)
+    assert "variant A line 2 is outside 20–35 characters" in feedback
+    assert "the three variant headlines must be unique" in feedback
 
 
 def test_api_response_always_marks_the_limited_button_context():
@@ -236,6 +285,7 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
     monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
     monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_TOKENS", 320)
     monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_TIMEOUT_S", 8.0)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_REASONING_EFFORT", "low")
     monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
     monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
     monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
@@ -253,7 +303,7 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
     assert request["model"] == "gpt-5.6-luna"
     assert request["max_completion_tokens"] == 320
     assert request["extra_body"] == {
-        "reasoning_effort": "none",
+        "reasoning_effort": "low",
         "verbosity": "low",
     }
     assert "max_tokens" not in request
@@ -307,6 +357,60 @@ def test_generate_returns_cvd_escalation_without_fail_open(monkeypatch):
     assert result["alternativeTitles"] == []
     assert result["escalation"] is True
     assert result["meta"]["modus"] == "openai-push-headline-v1.4-escalation"
+    assert create.call_count == 2
+    retry_messages = create.call_args.kwargs["messages"]
+    assert [message["role"] for message in retry_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert retry_messages[2]["content"] == "ESKALATION: CvD-Prüfung erforderlich"
+
+
+def test_generate_retries_first_cvd_escalation_then_returns_three_pairs(monkeypatch):
+    create = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="ESKALATION: CvD-Prüfung erforderlich"
+                        ),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=VALID_OUTPUT),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+        ]
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    result = prompt_v14.generate_push_headline_v14(
+        "Testredaktion beschließt neue Regel",
+        "politik",
+        content_type="editorial",
+    )
+
+    assert result is not None
+    assert result["escalation"] is False
+    assert len(result["variants"]) == 3
+    assert create.call_count == 2
 
 
 def test_generate_rejects_truncated_model_output(monkeypatch):
@@ -338,7 +442,15 @@ def test_generate_rejects_truncated_model_output(monkeypatch):
         )
 
     assert create.call_count == 2
-    assert "KORREKTURLAUF" in create.call_args.kwargs["messages"][1]["content"]
+    retry_messages = create.call_args.kwargs["messages"]
+    assert [message["role"] for message in retry_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "KORREKTURLAUF" in retry_messages[3]["content"]
+    assert retry_messages[2]["content"] == VALID_OUTPUT
 
 
 def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypatch):
@@ -382,11 +494,124 @@ def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypa
     assert len(result["variants"]) == 3
     assert all(item["headline"] and item["line2"] for item in result["variants"])
     assert create.call_count == 2
-    assert "KORREKTURLAUF" in create.call_args.kwargs["messages"][1]["content"]
+    retry_messages = create.call_args.kwargs["messages"]
+    assert [message["role"] for message in retry_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert retry_messages[2]["content"] == "unvollständig"
+    assert "KORREKTURLAUF" in retry_messages[3]["content"]
+    assert "ändere ausschließlich" in retry_messages[3]["content"]
+    assert "drei einzigartige Headlines" in retry_messages[3]["content"]
     assert (
         "stage line does not match the v1.4 contract"
-        in create.call_args.kwargs["messages"][1]["content"]
+        in retry_messages[3]["content"]
     )
+
+
+def test_generate_video_retry_rechecks_video_context_after_other_error(monkeypatch):
+    invalid_first = VALID_OUTPUT.replace(
+        "Pendler zahlen vorerst nicht (28)",
+        "Zu kurz (8)",
+    )
+    valid_video = (
+        VALID_OUTPUT.replace(
+            "Bund stoppt neue Maut-Regel (27)",
+            "Video zeigt neue Maut-Regel (27)",
+        )
+        .replace(
+            "Neue Maut-Regel trifft Pendler (30)",
+            "Aufnahmen zeigen Maut-Folgen (28)",
+        )
+        .replace(
+            "Maut-Stopp entlastet Pendler (28)",
+            "Clip zeigt Entlastung für Pendler (33)",
+        )
+    )
+    create = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=invalid_first),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=valid_video),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+        ]
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    result = prompt_v14.generate_push_headline_v14(
+        "Testredaktion zeigt neue Aufnahmen",
+        "news",
+        content_type="video",
+    )
+
+    assert result is not None
+    assert result["escalation"] is False
+    assert len(result["variants"]) == 3
+    retry_messages = create.call_args.kwargs["messages"]
+    assert "Bei VIDEO muss außerdem jede Headline" in retry_messages[3]["content"]
+
+
+def test_generate_does_not_make_third_call_after_two_invalid_contracts(monkeypatch):
+    create = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="unvollständig"),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="weiterhin unvollständig"),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+        ]
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError, match="stage line"):
+        prompt_v14.generate_push_headline_v14(
+            "Testredaktion beschließt neue Regel",
+            "politik",
+            content_type="editorial",
+        )
+
+    assert create.call_count == 2
 
 
 def test_generate_stays_local_when_either_opt_in_is_off(monkeypatch):

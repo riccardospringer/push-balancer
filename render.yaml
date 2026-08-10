@@ -222,12 +222,13 @@ services:
         value: gpt-5.6-luna
       # Harter Zeitrahmen fuer den interaktiven Button-Pfad.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "8.0"
-      # Jeder Titel erscheint nur einmal im kompakten Modell-JSON.
+        value: "15.0"
+      # Einschliesslich des kleinen Reasoning-Budgets und des kompakten
+      # v1.4-Outputs mit drei vollstaendigen Headline-/Zeile-2-Paaren.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
-        value: "600"
+        value: "1000"
       - key: OPENAI_TITLE_GENERATION_REASONING_EFFORT
-        value: none
+        value: low
       # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.
       - key: OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR
         value: "60"
