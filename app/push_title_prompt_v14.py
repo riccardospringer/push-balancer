@@ -239,6 +239,7 @@ def parse_model_output(raw: str) -> PushHeadlineResult:
 
     cursor = 1
     variants: list[PushHeadlineVariant] = []
+    validation_errors: list[str] = []
     for expected_identifier in ("A", "B", "C"):
         if cursor + 2 >= len(lines):
             raise PushHeadlinePromptError("model returned fewer than three variants")
@@ -253,21 +254,31 @@ def parse_model_output(raw: str) -> PushHeadlineResult:
             lines[cursor + 2], field_name=f"variant {expected_identifier} line 2"
         )
         if not 25 <= len(headline) <= 45:
-            raise PushHeadlinePromptError(
+            validation_errors.append(
                 f"variant {expected_identifier} headline is outside 25–45 characters"
             )
         if not 20 <= len(line2) <= 35:
-            raise PushHeadlinePromptError(
+            validation_errors.append(
                 f"variant {expected_identifier} line 2 is outside 20–35 characters"
             )
-        if "?" in headline or "？" in headline or "?" in line2 or "？" in line2:
-            raise PushHeadlinePromptError(f"variant {expected_identifier} must not use a question")
-        if "!" in headline or "！" in headline or "!" in line2 or "！" in line2:
-            raise PushHeadlinePromptError(
+        if "?" in headline or "？" in headline:
+            validation_errors.append(
+                f"variant {expected_identifier} headline must not use a question"
+            )
+        if "?" in line2 or "？" in line2:
+            validation_errors.append(
+                f"variant {expected_identifier} line 2 must not use a question"
+            )
+        if "!" in headline or "！" in headline:
+            validation_errors.append(
                 f"variant {expected_identifier} headline must not use an exclamation"
             )
+        if "!" in line2 or "！" in line2:
+            validation_errors.append(
+                f"variant {expected_identifier} line 2 must not use an exclamation"
+            )
         if _FORBIDDEN_HEADLINE_PREFIX_RE.match(headline):
-            raise PushHeadlinePromptError(
+            validation_errors.append(
                 f"variant {expected_identifier} headline uses a forbidden prefix"
             )
         variants.append(
@@ -282,11 +293,11 @@ def parse_model_output(raw: str) -> PushHeadlineResult:
 
     structure_types = {variant.structure_type for variant in variants}
     if len(structure_types) != 3 or not structure_types.issubset(_ALLOWED_TYPES):
-        raise PushHeadlinePromptError("the three variants need three different structure types")
+        validation_errors.append("the three variants need three different structure types")
     if stage == 1 and "OFFENE IMPLIKATION" in structure_types:
-        raise PushHeadlinePromptError("stage 1 must not use OFFENE IMPLIKATION")
+        validation_errors.append("stage 1 must not use OFFENE IMPLIKATION")
     if len({variant.headline.casefold() for variant in variants}) != 3:
-        raise PushHeadlinePromptError("the three variant headlines must be unique")
+        validation_errors.append("the three variant headlines must be unique")
 
     if cursor >= len(lines):
         raise PushHeadlinePromptError("recommendation line is missing")
@@ -299,6 +310,8 @@ def parse_model_output(raw: str) -> PushHeadlineResult:
         raise PushHeadlinePromptError("recommendation reason is missing")
 
     review_point = " ".join(lines[cursor + 1 :]).strip()
+    if validation_errors:
+        raise PushHeadlinePromptError("; ".join(validation_errors))
     return PushHeadlineResult(
         stage=stage,
         stage_reason=stage_reason,
@@ -368,6 +381,7 @@ def _request_messages(
     content_type: str,
     now: datetime | None,
     retry_feedback: str,
+    previous_output: str,
 ) -> list[dict[str, str]]:
     user_prompt = build_user_prompt(
         title,
@@ -375,18 +389,49 @@ def _request_messages(
         content_type=content_type,
         now=now,
     )
-    if retry_feedback:
-        user_prompt = (
-            f"{user_prompt}\n\n"
-            "KORREKTURLAUF: Die erste Ausgabe verletzte den maschinenlesbaren "
-            "v1.4-Vertrag. Erzeuge den exakten vollständigen Output erneut: "
-            "genau A, B und C mit jeweils Headline und Zeile 2 samt korrekten "
-            f"Zeichenzahlen. Konkreter Verstoß: {retry_feedback}."
-        )
-    return [
+    messages = [
         {"role": "system", "content": load_system_prompt()},
         {"role": "user", "content": user_prompt},
     ]
+    if retry_feedback:
+        video_check = (
+            " Bei VIDEO muss außerdem jede Headline den Video-Kontext mit Video, "
+            "Aufnahmen oder Clip sichtbar machen."
+            if content_type == "video"
+            else ""
+        )
+        if previous_output:
+            # Preserve the failed response only in memory so the single
+            # correction attempt can repair every already-generated field.
+            # The provider response is bounded and is never logged or stored.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": previous_output.strip()[:6000],
+                }
+            )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "KORREKTURLAUF: Die vorherige Ausgabe verletzte den "
+                    "maschinenlesbaren v1.4-Vertrag. Korrigiere diese Ausgabe "
+                    "vollständig: genau A, B und C mit jeweils Headline und "
+                    "Zeile 2 samt Zeichenzahlen. Wenn A, B und C bereits "
+                    "vorhanden sind, ändere ausschließlich die im konkreten "
+                    "Verstoß genannten Felder und lasse alle anderen Headline- "
+                    "und Zeile-2-Texte exakt unverändert, sofern sie alle "
+                    "nachfolgenden Regeln erfüllen. Prüfe vor der Ausgabe noch "
+                    "einmal: tatsächliche Längen 25–45 und 20–35, drei "
+                    "einzigartige Headlines, drei verschiedene Strukturtypen, "
+                    "keine Frage, kein Ausrufezeichen und kein verbotener "
+                    f"Präfix.{video_check} Gib ausschließlich den korrigierten "
+                    "vollständigen v1.4-Output aus. "
+                    f"Konkreter Verstoß: {retry_feedback}."
+                ),
+            }
+        )
+    return messages
 
 
 def _to_api_response(
@@ -546,6 +591,7 @@ def generate_push_headline_v14(
     model = resolve_title_generation_model(config.OPENAI_TITLE_GENERATION_MODEL)
     token_argument = _completion_token_argument(model)
     last_error: Exception | None = None
+    last_raw = ""
     for attempt in range(2):
         if not _claim_call_budget():
             return build_push_headline_escalation(
@@ -566,6 +612,7 @@ def generate_push_headline_v14(
                     if isinstance(last_error, PushHeadlinePromptError)
                     else ("Provider-Aufruf fehlgeschlagen" if last_error else "")
                 ),
+                previous_output=last_raw,
             ),
             "timeout": config.OPENAI_TITLE_GENERATION_TIMEOUT_S,
             "store": False,
@@ -579,22 +626,31 @@ def generate_push_headline_v14(
                 "verbosity": "low",
             }
 
+        raw = ""
         try:
             completion = _get_openai_client().chat.completions.create(**request)
             choice = completion.choices[0]
+            raw = choice.message.content or ""
             if getattr(choice, "finish_reason", "stop") != "stop":
                 raise PushHeadlinePromptError("model response did not finish cleanly")
-            raw = choice.message.content
-            if (raw or "").strip() == "ESKALATION: CvD-Prüfung erforderlich":
+            if raw.strip() == "ESKALATION: CvD-Prüfung erforderlich":
+                if attempt == 0:
+                    last_raw = raw
+                    last_error = PushHeadlinePromptError(
+                        "model requested escalation before the correction attempt"
+                    )
+                    continue
                 return build_push_headline_escalation(
                     title,
                     content_type=content_type,
                     model=model,
                 )
-            parsed = parse_model_output(raw or "")
+            parsed = parse_model_output(raw)
             return _to_api_response(parsed, model=model, content_type=content_type)
         except Exception as exc:
             last_error = exc
+            if raw:
+                last_raw = raw
             if attempt == 1:
                 raise
 
