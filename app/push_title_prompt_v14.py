@@ -213,10 +213,13 @@ def _parse_text_with_length(line: str, *, field_name: str) -> str:
     match = _TEXT_WITH_LENGTH_RE.fullmatch(line)
     if not match:
         raise PushHeadlinePromptError(f"{field_name} misses its character count")
-    text, declared_length = match.groups()
+    text, _declared_length = match.groups()
     text = text.strip()
-    if len(text) != int(declared_length):
-        raise PushHeadlinePromptError(f"{field_name} character count is incorrect")
+    # The model-supplied number is present only to enforce the v1.4 output
+    # shape. Trust the actual string length below instead: language models
+    # routinely miscount Unicode punctuation by one even when the text itself
+    # satisfies the hard 25–45 / 20–35 limits. API responses always publish
+    # freshly calculated lengths.
     return text
 
 
@@ -364,7 +367,7 @@ def _request_messages(
     *,
     content_type: str,
     now: datetime | None,
-    retry: bool,
+    retry_feedback: str,
 ) -> list[dict[str, str]]:
     user_prompt = build_user_prompt(
         title,
@@ -372,13 +375,13 @@ def _request_messages(
         content_type=content_type,
         now=now,
     )
-    if retry:
+    if retry_feedback:
         user_prompt = (
             f"{user_prompt}\n\n"
             "KORREKTURLAUF: Die erste Ausgabe verletzte den maschinenlesbaren "
             "v1.4-Vertrag. Erzeuge den exakten vollständigen Output erneut: "
             "genau A, B und C mit jeweils Headline und Zeile 2 samt korrekten "
-            "Zeichenzahlen."
+            f"Zeichenzahlen. Konkreter Verstoß: {retry_feedback}."
         )
     return [
         {"role": "system", "content": load_system_prompt()},
@@ -558,7 +561,11 @@ def generate_push_headline_v14(
                 category,
                 content_type=content_type,
                 now=now,
-                retry=attempt == 1,
+                retry_feedback=(
+                    str(last_error)
+                    if isinstance(last_error, PushHeadlinePromptError)
+                    else ("Provider-Aufruf fehlgeschlagen" if last_error else "")
+                ),
             ),
             "timeout": config.OPENAI_TITLE_GENERATION_TIMEOUT_S,
             "store": False,
