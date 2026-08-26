@@ -509,7 +509,8 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
 
 - Purpose: restore the existing on-demand `/headline` editorial-support command
   when Microsoft Teams wraps the supplied CMS ID in command text or HTML, and
-  allow an exact lookup anywhere in the current public BILD news sitemap.
+  allow an exact lookup anywhere in the current public BILD news sitemap. The
+  same guard also prevents a posted bot result from invoking the flow again.
 - Data categories: the existing command field containing one CMS document ID
   plus bounded Teams transport markup; existing public article title, URL and
   category; generated advisory headline variants. No user identifier, reader
@@ -526,10 +527,16 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
   the request model; transport markup is not forwarded to the title provider.
 - Retention / deletion: no new persistence, cache or log field. Responses remain
   `no-store`; command wrappers and generated results are request-scoped only.
-- Safeguards: 4,096-character input bound, exactly-one-ID extraction, ambiguous
-  input rejection, no raw-payload logging, full-sitemap lookup only for the
-  requested ID, advisory output and unchanged human review. The Power Automate
-  flow, scheduled Teams transport and score paths are not modified.
+- Safeguards: 4,096-character input bound; acceptance only of one bare CMS ID
+  or one complete `/headline <ID>` command; rejection of bot responses and all
+  other surrounding text before lookup or generation; fixed response headings
+  and failure labels avoid the known Teams trigger word while exact-command
+  validation remains the authoritative recursion guard for generated copy; no
+  raw-payload logging; full-sitemap lookup only for the requested ID; advisory
+  output and unchanged human review.
+  The existing headline flow forwards only its one command's plain text. The
+  separate scheduled Teams transport, claim/receipt and score paths are not
+  modified.
 - Required documentation / approvals: no new purpose, data category, provider,
   recipient or transfer is introduced. Product/System Owner and Privacy Manager
   should record the compatibility fix; reassessment is required before accepting
