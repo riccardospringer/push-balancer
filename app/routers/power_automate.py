@@ -70,8 +70,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _BERLIN = ZoneInfo("Europe/Berlin")
-_HEADLINE_COMMAND_ARTICLE_ID_RE = re.compile(
-    r"(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])",
+_HEADLINE_ARTICLE_ID_RE = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
+_HEADLINE_COMMAND_RE = re.compile(
+    r"^/headline\s+([0-9a-f]{24})$",
     re.IGNORECASE,
 )
 # Backwards-compatible weekday alias for existing imports.
@@ -451,16 +452,22 @@ class PowerAutomateHeadlineRequest(BaseModel):
     @field_validator("articleId")
     @classmethod
     def validate_article_id(cls, value: str) -> str:
-        # Teams message details can wrap the slash command in HTML. Accept the
-        # existing articleId field in that transport form, but retain exactly
-        # one CMS ID and reject ambiguous payloads.
-        matches = {
-            match.group(1).casefold()
-            for match in _HEADLINE_COMMAND_ARTICLE_ID_RE.finditer(html.unescape(value))
-        }
-        if len(matches) != 1:
-            raise ValueError("articleId must contain exactly one 24-character CMS ID")
-        return matches.pop()
+        # Direct callers may send one bare CMS ID. The Teams flow sends the
+        # original message text, which can be wrapped in simple connector HTML.
+        # Require that transport form to be the complete slash command so a
+        # bot response containing the same ID cannot recursively invoke the
+        # generator again.
+        unescaped = html.unescape(value)
+        plain_text = re.sub(r"<[^>]*>", " ", unescaped)
+        plain_text = re.sub(r"\s+", " ", plain_text).strip()
+        if _HEADLINE_ARTICLE_ID_RE.fullmatch(plain_text):
+            return plain_text.casefold()
+        command = _HEADLINE_COMMAND_RE.fullmatch(plain_text)
+        if command is None:
+            raise ValueError(
+                "articleId must be one CMS ID or one complete /headline command"
+            )
+        return command.group(1).casefold()
 
 
 def _headline_article_context(article_id: str) -> dict[str, str] | None:
@@ -546,7 +553,10 @@ def _headline_message_html(
     level = int(result.get("stage") or 2)
     level_reason = html.escape(str(result.get("stageReason") or "").strip())
     parts = [
-        "<h2>Headline-Vorschläge</h2>",
+        # Avoid the known Teams keyword in our fixed heading. Generated copy is
+        # intentionally left untouched; exact-command request validation above
+        # is the authoritative recursion guard if it contains that word.
+        "<h2>Titelvorschläge</h2>",
         f"<p><strong>Artikel:</strong> <a href=\"{html.escape(article_url, quote=True)}\">{html.escape(article_id)}</a></p>",
         f"<p><strong>Stufe {level}</strong>{' · ' + level_reason if level_reason else ''}</p>",
     ]
@@ -1436,7 +1446,7 @@ def generate_power_automate_teams_headlines(
                 "ready": False,
                 "reason": "headline_generator_unavailable",
                 "messageHtml": (
-                    "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+                    "<p><strong>Titelgenerator gerade nicht verfügbar.</strong><br>"
                     "Bitte den Befehl später erneut senden.</p>"
                 ),
             },

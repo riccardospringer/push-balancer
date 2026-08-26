@@ -1186,7 +1186,8 @@ def test_headline_command_returns_three_v14_pairs(monkeypatch):
         "headline": "Bund startet neues Hilfspaket",
         "line2": "Ab Montag gilt die neue Hilfe",
     }
-    assert "Headline-Vorschläge" in payload["messageHtml"]
+    assert "Titelvorschläge" in payload["messageHtml"]
+    assert "Headline-Vorschläge" not in payload["messageHtml"]
     assert "bitte vor Versand prüfen" in payload["messageHtml"]
 
 
@@ -1238,7 +1239,7 @@ def test_headline_command_fails_closed_for_incomplete_v14_pairs(
         "ready": False,
         "reason": "headline_generator_unavailable",
         "messageHtml": (
-            "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+            "<p><strong>Titelgenerator gerade nicht verfügbar.</strong><br>"
             "Bitte den Befehl später erneut senden.</p>"
         ),
     }
@@ -1283,7 +1284,7 @@ def test_headline_command_keeps_generic_flow_response_for_timeout(
         "ready": False,
         "reason": "headline_generator_unavailable",
         "messageHtml": (
-            "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+            "<p><strong>Titelgenerator gerade nicht verfügbar.</strong><br>"
             "Bitte den Befehl später erneut senden.</p>"
         ),
     }
@@ -1341,6 +1342,40 @@ def test_headline_command_rejects_ambiguous_teams_content(monkeypatch):
             "articleId": (
                 "/headline 0123456789abcdef01234567 "
                 "fedcba987654321001234567"
+            )
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_headline_command_rejects_bot_response_with_one_article_id(monkeypatch):
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={
+            "articleId": (
+                "<h2>Titelvorschläge</h2><p>Artikel: "
+                "0123456789abcdef01234567</p>"
+            )
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_headline_command_rejects_trigger_word_in_bot_response(monkeypatch):
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+
+    response = client.post(
+        "/api/v1/power-automate/teams/headline",
+        headers=HEADERS,
+        json={
+            "articleId": (
+                "<p><strong>Headline-Generator gerade nicht verfügbar.</strong>"
+                " Artikel 0123456789abcdef01234567</p>"
             )
         },
     )
