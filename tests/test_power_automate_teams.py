@@ -1244,6 +1244,53 @@ def test_headline_command_fails_closed_for_incomplete_v14_pairs(
     }
 
 
+def test_headline_command_keeps_generic_flow_response_for_timeout(
+    monkeypatch,
+    caplog,
+):
+    import app.routers.power_automate as power_automate
+    from app.push_title_prompt_v14 import PushHeadlineGenerationError
+
+    monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
+    monkeypatch.setattr(
+        power_automate,
+        "_headline_article_context",
+        lambda _article_id: {
+            "url": "https://www.bild.de/politik/synthetischer-artikel",
+            "title": "Synthetic private headline marker",
+            "text": "",
+            "category": "politik",
+        },
+    )
+
+    def fail_generation(**_kwargs):
+        raise PushHeadlineGenerationError("timeout", attempts=1)
+
+    monkeypatch.setattr(
+        "app.push_title_prompt_v14.generate_push_headline_v14",
+        fail_generation,
+    )
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            "/api/v1/power-automate/teams/headline",
+            headers=HEADERS,
+            json={"articleId": "0123456789abcdef01234567"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "reason": "headline_generator_unavailable",
+        "messageHtml": (
+            "<p><strong>Headline-Generator gerade nicht verfügbar.</strong><br>"
+            "Bitte den Befehl später erneut senden.</p>"
+        ),
+    }
+    assert "failure_class=timeout" in caplog.text
+    assert "Synthetic private headline marker" not in caplog.text
+
+
 def test_headline_command_requires_auth_and_rejects_invalid_ids(monkeypatch):
     monkeypatch.setattr(auth.config, "POWER_AUTOMATE_API_KEY", POWER_AUTOMATE_KEY)
 

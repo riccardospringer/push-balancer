@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import html
 import json
+import logging
 import math
 import re
 import time
@@ -66,6 +67,7 @@ from app.teams_slot_claims import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 _HEADLINE_COMMAND_ARTICLE_ID_RE = re.compile(
@@ -1395,21 +1397,40 @@ def generate_power_automate_teams_headlines(
             headers=_NO_STORE_HEADERS,
         )
 
-    from app.push_title_prompt_v14 import generate_push_headline_v14
+    from app.push_title_prompt_v14 import (
+        classify_generation_failure,
+        generate_push_headline_v14,
+    )
     from app.push_titles import infer_content_type
 
+    failure_class = "unknown"
     try:
         result = generate_push_headline_v14(
             title=context["title"],
             category=context.get("category", "news"),
             content_type=infer_content_type(context["url"], context["title"]),
         )
-    except Exception:
+    except Exception as exc:
+        failure_class = classify_generation_failure(exc)
         result = None
+    if result is None and failure_class == "unknown":
+        failure_class = "disabled"
+    if isinstance(result, dict) and result.get("escalation") is True:
+        meta = result.get("meta")
+        if isinstance(meta, dict):
+            candidate_failure_class = meta.get("failure_class")
+            if candidate_failure_class in {"escalation", "budget"}:
+                failure_class = candidate_failure_class
     if not isinstance(result, dict) or result.get("escalation") is True:
         result = {}
     candidates = _headline_candidates(result)
     if len(candidates) < 3:
+        if failure_class == "unknown":
+            failure_class = "contract"
+        logger.warning(
+            "power_automate_headline_unavailable failure_class=%s",
+            failure_class,
+        )
         return JSONResponse(
             content={
                 "ready": False,

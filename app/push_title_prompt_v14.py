@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 import hashlib
+import json
+import logging
 from pathlib import Path
 import re
 from threading import Lock
@@ -25,7 +27,7 @@ from app.title_generation_model import resolve_title_generation_model
 SOURCE_PROMPT_VERSION = "1.4"
 SOURCE_PROMPT_SHA256 = "498f24582d23a0343741db9c1bde258782701f718120b8a6765de4a781edb2fd"
 PROMPT_VERSION = SOURCE_PROMPT_VERSION
-RUNTIME_PROFILE = "button-limited-context"
+RUNTIME_PROFILE = "button-limited-context-structured-v1"
 _PROMPT_PATH = Path(__file__).with_name("prompts") / "push_headline_v1_4.md"
 _REQUIRED_PROMPT_SECTIONS = tuple(f"# [{number}]" for number in range(6))
 _RUNTIME_INSTRUCTIONS = """# BUTTON-RUNTIME — VERBINDLICHE AUSFÜHRUNG
@@ -52,6 +54,19 @@ Button-Aufruf gilt:
 
 Außer dem exakten Generator-Output oder der exakten Eskalationszeile gibst du
 nichts aus.
+"""
+_STRUCTURED_TRANSPORT_INSTRUCTIONS = """# STRUKTURIERTER TRANSPORT — VERBINDLICH
+
+Der vollständige Prompt v1.4 und der BUTTON-RUNTIME bleiben semantisch
+unverändert verbindlich. Ausschließlich die technische Ausgabeform wird durch
+das vom Server vorgegebene JSON-Schema ersetzt: variant_a, variant_b und
+variant_c entsprechen A, B und C. Gib keine zusätzlichen Schlüssel oder Texte
+aus. Der Server rekonstruiert daraus vor der verbindlichen Prüfung den exakten
+v1.4-Generator-Output. Zeichenzahlen werden vom Server berechnet und dürfen
+nicht als Text an headline oder line2 angehängt werden. Setze escalation nur
+dann auf true, wenn auch nach der internen Prüfung keine regelkonformen
+Varianten möglich sind. Bei escalation=true müssen alle anderen Schemafelder
+null sein; bei escalation=false müssen sie vollständig befüllt sein.
 """
 
 _ALLOWED_TYPES = {"FAKT", "BETROFFENHEIT", "FOLGE", "OFFENE IMPLIKATION"}
@@ -86,6 +101,55 @@ _FORBIDDEN_HEADLINE_PREFIX_RE = re.compile(
     r"regional|reise|sport|unterhaltung|wirtschaft)\s*:",
     re.IGNORECASE,
 )
+_CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+_STRUCTURED_VARIANT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "structure_type": {
+            "type": "string",
+            "enum": ["FAKT", "BETROFFENHEIT", "FOLGE", "OFFENE IMPLIKATION"],
+        },
+        "headline": {"type": "string", "minLength": 25, "maxLength": 45},
+        "line2": {"type": "string", "minLength": 20, "maxLength": 35},
+    },
+    "required": ["structure_type", "headline", "line2"],
+    "additionalProperties": False,
+}
+
+
+def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+_STRUCTURED_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "stage": _nullable_schema({"type": "integer", "enum": [1, 2, 3]}),
+        "stage_reason": _nullable_schema({"type": "string", "minLength": 1}),
+        "variant_a": _nullable_schema(_STRUCTURED_VARIANT_SCHEMA),
+        "variant_b": _nullable_schema(_STRUCTURED_VARIANT_SCHEMA),
+        "variant_c": _nullable_schema(_STRUCTURED_VARIANT_SCHEMA),
+        "recommendation": _nullable_schema({"type": "string", "enum": ["A", "B", "C"]}),
+        "recommendation_reason": _nullable_schema({"type": "string", "minLength": 1}),
+        "review_point": _nullable_schema({"type": "string"}),
+        "escalation": {"type": "boolean"},
+    },
+    "required": [
+        "stage",
+        "stage_reason",
+        "variant_a",
+        "variant_b",
+        "variant_c",
+        "recommendation",
+        "recommendation_reason",
+        "review_point",
+        "escalation",
+    ],
+    "additionalProperties": False,
+}
+
+logger = logging.getLogger(__name__)
 
 _OPENAI_CLIENT: Any | None = None
 _OPENAI_CLIENT_KEY = ""
@@ -95,6 +159,19 @@ _CALL_TIMESTAMPS: deque[float] = deque()
 
 class PushHeadlinePromptError(ValueError):
     """Raised when the model response violates the v1.4 output contract."""
+
+
+class _RetryableHeadlineEscalation(PushHeadlinePromptError):
+    """Allow one bounded correction when the model escalates prematurely."""
+
+
+class PushHeadlineGenerationError(RuntimeError):
+    """Expose only a fixed operational failure class to callers and logs."""
+
+    def __init__(self, failure_class: str, *, attempts: int) -> None:
+        self.failure_class = failure_class
+        self.attempts = attempts
+        super().__init__(f"push headline generation failed: {failure_class}")
 
 
 @dataclass(frozen=True)
@@ -147,7 +224,10 @@ def load_system_prompt() -> str:
     if source.count("{{ REGELVERTRAG }}") != 3:
         raise RuntimeError(f"Prompt v{PROMPT_VERSION} must contain three rule placeholders")
     assembled = source.replace("{{ REGELVERTRAG }}", rules)
-    return f"{assembled}\n\n---\n\n{_RUNTIME_INSTRUCTIONS}"
+    return (
+        f"{assembled}\n\n---\n\n{_RUNTIME_INSTRUCTIONS}"
+        f"\n\n---\n\n{_STRUCTURED_TRANSPORT_INSTRUCTIONS}"
+    )
 
 
 def _compact(value: str, max_chars: int) -> str:
@@ -374,6 +454,185 @@ def _completion_token_argument(model: str) -> str:
     return "max_tokens"
 
 
+def _provider_status_code(exc: Exception) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return status_code if 100 <= status_code <= 599 else None
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int) and not isinstance(response_status, bool):
+        return response_status if 100 <= response_status <= 599 else None
+    return None
+
+
+def classify_generation_failure(exc: Exception) -> str:
+    """Map arbitrary provider errors to a non-sensitive fixed taxonomy."""
+    if isinstance(exc, PushHeadlineGenerationError):
+        return exc.failure_class
+    if isinstance(exc, _RetryableHeadlineEscalation):
+        return "escalation"
+    if isinstance(exc, PushHeadlinePromptError):
+        return "contract"
+
+    status_code = _provider_status_code(exc)
+    class_name = type(exc).__name__.casefold()
+    if status_code in {401, 403} or "authentication" in class_name:
+        return "auth"
+    if status_code == 429 or "ratelimit" in class_name:
+        return "rate_limit"
+    if isinstance(exc, TimeoutError) or "timeout" in class_name:
+        return "timeout"
+    if "connection" in class_name or status_code is not None:
+        return "provider"
+    return "unknown"
+
+
+def _safe_finish_reason(value: Any) -> str:
+    reason = str(value or "").casefold()
+    if reason in {"stop", "length", "content_filter", "tool_calls", "function_call"}:
+        return reason
+    return "other"
+
+
+def _structured_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "push_headline_v14",
+            "strict": True,
+            "schema": _STRUCTURED_OUTPUT_SCHEMA,
+        },
+    }
+
+
+def _clean_structured_text(
+    value: Any,
+    *,
+    field_name: str,
+    allow_empty: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        raise PushHeadlinePromptError(f"{field_name} must be text")
+    if value != value.strip():
+        raise PushHeadlinePromptError(f"{field_name} has surrounding whitespace")
+    if _CONTROL_CHARACTER_RE.search(value):
+        raise PushHeadlinePromptError(f"{field_name} contains a control character")
+    if not allow_empty and not value:
+        raise PushHeadlinePromptError(f"{field_name} must not be empty")
+    return value
+
+
+def _structured_retry_payload(raw: str) -> str:
+    """Keep only known JSON fields for the one in-memory correction attempt."""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    filtered: dict[str, Any] = {}
+    for key in (
+        "stage",
+        "stage_reason",
+        "recommendation",
+        "recommendation_reason",
+        "review_point",
+        "escalation",
+    ):
+        value = data.get(key)
+        if value is None or isinstance(value, (str, int, bool)):
+            filtered[key] = value
+    for key in ("variant_a", "variant_b", "variant_c"):
+        value = data.get(key)
+        if value is None:
+            filtered[key] = None
+        elif isinstance(value, dict):
+            filtered[key] = {
+                field: value.get(field)
+                for field in ("structure_type", "headline", "line2")
+                if value.get(field) is None or isinstance(value.get(field), str)
+            }
+    encoded = json.dumps(filtered, ensure_ascii=False, separators=(",", ":"))
+    return encoded if len(encoded) <= 6000 else ""
+
+
+def parse_structured_model_output(raw: str) -> PushHeadlineResult | None:
+    """Decode strict JSON and re-run the existing authoritative v1.4 checks."""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise PushHeadlinePromptError("structured output is invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise PushHeadlinePromptError("structured output root must be an object")
+
+    expected_fields = set(_STRUCTURED_OUTPUT_SCHEMA["required"])
+    if set(data) != expected_fields:
+        raise PushHeadlinePromptError("structured output fields do not match the schema")
+    if not isinstance(data["escalation"], bool):
+        raise PushHeadlinePromptError("structured escalation flag must be boolean")
+
+    generation_fields = expected_fields - {"escalation"}
+    if data["escalation"] is True:
+        if any(data[field] is not None for field in generation_fields):
+            raise PushHeadlinePromptError("structured escalation fields must all be null")
+        return None
+    if any(data[field] is None for field in generation_fields):
+        raise PushHeadlinePromptError("structured generation fields must not be null")
+
+    stage = data["stage"]
+    if not isinstance(stage, int) or isinstance(stage, bool) or stage not in {1, 2, 3}:
+        raise PushHeadlinePromptError("structured stage is invalid")
+    stage_reason = _clean_structured_text(data["stage_reason"], field_name="stage reason")
+    recommendation = data["recommendation"]
+    if recommendation not in {"A", "B", "C"}:
+        raise PushHeadlinePromptError("structured recommendation is invalid")
+    recommendation_reason = _clean_structured_text(
+        data["recommendation_reason"], field_name="recommendation reason"
+    )
+    review_point = _clean_structured_text(
+        data["review_point"], field_name="review point", allow_empty=True
+    )
+
+    rows: list[str] = []
+    for field, identifier in (
+        ("variant_a", "A"),
+        ("variant_b", "B"),
+        ("variant_c", "C"),
+    ):
+        variant = data[field]
+        if not isinstance(variant, dict) or set(variant) != {
+            "structure_type",
+            "headline",
+            "line2",
+        }:
+            raise PushHeadlinePromptError(f"structured variant {identifier} is invalid")
+        structure_type = variant["structure_type"]
+        if structure_type not in _ALLOWED_TYPES:
+            raise PushHeadlinePromptError(f"structured variant {identifier} type is invalid")
+        headline = _clean_structured_text(
+            variant["headline"], field_name=f"variant {identifier} headline"
+        )
+        line2 = _clean_structured_text(variant["line2"], field_name=f"variant {identifier} line 2")
+        rows.extend(
+            [
+                f"{identifier} — {structure_type}",
+                f"{headline} ({len(headline)})",
+                f"{line2} ({len(line2)})",
+            ]
+        )
+
+    rendered = "\n".join(
+        [
+            f"Stufe {stage} · {stage_reason}",
+            *rows,
+            f"→ {recommendation}. {recommendation_reason}",
+            review_point,
+        ]
+    )
+    return parse_model_output(rendered)
+
+
 def _request_messages(
     title: str,
     category: str,
@@ -401,13 +660,13 @@ def _request_messages(
             else ""
         )
         if previous_output:
-            # Preserve the failed response only in memory so the single
+            # Preserve only allowlisted JSON fields in memory so the single
             # correction attempt can repair every already-generated field.
-            # The provider response is bounded and is never logged or stored.
+            # The bounded payload is never logged or stored.
             messages.append(
                 {
                     "role": "assistant",
-                    "content": previous_output.strip()[:6000],
+                    "content": previous_output,
                 }
             )
         messages.append(
@@ -415,9 +674,9 @@ def _request_messages(
                 "role": "user",
                 "content": (
                     "KORREKTURLAUF: Die vorherige Ausgabe verletzte den "
-                    "maschinenlesbaren v1.4-Vertrag. Korrigiere diese Ausgabe "
-                    "vollständig: genau A, B und C mit jeweils Headline und "
-                    "Zeile 2 samt Zeichenzahlen. Wenn A, B und C bereits "
+                    "maschinenlesbaren v1.4-Vertrag. Korrigiere das JSON "
+                    "vollständig: genau variant_a, variant_b und variant_c mit "
+                    "jeweils Headline und Zeile 2. Wenn alle Varianten bereits "
                     "vorhanden sind, ändere ausschließlich die im konkreten "
                     "Verstoß genannten Felder und lasse alle anderen Headline- "
                     "und Zeile-2-Texte exakt unverändert, sofern sie alle "
@@ -425,8 +684,8 @@ def _request_messages(
                     "einmal: tatsächliche Längen 25–45 und 20–35, drei "
                     "einzigartige Headlines, drei verschiedene Strukturtypen, "
                     "keine Frage, kein Ausrufezeichen und kein verbotener "
-                    f"Präfix.{video_check} Gib ausschließlich den korrigierten "
-                    "vollständigen v1.4-Output aus. "
+                    f"Präfix.{video_check} Gib ausschließlich das korrigierte "
+                    "vollständige JSON gemäß Schema aus. "
                     f"Konkreter Verstoß: {retry_feedback}."
                 ),
             }
@@ -535,6 +794,7 @@ def build_push_headline_escalation(
     content_type: str,
     model: str | None = None,
     reason: str = "Die vollständige v1.4-Prüfung wurde nicht bestanden.",
+    failure_class: str = "escalation",
 ) -> dict[str, Any]:
     """Return the unchanged source title without fail-open alternatives."""
     source_title = _compact(title, 500)
@@ -571,6 +831,7 @@ def build_push_headline_escalation(
             "source_prompt_version": SOURCE_PROMPT_VERSION,
             "source_prompt_sha256": SOURCE_PROMPT_SHA256,
             "runtime_profile": RUNTIME_PROFILE,
+            "failure_class": failure_class,
             "anzahl_kandidaten": 0,
             "analyse": {"pruefpunkt": review_point},
         },
@@ -590,15 +851,21 @@ def generate_push_headline_v14(
 
     model = resolve_title_generation_model(config.OPENAI_TITLE_GENERATION_MODEL)
     token_argument = _completion_token_argument(model)
-    last_error: Exception | None = None
-    last_raw = ""
+    last_error: PushHeadlinePromptError | None = None
+    last_structured_payload = ""
+    total_timeout = max(float(config.OPENAI_TITLE_GENERATION_TIMEOUT_S), 1.0)
+    deadline = time.monotonic() + total_timeout
     for attempt in range(2):
+        remaining_timeout = deadline - time.monotonic()
+        if remaining_timeout < 1.0:
+            raise PushHeadlineGenerationError("timeout", attempts=attempt) from last_error
         if not _claim_call_budget():
             return build_push_headline_escalation(
                 title,
                 content_type=content_type,
                 model=model,
                 reason="OpenAI-Aufruflimit erreicht; keine v1.4-Variante erzeugt.",
+                failure_class="budget",
             )
         request: dict[str, Any] = {
             "model": model,
@@ -608,13 +875,12 @@ def generate_push_headline_v14(
                 content_type=content_type,
                 now=now,
                 retry_feedback=(
-                    str(last_error)
-                    if isinstance(last_error, PushHeadlinePromptError)
-                    else ("Provider-Aufruf fehlgeschlagen" if last_error else "")
+                    str(last_error) if isinstance(last_error, PushHeadlinePromptError) else ""
                 ),
-                previous_output=last_raw,
+                previous_output=last_structured_payload,
             ),
-            "timeout": config.OPENAI_TITLE_GENERATION_TIMEOUT_S,
+            "response_format": _structured_response_format(),
+            "timeout": remaining_timeout,
             "store": False,
             token_argument: config.OPENAI_TITLE_GENERATION_MAX_TOKENS,
         }
@@ -627,33 +893,62 @@ def generate_push_headline_v14(
             }
 
         raw = ""
+        started_at = time.monotonic()
+        finish_reason = "other"
         try:
             completion = _get_openai_client().chat.completions.create(**request)
             choice = completion.choices[0]
+            refusal = getattr(choice.message, "refusal", None)
+            if refusal:
+                raise PushHeadlineGenerationError("safety", attempts=attempt + 1)
             raw = choice.message.content or ""
-            if getattr(choice, "finish_reason", "stop") != "stop":
-                raise PushHeadlinePromptError("model response did not finish cleanly")
-            if raw.strip() == "ESKALATION: CvD-Prüfung erforderlich":
+            finish_reason = _safe_finish_reason(getattr(choice, "finish_reason", None))
+            if finish_reason == "content_filter":
+                raise PushHeadlineGenerationError("safety", attempts=attempt + 1)
+            if finish_reason != "stop":
+                raise PushHeadlinePromptError(
+                    f"model response did not finish cleanly: {finish_reason}"
+                )
+            parsed = parse_structured_model_output(raw)
+            if parsed is None:
                 if attempt == 0:
-                    last_raw = raw
-                    last_error = PushHeadlinePromptError(
+                    raise _RetryableHeadlineEscalation(
                         "model requested escalation before the correction attempt"
                     )
-                    continue
                 return build_push_headline_escalation(
                     title,
                     content_type=content_type,
                     model=model,
                 )
-            parsed = parse_model_output(raw)
+            logger.info(
+                "push_headline_generation_succeeded attempt=%s duration_ms=%s "
+                "finish_reason=%s",
+                attempt + 1,
+                round((time.monotonic() - started_at) * 1000),
+                finish_reason,
+            )
             return _to_api_response(parsed, model=model, content_type=content_type)
         except Exception as exc:
+            failure_class = classify_generation_failure(exc)
+            logger.warning(
+                "push_headline_generation_failed failure_class=%s attempt=%s "
+                "duration_ms=%s finish_reason=%s provider_status=%s",
+                failure_class,
+                attempt + 1,
+                round((time.monotonic() - started_at) * 1000),
+                finish_reason,
+                _provider_status_code(exc),
+            )
+            if (
+                failure_class not in {"contract", "escalation"}
+                or attempt == 1
+                or not isinstance(exc, PushHeadlinePromptError)
+            ):
+                raise PushHeadlineGenerationError(
+                    failure_class,
+                    attempts=attempt + 1,
+                ) from exc
             last_error = exc
-            if raw:
-                last_raw = raw
-            if attempt == 1:
-                raise
+            last_structured_payload = _structured_retry_payload(raw)
 
-    if last_error is not None:  # pragma: no cover - loop is intentionally exhaustive
-        raise last_error
-    raise PushHeadlinePromptError("model returned no validated v1.4 output")
+    raise PushHeadlineGenerationError("contract", attempts=2) from last_error
