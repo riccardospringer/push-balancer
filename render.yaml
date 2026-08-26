@@ -220,13 +220,13 @@ services:
         value: "true"
       - key: OPENAI_TITLE_GENERATION_MODEL
         value: gpt-5.6-luna
-      # Harter Zeitrahmen fuer den interaktiven Button-Pfad.
+      # Gesamter Zeitrahmen fuer den interaktiven Pfad, inklusive Korrekturlauf.
       - key: OPENAI_TITLE_GENERATION_TIMEOUT_S
-        value: "15.0"
-      # Einschliesslich des kleinen Reasoning-Budgets und des kompakten
-      # v1.4-Outputs mit drei vollstaendigen Headline-/Zeile-2-Paaren.
+        value: "45.0"
+      # Einschliesslich des Reasoning-Budgets und des strukturierten v1.4-
+      # Outputs mit drei vollstaendigen Headline-/Zeile-2-Paaren.
       - key: OPENAI_TITLE_GENERATION_MAX_TOKENS
-        value: "1000"
+        value: "2000"
       - key: OPENAI_TITLE_GENERATION_REASONING_EFFORT
         value: low
       # Rate-Budget noetig: allow_calls() blockt bei Limit 0. Deckelt zugleich die Kosten.

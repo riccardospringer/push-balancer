@@ -1,5 +1,6 @@
 from datetime import datetime
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -28,6 +29,48 @@ Bund prüft die Regeln erneut (28)
 
 Artikelvolltext fehlt; Fakten müssen redaktionell geprüft werden."""
 
+VALID_STRUCTURED_DATA = {
+    "stage": 2,
+    "stage_reason": "Relevante Regeländerung ohne akute Gefahr",
+    "variant_a": {
+        "structure_type": "FAKT",
+        "headline": "Bund stoppt neue Maut-Regel",
+        "line2": "Pendler zahlen vorerst nicht",
+    },
+    "variant_b": {
+        "structure_type": "BETROFFENHEIT",
+        "headline": "Neue Maut-Regel trifft Pendler",
+        "line2": "Start verschiebt sich auf Montag",
+    },
+    "variant_c": {
+        "structure_type": "FOLGE",
+        "headline": "Maut-Stopp entlastet Pendler",
+        "line2": "Bund prüft die Regeln erneut",
+    },
+    "recommendation": "A",
+    "recommendation_reason": (
+        "Die Nachricht steht direkt vorn und bleibt auch ohne Zeile 2 verständlich."
+    ),
+    "review_point": "Artikelvolltext fehlt; Fakten müssen redaktionell geprüft werden.",
+    "escalation": False,
+}
+VALID_STRUCTURED_OUTPUT = json.dumps(VALID_STRUCTURED_DATA, ensure_ascii=False)
+
+
+def structured_output(**updates):
+    data = json.loads(VALID_STRUCTURED_OUTPUT)
+    data.update(updates)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def structured_escalation_output():
+    return json.dumps(
+        {
+            field: (True if field == "escalation" else None)
+            for field in prompt_v14._STRUCTURED_OUTPUT_SCHEMA["required"]
+        }
+    )
+
 
 def test_source_prompt_is_the_complete_supplied_v14_file():
     source = prompt_v14.load_source_prompt()
@@ -55,9 +98,92 @@ def test_system_prompt_contains_full_v14_workflow_and_runtime_wrapper():
     assert "# Beispiele aus der Kalibrierung" in prompt
     assert "# Betriebshinweise" in prompt
     assert "BUTTON-RUNTIME — VERBINDLICHE AUSFÜHRUNG" in prompt
+    assert "STRUKTURIERTER TRANSPORT — VERBINDLICH" in prompt
+    assert "Server rekonstruiert" in prompt
     assert "ESKALATION: CvD-Prüfung erforderlich" in prompt
     assert "{{ REGELVERTRAG }}" not in prompt
     assert "Elon Musk" in prompt
+
+
+def test_structured_schema_is_strict_and_nullable_only_for_escalation():
+    response_format = prompt_v14._structured_response_format()
+
+    assert response_format["type"] == "json_schema"
+    definition = response_format["json_schema"]
+    assert definition["name"] == "push_headline_v14"
+    assert definition["strict"] is True
+    schema = definition["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    for variant_name in ("variant_a", "variant_b", "variant_c"):
+        options = schema["properties"][variant_name]["anyOf"]
+        variant_schema = next(option for option in options if option.get("type") == "object")
+        assert variant_schema["additionalProperties"] is False
+        assert set(variant_schema["required"]) == set(variant_schema["properties"])
+
+
+def test_parse_structured_output_reconstructs_and_revalidates_v14_contract():
+    result = prompt_v14.parse_structured_model_output(VALID_STRUCTURED_OUTPUT)
+
+    assert result is not None
+    assert result.stage == 2
+    assert result.recommendation == "A"
+    assert [variant.identifier for variant in result.variants] == ["A", "B", "C"]
+    assert result.variants[0].headline == "Bund stoppt neue Maut-Regel"
+
+
+def test_parse_structured_output_accepts_only_consistent_escalation_branch():
+    assert prompt_v14.parse_structured_model_output(structured_escalation_output()) is None
+
+    mixed = json.loads(structured_escalation_output())
+    mixed["stage"] = 2
+    with pytest.raises(prompt_v14.PushHeadlinePromptError, match="must all be null"):
+        prompt_v14.parse_structured_model_output(json.dumps(mixed))
+
+
+@pytest.mark.parametrize("control", ["\n", "\r", "\x00", "\x1f", "\x7f"])
+def test_parse_structured_output_rejects_control_character_in_text(control):
+    data = json.loads(VALID_STRUCTURED_OUTPUT)
+    data["variant_a"]["headline"] = f"Bund stoppt neue{control}Maut-Regel"
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError, match="control character"):
+        prompt_v14.parse_structured_model_output(json.dumps(data))
+
+
+@pytest.mark.parametrize(
+    ("headline_length", "line2_length"),
+    [(25, 20), (45, 35)],
+)
+def test_parse_structured_output_accepts_unicode_length_boundaries(
+    headline_length,
+    line2_length,
+):
+    data = json.loads(VALID_STRUCTURED_OUTPUT)
+    data["variant_a"]["headline"] = "Ä" * headline_length
+    data["variant_a"]["line2"] = "Ö" * line2_length
+
+    parsed = prompt_v14.parse_structured_model_output(json.dumps(data, ensure_ascii=False))
+
+    assert parsed is not None
+    assert len(parsed.variants[0].headline) == headline_length
+    assert len(parsed.variants[0].line2) == line2_length
+
+
+@pytest.mark.parametrize(
+    ("field", "length", "message"),
+    [
+        ("headline", 24, "headline is outside"),
+        ("headline", 46, "headline is outside"),
+        ("line2", 19, "line 2 is outside"),
+        ("line2", 36, "line 2 is outside"),
+    ],
+)
+def test_parse_structured_output_rejects_unicode_off_by_one(field, length, message):
+    data = json.loads(VALID_STRUCTURED_OUTPUT)
+    data["variant_a"][field] = "Ä" * length
+
+    with pytest.raises(prompt_v14.PushHeadlinePromptError, match=message):
+        prompt_v14.parse_structured_model_output(json.dumps(data, ensure_ascii=False))
 
 
 def test_user_prompt_only_contains_current_button_scope():
@@ -137,7 +263,9 @@ def test_parse_model_output_recalculates_incorrect_declared_character_count():
 
 
 def test_parse_model_output_still_requires_declared_character_count():
-    invalid = VALID_OUTPUT.replace("Bund stoppt neue Maut-Regel (27)", "Bund stoppt neue Maut-Regel")
+    invalid = VALID_OUTPUT.replace(
+        "Bund stoppt neue Maut-Regel (27)", "Bund stoppt neue Maut-Regel"
+    )
 
     with pytest.raises(prompt_v14.PushHeadlinePromptError, match="character count"):
         prompt_v14.parse_model_output(invalid)
@@ -272,7 +400,7 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content=VALID_OUTPUT),
+                    message=SimpleNamespace(content=VALID_STRUCTURED_OUTPUT),
                     finish_reason="stop",
                 )
             ]
@@ -300,6 +428,7 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
 
     request = create.call_args.kwargs
     assert request["store"] is False
+    assert request["response_format"] == prompt_v14._structured_response_format()
     assert request["model"] == "gpt-5.6-luna"
     assert request["max_completion_tokens"] == 320
     assert request["extra_body"] == {
@@ -321,7 +450,7 @@ def test_generate_uses_v14_prompt_and_non_persistent_openai_request(monkeypatch)
     assert result["promptVersion"] == "1.4"
     assert result["sourcePromptVersion"] == "1.4"
     assert result["sourcePromptSha256"] == prompt_v14.SOURCE_PROMPT_SHA256
-    assert result["runtimeProfile"] == "button-limited-context"
+    assert result["runtimeProfile"] == "button-limited-context-structured-v1"
     assert result["meta"]["modus"] == "openai-push-headline-v1.4"
 
 
@@ -330,7 +459,7 @@ def test_generate_returns_cvd_escalation_without_fail_open(monkeypatch):
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content="ESKALATION: CvD-Prüfung erforderlich"),
+                    message=SimpleNamespace(content=structured_escalation_output()),
                     finish_reason="stop",
                 )
             ]
@@ -357,6 +486,7 @@ def test_generate_returns_cvd_escalation_without_fail_open(monkeypatch):
     assert result["alternativeTitles"] == []
     assert result["escalation"] is True
     assert result["meta"]["modus"] == "openai-push-headline-v1.4-escalation"
+    assert result["meta"]["failure_class"] == "escalation"
     assert create.call_count == 2
     retry_messages = create.call_args.kwargs["messages"]
     assert [message["role"] for message in retry_messages] == [
@@ -365,18 +495,16 @@ def test_generate_returns_cvd_escalation_without_fail_open(monkeypatch):
         "assistant",
         "user",
     ]
-    assert retry_messages[2]["content"] == "ESKALATION: CvD-Prüfung erforderlich"
+    assert json.loads(retry_messages[2]["content"])["escalation"] is True
 
 
-def test_generate_retries_first_cvd_escalation_then_returns_three_pairs(monkeypatch):
+def test_generate_corrects_one_premature_escalation(monkeypatch):
     create = Mock(
         side_effect=[
             SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(
-                            content="ESKALATION: CvD-Prüfung erforderlich"
-                        ),
+                        message=SimpleNamespace(content=structured_escalation_output()),
                         finish_reason="stop",
                     )
                 ]
@@ -384,7 +512,7 @@ def test_generate_retries_first_cvd_escalation_then_returns_three_pairs(monkeypa
             SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(content=VALID_OUTPUT),
+                        message=SimpleNamespace(content=VALID_STRUCTURED_OUTPUT),
                         finish_reason="stop",
                     )
                 ]
@@ -413,12 +541,46 @@ def test_generate_retries_first_cvd_escalation_then_returns_three_pairs(monkeypa
     assert create.call_count == 2
 
 
+def test_generate_rejects_mixed_escalation_after_single_retry(monkeypatch):
+    mixed_escalation = json.loads(structured_escalation_output())
+    mixed_escalation["stage"] = 2
+    create = Mock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(mixed_escalation)),
+                    finish_reason="stop",
+                )
+            ]
+        )
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    with pytest.raises(prompt_v14.PushHeadlineGenerationError) as exc_info:
+        prompt_v14.generate_push_headline_v14(
+            "Testredaktion beschließt neue Regel",
+            "politik",
+            content_type="editorial",
+        )
+
+    assert exc_info.value.failure_class == "contract"
+    assert create.call_count == 2
+
+
 def test_generate_rejects_truncated_model_output(monkeypatch):
     create = Mock(
         return_value=SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content=VALID_OUTPUT),
+                    message=SimpleNamespace(content=VALID_STRUCTURED_OUTPUT),
                     finish_reason="length",
                 )
             ]
@@ -434,13 +596,14 @@ def test_generate_rejects_truncated_model_output(monkeypatch):
     monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
     prompt_v14._CALL_TIMESTAMPS.clear()
 
-    with pytest.raises(prompt_v14.PushHeadlinePromptError, match="finish cleanly"):
+    with pytest.raises(prompt_v14.PushHeadlineGenerationError) as exc_info:
         prompt_v14.generate_push_headline_v14(
             "Testredaktion beschließt neue Regel",
             "politik",
             content_type="editorial",
         )
 
+    assert exc_info.value.failure_class == "contract"
     assert create.call_count == 2
     retry_messages = create.call_args.kwargs["messages"]
     assert [message["role"] for message in retry_messages] == [
@@ -450,7 +613,92 @@ def test_generate_rejects_truncated_model_output(monkeypatch):
         "user",
     ]
     assert "KORREKTURLAUF" in retry_messages[3]["content"]
-    assert retry_messages[2]["content"] == VALID_OUTPUT
+    assert json.loads(retry_messages[2]["content"]) == VALID_STRUCTURED_DATA
+
+
+@pytest.mark.parametrize(
+    ("class_name", "status_code", "expected"),
+    [
+        ("AuthenticationError", 401, "auth"),
+        ("PermissionDeniedError", 403, "auth"),
+        ("RateLimitError", 429, "rate_limit"),
+        ("APITimeoutError", None, "timeout"),
+        ("APIConnectionError", None, "provider"),
+        ("BadRequestError", 400, "provider"),
+    ],
+)
+def test_generation_failure_classification_is_fixed(class_name, status_code, expected):
+    error_type = type(class_name, (Exception,), {})
+    error = error_type("provider body must stay private")
+    if status_code is not None:
+        error.status_code = status_code
+
+    assert prompt_v14.classify_generation_failure(error) == expected
+
+
+def test_generate_does_not_retry_provider_timeout_or_log_content(monkeypatch, caplog):
+    create = Mock(side_effect=TimeoutError("private provider diagnostic"))
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    with (
+        caplog.at_level("WARNING"),
+        pytest.raises(prompt_v14.PushHeadlineGenerationError) as exc_info,
+    ):
+        prompt_v14.generate_push_headline_v14(
+            "Synthetic private headline marker",
+            "politik",
+            content_type="editorial",
+        )
+
+    assert exc_info.value.failure_class == "timeout"
+    assert create.call_count == 1
+    assert "failure_class=timeout" in caplog.text
+    assert "Synthetic private headline marker" not in caplog.text
+    assert "private provider diagnostic" not in caplog.text
+    assert "test-api-key" not in caplog.text
+
+
+def test_generate_handles_provider_refusal_without_retry(monkeypatch):
+    create = Mock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        refusal="provider refusal must not be exposed",
+                    ),
+                    finish_reason="stop",
+                )
+            ]
+        )
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    prompt_v14._CALL_TIMESTAMPS.clear()
+
+    with pytest.raises(prompt_v14.PushHeadlineGenerationError) as exc_info:
+        prompt_v14.generate_push_headline_v14(
+            "Testredaktion beschließt neue Regel",
+            "politik",
+            content_type="editorial",
+        )
+
+    assert exc_info.value.failure_class == "safety"
+    assert create.call_count == 1
 
 
 def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypatch):
@@ -467,7 +715,7 @@ def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypa
             SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(content=VALID_OUTPUT),
+                        message=SimpleNamespace(content=VALID_STRUCTURED_OUTPUT),
                         finish_reason="stop",
                     )
                 ]
@@ -498,38 +746,68 @@ def test_generate_retries_one_invalid_contract_then_returns_three_pairs(monkeypa
     assert [message["role"] for message in retry_messages] == [
         "system",
         "user",
-        "assistant",
         "user",
     ]
-    assert retry_messages[2]["content"] == "unvollständig"
-    assert "KORREKTURLAUF" in retry_messages[3]["content"]
-    assert "ändere ausschließlich" in retry_messages[3]["content"]
-    assert "drei einzigartige Headlines" in retry_messages[3]["content"]
-    assert (
-        "stage line does not match the v1.4 contract"
-        in retry_messages[3]["content"]
+    assert "KORREKTURLAUF" in retry_messages[2]["content"]
+    assert "ändere ausschließlich" in retry_messages[2]["content"]
+    assert "drei einzigartige Headlines" in retry_messages[2]["content"]
+    assert "structured output is invalid JSON" in retry_messages[2]["content"]
+
+
+def test_single_retry_shares_one_total_timeout_deadline(monkeypatch):
+    create = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="invalid"),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=VALID_STRUCTURED_OUTPUT),
+                        finish_reason="stop",
+                    )
+                ]
+            ),
+        ]
     )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    timestamps = iter([100.0, 101.0, 102.0, 110.0, 111.0, 112.0, 114.0])
+    monkeypatch.setattr(config, "PAID_EXTERNAL_APIS_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_ENABLED", True)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_TIMEOUT_S", 45.0)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR", 10)
+    monkeypatch.setattr(config, "OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY", 20)
+    monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
+    monkeypatch.setattr(prompt_v14, "_claim_call_budget", lambda: True)
+    monkeypatch.setattr(prompt_v14.time, "monotonic", lambda: next(timestamps))
+
+    result = prompt_v14.generate_push_headline_v14(
+        "Testredaktion beschließt neue Regel",
+        "politik",
+        content_type="editorial",
+    )
+
+    assert result is not None and result["escalation"] is False
+    assert create.call_args_list[0].kwargs["timeout"] == 44.0
+    assert create.call_args_list[1].kwargs["timeout"] == 34.0
 
 
 def test_generate_video_retry_rechecks_video_context_after_other_error(monkeypatch):
-    invalid_first = VALID_OUTPUT.replace(
-        "Pendler zahlen vorerst nicht (28)",
-        "Zu kurz (8)",
-    )
-    valid_video = (
-        VALID_OUTPUT.replace(
-            "Bund stoppt neue Maut-Regel (27)",
-            "Video zeigt neue Maut-Regel (27)",
-        )
-        .replace(
-            "Neue Maut-Regel trifft Pendler (30)",
-            "Aufnahmen zeigen Maut-Folgen (28)",
-        )
-        .replace(
-            "Maut-Stopp entlastet Pendler (28)",
-            "Clip zeigt Entlastung für Pendler (33)",
-        )
-    )
+    invalid_data = json.loads(VALID_STRUCTURED_OUTPUT)
+    invalid_data["variant_a"]["line2"] = "Zu kurz"
+    invalid_first = json.dumps(invalid_data, ensure_ascii=False)
+    valid_video_data = json.loads(VALID_STRUCTURED_OUTPUT)
+    valid_video_data["variant_a"]["headline"] = "Video zeigt neue Maut-Regel"
+    valid_video_data["variant_b"]["headline"] = "Aufnahmen zeigen Maut-Folgen"
+    valid_video_data["variant_c"]["headline"] = "Clip zeigt Entlastung für Pendler"
+    valid_video = json.dumps(valid_video_data, ensure_ascii=False)
     create = Mock(
         side_effect=[
             SimpleNamespace(
@@ -604,13 +882,14 @@ def test_generate_does_not_make_third_call_after_two_invalid_contracts(monkeypat
     monkeypatch.setattr(prompt_v14, "_get_openai_client", lambda: client)
     prompt_v14._CALL_TIMESTAMPS.clear()
 
-    with pytest.raises(prompt_v14.PushHeadlinePromptError, match="stage line"):
+    with pytest.raises(prompt_v14.PushHeadlineGenerationError) as exc_info:
         prompt_v14.generate_push_headline_v14(
             "Testredaktion beschließt neue Regel",
             "politik",
             content_type="editorial",
         )
 
+    assert exc_info.value.failure_class == "contract"
     assert create.call_count == 2
 
 

@@ -535,6 +535,45 @@ This is a historical pre-activation note for the broader score-driven/golden-hou
   should record the compatibility fix; reassessment is required before accepting
   unrelated message content, identities, persistence or a new destination.
 
+## PRIVACY NOTE: reliable structured Prompt v1.4 generation
+
+- Purpose: restore reliable on-demand `/headline` suggestions in the existing
+  Teams/Power-Automate workflow by transporting the unchanged Prompt v1.4
+  result through a strict schema and revalidating it on the server. This does
+  not send a push and does not change scheduled recommendation delivery.
+- Data categories: unchanged minimized public article headline, allowlisted
+  category and content-type marker; generated advisory headline and second-line
+  variants. No CMS ID, URL, article body, image, chat content, user identifier,
+  reader/device/session data, employee assessment, secret or raw log is sent to
+  the title provider.
+- Data subjects: people incidentally named or described in an already-public
+  editorial headline; no reader-level or employee-level profiling.
+- Legal basis: unchanged from the already-approved editorial headline-support
+  purpose. No new purpose or automated publication decision is introduced.
+- Roles: unchanged Axel Springer/BILD controller, Push Balancer system owner,
+  Microsoft 365 transport roles and existing approved OpenAI provider role.
+- External recipients / international transfer: no recipient or transfer path
+  is added. The same configured OpenAI endpoint receives the same minimized
+  fields with `store=false`; Power Automate and Teams receive the same advisory
+  result shape and generic failure message as before.
+- Retention / deletion: provider requests, schema responses and the single
+  bounded correction payload remain request-scoped in memory and are not
+  persisted. Existing Microsoft and provider retention/deletion controls remain
+  unchanged.
+- Safeguards: source-prompt bytes and SHA-256 stay unchanged; strict JSON Schema
+  with no additional properties; nullable fail-closed escalation branch;
+  authoritative server-side v1.4 validation; control-character rejection; one
+  shared 45-second deadline; one correction maximum; no retry for auth,
+  rate-limit, timeout or safety refusal; `store=false`; bounded call budgets;
+  pinned provider SDK; and logs limited to fixed failure class, attempt, duration,
+  finish reason and numeric status without title, ID, provider body or secret.
+- Required documentation / approvals: no new approval is introduced because
+  purpose, data categories, provider, destination, roles, transfer path and
+  persistence are unchanged. Product/System Owner and Privacy Manager should
+  record this reliability change; reassessment is required before adding source
+  fields, a recipient, persistence, tracking, automatic sending or another AI
+  provider.
+
 ## Engineering rules
 
 - Do not use production data in prompts, tests, screenshots, or examples

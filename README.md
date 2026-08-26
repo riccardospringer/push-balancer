@@ -489,8 +489,8 @@ The browser capture sends candidates in bounded chunks of 100. Its 30-second thr
 | `OPENAI_API_KEY` | No | — | OpenAI API key for optional editorial assistant features |
 | `OPENAI_TITLE_GENERATION_ENABLED` | No | `false` | Enables the higher-quality LLM path for manual push-title generation; without it the endpoint uses a local fallback |
 | `OPENAI_TITLE_GENERATION_MODEL` | No | `gpt-5.6-luna` | Efficient GPT-5.6 model used for interactive manual title generation |
-| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `15.0` | Hard timeout per interactive title-generation attempt |
-| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `1000` | Completion budget for three complete v1.4 headline/line-2 pairs, including bounded reasoning |
+| `OPENAI_TITLE_GENERATION_TIMEOUT_S` | No | `45.0` | Total deadline for the interactive title-generation request, including its single bounded correction attempt |
+| `OPENAI_TITLE_GENERATION_MAX_TOKENS` | No | `2000` | Completion budget for three complete structured v1.4 headline/line-2 pairs, including bounded reasoning |
 | `OPENAI_TITLE_GENERATION_REASONING_EFFORT` | No | `low` | Small GPT-5.6 reasoning budget for reliable v1.4 contract and length checks |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_HOUR` | No | `0` | Hard hourly budget for paid title generation; `0` keeps the local fallback active |
 | `OPENAI_TITLE_GENERATION_MAX_CALLS_PER_DAY` | No | `0` | Hard daily budget for paid title generation; `0` keeps the local fallback active |
