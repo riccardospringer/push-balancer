@@ -1,9 +1,10 @@
 """Tests für die Score-Regeln aus dem Redaktions-Feedback vom 27.08.2026.
 
 Abgedeckt: Erstpublikation (1), Spielberichte (3), Früh-Slots (4d), Top-Slots
-(6), beendete Live-Formate (8), Sport-Rätselzeilen (9), Echte-News-Erkennung
-und Video-Abwertung (10) sowie die Learnings (Autounfälle, Promi/Wirtschaft
-ohne Dringlichkeit, Live-Teaser, Überraschungswissen).
+(6), beendete Live-Formate (8), Echte-News-Erkennung und Video-Abwertung (10)
+sowie die Learnings (Promi/Wirtschaft ohne Dringlichkeit, Live-Teaser,
+Überraschungswissen). Punkt 9 (Sport-Rätselzeilen) und der Autounfall-Malus
+werden auf Redaktionswunsch vom 27.08. bewusst NICHT gesondert abgestraft.
 """
 
 import datetime as dt
@@ -128,7 +129,7 @@ def test_live_teaser_without_mass_relevance_is_dampened():
     assert any("Teaser" in risk or "Live-/Stream" in risk for risk in teaser["risks"])
 
 
-def test_sport_riddle_quote_line_is_penalized():
+def test_sport_riddle_quote_line_is_not_specially_penalized():
     now = int(time.time())
     riddle = _score(
         "„Unheimlich schnell auf die Fresse“: Koschinat hofft weiter auf die Hafenstraße",
@@ -136,17 +137,10 @@ def test_sport_riddle_quote_line_is_penalized():
         now=now,
         hours_ago=0.5,
     )
-    clear = _score(
-        "Koschinat vor Pokal-Duell: Aufstellung gegen Essen steht",
-        "sport",
-        now=now,
-        hours_ago=0.5,
-    )
-    assert riddle["score"] < clear["score"]
-    assert any("Rätselzeile" in risk for risk in riddle["risks"])
+    assert not any("Rätselzeile" in risk for risk in riddle["risks"])
 
 
-def test_routine_traffic_accident_is_dampened():
+def test_routine_traffic_accident_is_not_specially_penalized():
     now = int(time.time())
     accident = _score(
         "Schwerer Autounfall auf der A2: Drei Tote",
@@ -154,7 +148,7 @@ def test_routine_traffic_accident_is_dampened():
         now=now,
         hours_ago=0.5,
     )
-    assert any("Verkehrsunfälle" in risk for risk in accident["risks"])
+    assert not any("Verkehrsunfälle" in risk for risk in accident["risks"])
 
 
 def test_celebrity_topic_without_urgency_is_dampened():
