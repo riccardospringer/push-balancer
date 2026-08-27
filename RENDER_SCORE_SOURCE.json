@@ -34,7 +34,7 @@
     "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
     "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
     "app/routers/feed.py": "3a25a79583801f5a8e01440cf855b6120f3ce09e44edb2b84379d16ba7ae78d8",
-    "app/scoring/editorial.py": "d507a5e45b0d0ac54ea4b2d8ed79fb258ea018470b2f6db3eef309a42d40ef18",
-    "app/legacy_push_balancer.html": "1e8c7194944fa71fd56a33ada55c7528ac2a0f1bc3d0f6bd8b4d8ea0bf307279"
+    "app/scoring/editorial.py": "a5f61d49e386dee342b8feaffec3c7f10d4acda428264ce68ea0128f071f0ea2",
+    "app/legacy_push_balancer.html": "211d81c2c992de0a721dfe63afcdb41593953a0afe6ce67f5841722e4bfa674b"
   }
 }
