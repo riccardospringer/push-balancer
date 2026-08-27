@@ -25,12 +25,12 @@ def test_seed_and_heuristic_runtime_fixture():
     assert report["seedSha256"] == (
         "63637a93f55f009b9bb6d5a5f88e3f79addcad0468b6b134714d97996777d58e"
     )
-    assert report["heuristicScore"] == 77.3
+    assert report["heuristicScore"] == 82.3
     assert report["result"] == {
         "basis": "lightgbm",
         "confidence": 0.695,
         "predictedOR": 0.0535,
-        "score": 75.6,
+        "score": 80.6,
     }
 
 

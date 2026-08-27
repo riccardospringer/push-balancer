@@ -29,13 +29,15 @@ from app.ml import gbrt, lightgbm_model
 from app.research import worker as research_worker
 from app.routers import feed
 
+# Score-Stand inkl. Redaktions-Feedback 27.08.2026 (frische relevante Lage
+# mit Warnungs-Trigger erhaelt +5 im Editorial-Score).
 EXPECTED_RESULT = {
     "basis": "lightgbm",
     "confidence": 0.695,
     "predictedOR": 0.0535,
-    "score": 75.6,
+    "score": 80.6,
 }
-EXPECTED_HEURISTIC_SCORE = 77.3
+EXPECTED_HEURISTIC_SCORE = 82.3
 ARTICLE_URL = "https://www.bild.de/politik/synthetic-score-article"
 
 

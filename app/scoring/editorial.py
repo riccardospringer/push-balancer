@@ -258,9 +258,13 @@ _OVERLOAD_SENSATION_RE = re.compile(
     r"(?i)\b(schock|wahnsinn|irre|unfassbar|unglaublich|skandal|horror|drama|"
     r"hammer|mega|krass|sensation|brutal|schock-?\w*)\b"
 )
+# Redaktions-Feedback 27.08.2026: Kuriosität/Überraschungswissen ist KEIN
+# Overload-Treiber, sondern ein belegter Öffnungs-Treiber (Donau-Wehrmachtsfund
+# 8,25 %, Sonnenfinsternis-Militär 8,09 %). "kurios/skurril/verrückt" wurden
+# deshalb aus dem Overload-Muster entfernt; leere Klick-Frames bleiben drin.
 _OVERLOAD_CURIOSITY_RE = re.compile(
     r"(?i)(das steckt dahinter|sie werden (es )?nicht glauben|das m[uü]ssen sie sehen|"
-    r"\bkurios\b|\bskurril\b|\bverr[uü]ckt\b|darum geht es jetzt|das ist der grund|"
+    r"darum geht es jetzt|das ist der grund|"
     r"das m[uü]ssen sie wissen)"
 )
 
@@ -370,6 +374,92 @@ _A_LIST_PEOPLE_CONCERN_RE = re.compile(
 _A_LIST_PEOPLE_EVIDENCE_RE = re.compile(
     r"(?i)\b(?:video|videos|clip|clips|aufnahme|aufnahmen)\b"
 )
+
+# ── Redaktions-Feedback 27.08.2026 ("Feedback Push Balancer") ────────────────
+# Punkt 8 + LR1: Live-Formate (Ticker/Streams) erkennen. Laufende Live-Formate
+# werden ueber ihr letztes Update bewertet; beendete werden hart abgewertet.
+_LIVE_FORMAT_RE = re.compile(
+    r"(?i)\b(live-?ticker|liveticker|liveblog|live-?stream|livestream)\b"
+    r"|/liveticker/|/live-?stream/"
+)
+# Learnings: "Hier im Live-Ticker"/"JETZT im Livestream"/Testspiel-Streams
+# erzeugen ohne extreme Massenrelevanz keine Oeffnungsabsicht.
+_LIVE_TEASER_RE = re.compile(
+    r"(?i)(hier im live-?(?:ticker|blog|stream)|jetzt im live-?(?:ticker|blog|stream)|"
+    r"jetzt live (?:gucken|sehen|verfolgen)|im live-?stream verfolgen|"
+    r"\btestspiel\b.{0,50}\b(?:live|stream)\b|\b(?:live|stream)\b.{0,50}\btestspiel\b)"
+)
+_LIVE_ENDED_STATUSES = frozenset(
+    {"ended", "beendet", "finished", "closed", "post", "vorbei", "abgeschlossen", "over"}
+)
+# Punkt 3: Spielberichte/Ereignis-Ergebnisse nur direkt nach Feststellung
+# pushen — oder gar nicht (Taxonomie-Knoten "Spielbericht", URL oder Titel).
+_POST_EVENT_REPORT_RE = re.compile(r"(?i)\bspielbericht\b")
+_SPORT_RESULT_REPORT_RE = re.compile(
+    r"(?i)\b\d{1,2}\s*:\s*\d{1,2}\b.{0,60}"
+    r"\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(ä|ae)rtssieg)\b"
+    r"|\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(ä|ae)rtssieg)\b"
+    r".{0,60}\b\d{1,2}\s*:\s*\d{1,2}\b"
+)
+# Punkt 9: Sport-Raetselzeilen (Zitat-Teaser ohne klare Nachricht) sind
+# unerwuenscht, auch wenn das Embedding sie belohnt.
+_LEADING_QUOTE_TEASER_RE = re.compile(
+    r"^\s*[„“»\"‚'].{3,70}?[“”«\"’']\s*:"
+)
+# Learnings: Autounfaelle — auch mit mehreren Toten — erzielen keine hohen
+# Oeffnungsraten.
+_ROUTINE_TRAFFIC_ACCIDENT_RE = re.compile(
+    r"(?i)\b(auto|pkw|lkw|motorrad|verkehrs|frontal)-?unfall\b"
+    r"|\bunfall\b.{0,45}\b(a\s?\d{1,3}|b\s?\d{1,3}|autobahn|landstra(ß|ss)e|kreuzung)\b"
+    r"|\b(a\s?\d{1,3}|b\s?\d{1,3}|autobahn|landstra(ß|ss)e)\b.{0,45}\bunfall\b"
+    r"|\b(totraser|geisterfahrer|autounfall)\b"
+)
+# Punkt 10: Echte-News-Muster wie Vermisstenfaelle mit hoher Anteilnahme
+# (Beispiel Mallorca-Urlauberin) muessen frueh oben stehen.
+_MISSING_PERSON_RE = re.compile(
+    r"(?i)\b(vermisst|vermisste[rn]?|verschwunden|letzte spur|suchaktion|"
+    r"gro(ß|ss)fahndung|verzweifelte suche)\b"
+)
+# Learnings: Kuriose Entdeckungen mit "Warum?"-Impuls funktionieren ueber
+# Neugier (Donau-Wehrmachtsfund, Sonnenfinsternis-Militaer).
+_DISCOVERY_CURIOSITY_RE = re.compile(
+    r"(?i)\b(kurios|skurril|freigelegt|legt\b.{0,30}\bfrei|entdeckt|entdeckung|"
+    r"aufgetaucht|taucht\b.{0,20}\bauf|gibt r(ä|ae)tsel auf|verbl(ü|ue)fft|"
+    r"sensationsfund|mysteri(ö|oe)se[rs]? fund)\b"
+)
+# Punkt 4/6: Slot-Kontext. Frueh-Slots (06-08 Uhr) funktionieren nur mit harter
+# Betroffenheit; die Top-Slots 12:30/20:08 nicht mit Routine verschenken.
+_EARLY_MORNING_HOURS = frozenset({6, 7, 8})
+_PRIME_SLOT_HOURS = frozenset({12, 20})
+
+
+def _collect_taxonomy_text(push: dict[str, Any]) -> str:
+    """Join taxonomy-ish metadata (Knoten, Channels, Tags) into one lower string."""
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str):
+            if value.strip():
+                parts.append(value.strip())
+        elif isinstance(value, dict):
+            for inner in value.values():
+                add(inner)
+        elif isinstance(value, (list, tuple, set)):
+            for inner in value:
+                add(inner)
+
+    for key in ("taxonomy", "taxonomyNodes", "taxonomy_nodes", "knoten", "nodes", "channels", "tags", "keywords"):
+        add(push.get(key))
+    return " ".join(parts).lower()
+
+
+def _live_ended_flag(push: dict[str, Any]) -> bool:
+    """Explicit CMS signal that a live format has ended."""
+    for key in ("isLiveEnded", "liveEnded", "live_ended"):
+        if bool(push.get(key)):
+            return True
+    status = str(push.get("liveStatus") or push.get("live_status") or "").strip().lower()
+    return status in _LIVE_ENDED_STATUSES
 
 
 def is_german_public_figure_parenthood_story(push: dict[str, Any]) -> bool:
@@ -552,6 +642,127 @@ def _reuters_overload_adjustment(
     return max(-12.0, penalty)
 
 
+def _feedback_2026_adjustment(
+    title: str,
+    cat: str,
+    tone: str,
+    topic: str,
+    hour: int,
+    is_eil: bool,
+    features: dict[str, Any],
+    drivers: list[str],
+    risks: list[str],
+) -> float:
+    """Score-Anpassungen aus dem Redaktions-Feedback vom 27.08.2026.
+
+    Jede Regel ist bounded; die Summe wird zusaetzlich begrenzt, damit ein
+    einzelner Kandidat nicht durch Regel-Stacking kollabiert oder explodiert.
+    """
+    delta = 0.0
+    hits: dict[str, int] = features.get("trigger_hits") or {}
+    freshness_hours = features.get("freshness_hours")
+
+    # Punkt 8: beendete Live-Formate gehoeren nicht mehr in die Empfehlungen.
+    if features.get("is_live_ended"):
+        delta -= 30.0
+        risks.append("Redaktionsfeedback: Live-Format ist beendet und wird nicht mehr empfohlen")
+    # Learnings: Live-/Stream-Teaser ohne extreme Massenrelevanz oeffnet niemand.
+    elif features.get("is_live_teaser") and not is_eil and tone != "breaking":
+        delta -= 8.0
+        risks.append("Redaktionsfeedback: Live-/Stream-Teaser ohne Massenrelevanz erzeugt keine Öffnungen")
+
+    # Punkt 3: Ergebnis-/Spielberichte direkt nach Feststellung pushen oder gar nicht.
+    if features.get("is_post_event_report") and not is_eil:
+        if freshness_hours is None or freshness_hours > 1.0:
+            delta -= 25.0
+            risks.append(
+                "Redaktionsfeedback: Ergebnis-Bericht nach Abpfiff — direkt pushen oder gar nicht"
+            )
+        else:
+            drivers.append("Redaktionsfeedback: Ergebnis direkt nach Feststellung noch pushbar")
+
+    # Punkt 9: Sport-Rätselzeilen werden nicht belohnt.
+    if features.get("is_sport_riddle"):
+        delta -= 12.0
+        risks.append("Redaktionsfeedback: Sport-Rätselzeile ohne klare Nachricht wird abgewertet")
+
+    # Learnings: Autounfälle (auch mit Toten) haben keine hohen Öffnungsraten.
+    if features.get("is_routine_accident") and not is_eil:
+        delta -= 8.0
+        risks.append("Redaktionsfeedback: Verkehrsunfälle erzielen erfahrungsgemäß kaum Öffnungen")
+
+    # Learnings: Promi-/Wirtschaftsthemen brauchen echte Dringlichkeit.
+    if (
+        cat in {"unterhaltung", "wirtschaft"}
+        and not is_eil
+        and tone in {"neutral", "curiosity", "result"}
+        and not features.get("has_development")
+        and "economy_crisis" not in hits
+        and "celebrity_relationship_money_conflict" not in hits
+        and not features.get("public_figure_parenthood")
+        and not features.get("a_list_people_development")
+    ):
+        delta -= 6.0
+        risks.append("Redaktionsfeedback: Promi/Wirtschaft ohne echte Dringlichkeit funktioniert nicht")
+
+    # Learnings: Überraschungswissen mit "Warum?"-Impuls öffnet stark.
+    if (
+        features.get("has_curiosity_discovery")
+        and not features.get("is_politics")
+        and not features.get("is_stale")
+    ):
+        delta += 5.0
+        drivers.append("Redaktionsfeedback: Überraschungswissen mit Warum-Impuls öffnet stark")
+
+    # Punkt 10: frische harte Nachrichten (z. B. Vermisstenfall) früh nach oben.
+    if (
+        freshness_hours is not None
+        and freshness_hours <= 2.0
+        and not features.get("video_weak")
+        and ("missing_person" in hits or "danger" in hits or "crime" in hits)
+    ):
+        delta += 5.0
+        drivers.append("Redaktionsfeedback: frische relevante Lage gehört auf die erste Seite")
+
+    # Punkt 10: Videos werden zu hoch gerankt — ohne Jetzt-Anlass abwerten.
+    if features.get("video_weak") and not is_eil:
+        delta -= 6.0
+        risks.append("Redaktionsfeedback: Video ohne klaren Jetzt-Anlass wird stärker abgewertet")
+
+    # Punkt 4d: Früh-Slots (06-08 Uhr) nur mit harter Betroffenheit füllen.
+    if hour in _EARLY_MORNING_HOURS and not is_eil and tone != "breaking":
+        morning_impact = (
+            "danger" in hits
+            or topic == "wetter"
+            or (tone == "utility" and _GERMANY_BROAD_NEED_RE.search(title))
+        )
+        if morning_impact:
+            delta += 4.0
+            drivers.append("Zeitfenster: Früh-Slot mit akuter Betroffenheit (Wetter/Warnung)")
+        elif features.get("is_politics") or cat in {"verbraucher", "wirtschaft", "politik"}:
+            delta -= 4.0
+            risks.append(
+                "Zeitfenster: Früh-Slot nicht mit Politik/Service ohne Betroffenheit füllen"
+            )
+
+    # Punkt 6: Top-Slots (12:30/20:08) nicht mit Routine-Themen verschenken.
+    if hour in _PRIME_SLOT_HOURS:
+        routine = (
+            not is_eil
+            and tone not in {"breaking", "utility"}
+            and not features.get("has_development")
+            and features.get("trigger_strength", 0) < 10
+        )
+        if routine:
+            delta -= 6.0
+            risks.append("Zeitfenster: Top-Slot (12:30/20:08) nicht mit Routine-Thema verschenken")
+        elif is_eil or tone == "breaking" or features.get("trigger_strength", 0) >= 18:
+            delta += 2.0
+            drivers.append("Zeitfenster: starke Geschichte passt in den Top-Slot")
+
+    return _clip(delta, -40.0, 12.0)
+
+
 _FRESH_DEVELOPMENT_RE = re.compile(
     r"(?i)\b(heute|aktuell|neu|erstmals|plötzlich|ploetzlich|wende|"
     r"entscheidung|beschlossen|beschließt|beschliesst|festnahme|festgenommen|"
@@ -623,6 +834,11 @@ _BILD_TRIGGER_PATTERNS: dict[str, tuple[re.Pattern[str], int, str]] = {
         ),
         10,
         "BILD-Reiz: Crime/Polizei spricht starkes Push-Interesse an",
+    ),
+    "missing_person": (
+        _MISSING_PERSON_RE,
+        11,
+        "BILD-Reiz: Vermissten-/Fahndungsfall mit hoher Anteilnahme",
     ),
     "public_money_fraud": (
         re.compile(
@@ -854,7 +1070,9 @@ def score_push_candidate(
     if features["is_politics"]:
         raw_score += (politics_context - 60.0) * 0.23
     if features["is_video"]:
-        raw_score += (video_fit - 60.0) * 0.14
+        # Redaktions-Feedback 27.08.2026 (Punkt 10): Videos wurden zu hoch
+        # gerankt — der Video-Kontext wirkt staerker auf den Gesamtscore.
+        raw_score += (video_fit - 60.0) * 0.20
     if features["stale_politics_without_development"]:
         raw_score -= 7.0
     if features["strong_non_politics"]:
@@ -900,6 +1118,12 @@ def score_push_candidate(
     # direkt abwerten, nicht nur im 0.04-gewichteten Risiko-Term.
     overload_adjustment = _reuters_overload_adjustment(title, tone, is_eil, risks)
     raw_score += overload_adjustment
+
+    # Redaktions-Feedback 27.08.2026: gebuendelte Regel-Anpassungen.
+    feedback_2026_adjustment = _feedback_2026_adjustment(
+        title, cat, tone, topic, hour, is_eil, features, drivers, risks
+    )
+    raw_score += feedback_2026_adjustment
 
     germany_relevance = assess_germany_relevance(push)
     germany_adjustment = float(germany_relevance.get("adjustment") or 0.0)
@@ -947,10 +1171,13 @@ def score_push_candidate(
             "videoFit": round(video_fit, 1),
             "editorialFeedback": round(feedback_score, 1),
             "overloadAdjustment": round(overload_adjustment, 1),
+            "feedback2026Adjustment": round(feedback_2026_adjustment, 1),
             "germanyRelevanceAdjustment": round(germany_adjustment, 1),
         },
         "germanyRelevance": germany_relevance,
         "isCorporateAnnouncement": bool(features.get("is_corporate_announcement", False)),
+        "isEndedLiveFormat": bool(features.get("is_live_ended", False)),
+        "isPostEventReport": bool(features.get("is_post_event_report", False)),
     }
 
 
@@ -1276,6 +1503,26 @@ def _extract_push_features(
     ):
         has_development = True
 
+    # ── Redaktions-Feedback 27.08.2026 ──
+    url = str(push.get("url") or push.get("link") or "")
+    taxonomy_text = _collect_taxonomy_text(push)
+    is_live_format = bool(_LIVE_FORMAT_RE.search(title) or _LIVE_FORMAT_RE.search(url))
+    is_live_ended = is_live_format and (
+        _live_ended_flag(push) or (freshness_hours is not None and freshness_hours > 4.0)
+    )
+    is_post_event_report = bool(
+        _POST_EVENT_REPORT_RE.search(title)
+        or _POST_EVENT_REPORT_RE.search(url)
+        or _POST_EVENT_REPORT_RE.search(taxonomy_text)
+        or (cat == "sport" and _SPORT_RESULT_REPORT_RE.search(title))
+    )
+    is_sport_context = cat == "sport" or bool(_GERMAN_SPORT_RE.search(title))
+    is_sport_riddle = (
+        is_sport_context
+        and bool(_LEADING_QUOTE_TEASER_RE.search(title))
+        and not _HARD_NEWS_EVENT_RE.search(title)
+    )
+
     _corp_verb = bool(_CORP_ANNOUNCE_VERB_RE.search(title))
     _corp_noun = bool(_CORP_STRATEGY_NOUN_RE.search(title))
     _corp_wir = bool(_CORP_WIR_QUOTE_RE.search(title))
@@ -1321,6 +1568,13 @@ def _extract_push_features(
         ),
         "feedback_text": feedback_text,
         "is_corporate_announcement": is_corporate_announcement,
+        "is_live_format": is_live_format,
+        "is_live_ended": is_live_ended,
+        "is_live_teaser": bool(_LIVE_TEASER_RE.search(title)),
+        "is_post_event_report": is_post_event_report,
+        "is_sport_riddle": is_sport_riddle,
+        "is_routine_accident": bool(_ROUTINE_TRAFFIC_ACCIDENT_RE.search(title)),
+        "has_curiosity_discovery": bool(_DISCOVERY_CURIOSITY_RE.search(title)),
     }
 
 
@@ -2076,16 +2330,59 @@ def _predicted_percent(value: float | None) -> float | None:
     return predicted
 
 
-def _publication_dt(push: dict[str, Any]) -> _dt.datetime | None:
-    pub = push.get("pubDate") or push.get("publishedAt") or push.get("pub_date")
-    if not isinstance(pub, str) or not pub:
+_FIRST_PUBLICATION_KEYS = (
+    "firstPublishedAt",
+    "datePublishedFirst",
+    "first_published_at",
+    "firstPubDate",
+    "firstPublicationDate",
+    "erstpublikation",
+)
+_CURRENT_PUBLICATION_KEYS = ("pubDate", "publishedAt", "pub_date")
+
+
+def _parse_publication_value(value: Any) -> _dt.datetime | None:
+    if not isinstance(value, str) or not value:
         return None
     try:
         return (
-            _dt.datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            .astimezone()
+            .replace(tzinfo=None)
         )
     except ValueError:
         return None
+
+
+def _publication_dt(push: dict[str, Any]) -> _dt.datetime | None:
+    """Publication time for freshness scoring.
+
+    Redaktions-Feedback 27.08.2026 (Punkt 1): Re-Publikationen duerfen alte
+    Artikel nicht frisch aussehen lassen. Wenn eine Erstpublikation mitkommt,
+    zaehlt der fruehere der beiden Zeitpunkte. Ausnahme (LR1): laufende
+    Live-Formate leben von Updates und werden weiter ueber die letzte
+    Publikation bewertet.
+    """
+    current: _dt.datetime | None = None
+    for key in _CURRENT_PUBLICATION_KEYS:
+        current = _parse_publication_value(push.get(key))
+        if current is not None:
+            break
+
+    first: _dt.datetime | None = None
+    for key in _FIRST_PUBLICATION_KEYS:
+        first = _parse_publication_value(push.get(key))
+        if first is not None:
+            break
+
+    if first is not None:
+        title = _title(push)
+        url = str(push.get("url") or push.get("link") or "")
+        if _LIVE_FORMAT_RE.search(title) or _LIVE_FORMAT_RE.search(url):
+            return current or first
+        if current is None or first < current:
+            return first
+    return current
 
 
 def _freshness_hours(
