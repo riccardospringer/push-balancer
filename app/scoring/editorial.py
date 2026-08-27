@@ -401,19 +401,6 @@ _SPORT_RESULT_REPORT_RE = re.compile(
     r"|\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(ä|ae)rtssieg)\b"
     r".{0,60}\b\d{1,2}\s*:\s*\d{1,2}\b"
 )
-# Punkt 9: Sport-Raetselzeilen (Zitat-Teaser ohne klare Nachricht) sind
-# unerwuenscht, auch wenn das Embedding sie belohnt.
-_LEADING_QUOTE_TEASER_RE = re.compile(
-    r"^\s*[„“»\"‚'].{3,70}?[“”«\"’']\s*:"
-)
-# Learnings: Autounfaelle — auch mit mehreren Toten — erzielen keine hohen
-# Oeffnungsraten.
-_ROUTINE_TRAFFIC_ACCIDENT_RE = re.compile(
-    r"(?i)\b(auto|pkw|lkw|motorrad|verkehrs|frontal)-?unfall\b"
-    r"|\bunfall\b.{0,45}\b(a\s?\d{1,3}|b\s?\d{1,3}|autobahn|landstra(ß|ss)e|kreuzung)\b"
-    r"|\b(a\s?\d{1,3}|b\s?\d{1,3}|autobahn|landstra(ß|ss)e)\b.{0,45}\bunfall\b"
-    r"|\b(totraser|geisterfahrer|autounfall)\b"
-)
 # Punkt 10: Echte-News-Muster wie Vermisstenfaelle mit hoher Anteilnahme
 # (Beispiel Mallorca-Urlauberin) muessen frueh oben stehen.
 _MISSING_PERSON_RE = re.compile(
@@ -681,15 +668,11 @@ def _feedback_2026_adjustment(
         else:
             drivers.append("Redaktionsfeedback: Ergebnis direkt nach Feststellung noch pushbar")
 
-    # Punkt 9: Sport-Rätselzeilen werden nicht belohnt.
-    if features.get("is_sport_riddle"):
-        delta -= 12.0
-        risks.append("Redaktionsfeedback: Sport-Rätselzeile ohne klare Nachricht wird abgewertet")
+    # Punkt 9 (Sport-Rätselzeilen) wird auf Redaktionswunsch vom 27.08. NICHT
+    # gesondert abgestraft — Zitat-Teaser laufen ueber die normalen Komponenten.
 
-    # Learnings: Autounfälle (auch mit Toten) haben keine hohen Öffnungsraten.
-    if features.get("is_routine_accident") and not is_eil:
-        delta -= 8.0
-        risks.append("Redaktionsfeedback: Verkehrsunfälle erzielen erfahrungsgemäß kaum Öffnungen")
+    # Autounfaelle werden auf Redaktionswunsch vom 27.08. NICHT gesondert
+    # abgestraft — sie laufen ueber die normalen Komponenten.
 
     # Learnings: Promi-/Wirtschaftsthemen brauchen echte Dringlichkeit.
     if (
@@ -1516,13 +1499,6 @@ def _extract_push_features(
         or _POST_EVENT_REPORT_RE.search(taxonomy_text)
         or (cat == "sport" and _SPORT_RESULT_REPORT_RE.search(title))
     )
-    is_sport_context = cat == "sport" or bool(_GERMAN_SPORT_RE.search(title))
-    is_sport_riddle = (
-        is_sport_context
-        and bool(_LEADING_QUOTE_TEASER_RE.search(title))
-        and not _HARD_NEWS_EVENT_RE.search(title)
-    )
-
     _corp_verb = bool(_CORP_ANNOUNCE_VERB_RE.search(title))
     _corp_noun = bool(_CORP_STRATEGY_NOUN_RE.search(title))
     _corp_wir = bool(_CORP_WIR_QUOTE_RE.search(title))
@@ -1572,8 +1548,6 @@ def _extract_push_features(
         "is_live_ended": is_live_ended,
         "is_live_teaser": bool(_LIVE_TEASER_RE.search(title)),
         "is_post_event_report": is_post_event_report,
-        "is_sport_riddle": is_sport_riddle,
-        "is_routine_accident": bool(_ROUTINE_TRAFFIC_ACCIDENT_RE.search(title)),
         "has_curiosity_discovery": bool(_DISCOVERY_CURIOSITY_RE.search(title)),
     }
 
