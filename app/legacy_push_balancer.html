@@ -602,18 +602,20 @@ setInterval(function() {
     display: none;
     position: absolute;
     left: calc(100% + 12px);
-    top: 50%;
-    transform: translateY(-50%);
+    top: -8px;
     background: var(--white);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 12px 16px;
     z-index: 50;
     min-width: 230px;
+    max-height: min(70vh, 480px);
+    overflow-y: auto;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   }
 
-  .cell-score:hover .score-tooltip { display: block; }
+  .cell-score:hover .score-tooltip,
+  .cell-score.show-tooltip .score-tooltip { display: block; }
 
   .tooltip-title {
     font-size: 11px;
@@ -3212,6 +3214,7 @@ setInterval(function() {
 <!-- Keyboard hints -->
 <div class="kb-hint" id="kbHint">
   <span><kbd>↑</kbd><kbd>↓</kbd> Nav</span>
+  <span><kbd>I</kbd> Score-Info</span>
   <span><kbd>V</kbd> Vorschau</span>
   <span><kbd>M</kbd> Merken</span>
   <span><kbd>R</kbd> Aktualisieren</span>
@@ -6130,7 +6133,7 @@ function _buildArticleRow(a, idx, p, orMedian, orP75, favThreshold) {
 
     return `
       <div class="article-row${idx < 3 ? ' top3' : ''}${stateClass}${selectedClass}${isFavorite ? ' article-favorite' : ''}" data-index="${idx}" data-id="${a.id}" onclick="openPushPreviewByIndex(${idx})" style="cursor:pointer">
-        <div class="cell-score" style="display:flex;align-items:center">
+        <div class="cell-score" style="display:flex;align-items:center;cursor:help" onclick="event.stopPropagation();toggleScoreInfoEl(this)">
           ${idx < 3 ? `<span class="top3-rank top3-rank-${idx+1}">${idx+1}</span>` : ''}<span class="score-value" style="color:${scoreColor(a.score)}">${a.score}${scoreDelta}</span>
           ${renderTooltip(a)}
         </div>
@@ -6313,29 +6316,57 @@ function renderTooltip(a) {
     </div>`;
   }
 
-  const pushRow = b.pushHistorie != null && b.pushHistorie !== 0 ? `<div class="tooltip-row"><span class="label">Push-Historie</span><span class="value${cls(b.pushHistorie)}">${v(b.pushHistorie)}</span></div>` : '';
   const pushInfoRow = a.topicPushInfo ? `<div class="tooltip-row" style="font-size:10px;color:var(--text-tertiary)"><span class="label">Thema ${a.topicPushInfo.count}x gepusht</span><span class="value">${a.topicPushInfo.bestOR}% OR</span></div>` : '';
+
+  // ── Normierung auf den Score: alle Komponenten werden so skaliert, dass
+  // ihre Summe EXAKT dem angezeigten Gesamtwert entspricht. Frischefaktor,
+  // Caps und Struktur-Anpassungen stecken proportional in den Teilen —
+  // der Score ist damit direkt nachvollziehbar.
+  const rawParts = [
+    ['Relevanz', b.relevanz || 0],
+    ['Dringlichkeit', b.dringlichkeit || 0],
+    ['Neugier', b.neugier || 0],
+    ['Aktualität' + (b.temporalOutdated ? ' ⚠' : ''), b['aktualität'] || 0],
+    ['Timing', b.timing || 0],
+    ['Breaking', b.breaking || 0],
+    ['Titel-Boost', b.individual || 0],
+    ['Verb-Bonus', b.verbBonus || 0],
+    ['Forschung', b.forschung || 0],
+    ['Push-Historie', b.pushHistorie || 0],
+    ['Redaktions-Feedback', b.redaktion || 0],
+    ['Topic-Sättigung', b._topicPenalty || 0],
+  ];
+  const score = Math.round((Number(a.score) || 0) * 10) / 10;
+  const rawSum = rawParts.reduce((s, p) => s + p[1], 0);
+  const f = rawSum > 0 && score > 0 ? score / rawSum : 1;
+  const parts = rawParts
+    .map(([label, val]) => [label, Math.round(val * f * 10) / 10])
+    .filter(p => p[1] !== 0);
+  // Rundungsrest auf die groesste Komponente legen, damit die Summe exakt stimmt
+  if (parts.length && rawSum > 0 && score > 0) {
+    const shownSum = parts.reduce((s, p) => s + p[1], 0);
+    const rest = Math.round((score - shownSum) * 10) / 10;
+    if (Math.abs(rest) >= 0.1) {
+      let bi = 0;
+      for (let i = 1; i < parts.length; i++) if (Math.abs(parts[i][1]) > Math.abs(parts[bi][1])) bi = i;
+      parts[bi][1] = Math.round((parts[bi][1] + rest) * 10) / 10;
+    }
+  }
+  const partRows = parts.map(([label, val]) =>
+    `<div class="tooltip-row"><span class="label">${label}</span><span class="value${cls(val)}">${v(val)}</span></div>`
+  ).join('');
   return `
     <div class="score-tooltip">
-      <div class="tooltip-title">Engagement-Score</div>
-      <div class="tooltip-row"><span class="label">Relevanz</span><span class="value${cls(b.relevanz || 0)}">${v(b.relevanz || 0)}</span></div>
-      <div class="tooltip-row"><span class="label">Dringlichkeit</span><span class="value${cls(b.dringlichkeit || 0)}">${v(b.dringlichkeit || 0)}</span></div>
-      <div class="tooltip-row"><span class="label">Neugier</span><span class="value${cls(b.neugier || 0)}">${v(b.neugier || 0)}</span></div>
-      <div class="tooltip-row"><span class="label">Aktualit\u00e4t${b.temporalOutdated ? ' \u26a0' : ''}</span><span class="value${cls(b['aktualit\u00e4t'] || 0)}">${v(b['aktualit\u00e4t'] || 0)}</span></div>
+      <div class="tooltip-title">Score-Zusammensetzung (Summe = ${score})</div>
+      ${partRows}
       ${b.temporalReason ? `<div class="tooltip-row" style="font-size:10px;color:${b.temporalOutdated ? 'var(--red)' : 'var(--green)'}"><span class="label">${b.temporalReason}</span><span class="value"></span></div>` : ''}
-      <div class="tooltip-row"><span class="label">Timing</span><span class="value${cls(b.timing || 0)}">${v(b.timing || 0)}</span></div>
-      ${(b.forschung || 0) > 0 ? `<div class="tooltip-row" style="color:var(--accent)"><span class="label">Forschung</span><span class="value">+${v(b.forschung)}</span></div>` : ''}
       ${b.forschungsDetail ? `<div class="tooltip-row" style="font-size:10px;color:var(--accent)"><span class="label">${b.forschungsDetail}</span><span class="value"></span></div>` : ''}
-      ${(b.individual || 0) > 0 ? `<div class="tooltip-row"><span class="label">Titel-Boost</span><span class="value">${v(b.individual)}</span></div>` : ''}
-      ${(b.redaktion || 0) !== 0 ? `<div class="tooltip-row"><span class="label">Redaktions-Feedback</span><span class="value${cls(b.redaktion)}">${v(b.redaktion)}</span></div>` : ''}
       ${b.redaktionDetail ? `<div class="tooltip-row" style="font-size:10px;color:var(--text-tertiary)"><span class="label">${b.redaktionDetail}</span><span class="value"></span></div>` : ''}
-      ${pushRow}
-      ${pushInfoRow}
-      ${(b._topicPenalty && b._topicPenalty < 0) ? `<div class="tooltip-row" style="color:var(--text-tertiary)"><span class="label">Topic-Sättigung</span><span class="value negative">${v(b._topicPenalty)}</span></div>` : ''}
       ${(b._topicPenalty && b._topicPenalty < 0 && b._topicReason) ? `<div class="tooltip-row" style="font-size:10px;color:var(--text-tertiary)"><span class="label">${b._topicReason}</span><span class="value"></span></div>` : ''}
+      ${pushInfoRow}
       ${_ageTooltipRow(a)}
       <hr class="tooltip-divider">
-      <div class="tooltip-row tooltip-total"><span class="label">Gesamt</span><span class="value">${a.score}</span></div>
+      <div class="tooltip-row tooltip-total"><span class="label">Gesamt</span><span class="value">${score}</span></div>
       ${a._xorFactor != null ? `<div class="tooltip-row" style="font-size:10px;color:var(--text-tertiary);margin-top:4px"><span class="label">OR-Faktor</span><span class="value">${a._xorFactor}x</span></div>` : ''}
     </div>`;
 }
@@ -8321,9 +8352,24 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); selectedIndex = Math.min(selectedIndex+1, max); updateSelection(); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); selectedIndex = Math.max(selectedIndex-1, 0); updateSelection(); }
   else if ((e.key === 'v' || e.key === 'V') && selectedIndex >= 0) { openPushPreview(filteredArticles[selectedIndex]); }
+  else if ((e.key === 'i' || e.key === 'I') && selectedIndex >= 0) { e.preventDefault(); toggleScoreInfo(selectedIndex); }
   else if ((e.key === 'm' || e.key === 'M') && selectedIndex >= 0) { setArticleState(filteredArticles[selectedIndex].id, 'bookmarked'); }
   else if (e.key === 'r' || e.key === 'R') { fetchArticles(); }
 });
+
+function toggleScoreInfo(idx) {
+  const el = document.querySelector(`.article-row[data-index="${idx}"] .cell-score`);
+  if (!el) return;
+  const wasOpen = el.classList.contains('show-tooltip');
+  document.querySelectorAll('.cell-score.show-tooltip').forEach(c => c.classList.remove('show-tooltip'));
+  if (!wasOpen) el.classList.add('show-tooltip');
+}
+
+function toggleScoreInfoEl(el) {
+  const wasOpen = el.classList.contains('show-tooltip');
+  document.querySelectorAll('.cell-score.show-tooltip').forEach(c => c.classList.remove('show-tooltip'));
+  if (!wasOpen) el.classList.add('show-tooltip');
+}
 
 function updateSelection() {
   document.querySelectorAll('.article-row').forEach(r => r.classList.remove('selected'));
