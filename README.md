@@ -274,7 +274,19 @@ The responses are read-only and advisory-only (`actionAllowed=false`). Productio
 
 ### Editorial Push Scoring
 
-Article candidates are ranked by an editorial push score in [`app/scoring/editorial.py`](app/scoring/editorial.py). The score combines predicted opening-rate potential with BILD-specific signals: freshness, real news development, headline clarity, outrage/curiosity/emotion, broad audience relevance, video fit, and section mix. Politics remains eligible for top ranks when there is a concrete current development, but stale, abstract, complex, or debate-only politics receives explicit penalties.
+Article candidates are ranked by an editorial push score in [`app/scoring/editorial.py`](app/scoring/editorial.py). Since the score rebuild of 2026-08-30 the composition is:
+
+| Component | Weight | Source |
+|---|---|---|
+| BILD-Reiz (LLM reader score) | 40 % | One LLM call per article from a BILD reader's perspective ([`app/scoring/reader_score.py`](app/scoring/reader_score.py)), persistently cached; bounded heuristic fallback without an API key |
+| Öffnungs-Potenzial | 20 % | ML-predicted opening rate (LightGBM ensemble) plus content signals |
+| Aktualität | 15 % | Publication freshness (first publication counts, not re-publish) |
+| Mix-Balance | 10 % | Section/topic/tone fatigue over the last 6 hours |
+| Historie | 10 % | Historical opening behaviour (category and hour as separate signals; the category×hour interaction was removed) |
+| Headline-Stärke | 3 % | Clarity and concreteness |
+| Risiko | 2 % | Clickbait/fatigue guard |
+
+All candidates pass the same hard freshness gate: older than 12 h scores 0; before that an age multiplier applies (≤90 min ×1.0 · 3 h ×0.95 · 6 h ×0.6 · 9 h ×0.4 · 12 h ×0.3). Breaking news is detected via the "Breaking News" taxonomy node and enters immediately; all other articles enter 3 minutes after publication so the LLM check can complete first. BILD-Fit, the Germany-relevance adjustment, video special-casing, the corporate-PR malus, and the Reuters overload malus were removed — the LLM reader score covers those signals itself. Politics remains eligible for top ranks when there is a concrete current development, but stale, abstract, complex, or debate-only politics receives explicit penalties.
 
 The ranking is rebalanced after scoring so strong non-politics candidates from news, sport, entertainment, crime, consumer, service, and curiosity have a realistic chance when the top field is otherwise dominated by politics. Each article returns `scoreReason`, `performanceDrivers`, `risks`, `mixPriority`, `recommendedText`, and a structured `scoreBreakdown` so editors can see why the candidate is high or low.
 

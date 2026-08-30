@@ -417,21 +417,36 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
     return articles
 
 
+ARTICLE_MIN_AGE_SECONDS = 180
+
+
 def _fresh_article_candidates(
     articles: list[dict[str, Any]],
     *,
     now_ts: int | float,
 ) -> list[dict[str, Any]]:
-    """Keep only candidates whose publication time proves they are at most 12h old."""
-    return [
-        article
-        for article in articles
-        if is_publication_eligible(
+    """Keep only candidates whose publication time proves they are at most 12h old.
+
+    Score-Umbau 30.08.2026: Nicht-Eilmeldungen laufen erst 3 Minuten nach
+    Publikation ein, damit der LLM-Reader-Score-Check vor der ersten Anzeige
+    durchlaufen kann. Eilmeldungen (Taxonomie-Knoten "Breaking News") laufen
+    sofort ein.
+    """
+    fresh: list[dict[str, Any]] = []
+    for article in articles:
+        if not is_publication_eligible(
             article.get("pubDate"),
             now_ts=now_ts,
             max_future_skew_seconds=30,
-        )
-    ]
+        ):
+            continue
+        is_breaking = bool(article.get("isBreaking") or article.get("isEilmeldung"))
+        if not is_breaking:
+            age_hours = publication_age_hours(article.get("pubDate"), now_ts=now_ts)
+            if age_hours is not None and age_hours * 3600 < ARTICLE_MIN_AGE_SECONDS:
+                continue
+        fresh.append(article)
+    return fresh
 
 
 def _apply_server_score_freshness_weight(
@@ -468,10 +483,9 @@ def _apply_server_score_freshness_weight(
         capture_tracks_publication = article.get(
             "pushBalancerScoreArticlePublishedAt"
         ) is not None
-        needs_weight = score_source in {
-            "server_editorial_fallback",
-            "server_editorial_corp_announcement",
-        } or (score_source == "captured_push_balancer" and not capture_tracks_publication)
+        needs_weight = score_source == "server_editorial_fallback" or (
+            score_source == "captured_push_balancer" and not capture_tracks_publication
+        )
         if not needs_weight:
             continue
 
@@ -511,12 +525,6 @@ def _apply_canonical_push_balancer_scores(
             allow_db_fallback=False,
         )
         if not snapshot:
-            continue
-
-        # Never let a stale cached score rescue a PR/announcement article that
-        # the editorial assessment already marked down.
-        if bool(article.get("isCorporateAnnouncement")):
-            article["scoreSource"] = "server_editorial_corp_announcement"
             continue
 
         captured_score = round(max(0.0, min(float(snapshot["score"]), 100.0)), 1)
@@ -734,6 +742,13 @@ def build_articles_payload(
             history = _research_state.get("push_data") or []
 
         from app.scoring.editorial import rebalance_push_mix, score_push_candidate
+        from app.scoring.reader_score import enrich_articles_with_reader_scores
+
+        # BILD-Reiz: genau ein LLM-Call pro Artikel, dauerhaft gecacht.
+        try:
+            enrich_articles_with_reader_scores(articles)
+        except Exception as exc:
+            log.warning("[articles] reader score enrichment failed: %s", exc)
 
         for article in articles:
             editorial_score = score_push_candidate(
@@ -743,14 +758,13 @@ def build_articles_payload(
                     "hour": now.hour,
                     "ts_num": now_ts,
                     "is_eilmeldung": article["isEilmeldung"],
-                    "isVideo": article.get("isVideo"),
-                    "video": article.get("isVideo"),
                     "pubDate": article["pubDate"],
                     "link": article["url"],
                 },
                 history=history,
                 state=research_state,
                 predicted_or=article.get("predictedOR"),
+                reader_score=article.get("readerScore"),
             )
             article.update(editorial_score)
         articles = rebalance_push_mix(articles, history=history, target_ts=now_ts)
@@ -798,6 +812,52 @@ def get_articles(
 ) -> JSONResponse:
     """Return article candidates from the BILD sitemap as a typed JSON collection."""
     return JSONResponse(content=build_articles_payload(offset=offset, limit=limit))
+
+
+class ReaderScoreArticle(BaseModel):
+    url: str = ""
+    title: str = ""
+    description: str = ""
+
+
+class ReaderScoreRequest(BaseModel):
+    articles: list[ReaderScoreArticle] = []
+
+
+@router.post("/api/reader-scores")
+def post_reader_scores(payload: ReaderScoreRequest) -> JSONResponse:
+    """Return the per-article LLM reader scores for the candidate view.
+
+    Cached scores are free; a bounded number of uncached articles is scored
+    now (one LLM call per article, ever). The browser capture blends this
+    component with 40 % weight into the visible Push Score.
+    """
+    from app.scoring.reader_score import enrich_articles_with_reader_scores
+
+    items: list[dict[str, Any]] = []
+    for entry in payload.articles[:100]:
+        url = (entry.url or "").strip()
+        title = (entry.title or "").strip()
+        if not url and not title:
+            continue
+        items.append({"url": url, "title": title, "description": entry.description})
+
+    try:
+        enrich_articles_with_reader_scores(items)
+    except Exception as exc:
+        log.warning("[reader-scores] enrichment failed: %s", exc)
+
+    scores: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if item.get("readerScore") is None:
+            continue
+        key = str(item.get("url") or item.get("title") or "")
+        scores[key] = {
+            "readerScore": item.get("readerScore"),
+            "readerScoreReasoning": item.get("readerScoreReasoning") or "",
+            "readerScoreModel": item.get("readerScoreModel") or "",
+        }
+    return JSONResponse(content={"scores": scores, "weight": 0.4})
 
 
 def _iso_from_unix_ts(ts: int | float | None) -> str | None:

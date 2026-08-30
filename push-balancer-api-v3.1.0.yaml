@@ -1551,6 +1551,61 @@ paths:
           $ref: '#/components/responses/UnprocessableContent'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/reader-scores:
+    post:
+      tags:
+      - Articles
+      operationId: createReaderScores
+      summary: Return per-article LLM reader scores
+      description: Returns the cached LLM BILD-Reiz reader scores (0-100) for up
+        to 100 articles and scores a bounded number of uncached articles now
+        (exactly one LLM call per article, ever). The candidate view blends this
+        component with 40 percent weight into the visible Push Score.
+      requestBody:
+        required: true
+        description: Articles (url and/or title) to resolve reader scores for.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                articles:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                      title:
+                        type: string
+                      description:
+                        type: string
+      responses:
+        '200':
+          description: Reader score map keyed by article url (or title).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scores:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        readerScore:
+                          type: number
+                        readerScoreReasoning:
+                          type: string
+                        readerScoreModel:
+                          type: string
+                  weight:
+                    type: number
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/gbrt/predict:
     get:
       tags:

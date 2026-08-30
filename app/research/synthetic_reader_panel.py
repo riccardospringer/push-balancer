@@ -12,10 +12,185 @@ from collections import Counter, defaultdict
 from itertools import product
 from typing import Any
 
-from app.scoring.editorial import (
-    assess_germany_relevance,
-    is_german_public_figure_parenthood_story,
+from app.scoring.editorial import is_german_public_figure_parenthood_story
+
+# ── Panel-lokale Deutschland-Relevanz ────────────────────────────────────────
+# Der Live-Score hat die Deutschland-Relevanz komplett gestrichen (Score-Umbau
+# 30.08.2026, der LLM-Reader-Score bewertet Naehe selbst). Das shadow-only
+# Research-Panel behaelt die Klassifikation als eigenes Studieninstrument.
+
+_GERMANY_EXPLICIT_RE = re.compile(
+    r"(?i)\b(deutschland|deutsch(?:e|er|es|en)?|bundesweit|bundesregierung|"
+    r"bundestag|bundesrat|kanzleramt|schufa|buergergeld|bürgergeld|"
+    r"deutsche bahn|bundesliga|dfb|dax|nationalmannschaft)\b"
 )
+_GERMANY_UNQUALIFIED_GOVERNMENT_RE = re.compile(r"(?i)^(?:die\s+)?regierung\b")
+_GERMANY_BROAD_NEED_RE = re.compile(
+    r"(?i)\b(rente|krankenkasse|miete|steuer|verbraucher|pendler|rentner|"
+    r"patienten|kunden|strom|gas|heizung|spritpreis|lebensmittel|rueckruf|"
+    r"rückruf|streik|ausfall|warnung|unwetter|hochwasser|hitzewarnung|hitze|"
+    r"trinkwasser|preise|immobilien|wohnungspreise|hauspreise|bauzinsen|"
+    r"filialen|insolvenz|pleite)\b"
+)
+_GERMAN_SPORT_RE = re.compile(
+    r"(?i)\b(bayern|bvb|dortmund|leverkusen|leipzig|frankfurt|schalke|"
+    r"gladbach|hamburg|koeln|köln|stuttgart|werder|bundesliga|dfb|"
+    r"nationalmannschaft)\b"
+)
+_DOMESTIC_URL_RE = re.compile(r"(?i)/(?:regional|news/inland|politik/inland)/")
+_INTERNATIONAL_URL_RE = re.compile(
+    r"(?i)/(?:ausland|ausland-und-internationales|international|reise|reisen)/"
+)
+_USA_RE = re.compile(
+    r"(?i)\b(usa|u\.s\.|us-(?:mutter|vater|frau|mann|star|praesident|"
+    r"präsident|experte|experten|militaer|militär)|trump|weisses haus|"
+    r"weißes haus|washington|kalifornien|florida|texas|new york)\b"
+)
+_FOREIGN_MARKER_RE = re.compile(
+    r"(?i)\b(usa|iran|israel|ukraine|russland|china|katar|niederlande|"
+    r"belgien|bruessel|brüssel|frankreich|italien|spanien|grossbritannien|"
+    r"großbritannien|tuerkei|türkei|oesterreich|österreich|schweiz|polen|"
+    r"tschechien|griechenland|portugal|ibiza|mallorca|dubai|london|paris|"
+    r"rom|madrid|moskau|washington)\b"
+)
+_GEOPOLITICAL_EVENT_RE = re.compile(
+    r"(?i)\b(krieg|waffenruhe|feuerpause|angriffswelle|militaer|militär|"
+    r"raketen|atom|nato|sanktionen|invasion|terror|anschlag|geiseln|"
+    r"erdbeben|katastrophe|mehrere tote|massaker)\b|\b\d+\s+tote\b"
+)
+_FOREIGN_PERSONAL_STORY_RE = re.compile(
+    r"(?i)\b(mutter|vater|zwillinge|baby|kind|freundin|ehefrau|ehemann|"
+    r"influencer|promi|star|todesstrafe|erstickt|ermordet|totraser|"
+    r"scheidung|trennung|privat|party)\b"
+)
+
+
+def _panel_title(push: dict[str, Any]) -> str:
+    return str(push.get("title") or push.get("headline") or "").strip()
+
+
+def _panel_cat(push: dict[str, Any]) -> str:
+    raw = str(push.get("cat") or push.get("category") or "news").lower().strip()
+    mapping = {
+        "geld": "wirtschaft",
+        "leben": "verbraucher",
+        "ratgeber": "verbraucher",
+        "panorama": "news",
+    }
+    return mapping.get(raw, raw or "news")
+
+
+def assess_germany_relevance(push: dict[str, Any]) -> dict[str, Any]:
+    """Panel-lokale Klassifikation der Deutschland-Relevanz (nur Studie)."""
+    title = _panel_title(push)
+    url = str(push.get("url") or push.get("link") or "").strip()
+    category = _panel_cat(push)
+    explicit_breaking = bool(
+        push.get("is_eilmeldung") or push.get("isEilmeldung") or push.get("isBreaking")
+    )
+    explicit_germany = bool(_GERMANY_EXPLICIT_RE.search(title))
+    unqualified_german_government = bool(
+        _GERMANY_UNQUALIFIED_GOVERNMENT_RE.search(title)
+        and not _INTERNATIONAL_URL_RE.search(url)
+        and not _USA_RE.search(title)
+    )
+    domestic_url = bool(_DOMESTIC_URL_RE.search(url))
+    broad_need = bool(_GERMANY_BROAD_NEED_RE.search(title))
+    german_sport = category == "sport" and bool(_GERMAN_SPORT_RE.search(title))
+    international = (
+        bool(_INTERNATIONAL_URL_RE.search(url) or _FOREIGN_MARKER_RE.search(title))
+        and not explicit_germany
+    )
+
+    consumer_need = (
+        category in {"verbraucher", "wirtschaft"}
+        and broad_need
+        and not _INTERNATIONAL_URL_RE.search(url)
+    )
+
+    if is_german_public_figure_parenthood_story(push):
+        return {
+            "level": "germany_people",
+            "adjustment": 5.0,
+            "selectionAdjustment": 4.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": (
+                "Deutschland-People: benannte deutsche oeffentliche Person und bestaetigtes "
+                "Elternschafts-Ereignis mit breitem Gespraechswert"
+            ),
+        }
+
+    if (
+        explicit_germany
+        or unqualified_german_government
+        or german_sport
+        or (domestic_url and broad_need)
+        or consumer_need
+    ):
+        return {
+            "level": "germany_broad",
+            "adjustment": 8.0,
+            "selectionAdjustment": 7.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": "Deutschland-Relevanz: breite direkte Relevanz fuer Menschen in Deutschland",
+        }
+
+    if domestic_url:
+        adjustment = 0.0 if "/regional/" in url.casefold() else 2.0
+        return {
+            "level": "germany_domestic",
+            "adjustment": adjustment,
+            "selectionAdjustment": 2.0,
+            "minimumScore": 75.0,
+            "hardBlock": False,
+            "reason": "Deutschland-Relevanz: inlaendische Meldung ohne pauschalen Reichweitenbonus",
+        }
+
+    if international:
+        if explicit_breaking:
+            return {
+                "level": "international_breaking",
+                "adjustment": 0.0,
+                "selectionAdjustment": 0.0,
+                "minimumScore": 72.0,
+                "hardBlock": False,
+                "reason": "Internationales Breaking: weltweite Lage rechtfertigt Sofortpruefung",
+            }
+        geopolitical = bool(_GEOPOLITICAL_EVENT_RE.search(title))
+        personal = bool(_FOREIGN_PERSONAL_STORY_RE.search(title))
+        usa_domestic = bool(_USA_RE.search(title) and personal and not geopolitical)
+        if usa_domestic:
+            return {
+                "level": "usa_domestic",
+                "adjustment": -20.0,
+                "selectionAdjustment": -20.0,
+                "minimumScore": 101.0,
+                "hardBlock": True,
+                "reason": "Deutschland-Relevanz: rein US-inlaendische Crime-/People-Story ohne direkten Deutschland-Bezug",
+            }
+        minimum_score = 76.0 if geopolitical else 80.0
+        adjustment = -8.0 if geopolitical else -12.0
+        return {
+            "level": "international",
+            "adjustment": adjustment,
+            "selectionAdjustment": -8.0 if geopolitical else -12.0,
+            "minimumScore": minimum_score,
+            "hardBlock": False,
+            "reason": (
+                "Deutschland-Relevanz: internationale Lage braucht aussergewoehnlichen Push Score"
+            ),
+        }
+
+    return {
+        "level": "neutral",
+        "adjustment": 0.0,
+        "selectionAdjustment": 0.0,
+        "minimumScore": 75.0,
+        "hardBlock": False,
+        "reason": "Deutschland-Relevanz: neutral, Entscheidung ueber Push Score",
+    }
 
 
 PANEL_VERSION = "synthetic-reader-modes-v2"

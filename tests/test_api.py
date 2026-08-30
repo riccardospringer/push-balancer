@@ -145,7 +145,9 @@ class TestStableFrontendContracts:
         assert "experiments" in data
 
     def test_articles_contract_returns_collection(self, monkeypatch):
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -173,7 +175,9 @@ class TestStableFrontendContracts:
         assert data["articles"][0]["title"] == "Breaking Test Artikel"
 
     def test_articles_prefer_fresh_visible_push_balancer_ratings(self, monkeypatch):
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -289,12 +293,14 @@ class TestStableFrontendContracts:
 
         assert article["score"] == 0.0
         assert article["scoreSource"] == "internal_score_api_missing"
-        assert article["scoreBeforeInternalApi"] == 64.0
+        assert article["scoreBeforeInternalApi"] == 48.0
         assert article["scoreSourceBeforeInternalApi"] == "server_editorial_fallback"
-        assert article["freshnessScoreMultiplier"] == 0.8
+        assert article["freshnessScoreMultiplier"] == 0.6
 
     def test_articles_contract_marks_video_items(self, monkeypatch):
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -318,9 +324,9 @@ class TestStableFrontendContracts:
         article = resp.json()["articles"][0]
         assert article["isVideo"] is True
         assert article["type"] == "video"
-        assert "video" in article["scoreReason"].lower() or any(
-            "video" in risk.lower() for risk in article.get("risks", [])
-        )
+        # Score-Umbau 30.08.2026: Videos werden nur noch markiert, aber nicht
+        # mehr gesondert im Score behandelt.
+        assert "videoFit" not in (article.get("scoreBreakdown") or {})
 
     def test_international_feed_contract_falls_back_to_live_fetch_without_background_cache(self, monkeypatch):
         monkeypatch.setattr("app.routers.feed.get_cached_feeds", lambda _name: {})
@@ -450,7 +456,9 @@ class TestStableFrontendContracts:
     def test_articles_skip_prediction_enrichment_when_disabled(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -478,7 +486,9 @@ class TestStableFrontendContracts:
     def test_articles_prediction_enrichment_uses_runtime_cache(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -514,7 +524,9 @@ class TestStableFrontendContracts:
     def test_articles_prediction_enrichment_hides_global_average_fallback(self, monkeypatch):
         import app.routers.feed as feed_router
 
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>
@@ -637,7 +649,9 @@ class TestConsumerApi:
         from app.routers.consumer import _clear_recommendations_cache
 
         _clear_recommendations_cache()
-        published = dt.datetime.now(dt.timezone.utc).isoformat()
+        published = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
         sitemap = f"""<?xml version='1.0' encoding='UTF-8'?>
 <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'
         xmlns:news='http://www.google.com/schemas/sitemap-news/0.9'>

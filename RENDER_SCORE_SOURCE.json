@@ -1,40 +1,67 @@
 {
-  "sourceRepository": "https://github.com/riccardospringer/push-balancer",
-  "sourceCommit": "3b212fcdfb5339d8bffbfe55ae79ffb7f0ee6808",
-  "calibrationCommit": "8fe5472f00d9254ea0ae09647601bee2f1127b5a",
-  "purpose": "Frozen Render scoring base plus the deployed A-list People calibration, global article-freshness, and approved scheduled Top-5 bookkeeping overlays",
-  "freshnessPolicyOverlay": {
-    "maxArticleAgeHours": 12,
-    "publicationTimestampRequired": true,
-    "scoreCurve": [[0, 1.0], [1, 1.0], [3, 0.95], [6, 0.8], [9, 0.55], [12, 0.3]]
-  },
-  "scheduledTop5Overlay": {
-    "approvalStatus": "approved",
-    "approvalRecordedAt": "2026-08-09",
-    "historyMode": "cloud_only_durable_slot_and_receipt_dedup",
-    "livePushHistoryRequired": false,
-    "contractVersion": 2,
-    "recommendationCount": 5,
-    "displayFallbackScoreTransmitted": false,
-    "groupedMessageCounting": true
-  },
-  "runtimeParity": {
-    "status": "pending",
-    "reason": "The deployed Render image, dependency versions, architecture, active model and live scoring state are not derivable from git and must be validated before cutover."
-  },
-  "sha256": {
-    "app/cost_controls.py": "abd70355ef39329bf40318d1aca374d44fdf944d10c06fe171f6e996c484e1fa",
-    "app/database.py": "f4b2de5ed96197f738fea2bb6fa290140d678fb264338530ce6dcebccee6c056",
-    "app/ml/features.py": "dc7af50c1f555f82424ff7217b7eb5cf86dc7c39a4d0afbc4d4305dbd6f550e9",
-    "app/ml/heuristic.py": "5a085ea4ca80d4fc7f31e721e0fb47d21f61337b2cd70526df0f7d5c7e2a9439",
-    "app/ml/lightgbm_model.py": "2dfaa4b9753ebf8152bfa3e239bde883bcece9988527dd4da8fbd709d416d526",
-    "app/ml/predict.py": "1b7e20011b398d6abfc4bf7bf30d163fe7d9e2b67d9c483ecefa9597f10fa9a8",
-    "app/ml/seed_model.pkl": "63637a93f55f009b9bb6d5a5f88e3f79addcad0468b6b134714d97996777d58e",
-    "app/ml/stats.py": "eb1cc88cd6342e44dd4eff6f3a7f98f28fae1efa5c3cb586cd78b39fbe4eb41b",
-    "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
-    "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
-    "app/routers/feed.py": "3a25a79583801f5a8e01440cf855b6120f3ce09e44edb2b84379d16ba7ae78d8",
-    "app/scoring/editorial.py": "bfcfa1dc7896c8d7270de29cd790a84e653f696300bffb76cbf90baa0de1fe76",
-    "app/legacy_push_balancer.html": "045e43a8339fe3564e441d9bdd1a762da485f54b9978edeaae0156eacf15e429"
-  }
+ "sourceRepository": "https://github.com/riccardospringer/push-balancer",
+ "sourceCommit": "3b212fcdfb5339d8bffbfe55ae79ffb7f0ee6808",
+ "calibrationCommit": "8fe5472f00d9254ea0ae09647601bee2f1127b5a",
+ "purpose": "Frozen Render scoring base plus the deployed A-list People calibration, global article-freshness, and approved scheduled Top-5 bookkeeping overlays",
+ "freshnessPolicyOverlay": {
+  "maxArticleAgeHours": 12,
+  "publicationTimestampRequired": true,
+  "scoreCurve": [
+   [
+    0,
+    1.0
+   ],
+   [
+    1.5,
+    1.0
+   ],
+   [
+    3,
+    0.95
+   ],
+   [
+    6,
+    0.6
+   ],
+   [
+    9,
+    0.4
+   ],
+   [
+    12,
+    0.3
+   ]
+  ]
+ },
+ "scheduledTop5Overlay": {
+  "approvalStatus": "approved",
+  "approvalRecordedAt": "2026-08-09",
+  "historyMode": "cloud_only_durable_slot_and_receipt_dedup",
+  "livePushHistoryRequired": false,
+  "contractVersion": 2,
+  "recommendationCount": 5,
+  "displayFallbackScoreTransmitted": false,
+  "groupedMessageCounting": true
+ },
+ "runtimeParity": {
+  "status": "pending",
+  "reason": "The deployed Render image, dependency versions, architecture, active model and live scoring state are not derivable from git and must be validated before cutover."
+ },
+ "sha256": {
+  "app/cost_controls.py": "abd70355ef39329bf40318d1aca374d44fdf944d10c06fe171f6e996c484e1fa",
+  "app/database.py": "f4b2de5ed96197f738fea2bb6fa290140d678fb264338530ce6dcebccee6c056",
+  "app/legacy_push_balancer.html": "045e43a8339fe3564e441d9bdd1a762da485f54b9978edeaae0156eacf15e429",
+  "app/ml/features.py": "dc7af50c1f555f82424ff7217b7eb5cf86dc7c39a4d0afbc4d4305dbd6f550e9",
+  "app/ml/heuristic.py": "5a085ea4ca80d4fc7f31e721e0fb47d21f61337b2cd70526df0f7d5c7e2a9439",
+  "app/ml/lightgbm_model.py": "2dfaa4b9753ebf8152bfa3e239bde883bcece9988527dd4da8fbd709d416d526",
+  "app/ml/predict.py": "1b7e20011b398d6abfc4bf7bf30d163fe7d9e2b67d9c483ecefa9597f10fa9a8",
+  "app/ml/seed_model.pkl": "63637a93f55f009b9bb6d5a5f88e3f79addcad0468b6b134714d97996777d58e",
+  "app/ml/stats.py": "eb1cc88cd6342e44dd4eff6f3a7f98f28fae1efa5c3cb586cd78b39fbe4eb41b",
+  "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
+  "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
+  "app/routers/feed.py": "ff6d18211d5fc6d99fac10d7c862be93e5311425c70016c87f4763bc7e3a1c2c",
+  "app/scoring/editorial.py": "83a71865d0e8e59533f85fad4577b39920226a1d6f14161e0ae29ec65ded9a65",
+  "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
+  "app/scoring/reader_score.py": "bb3904c9bdc848eefd86d57a2f29d823b72775c9c3a4e12bd4003aa67d0972d5"
+ }
 }

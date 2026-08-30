@@ -16,14 +16,16 @@ from typing import Final
 MAX_ARTICLE_AGE_HOURS: Final[float] = 12.0
 MAX_ARTICLE_AGE_SECONDS: Final[int] = int(MAX_ARTICLE_AGE_HOURS * 3600)
 
-# Piecewise-linear policy requested by Editorial.  The hard exclusion just
-# after 12 hours is intentional; exactly 12 hours still uses the final point.
+# Piecewise-linear policy requested by Editorial (Score-Umbau 30.08.2026):
+# bis 90 min voll frisch, danach deutlich steilerer Abfall als zuvor.  The
+# hard exclusion just after 12 hours is intentional; exactly 12 hours still
+# uses the final point.
 FRESHNESS_SCORE_CURVE: Final[tuple[tuple[float, float], ...]] = (
     (0.0, 1.0),
-    (1.0, 1.0),
+    (1.5, 1.0),
     (3.0, 0.95),
-    (6.0, 0.8),
-    (9.0, 0.55),
+    (6.0, 0.6),
+    (9.0, 0.4),
     (12.0, 0.3),
 )
 
