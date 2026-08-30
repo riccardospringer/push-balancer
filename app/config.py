@@ -197,9 +197,12 @@ OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY: int = _env_int(
 # Jeder Artikel wird genau EINMAL vom LLM aus BILD-Leser-Sicht bewertet und
 # das Ergebnis dauerhaft gecacht. Ohne Key/Budget fällt der Score auf die
 # Heuristik-Komponente zurück.
+# Default AN: der Reader-Score ist seit dem Score-Umbau 30.08.2026 die
+# tragende BILD-Reiz-Komponente. Er läuft nur, wenn zusätzlich ein
+# OPENAI_API_KEY gesetzt ist; die Budgets unten begrenzen die Kosten hart.
 OPENAI_READER_SCORE_ENABLED: bool = _env_flag(
     "OPENAI_READER_SCORE_ENABLED",
-    False,
+    True,
 )
 OPENAI_READER_SCORE_MODEL: str = os.environ.get(
     "OPENAI_READER_SCORE_MODEL",
@@ -217,11 +220,11 @@ OPENAI_READER_SCORE_MAX_TOKENS: int = int(
 )
 OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR: int = _env_int(
     "OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR",
-    0,
+    300,
 )
 OPENAI_READER_SCORE_MAX_CALLS_PER_DAY: int = _env_int(
     "OPENAI_READER_SCORE_MAX_CALLS_PER_DAY",
-    0,
+    2500,
 )
 OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST: int = _env_int(
     "OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST",
