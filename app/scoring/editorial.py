@@ -1260,7 +1260,6 @@ def _extract_push_features(
 
     # ── Redaktions-Feedback 27.08.2026 ──
     url = str(push.get("url") or push.get("link") or "")
-    taxonomy_text = _collect_taxonomy_text(push)
     is_live_format = bool(_LIVE_FORMAT_RE.search(title) or _LIVE_FORMAT_RE.search(url))
     is_live_ended = is_live_format and (
         _live_ended_flag(push) or (freshness_hours is not None and freshness_hours > 4.0)

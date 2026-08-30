@@ -15,7 +15,7 @@ import re
 import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
 
 from app.article_identity import canonical_article_url_identity
@@ -351,23 +351,32 @@ def get_or_create_reader_score(push: dict[str, Any]) -> dict[str, Any] | None:
             _INFLIGHT.pop(key, None)
 
 
+# Shared background pool: slow LLM calls keep running after a request's wait
+# budget elapses and land in the persistent cache for the next poll.
+_ENRICH_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reader-score")
+
+
 def enrich_articles_with_reader_scores(
     articles: list[dict[str, Any]],
     *,
     max_new_calls: int | None = None,
-    max_workers: int = 4,
+    wait_budget_s: float | None = None,
 ) -> None:
     """Attach ``readerScore*`` fields to each article in place.
 
     Cached scores are attached for free; at most ``max_new_calls`` uncached
-    articles trigger an LLM call (concurrently), so one slow feed request can
-    never stack unbounded latency. Uncached leftovers simply stay heuristic
-    until the next poll.
+    articles trigger an LLM call. The request waits at most ``wait_budget_s``
+    seconds in total — calls that take longer keep running in the background
+    and reach the persistent cache, so no feed or scheduler request can stack
+    unbounded latency. Uncached leftovers simply stay heuristic until the
+    next poll.
     """
     from app import config
 
     if max_new_calls is None:
         max_new_calls = config.OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST
+    if wait_budget_s is None:
+        wait_budget_s = config.OPENAI_READER_SCORE_REQUEST_WAIT_S
 
     pending: list[dict[str, Any]] = []
     for article in articles:
@@ -381,9 +390,19 @@ def enrich_articles_with_reader_scores(
         return
 
     batch = pending[:max_new_calls]
-    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(batch)))) as pool:
-        futures = {pool.submit(get_or_create_reader_score, article): article for article in batch}
-        for future in as_completed(futures):
+    futures = {_ENRICH_POOL.submit(get_or_create_reader_score, article): article for article in batch}
+    deadline = time.monotonic() + max(0.0, float(wait_budget_s))
+    outstanding = set(futures)
+    while outstanding:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.info(
+                "[reader-score] wait budget reached; %d call(s) continue in background",
+                len(outstanding),
+            )
+            break
+        done, outstanding = wait(outstanding, timeout=remaining, return_when=FIRST_COMPLETED)
+        for future in done:
             article = futures[future]
             try:
                 entry = future.result()

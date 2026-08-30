@@ -227,6 +227,11 @@ OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST: int = _env_int(
     "OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST",
     8,
 )
+# Max. Wartezeit pro Request auf frische LLM-Scores; langsamere Calls laufen
+# im Hintergrund weiter und landen im Cache (Latenz-Schutz fuer Feed/Teams).
+OPENAI_READER_SCORE_REQUEST_WAIT_S: float = float(
+    os.environ.get("OPENAI_READER_SCORE_REQUEST_WAIT_S", "8.0")
+)
 
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")

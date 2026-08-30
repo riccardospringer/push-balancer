@@ -60,8 +60,8 @@
   "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
   "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
   "app/routers/feed.py": "ff6d18211d5fc6d99fac10d7c862be93e5311425c70016c87f4763bc7e3a1c2c",
-  "app/scoring/editorial.py": "83a71865d0e8e59533f85fad4577b39920226a1d6f14161e0ae29ec65ded9a65",
+  "app/scoring/editorial.py": "2f381caa93dfdcb4bc830610603214ab4d136d2ef011b8484c54c5e3d34e2b03",
   "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
-  "app/scoring/reader_score.py": "bb3904c9bdc848eefd86d57a2f29d823b72775c9c3a4e12bd4003aa67d0972d5"
+  "app/scoring/reader_score.py": "db0e42535bc98d63731d5794414faed7b39a9f23b7bf66cbfaa8f7c8dfe0f8ea"
  }
 }
