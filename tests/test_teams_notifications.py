@@ -1999,7 +1999,9 @@ def test_fresh_dashboard_rating_beats_a_more_negative_server_preference():
     assert message["payload"]["pushScoreSourceLabel"] == "frisches Push-Balancer-Rating"
 
 
-def test_pure_us_domestic_people_story_is_blocked_even_with_high_push_score():
+def test_us_domestic_people_story_is_no_longer_hard_blocked():
+    """Score-Umbau 30.08.2026: der US-People-Hard-Block ist gestrichen —
+    Deutschland-Naehe bewertet jetzt der LLM-Reader-Score im Push Score."""
     candidate = _candidate(
         id="us-people",
         url="https://www.bild.de/news/ausland/us-mutter-zwillinge",
@@ -2015,9 +2017,11 @@ def test_pure_us_domestic_people_story_is_blocked_even_with_high_push_score():
         _config(min_alert_score=60.0, min_editorial_score=60.0),
     )
 
-    assert decision["shouldNotify"] is False
-    assert decision["germanyRelevance"]["level"] == "usa_domestic"
-    assert any("rein US-inlaendische" in reason for reason in decision["blockingReasons"])
+    assert decision["germanyRelevance"]["level"] == "neutral"
+    assert not any("rein US-inlaendische" in reason for reason in decision["blockingReasons"])
+    assert not any(
+        "Deutschland-Relevanz" in reason for reason in decision["blockingReasons"]
+    )
 
 
 def test_highest_push_balancer_score_wins_inside_the_selection_band():
@@ -2060,8 +2064,8 @@ def test_highest_push_balancer_score_wins_inside_the_selection_band():
     # Deutschland-Relevanz bleibt Metadatum und Gate, kein Auswahl-Override.
     assert result["selectedCandidateId"] == international["url"]
     decisions = {item["decision"]["candidateId"]: item["decision"] for item in result["decisions"]}
-    assert decisions[german["url"]]["germanyRelevance"]["level"] == "germany_broad"
-    assert decisions[international["url"]]["germanyRelevance"]["level"] == "international"
+    assert decisions[german["url"]]["germanyRelevance"]["level"] == "neutral"
+    assert decisions[international["url"]]["germanyRelevance"]["level"] == "neutral"
 
 
 def test_cvd_selection_can_choose_lower_raw_score_when_editorially_stronger():
@@ -2322,7 +2326,7 @@ def test_confirmed_german_public_figure_parenthood_can_pass_people_gate_at_feier
     )
 
     assert decision["shouldNotify"] is True
-    assert decision["germanyRelevance"]["level"] == "germany_people"
+    assert decision["germanyRelevance"]["level"] == "neutral"
     assert decision["forecast"]["source"] == "historical_slot_baseline"
     assert decision["teamsAlertScore"] >= 80.0
     assert decision["editorialReview"]["newsValue"] >= 28.0

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
-import os
 import re
 from collections import Counter
 from typing import Any
@@ -246,101 +245,6 @@ _CLICKBAIT_RE = re.compile(
     r"unglaublich|unfassbar|netz rastet aus|so reagiert)\b"
 )
 
-# ── Reuters Digital News Report 2025 — "Walking the notification tightrope" ──
-# Kernbefund: Ueber-Sensationalismus/Clickbait und nicht-essenzielle, "nach Klicks
-# suchende" Stories sind die groessten Overload-/Abmelde-Treiber bei Push-Alerts.
-# Im bisherigen Score ist Clickbait nur mit 0.04 gewichtet, BILD-Reiz dagegen mit
-# 0.18 — die folgende Korrektur wertet Overload-Risiko direkt im Score ab.
-REUTERS_OVERLOAD_ENABLED: bool = os.environ.get(
-    "PUSH_BALANCER_REUTERS_OVERLOAD_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes", "on")
-_OVERLOAD_SENSATION_RE = re.compile(
-    r"(?i)\b(schock|wahnsinn|irre|unfassbar|unglaublich|skandal|horror|drama|"
-    r"hammer|mega|krass|sensation|brutal|schock-?\w*)\b"
-)
-# Redaktions-Feedback 27.08.2026: Kuriosität/Überraschungswissen ist KEIN
-# Overload-Treiber, sondern ein belegter Öffnungs-Treiber (Donau-Wehrmachtsfund
-# 8,25 %, Sonnenfinsternis-Militär 8,09 %). "kurios/skurril/verrückt" wurden
-# deshalb aus dem Overload-Muster entfernt; leere Klick-Frames bleiben drin.
-_OVERLOAD_CURIOSITY_RE = re.compile(
-    r"(?i)(das steckt dahinter|sie werden (es )?nicht glauben|das m[uü]ssen sie sehen|"
-    r"darum geht es jetzt|das ist der grund|"
-    r"das m[uü]ssen sie wissen)"
-)
-
-_GERMANY_EXPLICIT_RE = re.compile(
-    r"(?i)\b(deutschland|deutsch(?:e|er|es|en)?|bundesweit|bundesregierung|"
-    r"bundestag|bundesrat|kanzleramt|schufa|buergergeld|bürgergeld|"
-    r"deutsche bahn|bundesliga|dfb|dax|nationalmannschaft)\b"
-)
-_GERMANY_UNQUALIFIED_GOVERNMENT_RE = re.compile(r"(?i)^(?:die\s+)?regierung\b")
-_GERMANY_BROAD_NEED_RE = re.compile(
-    r"(?i)\b(rente|krankenkasse|miete|steuer|verbraucher|pendler|rentner|"
-    r"patienten|kunden|strom|gas|heizung|spritpreis|lebensmittel|rueckruf|"
-    r"rückruf|streik|ausfall|warnung|unwetter|hochwasser|hitzewarnung|hitze|"
-    r"trinkwasser|preise|immobilien|wohnungspreise|hauspreise|bauzinsen|"
-    r"filialen|insolvenz|pleite)\b"
-)
-_GERMAN_SPORT_RE = re.compile(
-    r"(?i)\b(bayern|bvb|dortmund|leverkusen|leipzig|frankfurt|schalke|"
-    r"gladbach|hamburg|koeln|köln|stuttgart|werder|bundesliga|dfb|"
-    r"nationalmannschaft)\b"
-)
-_DOMESTIC_URL_RE = re.compile(r"(?i)/(?:regional|news/inland|politik/inland)/")
-_INTERNATIONAL_URL_RE = re.compile(
-    r"(?i)/(?:ausland|ausland-und-internationales|international|reise|reisen)/"
-)
-_USA_RE = re.compile(
-    r"(?i)\b(usa|u\.s\.|us-(?:mutter|vater|frau|mann|star|praesident|"
-    r"präsident|experte|experten|militaer|militär)|trump|weisses haus|"
-    r"weißes haus|washington|kalifornien|florida|texas|new york)\b"
-)
-_FOREIGN_MARKER_RE = re.compile(
-    r"(?i)\b(usa|iran|israel|ukraine|russland|china|katar|niederlande|"
-    r"belgien|bruessel|brüssel|frankreich|italien|spanien|grossbritannien|"
-    r"großbritannien|tuerkei|türkei|oesterreich|österreich|schweiz|polen|"
-    r"tschechien|griechenland|portugal|ibiza|mallorca|dubai|london|paris|"
-    r"rom|madrid|moskau|washington)\b"
-)
-_GEOPOLITICAL_EVENT_RE = re.compile(
-    r"(?i)\b(krieg|waffenruhe|feuerpause|angriffswelle|militaer|militär|"
-    r"raketen|atom|nato|sanktionen|invasion|terror|anschlag|geiseln|"
-    r"erdbeben|katastrophe|mehrere tote|massaker)\b|\b\d+\s+tote\b"
-)
-_FOREIGN_PERSONAL_STORY_RE = re.compile(
-    r"(?i)\b(mutter|vater|zwillinge|baby|kind|freundin|ehefrau|ehemann|"
-    r"influencer|promi|star|todesstrafe|erstickt|ermordet|totraser|"
-    r"scheidung|trennung|privat|party)\b"
-)
-
-# Corporate PR / announcement detection.
-# A title is flagged when ≥2 of these three signals fire together (verb + noun,
-# verb + Wir-quote, or noun + Wir-quote) AND no hard news event is present.
-_CORP_ANNOUNCE_VERB_RE = re.compile(
-    r"(?i)\b(?:kündigt|kündet)\b.{0,55}\ban\b"
-    r"|\b(?:plant|startet|launcht?|lanciert|enthüllt|präsentiert)\b"
-)
-_CORP_STRATEGY_NOUN_RE = re.compile(
-    r"(?i)\b(?:offensive|expansion|wachstumsstrategie|roadmap|"
-    r"markteinführung|marktstart|markteintritt|"
-    r"kooperation|partnerschaft|zusammenarbeit)\b"
-)
-_CORP_WIR_QUOTE_RE = re.compile(
-    r"(?i)[–—-]\s*['\"]?wir\s+(?:wollen|werden|müssen|möchten|planen|sind|haben)\b"
-)
-# Hard newsroom events that override the announcement flag (article is push-worthy
-# regardless of announcement language).
-_HARD_NEWS_EVENT_RE = re.compile(
-    r"(?i)\b(?:brand|feuer|explosion|einsturz|unfall|crash|absturz|"
-    r"mord|get[öo]tet|tot|tote[rns]?|erschossen|erstochen|gestorben|"
-    r"verhaftet|festgenommen|razzia|urteil|verurteilt|"
-    r"streik|insolvenz|pleite|konkurs|bankrott|entlassungen?|"
-    r"rücktritt|zurückgetreten|abgesetzt|gefeuert|"
-    r"beschlossen|verabschiedet|"
-    r"anschlag|attentat|entführ|"
-    r"erdbeben|überschwemmung|hochwasser|"
-    r"rekordhoch|rekordtief)\b"
-)
 
 # Narrow People-news exception: a named holder of a German political role and
 # a confirmed parenthood milestone. The rule deliberately ignores partner sex,
@@ -358,6 +262,17 @@ _GERMAN_PUBLIC_FIGURE_PARENTHOOD_RE = re.compile(
 
 # Narrow high-interest People development. All signals must be present so a
 # famous name, fan wording, or a video teaser alone can never trigger the rule.
+_GERMANY_BROAD_NEED_RE = re.compile(
+    r"(?i)\b(rente|krankenkasse|miete|steuer|verbraucher|pendler|rentner|"
+    r"patienten|kunden|strom|gas|heizung|spritpreis|lebensmittel|rueckruf|"
+    r"rückruf|streik|ausfall|warnung|unwetter|hochwasser|hitzewarnung|hitze|"
+    r"trinkwasser|preise|immobilien|wohnungspreise|hauspreise|bauzinsen|"
+    r"filialen|insolvenz|pleite)\b"
+)
+_INTERNATIONAL_URL_RE = re.compile(
+    r"(?i)/(?:ausland|ausland-und-internationales|international|reise|reisen)/"
+)
+
 _A_LIST_PEOPLE_RE = re.compile(
     r"(?i)\b(ariana grande|taylor swift|beyonc[eé]|rihanna|lady gaga|"
     r"justin bieber|selena gomez|britney spears|adele|billie eilish|"
@@ -391,15 +306,6 @@ _LIVE_TEASER_RE = re.compile(
 )
 _LIVE_ENDED_STATUSES = frozenset(
     {"ended", "beendet", "finished", "closed", "post", "vorbei", "abgeschlossen", "over"}
-)
-# Punkt 3: Spielberichte/Ereignis-Ergebnisse nur direkt nach Feststellung
-# pushen — oder gar nicht (Taxonomie-Knoten "Spielbericht", URL oder Titel).
-_POST_EVENT_REPORT_RE = re.compile(r"(?i)\bspielbericht\b")
-_SPORT_RESULT_REPORT_RE = re.compile(
-    r"(?i)\b\d{1,2}\s*:\s*\d{1,2}\b.{0,60}"
-    r"\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(ä|ae)rtssieg)\b"
-    r"|\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(ä|ae)rtssieg)\b"
-    r".{0,60}\b\d{1,2}\s*:\s*\d{1,2}\b"
 )
 # Punkt 10: Echte-News-Muster wie Vermisstenfaelle mit hoher Anteilnahme
 # (Beispiel Mallorca-Urlauberin) muessen frueh oben stehen.
@@ -486,147 +392,33 @@ def is_strong_a_list_people_development_story(push: dict[str, Any]) -> bool:
 
 
 def assess_germany_relevance(push: dict[str, Any]) -> dict[str, Any]:
-    """Classify editorial relevance for people in Germany from existing metadata."""
-    title = _title(push)
-    url = str(push.get("url") or push.get("link") or "").strip()
-    category = _cat(push)
-    explicit_breaking = bool(
-        push.get("is_eilmeldung") or push.get("isEilmeldung") or push.get("isBreaking")
-    )
-    explicit_germany = bool(_GERMANY_EXPLICIT_RE.search(title))
-    unqualified_german_government = bool(
-        _GERMANY_UNQUALIFIED_GOVERNMENT_RE.search(title)
-        and not _INTERNATIONAL_URL_RE.search(url)
-        and not _USA_RE.search(title)
-    )
-    domestic_url = bool(_DOMESTIC_URL_RE.search(url))
-    broad_need = bool(_GERMANY_BROAD_NEED_RE.search(title))
-    german_sport = category == "sport" and bool(_GERMAN_SPORT_RE.search(title))
-    international = (
-        bool(_INTERNATIONAL_URL_RE.search(url) or _FOREIGN_MARKER_RE.search(title))
-        and not explicit_germany
-    )
+    """Deutschland-Relevanz ist komplett gestrichen (Score-Umbau 30.08.2026).
 
-    consumer_need = (
-        category in {"verbraucher", "wirtschaft"}
-        and broad_need
-        and not _INTERNATIONAL_URL_RE.search(url)
-    )
-
-    if is_german_public_figure_parenthood_story(push):
-        return {
-            "level": "germany_people",
-            "adjustment": 5.0,
-            "selectionAdjustment": 4.0,
-            "minimumScore": 75.0,
-            "hardBlock": False,
-            "reason": (
-                "Deutschland-People: benannte deutsche oeffentliche Person und bestaetigtes "
-                "Elternschafts-Ereignis mit breitem Gespraechswert"
-            ),
-        }
-
-    if (
-        explicit_germany
-        or unqualified_german_government
-        or german_sport
-        or (domestic_url and broad_need)
-        or consumer_need
-    ):
-        return {
-            "level": "germany_broad",
-            "adjustment": 8.0,
-            "selectionAdjustment": 7.0,
-            "minimumScore": 75.0,
-            "hardBlock": False,
-            "reason": "Deutschland-Relevanz: breite direkte Relevanz fuer Menschen in Deutschland",
-        }
-
-    if domestic_url:
-        adjustment = 0.0 if "/regional/" in url.casefold() else 2.0
-        return {
-            "level": "germany_domestic",
-            "adjustment": adjustment,
-            "selectionAdjustment": 2.0,
-            "minimumScore": 75.0,
-            "hardBlock": False,
-            "reason": "Deutschland-Relevanz: inlaendische Meldung ohne pauschalen Reichweitenbonus",
-        }
-
-    if international:
-        if explicit_breaking:
-            return {
-                "level": "international_breaking",
-                "adjustment": 0.0,
-                "selectionAdjustment": 0.0,
-                "minimumScore": 72.0,
-                "hardBlock": False,
-                "reason": "Internationales Breaking: weltweite Lage rechtfertigt Sofortpruefung",
-            }
-        geopolitical = bool(_GEOPOLITICAL_EVENT_RE.search(title))
-        personal = bool(_FOREIGN_PERSONAL_STORY_RE.search(title))
-        usa_domestic = bool(_USA_RE.search(title) and personal and not geopolitical)
-        if usa_domestic:
-            return {
-                "level": "usa_domestic",
-                "adjustment": -20.0,
-                "selectionAdjustment": -20.0,
-                "minimumScore": 101.0,
-                "hardBlock": True,
-                "reason": "Deutschland-Relevanz: rein US-inlaendische Crime-/People-Story ohne direkten Deutschland-Bezug",
-            }
-        # Reale BILD-Push-Scores liegen fast nie ueber ~80; die alten Schwellen
-        # (85/90) schlossen dadurch strukturell JEDE Auslandsmeldung dauerhaft
-        # aus. Realistische Bar: geopolitische Lagen ab 76, sonstiges Ausland ab
-        # 80 pruefbar. US-Inlands-Crime/People bleibt ueber usa_domestic hart.
-        minimum_score = 76.0 if geopolitical else 80.0
-        adjustment = -8.0 if geopolitical else -12.0
-        return {
-            "level": "international",
-            "adjustment": adjustment,
-            "selectionAdjustment": -8.0 if geopolitical else -12.0,
-            "minimumScore": minimum_score,
-            "hardBlock": False,
-            "reason": (
-                "Deutschland-Relevanz: internationale Lage braucht aussergewoehnlichen Push Score"
-            ),
-        }
-
+    Der LLM-Reader-Score bewertet Deutschland-Nähe selbst (Prompt-Abschnitt 7).
+    Die Funktion bleibt als neutrale API-Form für Bestands-Konsumenten
+    (Teams-Auswahl, Research-Panel) erhalten: keine Anpassung, kein Hard-Block,
+    keine Sonder-Schwelle.
+    """
     return {
         "level": "neutral",
         "adjustment": 0.0,
         "selectionAdjustment": 0.0,
-        "minimumScore": 75.0,
+        "minimumScore": 0.0,
         "hardBlock": False,
-        "reason": "Deutschland-Relevanz: neutral, Entscheidung ueber Push Score",
+        "reason": "",
     }
 
-
-def _reuters_overload_adjustment(
-    title: str,
-    tone: str,
-    is_eil: bool,
-    risks: list[str],
-) -> float:
-    """Score-Abwertung fuer Overload-Treiber nach Reuters DNR 2025.
-
-    Ueber-Sensationalismus/Clickbait und nicht-essenzielle Neugier-/Klick-Frames
-    treiben Abmeldungen; harte Breaking-Lagen sind ausgenommen (Breaking-
-    Priorisierung funktioniert laut Studie). Begrenzt auf max. -12 Punkte.
-    """
-    if not REUTERS_OVERLOAD_ENABLED or is_eil or tone == "breaking":
-        return 0.0
-    penalty = 0.0
-    sensation = len(_OVERLOAD_SENSATION_RE.findall(title))
-    if sensation:
-        penalty -= min(8.0, 4.0 + 2.0 * (sensation - 1))
-        risks.append("Overload-Risiko: ueber-sensationelle Zuspitzung (Reuters DNR 2025)")
-    if title.count("!") >= 2:
-        penalty -= 3.0
-    if _OVERLOAD_CURIOSITY_RE.search(title):
-        penalty -= 4.0
-        risks.append("Overload-Risiko: nicht-essenzieller Neugier-/Klick-Frame (Reuters DNR 2025)")
-    return max(-12.0, penalty)
+def _valid_reader_score(value: Any) -> float | None:
+    """Validate an incoming LLM reader score (0-100) or return ``None``."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= score <= 100.0:
+        return None
+    return round(score, 1)
 
 
 def _feedback_2026_adjustment(
@@ -658,15 +450,8 @@ def _feedback_2026_adjustment(
         delta -= 8.0
         risks.append("Redaktionsfeedback: Live-/Stream-Teaser ohne Massenrelevanz erzeugt keine Öffnungen")
 
-    # Punkt 3: Ergebnis-/Spielberichte direkt nach Feststellung pushen oder gar nicht.
-    if features.get("is_post_event_report") and not is_eil:
-        if freshness_hours is None or freshness_hours > 1.0:
-            delta -= 25.0
-            risks.append(
-                "Redaktionsfeedback: Ergebnis-Bericht nach Abpfiff — direkt pushen oder gar nicht"
-            )
-        else:
-            drivers.append("Redaktionsfeedback: Ergebnis direkt nach Feststellung noch pushbar")
+    # Score-Umbau 30.08.2026: Spielberichte werden NICHT mehr gesondert
+    # abgestraft — sie laufen ueber LLM-Reader-Score und Aktualität.
 
     # Punkt 9 (Sport-Rätselzeilen) wird auf Redaktionswunsch vom 27.08. NICHT
     # gesondert abgestraft — Zitat-Teaser laufen ueber die normalen Komponenten.
@@ -701,16 +486,12 @@ def _feedback_2026_adjustment(
     if (
         freshness_hours is not None
         and freshness_hours <= 2.0
-        and not features.get("video_weak")
         and ("missing_person" in hits or "danger" in hits or "crime" in hits)
     ):
         delta += 5.0
         drivers.append("Redaktionsfeedback: frische relevante Lage gehört auf die erste Seite")
 
-    # Punkt 10: Videos werden zu hoch gerankt — ohne Jetzt-Anlass abwerten.
-    if features.get("video_weak") and not is_eil:
-        delta -= 6.0
-        risks.append("Redaktionsfeedback: Video ohne klaren Jetzt-Anlass wird stärker abgewertet")
+    # Score-Umbau 30.08.2026: Video-Sonderabwertung komplett gestrichen.
 
     # Punkt 4d: Früh-Slots (06-08 Uhr) nur mit harter Betroffenheit füllen.
     if hour in _EARLY_MORNING_HOURS and not is_eil and tone != "breaking":
@@ -769,14 +550,6 @@ _POLITICS_ABSTRACT_RE = re.compile(
     r"diskussion|plan|pläne|plaene|strategie|konzept|programm|papier|"
     r"setzt.*thema|wirtschaftliche wende|verschärfen druck|verschaerfen druck)\b"
 )
-_VIDEO_RE = re.compile(
-    r"(?i)\b(video|videos|clip|clips|stream|live|liveticker|gucken|ansehen|aufnahme|aufnahmen)\b"
-)
-_VIDEO_STRONG_RE = re.compile(
-    r"(?i)\b(live|jetzt gucken|jetzt sehen|spektakulär|spektakulaer|moment|"
-    r"szene|aufnahme|kamera|explosion|brand|unfall|tor|rekord|promi|sport)\b"
-)
-_VIDEO_WEAK_RE = re.compile(r"(?i)\b(video|videos|clip|clips)\b")
 _VAGUE_RE = re.compile(
     r"(?i)\b(das steckt dahinter|darum|so geht es|was dahinter steckt|"
     r"rätsel|raetsel|mysteriös|mysterioes|unklar|diese sache|dieses detail)\b"
@@ -967,13 +740,13 @@ _FEEDBACK_RULES: list[tuple[re.Pattern[str], int, str, str]] = [
         "risk",
         "Redaktionsfeedback: Fall wirkt generisch oder nicht neu genug",
     ),
-    (
-        re.compile(r"(?i)\b(video)\b"),
-        -3,
-        "risk",
-        "Redaktionsfeedback: Video braucht einen klaren Push-Anlass",
-    ),
 ]
+
+
+def is_breaking_news_taxonomy(push: dict[str, Any]) -> bool:
+    """Eilmeldung wird zuverlässig über den Taxonomie-Knoten "Breaking News" erkannt."""
+    taxonomy_text = _collect_taxonomy_text(push)
+    return "breaking news" in taxonomy_text or "eilmeldung" in taxonomy_text
 
 
 def score_push_candidate(
@@ -981,8 +754,13 @@ def score_push_candidate(
     history: list[dict[str, Any]] | None = None,
     state: dict[str, Any] | None = None,
     predicted_or: float | None = None,
+    reader_score: float | None = None,
 ) -> dict[str, Any]:
-    """Score a single push candidate on a 0-100 editorial priority scale."""
+    """Score a single push candidate on a 0-100 editorial priority scale.
+
+    ``reader_score`` is the per-article LLM BILD-Reiz (0-100, one call per
+    article). When absent, the bounded heuristic component fills in.
+    """
     history = history or []
     state = state or {}
     title = _title(push)
@@ -991,7 +769,12 @@ def score_push_candidate(
     target_ts = int(target_dt.timestamp())
     weekday = target_dt.weekday()
     hour = int(push.get("hour", target_dt.hour) or target_dt.hour)
-    is_eil = bool(push.get("is_eilmeldung") or push.get("isEilmeldung"))
+    is_eil = bool(
+        push.get("is_eilmeldung")
+        or push.get("isEilmeldung")
+        or push.get("isBreaking")
+        or is_breaking_news_taxonomy(push)
+    )
     tone = _tone(title, is_eil)
     topic = _topic(title, cat)
     features = _extract_push_features(push, title, cat, target_dt)
@@ -1001,7 +784,6 @@ def score_push_candidate(
     drivers: list[str] = []
     risks: list[str] = []
 
-    bild_fit = _score_bild_fit(title, cat, tone, is_eil, features, drivers, risks)
     hist_score, hist_info = _score_history(
         valid_history, cat, hour, weekday, tone, topic, global_avg, drivers, risks
     )
@@ -1009,12 +791,25 @@ def score_push_candidate(
         valid_history, title, cat, tone, topic, target_ts, drivers, risks
     )
     freshness_score = _score_freshness(push, title, cat, tone, features, target_dt, drivers, risks)
-    bild_reiz = _score_bild_reiz(title, cat, tone, topic, features, drivers, risks)
+
+    # BILD-Reiz: LLM-Reader-Score (ein Call pro Artikel), sonst Heuristik.
+    llm_reader_score = _valid_reader_score(reader_score)
+    if llm_reader_score is None:
+        llm_reader_score = _valid_reader_score(
+            push.get("readerScore") or push.get("reader_score")
+        )
+    if llm_reader_score is not None:
+        bild_reiz = llm_reader_score
+        bild_reiz_source = "llm_reader_score"
+        drivers.append("BILD-Reiz: LLM-Reader-Score aus BILD-Leser-Sicht")
+    else:
+        bild_reiz = _score_bild_reiz(title, cat, tone, topic, features, drivers, risks)
+        bild_reiz_source = "heuristik_fallback"
+
     headline_strength = _score_headline_strength(title, tone, features, drivers, risks)
     politics_context = _score_politics_context(
         title, cat, features, freshness_score, drivers, risks
     )
-    video_fit = _score_video_fit(title, features, drivers, risks)
     feedback_score = _score_editorial_feedback(push, features, drivers, risks)
     opening_score = _score_opening_potential(
         push,
@@ -1033,15 +828,17 @@ def score_push_candidate(
     )
     risk_score = _score_risk(title, cat, tone, mix_info, features, freshness_score, drivers, risks)
 
+    # Gewichtung Score-Umbau 30.08.2026: BILD-Reiz (LLM) 40 %, Öffnungs-
+    # Potenzial 20 %, Aktualität 15 %, Mix 10 %, Historie 10 %, Headline 3 %,
+    # Risiko 2 %. BILD-Fit ist gestrichen.
     raw_score = (
-        bild_fit * 0.14
-        + hist_score * 0.12
-        + mix_score * 0.13
-        + opening_score * 0.16
-        + freshness_score * 0.17
-        + bild_reiz * 0.18
-        + headline_strength * 0.06
-        + risk_score * 0.04
+        bild_reiz * 0.40
+        + opening_score * 0.20
+        + freshness_score * 0.15
+        + mix_score * 0.10
+        + hist_score * 0.10
+        + headline_strength * 0.03
+        + risk_score * 0.02
     )
     raw_score += (feedback_score - 60.0) * 0.18
 
@@ -1052,10 +849,6 @@ def score_push_candidate(
         raw_score -= 4.0
     if features["is_politics"]:
         raw_score += (politics_context - 60.0) * 0.23
-    if features["is_video"]:
-        # Redaktions-Feedback 27.08.2026 (Punkt 10): Videos wurden zu hoch
-        # gerankt — der Video-Kontext wirkt staerker auf den Gesamtscore.
-        raw_score += (video_fit - 60.0) * 0.20
     if features["stale_politics_without_development"]:
         raw_score -= 7.0
     if features["strong_non_politics"]:
@@ -1097,30 +890,15 @@ def score_push_candidate(
         raw_score += 6.0
         drivers.append("Deutschland-Relevanz: Wirtschaftskrise mit breiter Betroffenheit (Jobs)")
 
-    # Reuters DNR 2025: Overload-Treiber (Sensationalismus/Clickbait/Neugier-Frame)
-    # direkt abwerten, nicht nur im 0.04-gewichteten Risiko-Term.
-    overload_adjustment = _reuters_overload_adjustment(title, tone, is_eil, risks)
-    raw_score += overload_adjustment
+    # Score-Umbau 30.08.2026: Reuters-Overload-Malus, Deutschland-Relevanz-
+    # Anpassung und Unternehmens-PR-Malus sind komplett gestrichen — diese
+    # Signale bewertet jetzt der LLM-Reader-Score selbst.
 
     # Redaktions-Feedback 27.08.2026: gebuendelte Regel-Anpassungen.
     feedback_2026_adjustment = _feedback_2026_adjustment(
         title, cat, tone, topic, hour, is_eil, features, drivers, risks
     )
     raw_score += feedback_2026_adjustment
-
-    germany_relevance = assess_germany_relevance(push)
-    germany_adjustment = float(germany_relevance.get("adjustment") or 0.0)
-    raw_score += germany_adjustment
-    relevance_reason = str(germany_relevance.get("reason") or "").strip()
-    if relevance_reason:
-        if germany_adjustment >= 0:
-            drivers.append(relevance_reason)
-        else:
-            risks.append(relevance_reason)
-
-    if features.get("is_corporate_announcement") and not is_eil:
-        raw_score -= 15.0
-        risks.append("Ankündigungs-Malus: kein richtiges Push-Ereignis erkennbar")
 
     score = round(_clip(raw_score, 0.0, 100.0), 1)
     priority = _priority(score)
@@ -1142,25 +920,20 @@ def score_push_candidate(
         "recommendedText": recommendation,
         "mixPriority": priority,
         "scoreBreakdown": {
-            "bildFit": round(bild_fit, 1),
             "historicalTiming": round(hist_score, 1),
             "mixBalance": round(mix_score, 1),
             "openingRatePotential": round(opening_score, 1),
             "riskAndFatigue": round(risk_score, 1),
             "freshness": round(freshness_score, 1),
             "bildReiz": round(bild_reiz, 1),
+            "bildReizSource": bild_reiz_source,
             "headlineStrength": round(headline_strength, 1),
             "politicsContext": round(politics_context, 1),
-            "videoFit": round(video_fit, 1),
             "editorialFeedback": round(feedback_score, 1),
-            "overloadAdjustment": round(overload_adjustment, 1),
             "feedback2026Adjustment": round(feedback_2026_adjustment, 1),
-            "germanyRelevanceAdjustment": round(germany_adjustment, 1),
         },
-        "germanyRelevance": germany_relevance,
-        "isCorporateAnnouncement": bool(features.get("is_corporate_announcement", False)),
+        "readerScore": llm_reader_score,
         "isEndedLiveFormat": bool(features.get("is_live_ended", False)),
-        "isPostEventReport": bool(features.get("is_post_event_report", False)),
     }
 
 
@@ -1433,7 +1206,6 @@ def _extract_push_features(
     target_dt: _dt.datetime,
 ) -> dict[str, Any]:
     lower = title.lower()
-    is_video = bool(push.get("isVideo") or push.get("video") or _VIDEO_RE.search(title))
     freshness_hours = _freshness_hours(push, target_dt)
     pub_dt = _publication_dt(push)
     trigger_hits: dict[str, int] = {}
@@ -1488,38 +1260,12 @@ def _extract_push_features(
 
     # ── Redaktions-Feedback 27.08.2026 ──
     url = str(push.get("url") or push.get("link") or "")
-    taxonomy_text = _collect_taxonomy_text(push)
     is_live_format = bool(_LIVE_FORMAT_RE.search(title) or _LIVE_FORMAT_RE.search(url))
     is_live_ended = is_live_format and (
         _live_ended_flag(push) or (freshness_hours is not None and freshness_hours > 4.0)
     )
-    is_post_event_report = bool(
-        _POST_EVENT_REPORT_RE.search(title)
-        or _POST_EVENT_REPORT_RE.search(url)
-        or _POST_EVENT_REPORT_RE.search(taxonomy_text)
-        or (cat == "sport" and _SPORT_RESULT_REPORT_RE.search(title))
-    )
-    _corp_verb = bool(_CORP_ANNOUNCE_VERB_RE.search(title))
-    _corp_noun = bool(_CORP_STRATEGY_NOUN_RE.search(title))
-    _corp_wir = bool(_CORP_WIR_QUOTE_RE.search(title))
-    _hard_event = bool(_HARD_NEWS_EVENT_RE.search(title))
-    _corp_signals = sum([_corp_verb, _corp_noun, _corp_wir])
-    _is_eil = bool(push.get("is_eilmeldung") or push.get("isEilmeldung"))
-    is_corporate_announcement = (
-        _corp_signals >= 2
-        and not _hard_event
-        and not is_politics
-        and not _is_eil
-        and cat not in {"sport"}
-    )
-
     return {
         "lower": lower,
-        "is_video": is_video,
-        "video_strong": is_video and bool(_VIDEO_STRONG_RE.search(title)),
-        "video_weak": is_video
-        and not bool(_VIDEO_STRONG_RE.search(title))
-        and bool(_VIDEO_WEAK_RE.search(title)),
         "freshness_hours": freshness_hours,
         "published_dt": pub_dt,
         "is_stale": stale,
@@ -1543,112 +1289,11 @@ def _extract_push_features(
             _GENERIC_CASE_RE.search(title) or "passiert immer wieder" in feedback_text
         ),
         "feedback_text": feedback_text,
-        "is_corporate_announcement": is_corporate_announcement,
         "is_live_format": is_live_format,
         "is_live_ended": is_live_ended,
         "is_live_teaser": bool(_LIVE_TEASER_RE.search(title)),
-        "is_post_event_report": is_post_event_report,
         "has_curiosity_discovery": bool(_DISCOVERY_CURIOSITY_RE.search(title)),
     }
-
-
-def _score_bild_fit(
-    title: str,
-    cat: str,
-    tone: str,
-    is_eil: bool,
-    features: dict[str, Any],
-    drivers: list[str],
-    risks: list[str],
-) -> float:
-    score = 56.0
-    length = len(title)
-    words = title.split()
-    word_count = len(words)
-
-    if 34 <= length <= 86 and 5 <= word_count <= 12:
-        score += 11
-        drivers.append("BILD-Fit: kurz, konkret und schnell erfassbar")
-    elif length > 105:
-        score -= 10
-        risks.append("Titel ist für Push-Verhältnisse zu lang")
-    elif length < 18:
-        score -= 7
-        risks.append("Titel wirkt zu knapp und braucht mehr Kontext")
-
-    if re.search(r"\d", title):
-        score += 5
-        drivers.append("Konkrete Zahl erhöht Orientierung und Klick-Anlass")
-
-    if re.search(r"^[A-ZÄÖÜ][A-ZÄÖÜa-zäöüß\s-]{2,24}[:|]", title) or ":" in title:
-        score += 4
-
-    if re.search(r"(?i)^(DAS|SO|HIER|JETZT|DIESE[RS]?)\b", title):
-        score += 5
-        drivers.append("BILD-Mechanik: direkter Einstieg mit klarem Fokus")
-
-    if tone in {"breaking", "utility", "conflict"}:
-        score += {"breaking": 12, "utility": 10, "conflict": 7}[tone]
-        drivers.append(f"Starker Nachrichten- oder Nutzwert-Treiber: {tone}")
-    elif tone == "emotion":
-        score += 4
-
-    if (
-        features.get("is_stale")
-        and tone == "breaking"
-        and not is_eil
-        and not features.get("is_exclusive")
-    ):
-        score -= 16
-        risks.append("Breaking-Wertung verfällt: Meldung ist zeitlich verbraucht")
-
-    if features.get("trigger_strength", 0) >= 18:
-        score += 6
-        drivers.append("BILD-Fit: Thema hat mehrere typische Push-Reize")
-    if features.get("public_figure_parenthood"):
-        score += 8
-        drivers.append("BILD-Fit: konkrete positive People-News mit oeffentlicher Person")
-    if features.get("a_list_people_development"):
-        score = max(score, 75.0)
-        drivers.append("BILD-Fit: konkrete A-List-Entwicklung mit sichtbarem Fan-Interesse")
-    if features.get("is_vague"):
-        score -= 9
-        risks.append("Headline wirkt unkonkret oder verrätselt")
-
-    if is_eil and not re.search(r"(?i)eilmeldung|breaking|\+\+", title):
-        score -= 4
-        risks.append("Eilmeldungs-Flag ist nicht sauber im Text erkennbar")
-
-    if cat in {"news", "verbraucher", "wirtschaft"}:
-        score += 4
-    elif cat == "politik" and not features.get("strong_politics"):
-        score -= 4
-        risks.append("Politik braucht für Push eine klare neue Entwicklung")
-    elif cat == "sport" and features.get("trigger_hits", {}).get("sport_emotion"):
-        score += 4
-    elif (
-        cat == "unterhaltung"
-        and tone == "neutral"
-        and not features.get("trigger_hits", {}).get("prominence")
-        and not features.get("public_figure_parenthood")
-        and not features.get("a_list_people_development")
-    ):
-        score -= 5
-        risks.append("Unterhaltung ohne Prominenz, Konflikt oder Überraschung")
-
-    if _CLICKBAIT_RE.search(title):
-        score -= 12
-        risks.append("Formulierung wirkt klickig statt redaktionell zwingend")
-
-    if title.count("!") > 1 or "??" in title:
-        score -= 8
-        risks.append("Überzeichnung durch Satzzeichen kann Vertrauen kosten")
-
-    if features.get("is_corporate_announcement") and not is_eil:
-        score -= 22
-        risks.append("Unternehmens-PR: Ankündigung ohne konkretes Push-Ereignis")
-
-    return _clip(score, 0, 100)
 
 
 def _score_history(
@@ -1663,12 +1308,11 @@ def _score_history(
     risks: list[str],
 ) -> tuple[float, dict[str, Any]]:
     if not history:
-        return 56.0, {"globalAvg": global_avg, "catHourAvg": global_avg, "catHourN": 0}
+        return 56.0, {"globalAvg": global_avg, "catAvg": global_avg, "catN": 0}
 
     cat_vals: list[float] = []
     hour_vals: list[float] = []
     weekday_hour_vals: list[float] = []
-    cat_hour_vals: list[float] = []
     tone_hour_vals: list[float] = []
     topic_vals: list[float] = []
 
@@ -1691,8 +1335,6 @@ def _score_history(
             hour_vals.append(orv)
         if dt.weekday() == weekday and item_hour == hour:
             weekday_hour_vals.append(orv)
-        if item_cat == cat and item_hour == hour:
-            cat_hour_vals.append(orv)
         if item_tone == tone and item_hour == hour:
             tone_hour_vals.append(orv)
         if item_topic == topic:
@@ -1701,17 +1343,17 @@ def _score_history(
     cat_avg = _bayes(cat_vals, global_avg, 10)
     hour_avg = _bayes(hour_vals, global_avg, 10)
     weekday_hour_avg = _bayes(weekday_hour_vals, global_avg, 8)
-    cat_hour_avg = _bayes(cat_hour_vals, global_avg, 8)
     tone_hour_avg = _bayes(tone_hour_vals, global_avg, 8)
     topic_avg = _bayes(topic_vals, global_avg, 10)
 
+    # Score-Umbau 30.08.2026: die Ressort×Uhrzeit-Relation ist gestrichen;
+    # Ressort und Uhrzeit wirken nur noch als getrennte Signale.
     score = (
-        _or_to_score(cat_hour_avg, global_avg) * 0.34
-        + _or_to_score(hour_avg, global_avg) * 0.19
-        + _or_to_score(cat_avg, global_avg) * 0.19
-        + _or_to_score(weekday_hour_avg, global_avg) * 0.13
-        + _or_to_score(tone_hour_avg, global_avg) * 0.08
-        + _or_to_score(topic_avg, global_avg) * 0.07
+        _or_to_score(hour_avg, global_avg) * 0.29
+        + _or_to_score(cat_avg, global_avg) * 0.29
+        + _or_to_score(weekday_hour_avg, global_avg) * 0.20
+        + _or_to_score(tone_hour_avg, global_avg) * 0.12
+        + _or_to_score(topic_avg, global_avg) * 0.10
     )
 
     if 6 <= hour <= 9 and (
@@ -1744,15 +1386,14 @@ def _score_history(
         score -= 3
         risks.append("Zeitfenster: neutrale Politik braucht stärkeren aktuellen Anlass")
 
-    if cat_hour_avg > global_avg + 0.6 and len(cat_hour_vals) >= 3:
-        drivers.append(f"Historisches Muster: {cat} um {hour} Uhr liegt über Durchschnitt")
-    elif cat_hour_avg < global_avg - 0.6 and len(cat_hour_vals) >= 3:
-        risks.append(f"Historisches Muster: {cat} um {hour} Uhr performt unter Durchschnitt")
+    if cat_avg > global_avg + 0.6 and len(cat_vals) >= 3:
+        drivers.append(f"Historisches Muster: {cat} liegt über Durchschnitt")
+    elif cat_avg < global_avg - 0.6 and len(cat_vals) >= 3:
+        risks.append(f"Historisches Muster: {cat} performt unter Durchschnitt")
 
     return _clip(score, 0, 100), {
         "globalAvg": round(global_avg, 3),
-        "catHourAvg": round(cat_hour_avg, 3),
-        "catHourN": len(cat_hour_vals),
+        "catN": len(cat_vals),
         "hourAvg": round(hour_avg, 3),
         "catAvg": round(cat_avg, 3),
         "topicAvg": round(topic_avg, 3),
@@ -1948,9 +1589,6 @@ def _score_bild_reiz(
     if not hits and tone == "neutral" and not features.get("a_list_people_development"):
         score -= 4
         risks.append("BILD-Reiz: noch kein klarer Hä?-, Aufreger- oder Nutzwert-Moment")
-    if features.get("is_corporate_announcement"):
-        score -= 18
-        risks.append("BILD-Reiz: Unternehmens-Ankündigung hat keinen Sofort-Klick-Anlass")
     return _clip(score, 0, 100)
 
 
@@ -2026,36 +1664,6 @@ def _score_politics_context(
     return _clip(score, 0, 100)
 
 
-def _score_video_fit(
-    title: str,
-    features: dict[str, Any],
-    drivers: list[str],
-    risks: list[str],
-) -> float:
-    if not features.get("is_video"):
-        return 68.0
-
-    score = 56.0
-    if features.get("video_strong") or features.get("a_list_people_development"):
-        score += 24
-        drivers.append("Video: klarer Jetzt-Anlass oder starker Schauwert")
-    if features.get("has_development"):
-        score += 8
-    if features.get("trigger_strength", 0) >= 16:
-        score += 7
-    if (
-        features.get("video_weak")
-        and not features.get("video_strong")
-        and not features.get("a_list_people_development")
-    ):
-        score -= 16
-        risks.append("Video: Bewegtbild allein liefert noch keinen Push-Anlass")
-    if features.get("is_vague"):
-        score -= 8
-        risks.append("Video: Kontext muss ohne Rätsel sofort verständlich sein")
-    return _clip(score, 0, 100)
-
-
 def _score_editorial_feedback(
     push: dict[str, Any],
     features: dict[str, Any],
@@ -2074,10 +1682,6 @@ def _score_editorial_feedback(
                 drivers.append(label)
             else:
                 risks.append(label)
-    if features.get("is_video") and "video" in joined.lower() and score >= 60:
-        drivers.append(
-            "Feedback-Logik: Video wird nicht pauschal abgewertet, sondern nach Anlass bewertet"
-        )
     return _clip(score, 0, 100)
 
 
@@ -2098,7 +1702,7 @@ def _score_opening_potential(
 ) -> float:
     predicted = _predicted_percent(predicted_or)
     if predicted is None:
-        predicted = float(hist_info.get("catHourAvg") or hist_info.get("catAvg") or global_avg)
+        predicted = float(hist_info.get("catAvg") or global_avg)
 
     or_score = _or_to_score(predicted, global_avg)
     content = 48.0
@@ -2153,12 +1757,6 @@ def _score_opening_potential(
     if features.get("a_list_people_development"):
         content += 20
         drivers.append("Opening-Potenzial: konkrete A-List-Wendung mit belegter Fan-Sorge")
-    if features.get("is_video"):
-        if features.get("video_strong"):
-            content += 5
-        else:
-            content -= 6
-
     if (
         tone == "neutral"
         and not re.search(r"\d|:|\?|!", title)
@@ -2210,8 +1808,6 @@ def _score_risk(
         score -= 12
     if features.get("is_vague"):
         score -= 12
-    if features.get("is_video") and not features.get("video_strong"):
-        score -= 10
     if score >= 76:
         drivers.append("Risiko niedrig: kein klares Klickigkeits- oder Fatigue-Signal")
     return _clip(score, 0, 100)

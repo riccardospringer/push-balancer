@@ -193,6 +193,46 @@ OPENAI_PREDICTION_SCORING_MAX_CALLS_PER_DAY: int = _env_int(
     0,
 )
 
+# ── LLM-Reader-Score (BILD-Reiz, 40 % des Push Scores) ─────────────────────
+# Jeder Artikel wird genau EINMAL vom LLM aus BILD-Leser-Sicht bewertet und
+# das Ergebnis dauerhaft gecacht. Ohne Key/Budget fällt der Score auf die
+# Heuristik-Komponente zurück.
+OPENAI_READER_SCORE_ENABLED: bool = _env_flag(
+    "OPENAI_READER_SCORE_ENABLED",
+    False,
+)
+OPENAI_READER_SCORE_MODEL: str = os.environ.get(
+    "OPENAI_READER_SCORE_MODEL",
+    "gpt-5.6-luna",
+)
+OPENAI_READER_SCORE_REASONING_EFFORT: str = os.environ.get(
+    "OPENAI_READER_SCORE_REASONING_EFFORT",
+    "none",
+)
+OPENAI_READER_SCORE_TIMEOUT_S: float = float(
+    os.environ.get("OPENAI_READER_SCORE_TIMEOUT_S", "20.0")
+)
+OPENAI_READER_SCORE_MAX_TOKENS: int = int(
+    os.environ.get("OPENAI_READER_SCORE_MAX_TOKENS", "400")
+)
+OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR: int = _env_int(
+    "OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR",
+    0,
+)
+OPENAI_READER_SCORE_MAX_CALLS_PER_DAY: int = _env_int(
+    "OPENAI_READER_SCORE_MAX_CALLS_PER_DAY",
+    0,
+)
+OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST: int = _env_int(
+    "OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST",
+    8,
+)
+# Max. Wartezeit pro Request auf frische LLM-Scores; langsamere Calls laufen
+# im Hintergrund weiter und landen im Cache (Latenz-Schutz fuer Feed/Teams).
+OPENAI_READER_SCORE_REQUEST_WAIT_S: float = float(
+    os.environ.get("OPENAI_READER_SCORE_REQUEST_WAIT_S", "8.0")
+)
+
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")

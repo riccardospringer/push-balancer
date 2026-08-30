@@ -29,15 +29,17 @@ from app.ml import gbrt, lightgbm_model
 from app.research import worker as research_worker
 from app.routers import feed
 
-# Score-Stand inkl. Redaktions-Feedback 27.08.2026 (frische relevante Lage
-# mit Warnungs-Trigger erhaelt +5 im Editorial-Score).
+# Score-Stand nach dem Score-Umbau 30.08.2026 (LLM-Reader-Score 40 %,
+# neue Gewichtung, Deutschland-Relevanz/Video/PR/Reuters-Overload gestrichen).
+# Die Fixture laeuft offline ohne OpenAI-Key, d. h. mit Heuristik-Fallback
+# fuer den BILD-Reiz.
 EXPECTED_RESULT = {
     "basis": "lightgbm",
     "confidence": 0.695,
     "predictedOR": 0.0535,
-    "score": 80.6,
+    "score": 77.7,
 }
-EXPECTED_HEURISTIC_SCORE = 82.3
+EXPECTED_HEURISTIC_SCORE = 79.9
 ARTICLE_URL = "https://www.bild.de/politik/synthetic-score-article"
 
 

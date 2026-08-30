@@ -229,7 +229,7 @@ Unless a bullet explicitly names the scheduled Power Automate path, references b
 
 ## External transfer notes
 
-- OpenAI is only contacted when title generation is explicitly configured and invoked.
+- OpenAI is only contacted when title generation or the LLM reader score is explicitly configured. The reader score sends exactly one request per public article (public title plus, when available, public teaser text); the result is cached persistently so no article is transferred twice. No push history, reader data, or employee data is included.
 - Adobe Analytics is only contacted when the Adobe credentials are configured.
 - Microsoft Power Automate / Teams receives the existing editorial article recommendation and schedule fields plus the minimized title approval/score/click reason, final recommendation approval/score/confidence/short send window, the three-field live-push comparison marker, and a non-personal exact-dedup approval boolean when Teams alerts are enabled and all mandatory gates approve.
 - The internal Push Balancer score service receives only the requested batch of at most 500 CMS document IDs and the existing score-only credential header. Its operator, controller/processor role, infrastructure logging, and any transfer path remain governed by the approved internal integration.

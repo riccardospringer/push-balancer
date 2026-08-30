@@ -36,9 +36,9 @@ def _iso_timestamp(timestamp: int) -> str:
         (0.0, 1.0),
         (1.0, 1.0),
         (3.0, 0.95),
-        (4.5, 0.875),
-        (6.0, 0.8),
-        (9.0, 0.55),
+        (4.5, 0.775),
+        (6.0, 0.6),
+        (9.0, 0.4),
         (12.0, 0.3),
         (12.0 + (1.0 / 3600.0), 0.0),
     ],
@@ -115,12 +115,26 @@ def test_feed_candidate_filter_is_a_hard_twelve_hour_cutoff() -> None:
         {"id": "missing-publication"},
         {"id": "invalid-publication", "pubDate": "unknown"},
         {
-            "id": "within-future-skew",
+            "id": "within-future-skew-breaking",
             "pubDate": _iso_timestamp(NOW_TS + 30),
+            "isBreaking": True,
         },
         {
             "id": "beyond-future-skew",
             "pubDate": _iso_timestamp(NOW_TS + 31),
+        },
+        {
+            "id": "younger-than-three-minutes",
+            "pubDate": _iso_timestamp(NOW_TS - 60),
+        },
+        {
+            "id": "younger-than-three-minutes-breaking",
+            "pubDate": _iso_timestamp(NOW_TS - 60),
+            "isEilmeldung": True,
+        },
+        {
+            "id": "three-minutes-old",
+            "pubDate": _iso_timestamp(NOW_TS - 180),
         },
     ]
 
@@ -128,7 +142,9 @@ def test_feed_candidate_filter_is_a_hard_twelve_hour_cutoff() -> None:
 
     assert [article["id"] for article in filtered] == [
         "exact-boundary",
-        "within-future-skew",
+        "within-future-skew-breaking",
+        "younger-than-three-minutes-breaking",
+        "three-minutes-old",
     ]
 
 
@@ -153,7 +169,7 @@ def test_server_and_legacy_capture_scores_are_weighted_exactly_once() -> None:
         {
             "id": "freshness-aware-capture",
             "pubDate": _iso_timestamp(published_at),
-            "score": 64.0,
+            "score": 48.0,
             "scoreSource": "captured_push_balancer",
             "pushBalancerScoreArticlePublishedAt": published_at,
             "scoreReason": "Freshness-aware Capture",
@@ -163,13 +179,13 @@ def test_server_and_legacy_capture_scores_are_weighted_exactly_once() -> None:
     weighted = _apply_server_score_freshness_weight(articles, now_ts=NOW_TS)
     by_id = {article["id"]: article for article in weighted}
 
-    assert by_id["server-fallback"]["score"] == 64.0
-    assert by_id["legacy-capture"]["score"] == 64.0
-    assert by_id["freshness-aware-capture"]["score"] == 64.0
+    assert by_id["server-fallback"]["score"] == 48.0
+    assert by_id["legacy-capture"]["score"] == 48.0
+    assert by_id["freshness-aware-capture"]["score"] == 48.0
 
     for article in weighted:
         assert article["freshnessEligible"] is True
-        assert article["freshnessScoreMultiplier"] == 0.8
+        assert article["freshnessScoreMultiplier"] == 0.6
 
     assert "Frischefaktor" in by_id["server-fallback"]["scoreReason"]
     assert "Frischefaktor" in by_id["legacy-capture"]["scoreReason"]

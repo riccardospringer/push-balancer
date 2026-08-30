@@ -246,6 +246,26 @@ services:
         value: "60"
       - key: OPENAI_PREDICTION_SCORING_CACHE_TTL_S
         value: "3600"
+      # ── LLM-Reader-Score (BILD-Reiz, 40 % des Push Scores) ────────────
+      # Genau ein LLM-Call pro Artikel, dauerhaft im Push-DB-Cache.
+      - key: OPENAI_READER_SCORE_ENABLED
+        value: "true"
+      - key: OPENAI_READER_SCORE_MODEL
+        value: gpt-5.6-luna
+      - key: OPENAI_READER_SCORE_REASONING_EFFORT
+        value: none
+      - key: OPENAI_READER_SCORE_TIMEOUT_S
+        value: "20.0"
+      - key: OPENAI_READER_SCORE_MAX_TOKENS
+        value: "400"
+      - key: OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR
+        value: "300"
+      - key: OPENAI_READER_SCORE_MAX_CALLS_PER_DAY
+        value: "2500"
+      - key: OPENAI_READER_SCORE_MAX_CALLS_PER_REQUEST
+        value: "8"
+      - key: OPENAI_READER_SCORE_REQUEST_WAIT_S
+        value: "8.0"
       - key: ADMIN_API_KEY
         sync: false
       - key: CONSUMER_API_KEY

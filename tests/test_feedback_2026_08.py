@@ -65,7 +65,9 @@ def test_running_live_ticker_keeps_latest_update_for_freshness():
     assert ticker["scoreBreakdown"]["freshness"] >= 70
 
 
-def test_stale_spielbericht_is_heavily_penalized():
+def test_spielberichte_get_no_special_penalty():
+    """Score-Umbau 30.08.2026: Spielberichte werden nicht mehr gesondert
+    abgestraft — Bewertung laeuft ueber LLM-Reader-Score und Aktualitaet."""
     now = int(time.time())
     stale = _score(
         "Spielbericht: 2:1-Sieg für den HSV gegen Hannover",
@@ -73,27 +75,18 @@ def test_stale_spielbericht_is_heavily_penalized():
         now=now,
         hours_ago=2.5,
     )
-    fresh = _score(
-        "Spielbericht: 2:1-Sieg für den HSV gegen Hannover",
-        "sport",
-        now=now,
-        hours_ago=0.4,
-    )
-    assert stale["isPostEventReport"] is True
-    assert stale["score"] < fresh["score"] - 12
-    assert any("Ergebnis-Bericht" in risk for risk in stale["risks"])
+    assert "isPostEventReport" not in stale
+    assert not any("Ergebnis-Bericht" in risk for risk in stale["risks"])
 
-
-def test_spielbericht_detected_from_taxonomy_nodes():
-    now = int(time.time())
-    scored = _score(
+    taxonomy = _score(
         "HSV müht sich zum Heimsieg",
         "sport",
         now=now,
         hours_ago=2.0,
         taxonomy=["Fussball", "Spielbericht"],
     )
-    assert scored["isPostEventReport"] is True
+    assert "isPostEventReport" not in taxonomy
+    assert not any("Ergebnis-Bericht" in risk for risk in taxonomy["risks"])
 
 
 def test_ended_livestream_is_effectively_excluded():
@@ -187,7 +180,8 @@ def test_fresh_missing_person_case_ranks_high():
     assert scored["mixPriority"] in {"hoch", "mittel"}
 
 
-def test_weak_video_is_ranked_lower_than_before():
+def test_video_has_no_special_penalty_anymore():
+    """Score-Umbau 30.08.2026: Video-Sonderabwertung ist komplett gestrichen."""
     now = int(time.time())
     video = _score(
         "Video zeigt Ausflug einer Entenfamilie im Stadtpark",
@@ -196,13 +190,8 @@ def test_weak_video_is_ranked_lower_than_before():
         hours_ago=0.5,
         isVideo=True,
     )
-    no_video = _score(
-        "Ausflug einer Entenfamilie im Stadtpark",
-        "news",
-        now=now,
-        hours_ago=0.5,
-    )
-    assert video["score"] < no_video["score"] - 5
+    assert "videoFit" not in video["scoreBreakdown"]
+    assert not any("Video ohne klaren Jetzt-Anlass" in risk for risk in video["risks"])
 
 
 def test_prime_slot_penalizes_routine_topics():

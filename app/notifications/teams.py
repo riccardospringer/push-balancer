@@ -1374,12 +1374,6 @@ def should_notify_teams(
     if promotional_reason:
         blockers.append(promotional_reason)
 
-    if (
-        bool(candidate.get("isCorporateAnnouncement") or candidate.get("is_corporate_announcement"))
-        and not breaking
-    ):
-        blockers.append("Unternehmens-Ankündigung: kein Push-Ereignis – reine PR/Strategie")
-
     if dashboard_rank > 0:
         if dashboard_rank <= dashboard_top_limit:
             positive.append(f"Top-Kandidat im Push Balancer: Rang {dashboard_rank}")

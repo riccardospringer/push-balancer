@@ -246,10 +246,8 @@ def test_named_german_public_figure_parenthood_is_strong_people_news_not_politic
         url="https://example.invalid/unterhaltung/stars-und-leute/beispiel",
     )
 
-    assert scored["score"] >= 85.0
-    assert scored["germanyRelevance"]["level"] == "germany_people"
+    assert scored["score"] >= 80.0
     assert scored["scoreBreakdown"]["politicsContext"] == 66.0
-    assert scored["scoreBreakdown"]["germanyRelevanceAdjustment"] == 5.0
     assert any("Elternschaft" in item for item in scored["performanceDrivers"])
     assert not any("Politik:" in item for item in scored["risks"])
 
@@ -294,9 +292,8 @@ def test_people_parenthood_bonus_requires_named_public_role_and_survives_mix_pre
     rebalanced = rebalance_push_mix([*crowded_field, candidate], target_ts=now)
     result = next(item for item in rebalanced if item["url"] == candidate["url"])
 
-    assert anonymous["germanyRelevance"]["level"] == "neutral"
     assert scored["score"] >= anonymous["score"] + 10.0
-    assert result["score"] >= 80.0
+    assert result["score"] >= 78.0
     assert not any("Thema politik" in item for item in result["risks"])
 
 
@@ -317,75 +314,59 @@ def test_consumer_outrage_gets_bild_push_reiz():
     )
 
 
-def test_germany_relevance_blocks_pure_us_domestic_people_story():
-    relevance = assess_germany_relevance(
+def test_germany_relevance_is_fully_neutralized():
+    """Score-Umbau 30.08.2026: Deutschland-Relevanz ist komplett gestrichen.
+
+    Der LLM-Reader-Score bewertet Deutschland-Naehe selbst; es gibt keine
+    Zu-/Abschlaege, keine Sonder-Schwellen und keinen US-People-Hard-Block
+    mehr.
+    """
+    examples = [
         {
             "title": "Todesstrafe droht: US-Mutter soll ihre Zwillinge erstickt haben",
             "url": "https://www.bild.de/news/ausland/us-mutter-zwillinge",
             "cat": "news",
-        }
-    )
-
-    assert relevance["level"] == "usa_domestic"
-    assert relevance["hardBlock"] is True
-    assert relevance["minimumScore"] > 100
-
-
-def test_unqualified_government_story_is_treated_as_german_when_url_is_not_international():
-    relevance = assess_germany_relevance(
+        },
         {
             "title": "Regierung verbietet riskante China-App",
             "url": "https://www.bild.de/digital/china-app-verbot",
             "cat": "digital",
-        }
-    )
-
-    assert relevance["level"] == "germany_broad"
-    assert relevance["adjustment"] > 0
-
-
-def test_non_breaking_international_geopolitics_needs_exceptional_score():
-    relevance = assess_germany_relevance(
+        },
         {
             "title": "Trump warnt vor weiterer Eskalation im Iran-Krieg",
             "url": "https://www.bild.de/politik/ausland-und-internationales/iran-krieg",
             "cat": "politik",
-        }
-    )
-
-    assert relevance["level"] == "international"
-    assert relevance["hardBlock"] is False
-    # Realistische Bar: reale BILD-Push-Scores liegen fast nie ueber ~80. Die
-    # frueheren 85/90 schlossen jede Auslandslage strukturell dauerhaft aus.
-    # Geopolitische Lagen sind ab 76 pruefbar, bleiben aber abgewertet.
-    assert relevance["minimumScore"] == 76.0
-    assert relevance["adjustment"] < 0
-
-
-def test_foreign_travel_story_does_not_get_a_domestic_url_bonus():
-    relevance = assess_germany_relevance(
-        {
-            "title": "Vorsicht an Straenden: Ibiza verhaengt Bussgelder gegen Urlauber",
-            "url": "https://www.bild.de/leben-wissen/reisen/ibiza-bussgelder",
-            "cat": "news",
-        }
-    )
-
-    assert relevance["level"] == "international"
-    assert relevance["adjustment"] < 0
-
-
-def test_public_inland_need_gets_broad_germany_relevance():
-    relevance = assess_germany_relevance(
+        },
         {
             "title": "Hitze laesst unser Trinkwasser verkeimen",
             "url": "https://www.bild.de/news/inland/trinkwasser-verkeimt",
             "cat": "wetter",
-        }
-    )
+        },
+    ]
+    for example in examples:
+        relevance = assess_germany_relevance(example)
+        assert relevance["level"] == "neutral"
+        assert relevance["adjustment"] == 0.0
+        assert relevance["selectionAdjustment"] == 0.0
+        assert relevance["hardBlock"] is False
 
-    assert relevance["level"] == "germany_broad"
-    assert relevance["adjustment"] > 0
+
+def test_score_breakdown_has_no_removed_components():
+    now = int(time.time())
+    scored = _score(
+        "Todesstrafe droht: US-Mutter soll ihre Zwillinge erstickt haben",
+        "news",
+        now=now,
+        hours_ago=1,
+        url="https://www.bild.de/news/ausland/us-mutter-zwillinge",
+    )
+    breakdown = scored["scoreBreakdown"]
+    assert "bildFit" not in breakdown
+    assert "videoFit" not in breakdown
+    assert "overloadAdjustment" not in breakdown
+    assert "germanyRelevanceAdjustment" not in breakdown
+    assert "germanyRelevance" not in scored
+    assert "isCorporateAnnouncement" not in scored
 
 
 def test_public_money_fraud_razzia_gets_strong_push_score():
@@ -445,11 +426,11 @@ def test_a_list_hiatus_with_fan_concern_and_video_is_a_top_people_push():
     assert scored["score"] >= 85.0
     assert scored["score"] >= name_only["score"] + 15.0
     assert scored["scoreBreakdown"]["bildReiz"] >= 90.0
-    assert scored["scoreBreakdown"]["videoFit"] >= 85.0
     assert any("A-List" in driver for driver in scored["performanceDrivers"])
 
 
-def test_weak_video_is_penalized_but_live_video_can_rank_high():
+def test_video_articles_get_no_special_video_adjustment():
+    """Score-Umbau 30.08.2026: Video-Sonderlogik ist komplett gestrichen."""
     now = int(time.time())
     weak = _score(
         "Video: Zeigt dieses KI-Video die Zukunft?",
@@ -459,19 +440,9 @@ def test_weak_video_is_penalized_but_live_video_can_rank_high():
         predicted_or=4.5,
         video=True,
     )
-    live = _score(
-        "Messi knackt Klose-Rekord: JETZT Lothar legt los gucken",
-        "sport",
-        now=now,
-        hours_ago=0.2,
-        predicted_or=6.0,
-        video=True,
-    )
 
-    assert weak["score"] < 65
-    assert live["score"] >= 75
-    assert live["scoreBreakdown"]["videoFit"] > weak["scoreBreakdown"]["videoFit"] + 30
-    assert any("Video" in risk for risk in weak["risks"])
+    assert "videoFit" not in weak["scoreBreakdown"]
+    assert not any("Video ohne klaren Jetzt-Anlass" in risk for risk in weak["risks"])
 
 
 def test_previous_day_article_gets_freshness_penalty():
@@ -653,30 +624,13 @@ def test_generic_crime_category_has_no_automatic_score_advantage():
     assert crime["score"] <= general_news["score"]
 
 
-def test_reuters_overload_penalises_sensationalism_but_not_breaking():
+def test_reuters_overload_malus_is_removed():
+    """Score-Umbau 30.08.2026: der Reuters-Overload-Malus ist gestrichen."""
     now = int(time.time())
-
     sensational = _score("Wahnsinn! Unfassbarer Skandal erschüttert die Liga", "news", now=now)
-    neutral = _score("Liga-Reform beschlossen: neue Regeln ab Sommer", "news", now=now)
 
-    # Ueber-Sensationalismus wird abgewertet (Reuters DNR 2025).
-    assert sensational["scoreBreakdown"]["overloadAdjustment"] < 0
-    assert sensational["score"] < neutral["score"]
-
-    # Harte Breaking-Lage ist ausgenommen, auch mit "Schock" im Titel.
-    breaking = score_push_candidate(
-        {
-            "title": "Eilmeldung: Schock-Diagnose - Minister tritt zurück",
-            "cat": "news",
-            "hour": 9,
-            "ts_num": now,
-            "is_eilmeldung": True,
-        },
-        history=_history(now),
-        state={"global_avg": 5.5},
-        predicted_or=6.0,
-    )
-    assert breaking["scoreBreakdown"]["overloadAdjustment"] == 0.0
+    assert "overloadAdjustment" not in sensational["scoreBreakdown"]
+    assert not any("Overload-Risiko" in risk for risk in sensational["risks"])
 
 
 def scored_breakdown_value(result: dict, key: str) -> float:
