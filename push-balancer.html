@@ -8614,7 +8614,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); selectedIndex = Math.min(selectedIndex+1, max); updateSelection(); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); selectedIndex = Math.max(selectedIndex-1, 0); updateSelection(); }
   else if ((e.key === 'v' || e.key === 'V') && selectedIndex >= 0) { openPushPreview(filteredArticles[selectedIndex]); }
-  else if ((e.key === 'i' || e.key === 'I') && selectedIndex >= 0) { e.preventDefault(); toggleScoreInfo(selectedIndex); }
+  else if (e.key === 'i' || e.key === 'I') { e.preventDefault(); if (selectedIndex < 0) { selectedIndex = 0; updateSelection(); } toggleScoreInfo(selectedIndex); }
   else if ((e.key === 'm' || e.key === 'M') && selectedIndex >= 0) { setArticleState(filteredArticles[selectedIndex].id, 'bookmarked'); }
   else if (e.key === 'r' || e.key === 'R') { fetchArticles(); }
 });

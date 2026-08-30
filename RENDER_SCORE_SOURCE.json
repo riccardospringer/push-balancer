@@ -35,6 +35,6 @@
     "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
     "app/routers/feed.py": "3a25a79583801f5a8e01440cf855b6120f3ce09e44edb2b84379d16ba7ae78d8",
     "app/scoring/editorial.py": "bfcfa1dc7896c8d7270de29cd790a84e653f696300bffb76cbf90baa0de1fe76",
-    "app/legacy_push_balancer.html": "24295100bdd558775cac3f71b45592ad0136de3b48cc3fc2b9ef3ec9eeed035c"
+    "app/legacy_push_balancer.html": "045e43a8339fe3564e441d9bdd1a762da485f54b9978edeaae0156eacf15e429"
   }
 }
