@@ -61,8 +61,8 @@
   "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
   "app/routers/feed.py": "909085793f03d5f7e99b74503732d042f7dc1276bb1e914c67dec7de69509c3c",
   "app/scoring/editorial.py": "8743f6be4d6a34398eb8fe71b2f82b44f74c550e0de32bf0272cc3bbc679415b",
-  "app/scoring/first_seen.py": "0b16d5afc4aec3e2c695a0d8ad701e8f715b4e1aaaf3b3df8f471cfec8e6852e",
+  "app/scoring/first_seen.py": "d49ff6f865d1252092b112baac8dc55d44eec41b78f8f188190c77a8274fc09f",
   "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
-  "app/scoring/reader_score.py": "6c1ec569993bb0cad5021fa776f7fb31b2e67f96d7e66896834ca6fa0dbda8e3"
+  "app/scoring/reader_score.py": "588e3f378035c72b0f1f90f3bc77ec18a9a1b0cebb4634651945eb4412c65b5c"
  }
 }
