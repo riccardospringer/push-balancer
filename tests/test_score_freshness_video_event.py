@@ -355,3 +355,51 @@ def test_reader_score_memory_cache_is_bounded(monkeypatch):
         assert "key-0" not in rs._MEMORY_CACHE
     with rs._MEMORY_CACHE_LOCK:
         rs._MEMORY_CACHE.clear()
+
+
+# ── Slot-Stunden in deutscher Ortszeit ──────────────────────────────────────
+
+
+def test_slot_rules_use_german_local_time_not_server_time():
+    """Die Slots sind Redaktionszeiten; der Server laeuft in UTC.
+
+    12:00 Uhr deutscher Zeit ist im Sommer 10:00 UTC — die Top-Slot-Regel muss
+    an der deutschen Stunde haengen, nicht an der Server-Stunde.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    from app.scoring.editorial import _slot_hour
+
+    berlin_noon = _dt.datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+    assert _slot_hour(berlin_noon) == 12
+
+    berlin_seven = _dt.datetime(2026, 7, 15, 7, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+    assert _slot_hour(berlin_seven) == 7
+
+    # Dieselben Momente in UTC ausgedrueckt ergeben dieselbe Slot-Stunde.
+    assert _slot_hour(berlin_noon.astimezone(_dt.timezone.utc)) == 12
+    assert _slot_hour(berlin_seven.astimezone(_dt.timezone.utc)) == 7
+
+
+def test_prime_slot_penalty_follows_german_clock():
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    berlin = ZoneInfo("Europe/Berlin")
+    routine = "Museum zeigt neue Ausstellung über Alltagsdesign"
+
+    def _score_at(local_hour: int) -> float:
+        moment = _dt.datetime(2026, 7, 15, local_hour, 0, tzinfo=berlin)
+        return score_push_candidate(
+            {
+                "title": routine,
+                "cat": "news",
+                "ts_num": moment.timestamp(),
+                "pubDate": _iso(int(moment.timestamp()) - 3600),
+            },
+            reader_score=60.0,
+        )["scoreBreakdown"]["feedback2026Adjustment"]
+
+    # 12 Uhr deutscher Zeit ist Top-Slot, 11 Uhr nicht.
+    assert _score_at(12) < _score_at(11)

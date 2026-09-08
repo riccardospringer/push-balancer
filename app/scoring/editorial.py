@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import re
+from zoneinfo import ZoneInfo
 from collections import Counter
 from typing import Any
 
@@ -319,6 +320,20 @@ _DISCOVERY_CURIOSITY_RE = re.compile(
 # Betroffenheit; die Top-Slots 12:30/20:08 nicht mit Routine verschenken.
 _EARLY_MORNING_HOURS = frozenset({6, 7, 8})
 _PRIME_SLOT_HOURS = frozenset({12, 20})
+# Die Slot-Regeln sind in deutscher Ortszeit gemeint ("Frueh-Slot 06-08 Uhr",
+# "Top-Slot 12:30/20:08"). Der Server laeuft in UTC, deshalb wird die
+# Slot-Stunde ausdruecklich nach Europe/Berlin umgerechnet.
+_PUSH_SLOT_TIMEZONE = ZoneInfo("Europe/Berlin")
+
+
+def _slot_hour(target_dt: _dt.datetime) -> int:
+    """Stunde des Push-Slots in deutscher Ortszeit."""
+    try:
+        return _dt.datetime.fromtimestamp(
+            target_dt.timestamp(), _PUSH_SLOT_TIMEZONE
+        ).hour
+    except (OverflowError, OSError, ValueError):
+        return target_dt.hour
 
 
 def _collect_taxonomy_text(push: dict[str, Any]) -> str:
@@ -428,6 +443,9 @@ def _feedback_2026_adjustment(
     risks: list[str],
 ) -> float:
     """Score-Anpassungen aus dem Redaktions-Feedback vom 27.08.2026.
+
+    ``hour`` ist hier die Slot-Stunde in deutscher Ortszeit, nicht die
+    Server-Stunde — die Slots sind Redaktionszeiten.
 
     Jede Regel ist bounded; die Summe wird zusaetzlich begrenzt, damit ein
     einzelner Kandidat nicht durch Regel-Stacking kollabiert oder explodiert.
@@ -789,7 +807,15 @@ def score_push_candidate(
     target_dt = _target_dt(push)
     target_ts = int(target_dt.timestamp())
     weekday = target_dt.weekday()
-    hour = int(push.get("hour", target_dt.hour) or target_dt.hour)
+    # Eine explizit gesetzte Stunde ist die Redaktionsstunde (deutsche Zeit);
+    # sonst wird sie aus dem Zeitstempel nach Europe/Berlin abgeleitet. Der
+    # Server laeuft in UTC, die Push-Historie traegt deutsche Stunden.
+    _explicit_hour = push.get("hour")
+    hour = (
+        int(_explicit_hour)
+        if isinstance(_explicit_hour, (int, float)) and not isinstance(_explicit_hour, bool)
+        else _slot_hour(target_dt)
+    )
     is_eil = bool(
         push.get("is_eilmeldung")
         or push.get("isEilmeldung")
