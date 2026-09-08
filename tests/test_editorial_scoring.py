@@ -423,8 +423,11 @@ def test_a_list_hiatus_with_fan_concern_and_video_is_a_top_people_push():
         predicted_or=4.75,
     )
 
-    assert scored["score"] >= 85.0
-    assert scored["score"] >= name_only["score"] + 15.0
+    # Redaktionsvorgabe 30.08.2026: Die Video-Null hat Vorrang vor jedem
+    # People-Signal — beide Zeilen nennen ein Video und bekommen daher 0.
+    assert scored["score"] == 0.0
+    assert scored["isVideo"] is True
+    assert name_only["score"] == 0.0
     assert scored["scoreBreakdown"]["bildReiz"] >= 90.0
     assert any("A-List" in driver for driver in scored["performanceDrivers"])
 
@@ -532,7 +535,7 @@ def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exi
     alternatives = [
         ("Messer-Alarm an Kita: Polizei nimmt Verdächtigen fest", "news"),
         ("China-Shops tricksen Kunden aus: Diese Gebühren zahlen Millionen", "verbraucher"),
-        ("Messi knackt Klose-Rekord: JETZT Lothar legt los gucken", "sport"),
+        ("Messi knackt Klose-Rekord im Bundesliga-Gipfel", "sport"),
         ("Promi-Paar trennt sich nach TV-Skandal", "unterhaltung"),
     ]
     candidates = []
@@ -560,7 +563,6 @@ def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exi
                     hours_ago=0.5,
                     predicted_or=6.2,
                     history=history,
-                    video="gucken" in title.lower(),
                 ),
             }
         )
@@ -579,19 +581,17 @@ def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exi
 def test_scoring_explanation_names_concrete_pro_and_contra_reasons():
     now = int(time.time())
     scored = _score(
-        "Video: Messi knackt Klose-Rekord - JETZT live gucken",
+        "Messi knackt Klose-Rekord im Bundesliga-Gipfel",
         "sport",
         now=now,
         hours_ago=0.2,
         predicted_or=6.0,
-        video=True,
-        videoNote="Video, aber ok, weil aktuell und klar verständlich",
     )
 
     assert "hoch wegen" in scored["scoreReason"]
     assert any(
         word in scored["scoreReason"]
-        for word in ("Video", "Aktualität", "Redaktionsfeedback", "Sportmoment")
+        for word in ("Aktualität", "Redaktionsfeedback", "Sportmoment", "frisch")
     )
     assert scored["performanceDrivers"]
     assert scored["risks"]

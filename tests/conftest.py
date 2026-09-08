@@ -66,3 +66,31 @@ def sample_pushes():
             "total_recipients": 20000,
         })
     return pushes
+
+
+@pytest.fixture(autouse=True)
+def _isolate_article_first_seen():
+    """Haelt den Re-Publish-Speicher pro Test sauber.
+
+    Der First-Seen-Store ist bewusst dauerhaft (er merkt sich, wann ein Artikel
+    zuerst gesehen wurde). In Tests wuerde dieser Zustand sonst zwischen Laeufen
+    ueberleben und Frische-Erwartungen unbemerkt verschieben.
+    """
+    from app.scoring import first_seen
+
+    def _reset() -> None:
+        with first_seen._MEMORY_LOCK:
+            first_seen._MEMORY_FIRST_SEEN.clear()
+        try:
+            conn = first_seen._connect()
+            try:
+                conn.execute("DELETE FROM article_first_seen")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    _reset()
+    yield
+    _reset()

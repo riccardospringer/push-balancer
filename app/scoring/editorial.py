@@ -743,6 +743,59 @@ _FEEDBACK_RULES: list[tuple[re.Pattern[str], int, str, str]] = [
 ]
 
 
+_VIDEO_URL_RE = re.compile(r"(?i)(?:/video/|/videos/|-video-)")
+_VIDEO_TITLE_RE = re.compile(
+    r"(?i)\b(video|videos|clip|clips)\b|im video|hier sehen sie|hier seht ihr|aufnahmen"
+)
+
+
+def _event_mode_state() -> tuple[bool, re.Pattern[str] | None, float]:
+    """Aktiver Event-Modus (Wahlabend/Grosslage) inkl. Themen-Muster."""
+    try:
+        from app import config
+
+        if not config.PUSH_BALANCER_EVENT_MODE_ENABLED:
+            return False, None, 0.0
+        keywords = [
+            re.escape(word.strip())
+            for word in str(config.PUSH_BALANCER_EVENT_MODE_KEYWORDS or "").split(",")
+            if word.strip()
+        ]
+        if not keywords:
+            return False, None, 0.0
+        pattern = re.compile(r"(?i)\b(?:" + "|".join(keywords) + r")\w*\b")
+        return True, pattern, float(config.PUSH_BALANCER_EVENT_MODE_BONUS)
+    except Exception:
+        return False, None, 0.0
+
+
+def is_event_mode_topic(push: dict[str, Any]) -> bool:
+    """True, wenn der Artikel zum laufenden Grossereignis gehoert."""
+    active, pattern, _bonus = _event_mode_state()
+    if not active or pattern is None:
+        return False
+    haystack = " ".join(
+        [
+            _title(push),
+            str(push.get("url") or push.get("link") or ""),
+            _collect_taxonomy_text(push),
+        ]
+    )
+    return bool(pattern.search(haystack))
+
+
+def is_video_article(push: dict[str, Any]) -> bool:
+    """Redaktionsvorgabe 30.08.2026: Videos sind keine Push-Kandidaten."""
+    if push.get("isVideo") or push.get("video"):
+        return True
+    if str(push.get("type") or push.get("articleType") or "").strip().lower() == "video":
+        return True
+    url = str(push.get("url") or push.get("link") or "")
+    if url and _VIDEO_URL_RE.search(url):
+        return True
+    return bool(_VIDEO_TITLE_RE.search(_title(push)))
+
+
 def is_breaking_news_taxonomy(push: dict[str, Any]) -> bool:
     """Eilmeldung wird zuverlässig über den Taxonomie-Knoten "Breaking News" erkannt."""
     taxonomy_text = _collect_taxonomy_text(push)
@@ -777,6 +830,7 @@ def score_push_candidate(
     )
     tone = _tone(title, is_eil)
     topic = _topic(title, cat)
+    is_video = is_video_article(push)
     features = _extract_push_features(push, title, cat, target_dt)
     valid_history = _valid_history(history, target_ts)
     global_avg = _global_avg(valid_history, state)
@@ -900,6 +954,19 @@ def score_push_candidate(
     )
     raw_score += feedback_2026_adjustment
 
+    # Event-Modus (Wahlabend/Grosslage): Artikel zum laufenden Ereignis
+    # bekommen Vorrang, solange der Schalter aktiv ist.
+    event_mode_bonus = 0.0
+    if is_event_mode_topic(push):
+        event_mode_bonus = _event_mode_state()[2]
+        raw_score += event_mode_bonus
+        drivers.append("Event-Modus: Artikel zur laufenden Grosslage hat Vorrang")
+
+    # Redaktionsvorgabe 30.08.2026: Videos bekommen immer Score 0.
+    if is_video:
+        raw_score = 0.0
+        risks.append("Video: keine Push-Empfehlung, Score 0 nach Redaktionsvorgabe")
+
     score = round(_clip(raw_score, 0.0, 100.0), 1)
     priority = _priority(score)
 
@@ -931,8 +998,10 @@ def score_push_candidate(
             "politicsContext": round(politics_context, 1),
             "editorialFeedback": round(feedback_score, 1),
             "feedback2026Adjustment": round(feedback_2026_adjustment, 1),
+            "eventModeAdjustment": round(event_mode_bonus, 1),
         },
         "readerScore": llm_reader_score,
+        "isVideo": is_video,
         "isEndedLiveFormat": bool(features.get("is_live_ended", False)),
     }
 
@@ -946,6 +1015,7 @@ def rebalance_push_mix(
     if not candidates:
         return candidates
 
+    event_mode_active = _event_mode_state()[0]
     ranked = sorted(candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True)
     cat_counts: Counter[str] = Counter()
     tone_counts: Counter[str] = Counter()
@@ -964,7 +1034,12 @@ def rebalance_push_mix(
         mix_risks: list[str] = []
         mix_drivers: list[str] = []
 
-        cat_limit = 2 if cat == "politik" and not features.get("strong_politics") else 3
+        if event_mode_active and (cat == "politik" or is_event_mode_topic(item)):
+            # Event-Modus: am Wahlabend/bei Grosslagen keine Politik-Deckelung
+            # und keine Themen-Saettigung fuer das laufende Ereignis.
+            cat_limit = 99
+        else:
+            cat_limit = 2 if cat == "politik" and not features.get("strong_politics") else 3
         if cat_counts[cat] >= cat_limit:
             category_penalty_cap = 5.0 if features.get("public_figure_parenthood") else 12.0
             penalty += min(
@@ -972,7 +1047,10 @@ def rebalance_push_mix(
                 (cat_counts[cat] - cat_limit + 1) * 3.0,
             )
             mix_risks.append(f"Mix-Dopplung: Ressort {cat} ist bereits stark vertreten")
-        if topic_counts[topic] >= 2:
+        event_topic_item = event_mode_active and (
+            cat == "politik" or is_event_mode_topic(item)
+        )
+        if topic_counts[topic] >= 2 and not event_topic_item:
             penalty += min(12.0, topic_counts[topic] * 4.0)
             mix_risks.append(f"Mix-Dopplung: Thema {topic} wiederholt sich")
         if tone in {"breaking", "emotion", "conflict"} and tone_counts[tone] >= 2:
@@ -1032,6 +1110,11 @@ def rebalance_push_mix(
 def _rebalance_politics_top10(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if len(candidates) < 6:
         return candidates
+    if _event_mode_state()[0]:
+        # Event-Modus: Politikdichte ist am Wahlabend gewollt, nicht ein Fehler.
+        return sorted(
+            candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True
+        )
     ranked = sorted(candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True)
     top = ranked[:10]
     politics_count = sum(1 for item in top if _cat(item) == "politik")

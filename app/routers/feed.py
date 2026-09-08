@@ -45,6 +45,7 @@ from app.config import (
     SPORT_GLOBAL_FEEDS,
 )
 from app.research.worker import _xor_perf_cache, _xor_perf_lock, get_cached_feeds
+from app.scoring.first_seen import apply_first_seen_publication_floor
 from app.scoring.freshness import (
     freshness_score_multiplier,
     is_publication_eligible,
@@ -360,9 +361,10 @@ def _build_article_score(category: str, title: str, pub_date: str, article_type:
 
     # kein genereller Sport-Bonus — verhindert Sport-Monopol in der Liste
 
+    # Redaktionsvorgabe 30.08.2026: Videos sind keine Push-Kandidaten und
+    # bekommen immer Score 0 — kein Abschlag, sondern harte Null.
     if article_type == "video":
-        score -= 9.0
-        reasons.append("video-abschlag")
+        return 0.0, "Video: keine Push-Empfehlung (Score 0)"
 
     return max(18.0, min(score, 100.0)), ", ".join(reasons[:3])
 
@@ -688,6 +690,9 @@ def build_articles_payload(
         articles = _extract_sitemap_articles(data, max_items=max(offset + limit, 120))
     except ET.ParseError as exc:
         raise HTTPException(status_code=502, detail=f"Invalid sitemap XML: {exc}") from exc
+    # Re-Publish-Schutz: ein erneut publizierter Artikel darf nicht wieder
+    # frisch aussehen. Die frueheste bekannte Sichtung gewinnt.
+    articles = apply_first_seen_publication_floor(articles, now_ts=now_ts)
     articles = _fresh_article_candidates(articles, now_ts=now_ts)
     history: list[dict[str, Any]] = []
     research_state: dict[str, Any] = {}
@@ -758,6 +763,8 @@ def build_articles_payload(
                     "hour": now.hour,
                     "ts_num": now_ts,
                     "is_eilmeldung": article["isEilmeldung"],
+                    "isVideo": article.get("isVideo"),
+                    "type": article.get("type"),
                     "pubDate": article["pubDate"],
                     "link": article["url"],
                 },
