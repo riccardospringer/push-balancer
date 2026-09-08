@@ -422,6 +422,13 @@ def _extract_sitemap_articles(xml_bytes: bytes, max_items: int = 200) -> list[di
 ARTICLE_MIN_AGE_SECONDS = 180
 
 
+def _german_slot_hour(now_ts: int | float) -> int:
+    """Aktuelle Stunde in deutscher Ortszeit (Slot- und Historien-Referenz)."""
+    from zoneinfo import ZoneInfo
+
+    return datetime.datetime.fromtimestamp(now_ts, ZoneInfo("Europe/Berlin")).hour
+
+
 def _fresh_article_candidates(
     articles: list[dict[str, Any]],
     *,
@@ -767,7 +774,9 @@ def build_articles_payload(
                 {
                     "title": article["title"],
                     "cat": article["category"],
-                    "hour": now.hour,
+                    # Redaktionsstunde in deutscher Zeit: der Server laeuft in
+                    # UTC, Slot-Regeln und Push-Historie sind deutsche Zeiten.
+                    "hour": _german_slot_hour(now_ts),
                     "ts_num": now_ts,
                     "is_eilmeldung": article["isEilmeldung"],
                     "isVideo": article.get("isVideo"),
