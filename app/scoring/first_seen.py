@@ -26,7 +26,20 @@ log = logging.getLogger("push-balancer")
 
 _MEMORY_LOCK = threading.Lock()
 _MEMORY_FIRST_SEEN: dict[str, int] = {}
+# Der Prozess laeuft wochenlang durch; ohne Deckel waechst der Lese-Cache mit
+# jedem je gesehenen Artikel. Die SQLite-Tabelle bleibt die Wahrheit, der
+# Cache ist nur eine Abkuerzung und darf jederzeit Eintraege verlieren.
+_MEMORY_MAX_ENTRIES = 5000
 _SCHEMA_READY = False
+
+
+def _remember(key: str, value: int) -> None:
+    with _MEMORY_LOCK:
+        _MEMORY_FIRST_SEEN[key] = value
+        overflow = len(_MEMORY_FIRST_SEEN) - _MEMORY_MAX_ENTRIES
+        if overflow > 0:
+            for stale_key in list(_MEMORY_FIRST_SEEN)[:overflow]:
+                _MEMORY_FIRST_SEEN.pop(stale_key, None)
 
 
 def article_key(article: dict[str, Any]) -> str:
@@ -82,14 +95,12 @@ def _load(key: str) -> int | None:
     if not candidates:
         return None
     earliest = min(candidates)
-    with _MEMORY_LOCK:
-        _MEMORY_FIRST_SEEN[key] = earliest
+    _remember(key, earliest)
     return earliest
 
 
 def _store(key: str, article: dict[str, Any], first_seen_ts: int, published_ts: int | None) -> None:
-    with _MEMORY_LOCK:
-        _MEMORY_FIRST_SEEN[key] = first_seen_ts
+    _remember(key, first_seen_ts)
     try:
         conn = _connect()
         try:

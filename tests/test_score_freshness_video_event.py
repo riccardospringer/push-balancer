@@ -254,3 +254,35 @@ def test_event_mode_suspends_the_politics_mix_cap(monkeypatch):
         assert [item["title"] for item in event] == [item["title"] for item in politics]
     finally:
         _reload_scoring(monkeypatch, False)
+
+
+# ── Speicher-Deckel ─────────────────────────────────────────────────────────
+
+
+def test_first_seen_memory_cache_is_bounded(monkeypatch):
+    monkeypatch.setattr(fs, "_MEMORY_MAX_ENTRIES", 10)
+    for index in range(40):
+        fs._remember(f"key-{index}", NOW_TS + index)
+
+    with fs._MEMORY_LOCK:
+        assert len(fs._MEMORY_FIRST_SEEN) == 10
+        # Die juengsten Eintraege bleiben erhalten.
+        assert "key-39" in fs._MEMORY_FIRST_SEEN
+        assert "key-0" not in fs._MEMORY_FIRST_SEEN
+
+
+def test_reader_score_memory_cache_is_bounded(monkeypatch):
+    from app.scoring import reader_score as rs
+
+    monkeypatch.setattr(rs, "_MEMORY_CACHE_MAX_ENTRIES", 10)
+    with rs._MEMORY_CACHE_LOCK:
+        rs._MEMORY_CACHE.clear()
+    for index in range(40):
+        rs._remember_reader_score(f"key-{index}", {"readerScore": float(index)})
+
+    with rs._MEMORY_CACHE_LOCK:
+        assert len(rs._MEMORY_CACHE) == 10
+        assert "key-39" in rs._MEMORY_CACHE
+        assert "key-0" not in rs._MEMORY_CACHE
+    with rs._MEMORY_CACHE_LOCK:
+        rs._MEMORY_CACHE.clear()

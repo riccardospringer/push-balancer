@@ -111,6 +111,18 @@ _INFLIGHT: dict[str, threading.Event] = {}
 
 _MEMORY_CACHE_LOCK = threading.Lock()
 _MEMORY_CACHE: dict[str, dict[str, Any]] = {}
+# Deckel gegen unbegrenztes Wachstum im Dauerbetrieb — die SQLite-Tabelle
+# bleibt die Wahrheit, der Speicher-Cache ist nur eine Abkuerzung.
+_MEMORY_CACHE_MAX_ENTRIES = 5000
+
+
+def _remember_reader_score(key: str, entry: dict[str, Any]) -> None:
+    with _MEMORY_CACHE_LOCK:
+        _MEMORY_CACHE[key] = entry
+        overflow = len(_MEMORY_CACHE) - _MEMORY_CACHE_MAX_ENTRIES
+        if overflow > 0:
+            for stale_key in list(_MEMORY_CACHE)[:overflow]:
+                _MEMORY_CACHE.pop(stale_key, None)
 
 _CLIENT_LOCK = threading.Lock()
 _CLIENT = None
@@ -192,8 +204,7 @@ def get_cached_reader_score(push: dict[str, Any]) -> dict[str, Any] | None:
         "readerScoreModel": str(row[2] or ""),
         "readerScoreScoredAt": int(row[3] or 0),
     }
-    with _MEMORY_CACHE_LOCK:
-        _MEMORY_CACHE[key] = dict(entry)
+    _remember_reader_score(key, dict(entry))
     return entry
 
 
@@ -206,8 +217,7 @@ def _store_reader_score(
         "readerScoreModel": model,
         "readerScoreScoredAt": int(time.time()),
     }
-    with _MEMORY_CACHE_LOCK:
-        _MEMORY_CACHE[key] = dict(entry)
+    _remember_reader_score(key, dict(entry))
     try:
         conn = _db_connect()
         try:
