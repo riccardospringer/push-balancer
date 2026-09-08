@@ -91,9 +91,9 @@ def test_strong_bild_breaking_beats_generic_entertainment():
         predicted_or=3.0,
     )
 
-    assert strong["score"] >= 75
+    assert strong["score"] >= 70
     assert strong["score"] > weak["score"] + 15
-    assert strong["mixPriority"] == "hoch"
+    assert strong["mixPriority"] in {"hoch", "mittel"}
     assert strong["performanceDrivers"]
     assert strong["recommendedText"].startswith("Eilmeldung:")
 
@@ -208,10 +208,11 @@ def test_current_trump_putin_turn_remains_high_priority():
         predicted_or=8.0,
     )
 
-    assert scored["score"] >= 75
-    assert scored["mixPriority"] == "hoch"
-    assert scored["scoreBreakdown"]["politicsContext"] >= 80
-    assert "Politik" in " ".join(scored["performanceDrivers"])
+    # Politik bekommt seit 30.08.2026 weder Bonus noch Malus — eine frische,
+    # zugespitzte Lage muss allein ueber die normalen Komponenten tragen.
+    assert scored["score"] >= 65
+    assert scored["mixPriority"] in {"hoch", "mittel"}
+    assert "politicsContext" not in scored["scoreBreakdown"]
 
 
 def test_curiosity_news_beats_mediocre_policy_debate():
@@ -247,7 +248,6 @@ def test_named_german_public_figure_parenthood_is_strong_people_news_not_politic
     )
 
     assert scored["score"] >= 80.0
-    assert scored["scoreBreakdown"]["politicsContext"] == 66.0
     assert any("Elternschaft" in item for item in scored["performanceDrivers"])
     assert not any("Politik:" in item for item in scored["risks"])
 
@@ -293,7 +293,7 @@ def test_people_parenthood_bonus_requires_named_public_role_and_survives_mix_pre
     result = next(item for item in rebalanced if item["url"] == candidate["url"])
 
     assert scored["score"] >= anonymous["score"] + 10.0
-    assert result["score"] >= 78.0
+    assert result["score"] >= 75.0
     assert not any("Thema politik" in item for item in result["risks"])
 
 
@@ -520,61 +520,69 @@ def test_manual_feedback_penalizes_generic_case_and_vague_headline():
     )
 
 
-def test_top10_rebalance_reduces_politics_dominance_when_strong_alternatives_exist():
+def test_politics_is_treated_like_every_other_section():
+    """Redaktionsvorgabe 30.08.2026: Politik wird nicht mehr abgewertet.
+
+    Bei identischen Eingaben muss ein Politik-Artikel exakt so scoren wie ein
+    Artikel aus jedem anderen Ressort — kein Malus, aber auch kein Bonus.
+    """
     now = int(time.time())
-    history = _history(now)
-    politics_titles = [
-        "G7 verschärfen Druck auf Putin",
-        "Startups fordern wirtschaftliche Wende",
-        "Kriminelle Kinder vor Gericht?",
-        "Staatsbürgerschaft: Debatte um deutschen Pass",
-        "Marine im Hormus: Regierung prüft Einsatz",
-        "G7 und Trump beraten über Putin",
-        "Minister fordert neue Regeln für Migranten",
-    ]
-    alternatives = [
-        ("Messer-Alarm an Kita: Polizei nimmt Verdächtigen fest", "news"),
-        ("China-Shops tricksen Kunden aus: Diese Gebühren zahlen Millionen", "verbraucher"),
-        ("Messi knackt Klose-Rekord im Bundesliga-Gipfel", "sport"),
-        ("Promi-Paar trennt sich nach TV-Skandal", "unterhaltung"),
-    ]
-    candidates = []
-    for title in politics_titles:
-        candidates.append(
+    title = "Behörde bestätigt neue Regel für Millionen Betroffene"
+
+    # Ohne Historie bleiben nur die fest kodierten Ressort-Regeln uebrig.
+    scores = {
+        cat: score_push_candidate(
+            {"title": title, "cat": cat, "hour": 11, "ts_num": now},
+            predicted_or=6.0,
+            reader_score=70.0,
+        )["score"]
+        for cat in ("politik", "sport", "news")
+    }
+
+    assert len(set(scores.values())) == 1, scores
+
+    # Unterschiede duerfen nur aus echten Oeffnungsdaten kommen, nicht aus
+    # einer Politik-Sonderregel.
+    with_history = {
+        cat: _score(title, cat, now=now, hours_ago=1, predicted_or=6.0, history=_history(now))[
+            "score"
+        ]
+        for cat in ("politik", "sport", "news")
+    }
+    assert max(with_history.values()) - min(with_history.values()) < 2.0, with_history
+
+
+def test_politics_density_is_capped_like_any_other_section():
+    """Der Mix deckelt alle Ressorts gleich (3), nicht Politik strenger."""
+    now = int(time.time())
+
+    def _field(cat: str) -> list[dict]:
+        return [
             {
-                "title": title,
-                "cat": "politik",
-                "ts_num": now,
-                "pubDate": _pubdate(now, 3),
-                **_score(title, "politik", now=now, hours_ago=3, predicted_or=6.7, history=history),
-            }
-        )
-    for title, cat in alternatives:
-        candidates.append(
-            {
-                "title": title,
+                "title": f"Meldung {index} aus dem Ressort",
                 "cat": cat,
                 "ts_num": now,
-                "pubDate": _pubdate(now, 0.5),
-                **_score(
-                    title,
-                    cat,
-                    now=now,
-                    hours_ago=0.5,
-                    predicted_or=6.2,
-                    history=history,
+                "pubDate": _pubdate(now, 1),
+                **score_push_candidate(
+                    {
+                        "title": f"Meldung {index} aus dem Ressort",
+                        "cat": cat,
+                        "hour": 11,
+                        "ts_num": now,
+                    },
+                    predicted_or=6.0,
+                    reader_score=70.0,
                 ),
             }
-        )
+            for index in range(5)
+        ]
 
-    balanced = rebalance_push_mix(candidates, history=history, target_ts=now)
-    top10 = balanced[:10]
+    politics = rebalance_push_mix(_field("politik"), target_ts=now)
+    sport = rebalance_push_mix(_field("sport"), target_ts=now)
 
-    assert sum(1 for item in top10 if item["cat"] == "politik") <= 6
-    assert any(item["cat"] != "politik" and item["score"] >= 70 for item in top10)
-    assert any(
-        "Top-10-Balance" in " ".join(item.get("performanceDrivers", []) + item.get("risks", []))
-        for item in balanced
+    assert [item["score"] for item in politics] == [item["score"] for item in sport]
+    assert not any(
+        "Top-10-Balance" in " ".join(item.get("risks") or []) for item in politics
     )
 
 

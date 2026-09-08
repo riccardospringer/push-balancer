@@ -12531,8 +12531,6 @@ def _score_breakdown_lines(candidate: dict[str, Any]) -> list[str]:
         ("headlineStrength", "Headline"),
         ("openingRatePotential", "OR-Potenzial"),
         ("mixBalance", "Mix"),
-        ("politicsContext", "Politik-Kontext"),
-        ("videoFit", "Video-Fit"),
         ("editorialFeedback", "Redaktionsfeedback"),
         ("riskAndFatigue", "Risiko/Fatigue"),
     ]

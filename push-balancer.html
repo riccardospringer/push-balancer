@@ -3456,10 +3456,6 @@ function _articleFreshnessPolicy(articleDate) {
 // heuristische Score allein wirksam.
 const READER_SCORE_WEIGHT = 0.4;
 
-// Grosslagen-Themen (Feedback Wahlsonntag 30.08.2026): erlauben laufende
-// Ticker als Kandidat und geben im Event-Modus einen Score-Bonus.
-const _EVENT_TOPIC_RE = /\b(wahl|wahlen|wahlabend|wahlkampf|wahlsieg|wahlergebnis|hochrechnung|hochrechnungen|stimmauszaehlung|auszaehlung|bundestagswahl|landtagswahl|europawahl|koalition|regierungsbildung)\b/i;
-
 // Redaktionsvorgabe 30.08.2026: Videos sind keine Push-Kandidaten (Score 0).
 const _VIDEO_URL_RE_UI = /(?:\/video\/|\/videos\/|-video-)/i;
 const _VIDEO_TITLE_RE_UI = /\b(video|videos|clip|clips)\b|im video|hier sehen sie|hier seht ihr|aufnahmen/i;
@@ -3927,7 +3923,6 @@ function _analyzeTitleStructure(title) {
 // Gebuendelte Regel-Anpassungen als eigene Score-Komponente (bd.redaktion),
 // damit sie den Live-Recompute in applyFilterAndSort ueberleben.
 const _FB26_LIVE_FORMAT_RE = /\b(live-?ticker|liveticker|liveblog|live-?stream|livestream)\b|\/liveticker\/|\/live-?stream\//i;
-const _FB26_LIVE_TEASER_RE = /(hier im live-?(?:ticker|blog|stream)|jetzt im live-?(?:ticker|blog|stream)|jetzt live (?:gucken|sehen|verfolgen)|im live-?stream verfolgen|\btestspiel\b.{0,50}\b(?:live|stream)\b|\b(?:live|stream)\b.{0,50}\btestspiel\b)/i;
 const _FB26_SPIELBERICHT_RE = /\bspielbericht\b/i;
 const _FB26_SPORT_RESULT_RE = /\b\d{1,2}\s*:\s*\d{1,2}\b.{0,60}\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(?:ä|ae)rtssieg)\b|\b(sieg|niederlage|pleite|remis|unentschieden|heimsieg|ausw(?:ä|ae)rtssieg)\b.{0,60}\b\d{1,2}\s*:\s*\d{1,2}\b/i;
 const _FB26_HARD_NEWS_RE = /\b(brand|feuer|explosion|einsturz|unfall|crash|absturz|mord|get(?:ö|oe)tet|tot|tote[rns]?|erschossen|erstochen|gestorben|verhaftet|festgenommen|razzia|urteil|verurteilt|streik|insolvenz|r(?:ü|ue)cktritt|anschlag|erdbeben|hochwasser)\b/i;
@@ -3954,10 +3949,9 @@ function editorialFeedback2026(article) {
   // Punkt 8: beendete Live-Formate raus aus den Empfehlungen
   if (_FB26_LIVE_FORMAT_RE.test(text) && ageH != null && ageH > 4) {
     delta -= 30; reasons.push('Live-Format beendet (-30)');
-  } else if (_FB26_LIVE_TEASER_RE.test(title) && !isUrgent) {
-    // Learnings: Live-/Stream-Teaser ohne Massenrelevanz
-    delta -= 8; reasons.push('Live-Teaser ohne Massenrelevanz (-8)');
   }
+  // Redaktionsvorgabe 30.08.2026: laufende Live-Formate laufen gleichberechtigt
+  // mit — nur beendete werden abgewertet.
 
   // Score-Umbau 30.08.2026: Spielberichte werden NICHT mehr gesondert
   // abgestraft — Bewertung laeuft ueber LLM-Reader-Score und Aktualitaet.
@@ -4580,16 +4574,9 @@ function applyFilterAndSort(forceInvalidate) {
         /eilmeldung|breaking/i.test((a.title || '') + ' ' + (a.description || ''));
       if (_ageMinutes != null && _ageMinutes < 3 && !_isBreakingCandidate) return false;
     }
-    // 0. Live-Ticker sind normalerweise kein eigenstaendiger Push-Kandidat.
-    // Ausnahme (Feedback Wahlsonntag 30.08.2026): laufende Ticker zu Wahl-
-    // oder Breaking-Lagen sind am Ereignistag genau das zentrale Stueck.
-    if (/live-ticker|liveblog|liveticker/i.test(a.title) || /live-ticker|liveblog|liveticker/i.test(a.link)) {
-      const _tickerText = (a.title || '') + ' ' + (a.link || '') + ' ' + (a.description || '');
-      const _isMajorEventTicker = _EVENT_TOPIC_RE.test(_tickerText) ||
-        /eilmeldung|breaking/i.test(_tickerText);
-      const _tickerAgeH = _fb26AgeHours(a);
-      if (!_isMajorEventTicker || (_tickerAgeH != null && _tickerAgeH > 4)) return false;
-    }
+    // Redaktionsvorgabe 30.08.2026: Live-Ticker werden NICHT mehr pauschal
+    // ausgeschlossen — sie laufen gleichberechtigt mit allen anderen Artikeln.
+    // Nur beendete Live-Formate fallen unten raus.
     // 0b. Redaktions-Feedback 27.08.2026 (Punkt 8): Livestreams nach Ende ausschliessen
     {
       const _ageH = _fb26AgeHours(a);

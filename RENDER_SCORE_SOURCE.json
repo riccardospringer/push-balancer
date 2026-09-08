@@ -59,8 +59,9 @@
   "app/ml/stats.py": "eb1cc88cd6342e44dd4eff6f3a7f98f28fae1efa5c3cb586cd78b39fbe4eb41b",
   "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
   "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
-  "app/routers/feed.py": "909085793f03d5f7e99b74503732d042f7dc1276bb1e914c67dec7de69509c3c",
-  "app/scoring/editorial.py": "8743f6be4d6a34398eb8fe71b2f82b44f74c550e0de32bf0272cc3bbc679415b",
+  "app/routers/feed.py": "cbdcd9a0c4ce232b3496e4398dd489c4fd341870b3d74ffd8b436cb6bc8363be",
+  "app/scoring/editorial.py": "5f1ef0844aac7060efb125c0cd151d0cd2926f4a30ef375deaad7fee610071cd",
+  "app/scoring/events.py": "75a461a807c809e26f3dd320891b1e12d821ee184a8dd31295c096ff8a33ec34",
   "app/scoring/first_seen.py": "d49ff6f865d1252092b112baac8dc55d44eec41b78f8f188190c77a8274fc09f",
   "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
   "app/scoring/reader_score.py": "588e3f378035c72b0f1f90f3bc77ec18a9a1b0cebb4634651945eb4412c65b5c"
