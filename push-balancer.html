@@ -3455,6 +3455,23 @@ function _articleFreshnessPolicy(articleDate) {
 // in den sichtbaren (und gecapturten) Score ein; ohne Reader-Score bleibt der
 // heuristische Score allein wirksam.
 const READER_SCORE_WEIGHT = 0.4;
+
+// Grosslagen-Themen (Feedback Wahlsonntag 30.08.2026): erlauben laufende
+// Ticker als Kandidat und geben im Event-Modus einen Score-Bonus.
+const _EVENT_TOPIC_RE = /\b(wahl|wahlen|wahlabend|wahlkampf|wahlsieg|wahlergebnis|hochrechnung|hochrechnungen|stimmauszaehlung|auszaehlung|bundestagswahl|landtagswahl|europawahl|koalition|regierungsbildung)\b/i;
+
+// Redaktionsvorgabe 30.08.2026: Videos sind keine Push-Kandidaten (Score 0).
+const _VIDEO_URL_RE_UI = /(?:\/video\/|\/videos\/|-video-)/i;
+const _VIDEO_TITLE_RE_UI = /\b(video|videos|clip|clips)\b|im video|hier sehen sie|hier seht ihr|aufnahmen/i;
+
+function isVideoArticle(article) {
+  if (!article) return false;
+  if (article.isVideo === true) return true;
+  if (String(article.type || '').toLowerCase() === 'video') return true;
+  const link = article.link || article.url || '';
+  if (link && _VIDEO_URL_RE_UI.test(link)) return true;
+  return _VIDEO_TITLE_RE_UI.test(article.title || '');
+}
 const _readerScoreMap = {};
 const _readerScoreRequested = new Set();
 let _readerScoreFetchInFlight = false;
@@ -3473,6 +3490,8 @@ async function _fetchReaderScores(articles) {
   if (_readerScoreFetchInFlight) return;
   const pending = (articles || [])
     .filter(a => {
+      // Videos bekommen immer Score 0 — kein LLM-Call noetig.
+      if (isVideoArticle(a)) return false;
       const key = a.link || a.url || a.title || '';
       return key && !(key in _readerScoreMap) && !_readerScoreRequested.has(key);
     })
@@ -4561,8 +4580,16 @@ function applyFilterAndSort(forceInvalidate) {
         /eilmeldung|breaking/i.test((a.title || '') + ' ' + (a.description || ''));
       if (_ageMinutes != null && _ageMinutes < 3 && !_isBreakingCandidate) return false;
     }
-    // 0. Exclude live tickers (not pushable standalone content)
-    if (/live-ticker|liveblog|liveticker/i.test(a.title) || /live-ticker|liveblog|liveticker/i.test(a.link)) return false;
+    // 0. Live-Ticker sind normalerweise kein eigenstaendiger Push-Kandidat.
+    // Ausnahme (Feedback Wahlsonntag 30.08.2026): laufende Ticker zu Wahl-
+    // oder Breaking-Lagen sind am Ereignistag genau das zentrale Stueck.
+    if (/live-ticker|liveblog|liveticker/i.test(a.title) || /live-ticker|liveblog|liveticker/i.test(a.link)) {
+      const _tickerText = (a.title || '') + ' ' + (a.link || '') + ' ' + (a.description || '');
+      const _isMajorEventTicker = _EVENT_TOPIC_RE.test(_tickerText) ||
+        /eilmeldung|breaking/i.test(_tickerText);
+      const _tickerAgeH = _fb26AgeHours(a);
+      if (!_isMajorEventTicker || (_tickerAgeH != null && _tickerAgeH > 4)) return false;
+    }
     // 0b. Redaktions-Feedback 27.08.2026 (Punkt 8): Livestreams nach Ende ausschliessen
     {
       const _ageH = _fb26AgeHours(a);
@@ -4670,6 +4697,13 @@ function applyFilterAndSort(forceInvalidate) {
         if (_rsEntry && _rsEntry.readerScoreReasoning) bd.readerScoreReasoning = _rsEntry.readerScoreReasoning;
       } else {
         bd.readerScoreBlended = false;
+      }
+
+      // Redaktionsvorgabe 30.08.2026: Videos bekommen immer Score 0.
+      if (isVideoArticle(a)) {
+        bd.videoZeroScore = true;
+        a.score = 0;
+        return;
       }
 
       // Frische wirkt auf den Gesamtwert, nicht nur auf die 20-Punkte-Komponente.

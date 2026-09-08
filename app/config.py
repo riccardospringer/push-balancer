@@ -236,6 +236,23 @@ OPENAI_READER_SCORE_REQUEST_WAIT_S: float = float(
     os.environ.get("OPENAI_READER_SCORE_REQUEST_WAIT_S", "8.0")
 )
 
+# ── Event-Modus (Wahlabend, Grosslage) ─────────────────────────────────────
+# Feedback Wahlsonntag 30.08.2026: an Grossereignis-Tagen arbeiten die
+# Politik-Deckel im Mix gegen die Redaktion. Der Schalter setzt sie aus und
+# hebt Artikel zum laufenden Ereignis an. Bewusst manuell, nicht automatisch.
+PUSH_BALANCER_EVENT_MODE_ENABLED: bool = _env_flag(
+    "PUSH_BALANCER_EVENT_MODE_ENABLED",
+    False,
+)
+PUSH_BALANCER_EVENT_MODE_KEYWORDS: str = os.environ.get(
+    "PUSH_BALANCER_EVENT_MODE_KEYWORDS",
+    "wahl,wahlen,wahlabend,wahlergebnis,hochrechnung,stimmauszaehlung,"
+    "bundestagswahl,landtagswahl,europawahl,koalition,regierungsbildung",
+)
+PUSH_BALANCER_EVENT_MODE_BONUS: float = float(
+    os.environ.get("PUSH_BALANCER_EVENT_MODE_BONUS", "12.0")
+)
+
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")

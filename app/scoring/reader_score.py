@@ -378,8 +378,13 @@ def enrich_articles_with_reader_scores(
     if wait_budget_s is None:
         wait_budget_s = config.OPENAI_READER_SCORE_REQUEST_WAIT_S
 
+    from app.scoring.editorial import is_video_article
+
     pending: list[dict[str, Any]] = []
     for article in articles:
+        # Videos bekommen per Redaktionsvorgabe immer Score 0 — kein LLM-Call.
+        if is_video_article(article):
+            continue
         cached = get_cached_reader_score(article)
         if cached is not None:
             article.update(cached)

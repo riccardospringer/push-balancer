@@ -59,9 +59,10 @@
   "app/ml/stats.py": "eb1cc88cd6342e44dd4eff6f3a7f98f28fae1efa5c3cb586cd78b39fbe4eb41b",
   "app/research/scoring_optimizer.py": "5d22a44b40928c4c381c535bcb32a5f7d1c988fd311c131d908b775c79e8e141",
   "app/research/worker.py": "1a863429995a3b47e6dba2a505f73149cb7f180ae035a619a84275d024f547ef",
-  "app/routers/feed.py": "ff6d18211d5fc6d99fac10d7c862be93e5311425c70016c87f4763bc7e3a1c2c",
-  "app/scoring/editorial.py": "2f381caa93dfdcb4bc830610603214ab4d136d2ef011b8484c54c5e3d34e2b03",
+  "app/routers/feed.py": "909085793f03d5f7e99b74503732d042f7dc1276bb1e914c67dec7de69509c3c",
+  "app/scoring/editorial.py": "8743f6be4d6a34398eb8fe71b2f82b44f74c550e0de32bf0272cc3bbc679415b",
+  "app/scoring/first_seen.py": "0b16d5afc4aec3e2c695a0d8ad701e8f715b4e1aaaf3b3df8f471cfec8e6852e",
   "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
-  "app/scoring/reader_score.py": "db0e42535bc98d63731d5794414faed7b39a9f23b7bf66cbfaa8f7c8dfe0f8ea"
+  "app/scoring/reader_score.py": "6c1ec569993bb0cad5021fa776f7fb31b2e67f96d7e66896834ca6fa0dbda8e3"
  }
 }
