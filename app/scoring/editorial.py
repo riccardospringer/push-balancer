@@ -299,11 +299,6 @@ _LIVE_FORMAT_RE = re.compile(
 )
 # Learnings: "Hier im Live-Ticker"/"JETZT im Livestream"/Testspiel-Streams
 # erzeugen ohne extreme Massenrelevanz keine Oeffnungsabsicht.
-_LIVE_TEASER_RE = re.compile(
-    r"(?i)(hier im live-?(?:ticker|blog|stream)|jetzt im live-?(?:ticker|blog|stream)|"
-    r"jetzt live (?:gucken|sehen|verfolgen)|im live-?stream verfolgen|"
-    r"\btestspiel\b.{0,50}\b(?:live|stream)\b|\b(?:live|stream)\b.{0,50}\btestspiel\b)"
-)
 _LIVE_ENDED_STATUSES = frozenset(
     {"ended", "beendet", "finished", "closed", "post", "vorbei", "abgeschlossen", "over"}
 )
@@ -445,10 +440,8 @@ def _feedback_2026_adjustment(
     if features.get("is_live_ended"):
         delta -= 30.0
         risks.append("Redaktionsfeedback: Live-Format ist beendet und wird nicht mehr empfohlen")
-    # Learnings: Live-/Stream-Teaser ohne extreme Massenrelevanz oeffnet niemand.
-    elif features.get("is_live_teaser") and not is_eil and tone != "breaking":
-        delta -= 8.0
-        risks.append("Redaktionsfeedback: Live-/Stream-Teaser ohne Massenrelevanz erzeugt keine Öffnungen")
+    # Redaktionsvorgabe 30.08.2026: laufende Live-Formate laufen gleichberechtigt
+    # mit — nur beendete werden abgewertet.
 
     # Score-Umbau 30.08.2026: Spielberichte werden NICHT mehr gesondert
     # abgestraft — sie laufen ueber LLM-Reader-Score und Aktualität.
@@ -474,11 +467,7 @@ def _feedback_2026_adjustment(
         risks.append("Redaktionsfeedback: Promi/Wirtschaft ohne echte Dringlichkeit funktioniert nicht")
 
     # Learnings: Überraschungswissen mit "Warum?"-Impuls öffnet stark.
-    if (
-        features.get("has_curiosity_discovery")
-        and not features.get("is_politics")
-        and not features.get("is_stale")
-    ):
+    if features.get("has_curiosity_discovery") and not features.get("is_stale"):
         delta += 5.0
         drivers.append("Redaktionsfeedback: Überraschungswissen mit Warum-Impuls öffnet stark")
 
@@ -503,10 +492,10 @@ def _feedback_2026_adjustment(
         if morning_impact:
             delta += 4.0
             drivers.append("Zeitfenster: Früh-Slot mit akuter Betroffenheit (Wetter/Warnung)")
-        elif features.get("is_politics") or cat in {"verbraucher", "wirtschaft", "politik"}:
+        elif not features.get("has_development"):
             delta -= 4.0
             risks.append(
-                "Zeitfenster: Früh-Slot nicht mit Politik/Service ohne Betroffenheit füllen"
+                "Zeitfenster: Früh-Slot braucht akute Betroffenheit oder eine neue Entwicklung"
             )
 
     # Punkt 6: Top-Slots (12:30/20:08) nicht mit Routine-Themen verschenken.
@@ -538,17 +527,6 @@ _POLITICS_RE = re.compile(
     r"trump|putin|ukraine|russland|israel|iran|hormus|nato|eu|wahl|"
     r"staatsbürgerschaft|staatsbuergerschaft|pass|sanktionen|gesetz|"
     r"partei|afd|cdu|spd|grüne|gruene|fdp|koalition)\b"
-)
-_POLITICS_STRONG_RE = re.compile(
-    r"(?i)\b(trump|putin|ukraine|russland|iran|israel|krieg|krise|gipfel|g7|"
-    r"entscheidung|wende|eskalation|angriff|attacke|sanktionen|rücktritt|"
-    r"ruecktritt|beschluss|beschließt|beschliesst|alarm|droht|plötzlich|"
-    r"ploetzlich)\b"
-)
-_POLITICS_ABSTRACT_RE = re.compile(
-    r"(?i)\b(fordert|fordern|soll|sollen|könnte|koennte|will|wollen|debatte|"
-    r"diskussion|plan|pläne|plaene|strategie|konzept|programm|papier|"
-    r"setzt.*thema|wirtschaftliche wende|verschärfen druck|verschaerfen druck)\b"
 )
 _VAGUE_RE = re.compile(
     r"(?i)\b(das steckt dahinter|darum|so geht es|was dahinter steckt|"
@@ -749,39 +727,28 @@ _VIDEO_TITLE_RE = re.compile(
 )
 
 
-def _event_mode_state() -> tuple[bool, re.Pattern[str] | None, float]:
-    """Aktiver Event-Modus (Wahlabend/Grosslage) inkl. Themen-Muster."""
+def is_event_mode_topic(
+    push: dict[str, Any],
+    active_events: set[str] | None = None,
+) -> bool:
+    """True, wenn der Artikel zu einer laufenden Grosslage gehoert.
+
+    Die Grosslage wird automatisch am Kandidatenfeld erkannt
+    (app/scoring/events.py); ``active_events`` reicht das Ergebnis durch,
+    damit nicht jeder Artikel neu detektiert.
+    """
+    from app.scoring.events import article_matches_active_event
+
+    return article_matches_active_event(push, active_events)
+
+
+def _event_mode_bonus() -> float:
     try:
         from app import config
 
-        if not config.PUSH_BALANCER_EVENT_MODE_ENABLED:
-            return False, None, 0.0
-        keywords = [
-            re.escape(word.strip())
-            for word in str(config.PUSH_BALANCER_EVENT_MODE_KEYWORDS or "").split(",")
-            if word.strip()
-        ]
-        if not keywords:
-            return False, None, 0.0
-        pattern = re.compile(r"(?i)\b(?:" + "|".join(keywords) + r")\w*\b")
-        return True, pattern, float(config.PUSH_BALANCER_EVENT_MODE_BONUS)
+        return float(config.PUSH_BALANCER_EVENT_MODE_BONUS)
     except Exception:
-        return False, None, 0.0
-
-
-def is_event_mode_topic(push: dict[str, Any]) -> bool:
-    """True, wenn der Artikel zum laufenden Grossereignis gehoert."""
-    active, pattern, _bonus = _event_mode_state()
-    if not active or pattern is None:
-        return False
-    haystack = " ".join(
-        [
-            _title(push),
-            str(push.get("url") or push.get("link") or ""),
-            _collect_taxonomy_text(push),
-        ]
-    )
-    return bool(pattern.search(haystack))
+        return 0.0
 
 
 def is_video_article(push: dict[str, Any]) -> bool:
@@ -808,6 +775,7 @@ def score_push_candidate(
     state: dict[str, Any] | None = None,
     predicted_or: float | None = None,
     reader_score: float | None = None,
+    active_events: set[str] | None = None,
 ) -> dict[str, Any]:
     """Score a single push candidate on a 0-100 editorial priority scale.
 
@@ -831,6 +799,7 @@ def score_push_candidate(
     tone = _tone(title, is_eil)
     topic = _topic(title, cat)
     is_video = is_video_article(push)
+    is_event_article = is_event_mode_topic(push, active_events)
     features = _extract_push_features(push, title, cat, target_dt)
     valid_history = _valid_history(history, target_ts)
     global_avg = _global_avg(valid_history, state)
@@ -861,9 +830,6 @@ def score_push_candidate(
         bild_reiz_source = "heuristik_fallback"
 
     headline_strength = _score_headline_strength(title, tone, features, drivers, risks)
-    politics_context = _score_politics_context(
-        title, cat, features, freshness_score, drivers, risks
-    )
     feedback_score = _score_editorial_feedback(push, features, drivers, risks)
     opening_score = _score_opening_potential(
         push,
@@ -899,14 +865,12 @@ def score_push_candidate(
     # Keep truly urgent stories from being buried, but still let fatigue matter.
     if is_eil or (tone == "breaking" and opening_score >= 72):
         raw_score += 4.0
-    if tone == "neutral" and opening_score < 55 and hist_score < 55:
+    if tone == "neutral" and opening_score < 55 and hist_score < 55 and not is_event_article:
         raw_score -= 4.0
-    if features["is_politics"]:
-        raw_score += (politics_context - 60.0) * 0.23
-    if features["stale_politics_without_development"]:
-        raw_score -= 7.0
-    if features["strong_non_politics"]:
-        raw_score += 3.0
+    # Redaktionsvorgabe 30.08.2026: Politik wird nicht mehr grundsaetzlich
+    # abgewertet, sondern laeuft gleichberechtigt mit allen anderen Ressorts.
+    # Alter/fehlende Entwicklung schlagen weiter ueber Aktualitaet und
+    # LLM-Reader-Score durch — nur eben fuer jedes Ressort gleich.
     if (
         features.get("is_stale")
         and tone == "breaking"
@@ -957,8 +921,8 @@ def score_push_candidate(
     # Event-Modus (Wahlabend/Grosslage): Artikel zum laufenden Ereignis
     # bekommen Vorrang, solange der Schalter aktiv ist.
     event_mode_bonus = 0.0
-    if is_event_mode_topic(push):
-        event_mode_bonus = _event_mode_state()[2]
+    if is_event_article:
+        event_mode_bonus = _event_mode_bonus()
         raw_score += event_mode_bonus
         drivers.append("Event-Modus: Artikel zur laufenden Grosslage hat Vorrang")
 
@@ -995,7 +959,6 @@ def score_push_candidate(
             "bildReiz": round(bild_reiz, 1),
             "bildReizSource": bild_reiz_source,
             "headlineStrength": round(headline_strength, 1),
-            "politicsContext": round(politics_context, 1),
             "editorialFeedback": round(feedback_score, 1),
             "feedback2026Adjustment": round(feedback_2026_adjustment, 1),
             "eventModeAdjustment": round(event_mode_bonus, 1),
@@ -1010,12 +973,22 @@ def rebalance_push_mix(
     candidates: list[dict[str, Any]],
     history: list[dict[str, Any]] | None = None,
     target_ts: int | None = None,
+    active_events: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Apply a second-pass diversity adjustment across a candidate list."""
+    """Apply a second-pass diversity adjustment across a candidate list.
+
+    Bei einer laufenden Grosslage (Wahlabend & Co.) werden die Politik-Deckel
+    und die Themen-Saettigung fuer das Ereignis ausgesetzt — dort ist Dichte
+    gewollt, kein Fehler.
+    """
     if not candidates:
         return candidates
 
-    event_mode_active = _event_mode_state()[0]
+    if active_events is None:
+        from app.scoring.events import detect_active_event_groups
+
+        active_events = detect_active_event_groups(candidates)
+    event_mode_active = bool(active_events)
     ranked = sorted(candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True)
     cat_counts: Counter[str] = Counter()
     tone_counts: Counter[str] = Counter()
@@ -1034,12 +1007,12 @@ def rebalance_push_mix(
         mix_risks: list[str] = []
         mix_drivers: list[str] = []
 
-        if event_mode_active and (cat == "politik" or is_event_mode_topic(item)):
+        if event_mode_active and is_event_mode_topic(item, active_events):
             # Event-Modus: am Wahlabend/bei Grosslagen keine Politik-Deckelung
             # und keine Themen-Saettigung fuer das laufende Ereignis.
             cat_limit = 99
         else:
-            cat_limit = 2 if cat == "politik" and not features.get("strong_politics") else 3
+            cat_limit = 3
         if cat_counts[cat] >= cat_limit:
             category_penalty_cap = 5.0 if features.get("public_figure_parenthood") else 12.0
             penalty += min(
@@ -1047,9 +1020,7 @@ def rebalance_push_mix(
                 (cat_counts[cat] - cat_limit + 1) * 3.0,
             )
             mix_risks.append(f"Mix-Dopplung: Ressort {cat} ist bereits stark vertreten")
-        event_topic_item = event_mode_active and (
-            cat == "politik" or is_event_mode_topic(item)
-        )
+        event_topic_item = event_mode_active and is_event_mode_topic(item, active_events)
         if topic_counts[topic] >= 2 and not event_topic_item:
             penalty += min(12.0, topic_counts[topic] * 4.0)
             mix_risks.append(f"Mix-Dopplung: Thema {topic} wiederholt sich")
@@ -1060,20 +1031,9 @@ def rebalance_push_mix(
         if cat_counts[cat] == 0 and topic_counts[topic] == 0:
             bonus += 2.0
             mix_drivers.append("Bringt Vielfalt in den aktuellen Kandidaten-Mix")
-        if (
-            cat != "politik"
-            and features.get("trigger_strength", 0) >= 18
-            and float(item.get("score", 0) or 0) >= 58
-        ):
+        if features.get("trigger_strength", 0) >= 18 and float(item.get("score", 0) or 0) >= 58:
             bonus += 2.5
-            mix_drivers.append(
-                "BILD-starker Nicht-Politik-Kandidat bekommt im Mix eine echte Chance"
-            )
-        if cat == "politik" and features.get("stale_politics_without_development"):
-            penalty += 5.0
-            mix_risks.append(
-                "Politik-Dichte: alte Politik ohne Entwicklung wird im Mix zurückgenommen"
-            )
+            mix_drivers.append("BILD-starker Kandidat bekommt im Mix eine echte Chance")
 
         if penalty or bonus:
             item = dict(item)
@@ -1103,58 +1063,7 @@ def rebalance_push_mix(
         tone_counts[tone] += 1
         topic_counts[topic] += 1
 
-    adjusted = _rebalance_politics_top10(adjusted)
     return sorted(adjusted, key=lambda item: float(item.get("score", 0) or 0), reverse=True)
-
-
-def _rebalance_politics_top10(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if len(candidates) < 6:
-        return candidates
-    if _event_mode_state()[0]:
-        # Event-Modus: Politikdichte ist am Wahlabend gewollt, nicht ein Fehler.
-        return sorted(
-            candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True
-        )
-    ranked = sorted(candidates, key=lambda item: float(item.get("score", 0) or 0), reverse=True)
-    top = ranked[:10]
-    politics_count = sum(1 for item in top if _cat(item) == "politik")
-    if politics_count < 6:
-        return ranked
-
-    floor = (
-        float(top[-1].get("score", 0) or 0)
-        if len(top) >= 10
-        else float(top[-1].get("score", 0) or 0)
-    )
-    surplus = max(1, politics_count - 5)
-    adjusted: list[dict[str, Any]] = []
-    politics_seen = 0
-
-    for item in ranked:
-        title = _title(item)
-        cat = _cat(item)
-        features = _extract_push_features(item, title, cat, _target_dt(item))
-        score = float(item.get("score", 0) or 0)
-        delta = 0.0
-        drivers: list[str] = []
-        risks: list[str] = []
-
-        if cat == "politik":
-            politics_seen += 1
-            if politics_seen > 5 and not features.get("strong_politics"):
-                delta -= min(7.0, 3.0 + surplus * 1.5)
-                risks.append("Top-10-Balance: Politik ist bereits sehr dominant")
-            if features.get("stale_politics_without_development"):
-                delta -= 3.0
-                risks.append("Top-10-Balance: alte Politik ohne neuen Dreh verliert Vorrang")
-        elif score >= floor - 8 and features.get("trigger_strength", 0) >= 14:
-            delta += min(7.0, 3.0 + surplus * 1.5)
-            drivers.append("Top-10-Balance: BILD-starke Nicht-Politik liegt qualitativ nah dran")
-
-        if delta:
-            item = _score_adjusted_item(item, delta, drivers, risks)
-        adjusted.append(item)
-    return adjusted
 
 
 def _score_adjusted_item(
@@ -1308,23 +1217,10 @@ def _extract_push_features(
         or public_figure_parenthood
         or a_list_people_development
     )
-    strong_politics = is_politics and bool(_POLITICS_STRONG_RE.search(title)) and has_development
-    abstract_politics = (
-        is_politics and bool(_POLITICS_ABSTRACT_RE.search(title)) and not has_development
-    )
     stale = freshness_hours is not None and freshness_hours > 6
     overnight = False
     if pub_dt is not None:
         overnight = pub_dt.hour < 6 or (pub_dt.date() < target_dt.date())
-
-    strong_non_politics = (
-        not is_politics
-        and (
-            trigger_strength >= 18
-            or cat in {"sport", "unterhaltung", "verbraucher", "news"}
-        )
-        and not stale
-    )
 
     feedback_text = " ".join(_collect_feedback_texts(push)).lower()
     if (
@@ -1357,13 +1253,6 @@ def _extract_push_features(
         "trigger_strength": trigger_strength,
         "is_politics": is_politics,
         "has_development": has_development,
-        "strong_politics": strong_politics,
-        "abstract_politics": abstract_politics,
-        "stale_politics_without_development": is_politics
-        and stale
-        and not has_development
-        and not _EXCLUSIVE_RE.search(title),
-        "strong_non_politics": strong_non_politics,
         "public_figure_parenthood": public_figure_parenthood,
         "a_list_people_development": a_list_people_development,
         "is_exclusive": bool(_EXCLUSIVE_RE.search(title)),
@@ -1374,7 +1263,6 @@ def _extract_push_features(
         "feedback_text": feedback_text,
         "is_live_format": is_live_format,
         "is_live_ended": is_live_ended,
-        "is_live_teaser": bool(_LIVE_TEASER_RE.search(title)),
         "has_curiosity_discovery": bool(_DISCOVERY_CURIOSITY_RE.search(title)),
     }
 
@@ -1465,10 +1353,6 @@ def _score_history(
         if tone != "breaking":
             score -= 8
             risks.append("Nachtzeit ohne Breaking-Druck senkt Push-Relevanz")
-    if cat == "politik" and tone == "neutral":
-        score -= 3
-        risks.append("Zeitfenster: neutrale Politik braucht stärkeren aktuellen Anlass")
-
     if cat_avg > global_avg + 0.6 and len(cat_vals) >= 3:
         drivers.append(f"Historisches Muster: {cat} liegt über Durchschnitt")
     elif cat_avg < global_avg - 0.6 and len(cat_vals) >= 3:
@@ -1605,9 +1489,6 @@ def _score_freshness(
     if features.get("is_exclusive"):
         score += 8
         drivers.append("Aktualität: Exklusivität kann Alter teilweise auffangen")
-    if cat == "politik" and age > 3 and not features.get("has_development"):
-        score -= 12
-        risks.append("Politik: ohne neue Entwicklung verliert der Artikel schnell Push-Wert")
     if tone == "utility" and age <= 18:
         score += 4
     return _clip(score, 0, 100)
@@ -1661,9 +1542,6 @@ def _score_bild_reiz(
         and hits
     ):
         score += 5
-    if cat == "politik" and not (features.get("strong_politics") or hits):
-        score -= 10
-        risks.append("BILD-Reiz: abstrakte Politik ohne klaren Sofort-Klick")
     if features.get("is_generic_case"):
         score -= 14
         risks.append("BILD-Reiz: Fall wirkt generisch oder schon bekannt")
@@ -1705,45 +1583,8 @@ def _score_headline_strength(
     if features.get("is_vague"):
         score -= 15
         risks.append("Headline-Stärke: verrätselt statt konkret")
-    if features.get("abstract_politics"):
-        score -= 8
-        risks.append("Headline-Stärke: politische Debatte schwer in einem Push-Satz")
     if score >= 75:
         drivers.append("Headline-Stärke: schnell verständlich und zuspitzbar")
-    return _clip(score, 0, 100)
-
-
-def _score_politics_context(
-    title: str,
-    cat: str,
-    features: dict[str, Any],
-    freshness_score: float,
-    drivers: list[str],
-    risks: list[str],
-) -> float:
-    if not features.get("is_politics"):
-        return 66.0
-
-    score = 54.0
-    if features.get("strong_politics"):
-        score += 26
-        drivers.append("Politik: aktuelle Lage, prominente Akteure oder klare Wendung")
-    elif _POLITICS_STRONG_RE.search(title):
-        score += 10
-
-    if features.get("has_development"):
-        score += 10
-    if freshness_score >= 80:
-        score += 6
-    if features.get("abstract_politics"):
-        score -= 20
-        risks.append("Politik: abstrakte Debatte ohne Ereignis oder Eskalation")
-    if features.get("stale_politics_without_development"):
-        score -= 24
-        risks.append("Politik: alt/aus der Nacht und keine neue Entwicklung erkennbar")
-    if not features.get("has_development") and not features.get("trigger_hits"):
-        score -= 10
-        risks.append("Politik: Nachrichtenwert noch zu gesetzt, nicht passiert")
     return _clip(score, 0, 100)
 
 
@@ -1826,12 +1667,6 @@ def _score_opening_potential(
     elif bild_reiz < 45:
         content -= 8
 
-    if features.get("is_politics") and not features.get("has_development"):
-        content -= 9
-    if features.get("abstract_politics"):
-        content -= 8
-    if features.get("strong_non_politics"):
-        content += 6
     if features.get("public_figure_parenthood"):
         content += 16
         drivers.append(
@@ -1883,10 +1718,6 @@ def _score_risk(
         risks.append("Frage erzeugt Neugier, aber noch zu wenig Substanz")
     if freshness_score < 45:
         score -= 12
-    if cat == "politik" and features.get("abstract_politics"):
-        score -= 14
-    if features.get("stale_politics_without_development"):
-        score -= 16
     if features.get("is_generic_case"):
         score -= 12
     if features.get("is_vague"):

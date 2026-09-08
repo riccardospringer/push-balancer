@@ -739,6 +739,9 @@ def build_articles_payload(
         except Exception as exc:
             log.warning("[articles] prediction enrichment failed: %s", exc)
 
+    # Muss auch dann definiert sein, wenn das Editorial-Scoring unten scheitert.
+    active_events: set[str] = set()
+
     try:
         if not history:
             from app.research.worker import _research_state
@@ -747,7 +750,11 @@ def build_articles_payload(
             history = _research_state.get("push_data") or []
 
         from app.scoring.editorial import rebalance_push_mix, score_push_candidate
+        from app.scoring.events import detect_active_event_groups
         from app.scoring.reader_score import enrich_articles_with_reader_scores
+
+        # Laufende Grosslage (Wahlabend & Co.) einmal am gesamten Feld erkennen.
+        active_events = detect_active_event_groups(articles, now_ts=now_ts)
 
         # BILD-Reiz: genau ein LLM-Call pro Artikel, dauerhaft gecacht.
         try:
@@ -772,9 +779,15 @@ def build_articles_payload(
                 state=research_state,
                 predicted_or=article.get("predictedOR"),
                 reader_score=article.get("readerScore"),
+                active_events=active_events,
             )
             article.update(editorial_score)
-        articles = rebalance_push_mix(articles, history=history, target_ts=now_ts)
+        articles = rebalance_push_mix(
+            articles,
+            history=history,
+            target_ts=now_ts,
+            active_events=active_events,
+        )
     except Exception as exc:
         log.warning("[articles] editorial scoring enrichment failed: %s", exc)
         articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
@@ -804,6 +817,7 @@ def build_articles_payload(
 
     return {
         "articles": selected,
+        "activeEvents": sorted(active_events),
         "total": len(articles),
         "count": len(articles),
         "offset": offset,

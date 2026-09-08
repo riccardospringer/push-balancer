@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import importlib
 import time
 
 import pytest
@@ -181,54 +180,130 @@ def test_reader_score_enrichment_skips_videos(monkeypatch):
     assert calls == ["Rentenpaket beschlossen"]
 
 
-# ── Event-Modus ─────────────────────────────────────────────────────────────
+# ── Automatische Grosslagen-Erkennung ───────────────────────────────────────
 
 
-def _reload_scoring(monkeypatch, enabled: bool):
-    monkeypatch.setenv("PUSH_BALANCER_EVENT_MODE_ENABLED", "1" if enabled else "0")
-    from app import config
-
-    importlib.reload(config)
-    from app.scoring import editorial
-
-    importlib.reload(editorial)
-    return editorial
-
-
-def test_event_mode_lifts_election_articles_and_is_off_by_default(monkeypatch):
-    from app import config
-
-    assert config.PUSH_BALANCER_EVENT_MODE_ENABLED is False
-
-    now = int(time.time())
-    candidate = {
-        "title": "Wahl-Hochrechnung: Regierung vor dem Aus",
-        "cat": "politik",
-        "hour": 20,
-        "ts_num": now,
+def _event_article(title: str, *, age_h: float = 0.5, ticker: bool = False, breaking: bool = False):
+    slug = "liveticker/lage" if ticker else "artikel"
+    return {
+        "title": title,
+        "url": f"https://www.bild.de/politik/{slug}",
+        "pubDate": _iso(int(NOW_TS - age_h * 3600)),
+        "isBreaking": breaking,
     }
-    try:
-        editorial = _reload_scoring(monkeypatch, True)
-        active = editorial.score_push_candidate(dict(candidate), reader_score=85.0)
-        sport = editorial.score_push_candidate(
-            {"title": "Bayern gewinnt souveraen", "cat": "sport", "hour": 20, "ts_num": now},
-            reader_score=85.0,
-        )
-        assert active["scoreBreakdown"]["eventModeAdjustment"] > 0
-        assert sport["scoreBreakdown"]["eventModeAdjustment"] == 0.0
-        assert active["score"] > sport["score"]
-        assert any("Event-Modus" in d for d in active["performanceDrivers"])
-    finally:
-        _reload_scoring(monkeypatch, False)
 
 
-def test_event_mode_suspends_the_politics_mix_cap(monkeypatch):
+def _election_night_field() -> list[dict]:
+    return [
+        _event_article("Wahlabend: Erste Hochrechnung sieht die CDU vorn", age_h=0.3, ticker=True),
+        _event_article("Hochrechnung 20:15 Uhr: Koalitionsverhandlung wird schwierig", age_h=0.6),
+        _event_article("Wahllokale geschlossen: Die Auszaehlung laeuft", age_h=1.0),
+        _event_article("Wahlergebnis in Sachsen-Anhalt: AfD deutlich vorn", age_h=1.5),
+        _event_article("Wahlsieg gefeiert: Jubel in der Parteizentrale", age_h=2.5),
+    ]
+
+
+def test_election_night_is_detected_automatically():
+    from app.scoring.events import detect_active_event_groups
+
+    assert detect_active_event_groups(_election_night_field(), now_ts=NOW_TS) == {"wahl"}
+
+
+def test_routine_coverage_does_not_trigger_event_mode():
+    """Dauerthemen duerfen die Mix-Deckel nicht permanent aushebeln."""
+    from app.scoring.events import detect_active_event_groups
+
+    routine = [
+        _event_article("Luftangriff auf Kiew gemeldet", age_h=5.0),
+        _event_article("Waffenruhe bleibt weiter unklar", age_h=7.0),
+        _event_article("Invasion dauert an", age_h=9.0),
+        _event_article("Raketenangriff auf Odessa", age_h=10.0),
+        _event_article("Grossangriff abgewehrt", age_h=11.0),
+    ]
+    assert detect_active_event_groups(routine, now_ts=NOW_TS) == set()
+
+
+def test_event_needs_enough_articles_and_a_running_signal():
+    from app.scoring.events import detect_active_event_groups
+
+    # Zu wenige Artikel.
+    assert detect_active_event_groups(_election_night_field()[:3], now_ts=NOW_TS) == set()
+
+    # Genug Artikel und frisch, aber kein Ticker/keine Eilmeldung.
+    without_signal = [
+        {**article, "url": "https://www.bild.de/politik/artikel", "isBreaking": False}
+        for article in _election_night_field()
+    ]
+    assert detect_active_event_groups(without_signal, now_ts=NOW_TS) == set()
+
+    # Genug Artikel und Signal, aber nichts davon frisch.
+    stale = [
+        {**article, "pubDate": _iso(NOW_TS - 8 * 3600)} for article in _election_night_field()
+    ]
+    assert detect_active_event_groups(stale, now_ts=NOW_TS) == set()
+
+
+def test_detected_event_lifts_its_articles_but_not_unrelated_ones():
+    from app.scoring.events import detect_active_event_groups
+
     now = int(time.time())
-    politics = [
+    active = detect_active_event_groups(_election_night_field(), now_ts=NOW_TS)
+
+    election = score_push_candidate(
         {
-            "title": f"Wahl-Analyse Nummer {index}",
+            "title": "Wahlergebnis in Sachsen-Anhalt: AfD deutlich vorn",
             "cat": "politik",
-            "url": f"https://www.bild.de/politik/wahl-{index}",
+            "hour": 20,
+            "ts_num": now,
+        },
+        reader_score=80.0,
+        active_events=active,
+    )
+    sport = score_push_candidate(
+        {"title": "Bayern gewinnt souveraen", "cat": "sport", "hour": 20, "ts_num": now},
+        reader_score=80.0,
+        active_events=active,
+    )
+
+    assert election["scoreBreakdown"]["eventModeAdjustment"] > 0
+    assert sport["scoreBreakdown"]["eventModeAdjustment"] == 0.0
+    assert election["score"] > sport["score"]
+    assert any("Event-Modus" in driver for driver in election["performanceDrivers"])
+
+
+def test_detected_event_suspends_the_politics_mix_caps():
+    now = int(time.time())
+    field = _election_night_field()
+    candidates = [
+        {
+            **article,
+            "cat": "politik",
+            "ts_num": now,
+            "score": 90.0 - index,
+            "scoreBreakdown": {"mixBalance": 70.0},
+            "performanceDrivers": [],
+            "risks": [],
+        }
+        for index, article in enumerate(field)
+    ]
+
+    balanced = rebalance_push_mix([dict(item) for item in candidates], target_ts=now)
+    joined = [" ".join(item.get("risks") or []) for item in balanced]
+
+    assert not any("Ressort politik" in risks for risks in joined)
+    assert not any("Thema politik" in risks for risks in joined)
+    assert [item["title"] for item in balanced] == [item["title"] for item in candidates]
+
+
+def test_ordinary_politics_field_keeps_its_mix_caps():
+    """Ohne Grosslage bleiben die Deckel unveraendert wirksam."""
+    now = int(time.time())
+    candidates = [
+        {
+            "title": f"Debatte im Bundestag Teil {index}",
+            "url": f"https://www.bild.de/politik/debatte-{index}",
+            "cat": "politik",
+            "pubDate": _iso(NOW_TS - 3 * 3600),
             "ts_num": now,
             "score": 90.0 - index,
             "scoreBreakdown": {"mixBalance": 70.0},
@@ -238,22 +313,16 @@ def test_event_mode_suspends_the_politics_mix_cap(monkeypatch):
         for index in range(6)
     ]
 
-    normal = rebalance_push_mix([dict(item) for item in politics], target_ts=now)
-    normal_top = [item for item in normal[:6] if item["cat"] == "politik"]
-    assert any(
-        "Ressort politik" in " ".join(item.get("risks") or []) for item in normal_top
-    )
+    balanced = rebalance_push_mix(candidates, target_ts=now)
+    joined = " ".join(" ".join(item.get("risks") or []) for item in balanced)
+    assert "Ressort politik" in joined
 
-    try:
-        editorial = _reload_scoring(monkeypatch, True)
-        event = editorial.rebalance_push_mix([dict(item) for item in politics], target_ts=now)
-        joined_risks = [" ".join(item.get("risks") or []) for item in event]
-        assert not any("Ressort politik" in risks for risks in joined_risks)
-        assert not any("Thema politik" in risks for risks in joined_risks)
-        # Reihenfolge bleibt die des rohen Push Scores.
-        assert [item["title"] for item in event] == [item["title"] for item in politics]
-    finally:
-        _reload_scoring(monkeypatch, False)
+
+def test_event_mode_can_be_forced_off(monkeypatch):
+    from app.scoring.events import detect_active_event_groups
+
+    monkeypatch.setattr("app.config.PUSH_BALANCER_EVENT_MODE", "off")
+    assert detect_active_event_groups(_election_night_field(), now_ts=NOW_TS) == set()
 
 
 # ── Speicher-Deckel ─────────────────────────────────────────────────────────

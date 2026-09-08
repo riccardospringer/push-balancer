@@ -266,9 +266,10 @@ services:
         value: "8"
       - key: OPENAI_READER_SCORE_REQUEST_WAIT_S
         value: "8.0"
-      # Event-Modus: am Wahlabend/bei Grosslagen manuell auf "true" setzen.
-      - key: PUSH_BALANCER_EVENT_MODE_ENABLED
-        value: "false"
+      # Grosslagen-Erkennung: "auto" erkennt Wahlabende & Co. selbst am
+      # Kandidatenfeld; "on"/"off" uebersteuern manuell.
+      - key: PUSH_BALANCER_EVENT_MODE
+        value: auto
       - key: PUSH_BALANCER_EVENT_MODE_BONUS
         value: "12.0"
       - key: ADMIN_API_KEY

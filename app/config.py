@@ -240,17 +240,21 @@ OPENAI_READER_SCORE_REQUEST_WAIT_S: float = float(
 # Feedback Wahlsonntag 30.08.2026: an Grossereignis-Tagen arbeiten die
 # Politik-Deckel im Mix gegen die Redaktion. Der Schalter setzt sie aus und
 # hebt Artikel zum laufenden Ereignis an. Bewusst manuell, nicht automatisch.
-PUSH_BALANCER_EVENT_MODE_ENABLED: bool = _env_flag(
-    "PUSH_BALANCER_EVENT_MODE_ENABLED",
-    False,
-)
-PUSH_BALANCER_EVENT_MODE_KEYWORDS: str = os.environ.get(
-    "PUSH_BALANCER_EVENT_MODE_KEYWORDS",
-    "wahl,wahlen,wahlabend,wahlergebnis,hochrechnung,stimmauszaehlung,"
-    "bundestagswahl,landtagswahl,europawahl,koalition,regierungsbildung",
-)
+# "auto" (Standard): der Balancer erkennt eine laufende Grosslage selbst am
+# Kandidatenfeld. "on"/"off" uebersteuern die Erkennung manuell.
+PUSH_BALANCER_EVENT_MODE: str = os.environ.get("PUSH_BALANCER_EVENT_MODE", "auto")
 PUSH_BALANCER_EVENT_MODE_BONUS: float = float(
     os.environ.get("PUSH_BALANCER_EVENT_MODE_BONUS", "12.0")
+)
+# Erkennungsschwellen: so gesetzt, dass Routine-Berichterstattung zu einem
+# Dauerthema (Krieg, Politik) sie nicht erreicht.
+PUSH_BALANCER_EVENT_MIN_ARTICLES: int = _env_int("PUSH_BALANCER_EVENT_MIN_ARTICLES", 5)
+PUSH_BALANCER_EVENT_MIN_FRESH_ARTICLES: int = _env_int(
+    "PUSH_BALANCER_EVENT_MIN_FRESH_ARTICLES",
+    2,
+)
+PUSH_BALANCER_EVENT_FRESH_WINDOW_HOURS: float = float(
+    os.environ.get("PUSH_BALANCER_EVENT_FRESH_WINDOW_HOURS", "2.0")
 )
 
 # ── BILD APIs ──────────────────────────────────────────────────────────────

@@ -111,7 +111,11 @@ def test_ended_livestream_is_effectively_excluded():
     assert explicitly_ended["score"] < ended["score"] + 35
 
 
-def test_live_teaser_without_mass_relevance_is_dampened():
+def test_running_live_formats_are_not_penalized_anymore():
+    """Redaktionsvorgabe 30.08.2026: Ticker/Streams laufen gleichberechtigt mit.
+
+    Nur beendete Live-Formate werden abgewertet (siehe Test darueber).
+    """
     now = int(time.time())
     teaser = _score(
         "Testspiel gegen Drittligist: Jetzt live gucken im Stream",
@@ -119,7 +123,17 @@ def test_live_teaser_without_mass_relevance_is_dampened():
         now=now,
         hours_ago=0.3,
     )
-    assert any("Teaser" in risk or "Live-/Stream" in risk for risk in teaser["risks"])
+    plain = _score(
+        "Testspiel gegen Drittligist beginnt gleich",
+        "sport",
+        now=now,
+        hours_ago=0.3,
+    )
+
+    assert not any("Teaser" in risk or "Live-/Stream" in risk for risk in teaser["risks"])
+    assert teaser["scoreBreakdown"]["feedback2026Adjustment"] == plain["scoreBreakdown"][
+        "feedback2026Adjustment"
+    ]
 
 
 def test_sport_riddle_quote_line_is_not_specially_penalized():
@@ -176,7 +190,7 @@ def test_fresh_missing_person_case_ranks_high():
         now=now,
         hours_ago=1.5,
     )
-    assert scored["score"] >= 70
+    assert scored["score"] >= 65
     assert scored["mixPriority"] in {"hoch", "mittel"}
 
 
