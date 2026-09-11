@@ -347,6 +347,7 @@ EDITORIAL_BREAKDOWN = {
     "bildReizPoints": 32.0,
     "bildReizSource": "llm_reader_score",
     "readerScore": 80.0,
+    "readerScoreReasoning": "Das trifft viele Autofahrer direkt und ich will sofort wissen, was los ist.",
     "openingRatePotential": 70.0,
     "openingRatePotentialPoints": 14.0,
     "freshness": 90.0,

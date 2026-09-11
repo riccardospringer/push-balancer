@@ -52,6 +52,7 @@ A score computed on the server returns the weighted `editorial` shape instead:
     "bildReizPoints": 31.2,
     "bildReizSource": "llm_reader_score",
     "readerScore": 78.0,
+    "readerScoreReasoning": "Ein Toter auf der A2 mitten im Berufsverkehr, das kann jeden treffen. Ich will sofort wissen, ob die Strecke gesperrt ist.",
     "openingRatePotential": 61.2,
     "openingRatePotentialPoints": 12.24,
     "freshness": 74.0,
@@ -89,7 +90,11 @@ A score computed on the server returns the weighted `editorial` shape instead:
   and `editorialFeedback` (18 % of its deviation from the neutral 60).
   `bildReizSource` says whether the BILD-Reiz value is the LLM reader score
   (`llm_reader_score`, raw value in `readerScore`) or the bounded heuristic
-  fallback (`heuristik_fallback`, `readerScore: null`). `otherAdjustments`
+  fallback (`heuristik_fallback`, `readerScore: null`).
+  `readerScoreReasoning` carries the short reason the LLM reader gave for its
+  own score, normalised to a single line of at most 400 characters. It is model
+  output about the article, not an editorial statement, and it is `null`
+  whenever the heuristic fallback produced `bildReiz`. `otherAdjustments`
   holds the remaining flat bonuses and penalties (breaking bonus, staleness and
   fatigue penalties, mix rebalancing, event mode). This shape reconciles:
   the sum of all `*Points` plus `otherAdjustments` equals `baseScore`, and
@@ -114,8 +119,11 @@ A score computed on the server returns the weighted `editorial` shape instead:
 - The latest eligible captured value remains available for up to eight hours,
   but the publication-time check is repeated for every lookup. The workday
   capture window therefore never extends the 12-hour article-age limit.
-- The response intentionally excludes article title, URL, prose explanations,
-  model metadata, and predicted opening-rate data.
+- The response intentionally excludes article title, URL, editorial prose,
+  model metadata, and predicted opening-rate data. The single
+  `readerScoreReasoning` line is the only free text and exists so the score can
+  be explained; it is bounded, single-line, and never present without an LLM
+  reader score.
 - The service returns no zero or alternate fallback score.
 
 The stable machine-readable contract is

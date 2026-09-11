@@ -422,6 +422,7 @@ components:
         - bildReizPoints
         - bildReizSource
         - readerScore
+        - readerScoreReasoning
         - openingRatePotential
         - openingRatePotentialPoints
         - freshness
@@ -466,6 +467,15 @@ components:
             - type: number
               minimum: 0
               maximum: 100
+            - type: "null"
+        readerScoreReasoning:
+          description: >-
+            One short reason the LLM reader gave for its score, normalised to a
+            single line. Null when the heuristic fallback was used.
+          anyOf:
+            - type: string
+              minLength: 1
+              maxLength: 400
             - type: "null"
         openingRatePotential:
           type: number

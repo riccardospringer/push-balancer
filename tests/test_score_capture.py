@@ -1307,6 +1307,7 @@ def _server_candidate_article(**overrides) -> dict:
         "freshnessScoreMultiplier": 1.0,
         "scoreBreakdown": dict(SERVER_EDITORIAL_BREAKDOWN),
         "readerScore": 80.0,
+        "readerScoreReasoning": "Das trifft viele Autofahrer direkt und ich will sofort wissen, was los ist.",
         "orFactor": 1.21,
     }
     article.update(overrides)
@@ -1345,6 +1346,7 @@ def test_server_candidate_fallback_explains_the_llm_share_of_the_score(monkeypat
                 "bildReizPoints": 32.0,
                 "bildReizSource": "llm_reader_score",
                 "readerScore": 80.0,
+                "readerScoreReasoning": "Das trifft viele Autofahrer direkt und ich will sofort wissen, was los ist.",
                 "openingRatePotential": 70.0,
                 "openingRatePotentialPoints": 14.0,
                 "freshness": 90.0,
@@ -1449,3 +1451,68 @@ def test_batch_endpoint_forwards_the_server_editorial_breakdown(monkeypatch):
     assert result["scoreBreakdown"]["kind"] == "editorial"
     assert result["scoreBreakdown"]["bildReizPoints"] == 32.0
     assert result["orFactor"] == 1.21
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  Trifft viele Menschen.\nIch klicke. ", "Trifft viele Menschen. Ich klicke."),
+        ("Kurz\tund sauber", "Kurz und sauber"),
+        ("", None),
+        ("   ", None),
+        (None, None),
+        (42, None),
+    ],
+)
+def test_reader_score_reasoning_is_normalized_to_one_bounded_line(raw, expected):
+    assert score_capture.normalized_reader_score_reasoning(raw) == expected
+
+
+def test_reader_score_reasoning_is_capped_at_a_word_boundary():
+    raw = "Sehr " * 200
+
+    normalized = score_capture.normalized_reader_score_reasoning(raw)
+
+    assert normalized is not None
+    assert len(normalized) <= score_capture.MAX_READER_SCORE_REASONING_LENGTH
+    assert normalized.endswith("\u2026")
+    assert "  " not in normalized
+
+
+def test_server_candidate_fallback_forwards_the_llm_reason(monkeypatch):
+    _patch_candidate_feed(
+        monkeypatch,
+        _server_candidate_article(
+            readerScoreReasoning="  Ein Toter auf der A2.\nDas will ich sofort wissen. "
+        ),
+    )
+
+    breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
+
+    assert breakdown["readerScoreReasoning"] == (
+        "Ein Toter auf der A2. Das will ich sofort wissen."
+    )
+
+
+def test_server_candidate_fallback_keeps_the_score_without_a_usable_reason(monkeypatch):
+    _patch_candidate_feed(
+        monkeypatch, _server_candidate_article(readerScoreReasoning="   ")
+    )
+
+    breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
+
+    assert breakdown["readerScoreReasoning"] is None
+    assert breakdown["readerScore"] == 80.0
+
+
+def test_heuristic_bild_reiz_never_carries_an_llm_reason(monkeypatch):
+    article = _server_candidate_article(
+        readerScore=None,
+        readerScoreReasoning="Aus einem frueheren LLM-Lauf",
+    )
+    article["scoreBreakdown"]["bildReizSource"] = "heuristik_fallback"
+    _patch_candidate_feed(monkeypatch, article)
+
+    breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
+
+    assert breakdown["readerScoreReasoning"] is None

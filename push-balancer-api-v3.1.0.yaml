@@ -5109,6 +5109,15 @@ components:
             minimum: 0.0
           - type: 'null'
           title: Readerscore
+        readerScoreReasoning:
+          anyOf:
+          - type: string
+            maxLength: 400
+            minLength: 1
+          - type: 'null'
+          title: Readerscorereasoning
+          description: One-sentence reason the LLM reader gave for its score, or null when the bounded heuristic
+            produced bildReiz
         openingRatePotential:
           type: number
           maximum: 100.0
@@ -5226,7 +5235,9 @@ components:
 
         Punkten. ``bildReizPoints`` ist der Anteil des LLM-Reader-Scores (40 %
 
-        Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``).
+        Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``,
+
+        Kurzbegruendung des Modells in ``readerScoreReasoning``).
 
         Summe aller ``*Points`` + ``otherAdjustments`` ergibt ``baseScore``,
 
