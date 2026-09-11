@@ -257,6 +257,22 @@ PUSH_BALANCER_EVENT_FRESH_WINDOW_HOURS: float = float(
     os.environ.get("PUSH_BALANCER_EVENT_FRESH_WINDOW_HOURS", "2.0")
 )
 
+# ── CMS-Dokumenttyp (Artikel vs. Video) ────────────────────────────────────
+# Videos tragen im CMS den Dokumenttyp "video" (editorial.one .../video/...),
+# haben aber eine gewoehnliche Artikel-URL. Der Typ steht als og:type auf der
+# oeffentlichen Seite und wird von dort einmal pro Artikel gelesen.
+PUSH_BALANCER_DOCUMENT_TYPE_PROBE_ENABLED: bool = _env_flag(
+    "PUSH_BALANCER_DOCUMENT_TYPE_PROBE_ENABLED",
+    True,
+)
+PUSH_BALANCER_DOCUMENT_TYPE_MAX_PROBES_PER_REQUEST: int = _env_int(
+    "PUSH_BALANCER_DOCUMENT_TYPE_MAX_PROBES_PER_REQUEST",
+    60,
+)
+PUSH_BALANCER_DOCUMENT_TYPE_WAIT_S: float = float(
+    os.environ.get("PUSH_BALANCER_DOCUMENT_TYPE_WAIT_S", "10.0")
+)
+
 # ── BILD APIs ──────────────────────────────────────────────────────────────
 PUSH_API_BASE: str = os.environ.get("PUSH_API_BASE", "https://push-frontend.bildcms.de")
 BILD_SITEMAP: str = os.environ.get("BILD_SITEMAP_URL", "https://www.bild.de/sitemap-news.xml")

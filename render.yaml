@@ -272,6 +272,11 @@ services:
         value: auto
       - key: PUSH_BALANCER_EVENT_MODE_BONUS
         value: "12.0"
+      # CMS-Dokumenttyp: Videos erkennen, auch wenn die URL wie ein Artikel aussieht.
+      - key: PUSH_BALANCER_DOCUMENT_TYPE_PROBE_ENABLED
+        value: "true"
+      - key: PUSH_BALANCER_DOCUMENT_TYPE_MAX_PROBES_PER_REQUEST
+        value: "60"
       - key: ADMIN_API_KEY
         sync: false
       - key: CONSUMER_API_KEY

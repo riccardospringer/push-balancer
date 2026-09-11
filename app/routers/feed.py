@@ -492,6 +492,8 @@ def _apply_server_score_freshness_weight(
         capture_tracks_publication = article.get(
             "pushBalancerScoreArticlePublishedAt"
         ) is not None
+        if article.get("isVideo"):
+            continue
         needs_weight = score_source == "server_editorial_fallback" or (
             score_source == "captured_push_balancer" and not capture_tracks_publication
         )
@@ -527,6 +529,12 @@ def _apply_canonical_push_balancer_scores(
         article["pushBalancerScoreAgeSeconds"] = None
         article["pushBalancerScoreArticlePublishedAt"] = None
         article["scoreSource"] = "server_editorial_fallback"
+
+        # Ein Video bleibt bei 0, auch wenn ein aelteres Browser-Capture den
+        # Dokumenttyp noch nicht kannte.
+        if article.get("isVideo"):
+            article["scoreSource"] = "server_editorial_video"
+            continue
 
         snapshot = get_score_snapshot_for_url(
             str(article.get("url") or ""),
@@ -700,6 +708,15 @@ def build_articles_payload(
     # Re-Publish-Schutz: ein erneut publizierter Artikel darf nicht wieder
     # frisch aussehen. Die frueheste bekannte Sichtung gewinnt.
     articles = apply_first_seen_publication_floor(articles, now_ts=now_ts)
+
+    # CMS-Dokumenttyp: Videos tragen gewoehnliche Artikel-URLs, deshalb wird
+    # der Typ einmal pro Artikel von der oeffentlichen Seite gelesen.
+    try:
+        from app.scoring.document_type import annotate_document_types
+
+        annotate_document_types(articles)
+    except Exception as exc:
+        log.warning("[articles] document type annotation failed: %s", exc)
     articles = _fresh_article_candidates(articles, now_ts=now_ts)
     history: list[dict[str, Any]] = []
     research_state: dict[str, Any] = {}
@@ -800,6 +817,14 @@ def build_articles_payload(
     except Exception as exc:
         log.warning("[articles] editorial scoring enrichment failed: %s", exc)
         articles.sort(key=lambda article: (article["score"], article["pubDate"]), reverse=True)
+
+    # Redaktionsvorgabe: Videos sind keine Push-Kandidaten. Die Null gilt auch
+    # dann, wenn das Editorial-Scoring oben ausgefallen ist.
+    for article in articles:
+        if article.get("isVideo"):
+            article["score"] = 0.0
+            article["mixPriority"] = "niedrig"
+            article["scoreReason"] = "Video: keine Push-Empfehlung (Score 0)"
 
     articles = _apply_canonical_push_balancer_scores(articles)
     # Preserve the final, publication-age-weighted fallback value before the
