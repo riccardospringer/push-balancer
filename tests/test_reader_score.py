@@ -157,3 +157,39 @@ def test_reader_scores_endpoint_returns_cached_scores(monkeypatch, tmp_path):
     entry = payload["scores"]["https://www.bild.de/news/endpoint-artikel"]
     assert entry["readerScore"] == 81.0
     assert entry["readerScoreReasoning"] == "Starke Story"
+
+
+def test_cache_generation_separates_prompt_and_model_changes(monkeypatch):
+    """A prompt or model swap must not serve judgements from the old setup.
+
+    The cache has no expiry, so a stale generation would silently keep scoring
+    articles with the retired prompt/model for as long as they stay in the feed.
+    """
+    article = {"url": "https://www.bild.de/politik/beispiel-123.bild.html"}
+
+    monkeypatch.setattr("app.config.OPENAI_READER_SCORE_MODEL", "gpt-5.6-luna")
+    rs._reader_score_generation.cache_clear()
+    luna_key = rs.reader_score_cache_key(article)
+
+    monkeypatch.setattr("app.config.OPENAI_READER_SCORE_MODEL", "gpt-5.6-terra")
+    rs._reader_score_generation.cache_clear()
+    terra_key = rs.reader_score_cache_key(article)
+
+    assert luna_key != terra_key
+    # Same article identity, different generation prefix.
+    assert luna_key.split(":", 1)[1] == terra_key.split(":", 1)[1]
+
+    changed_prompt = rs._reader_score_generation("gpt-5.6-terra")
+    monkeypatch.setattr(rs, "READER_SCORE_PROMPT", rs.READER_SCORE_PROMPT + " Zusatzregel.")
+    rs._reader_score_generation.cache_clear()
+    assert rs._reader_score_generation("gpt-5.6-terra") != changed_prompt
+
+
+def test_reader_score_model_uses_gpt5_parameter_family():
+    """Terra must take the gpt-5 argument shape, like the model it replaces."""
+    from app import config
+
+    assert config.OPENAI_READER_SCORE_MODEL == "gpt-5.6-terra"
+    assert rs._completion_token_argument(config.OPENAI_READER_SCORE_MODEL) == (
+        "max_completion_tokens"
+    )

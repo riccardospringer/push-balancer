@@ -206,7 +206,7 @@ OPENAI_READER_SCORE_ENABLED: bool = _env_flag(
 )
 OPENAI_READER_SCORE_MODEL: str = os.environ.get(
     "OPENAI_READER_SCORE_MODEL",
-    "gpt-5.6-luna",
+    "gpt-5.6-terra",
 )
 OPENAI_READER_SCORE_REASONING_EFFORT: str = os.environ.get(
     "OPENAI_READER_SCORE_REASONING_EFFORT",
