@@ -9,6 +9,7 @@ editorial scorer falls back to its bounded heuristic component.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -80,14 +81,32 @@ Bei Crime und Unfällen gilt: Hohe Scores entstehen nicht durch das schlimme Wor
 
 Eine schlimme, aber normale Polizeimeldung bleibt meist klein bis mittel.
 
-# 9. Score-Korrekturen: Prominenz, Royals, Sportstars, Unterhaltung
+# 9. Score-Korrekturen: Aktualität, Wahlen und nationale Aufmerksamkeit
+
+Manche Ereignisse haben nur für ein kurzes Zeitfenster außergewöhnlich hohe Relevanz. Bewerte deshalb nicht nur das Thema, sondern auch, ob die Story genau jetzt einen bundesweiten Nachrichtenmoment prägt.
+Landtagswahlen sind nicht automatisch nur Regionalthemen. Sie können vorübergehend für ganz Deutschland starke Relevanz haben, besonders wenn das Ergebnis über das jeweilige Bundesland hinaus politische Fallhöhe erzeugt.
+Das gilt insbesondere, wenn mindestens einer dieser Hebel klar aus Titel oder Artikeltext hervorgeht:
+- Eine Regierungspartei verliert die Stellung als stärkste Kraft.
+- Ein Machtwechsel, Regierungsverlust oder ungewöhnliches Bündnis zeichnet sich ab.
+- Eine bundesweit bedeutende Partei erzielt einen außergewöhnlichen Sieg oder eine außergewöhnliche Niederlage.
+- Spitzenpolitiker oder die Bundesregierung geraten durch das Ergebnis sichtbar unter Druck.
+- Das Ergebnis verändert das politische Kräfteverhältnis oder hat eine erkennbare Signalwirkung über das Bundesland hinaus.
+- Es gibt einen überraschenden Einbruch, Durchbruch, historischen Wert oder eine andere klar benannte politische Fallhöhe.
+
+Der Aktualitätsbonus gilt nur in einem engen Zeitfenster: in der Regel am Tag vor der Wahl, am Wahltag und am Tag danach. In dieser Phase darfst du die Story deutlich höher bewerten, weil Aufmerksamkeit, Gesprächswert und Informationsdruck besonders groß sind.
+Außerhalb dieses Zeitfensters darf die bloße Tatsache, dass eine Landtagswahl stattfindet oder stattgefunden hat, den Score nicht automatisch erhöhen. Dann braucht die konkrete Story weiterhin einen aktuellen Anlass, eine neue Entwicklung oder besondere Fallhöhe.
+Wichtig: Erhöhe den Score nicht allein wegen des Wortes „Wahl“. Entscheidend ist, ob die konkrete Entwicklung bundesweite Aufmerksamkeit, Überraschung, Machtverschiebung, Konflikt oder unmittelbaren Gesprächswert erzeugt. Eine erwartbare regionale Personalie, ein gewöhnlicher Wahlkampfauftritt oder eine kleine Umfragebewegung bleibt klein.
+Nutze nur die Aktualität und politische Fallhöhe, die aus Titel oder Artikeltext eindeutig hervorgehen. Unterstelle keine bundespolitischen Folgen, keinen Machtwechsel und keine Signalwirkung, wenn diese dort nicht klar erkennbar sind.
+
+# 10. Score-Korrekturen: Prominenz, Royals, Sportstars, Unterhaltung
 Fallhöhe entsteht auch durch Status: Je bekannter, erfolgreicher, beliebter, umstrittener oder glamouröser eine Person ist, desto stärker kann ein scheinbar kleines Ereignis wirken.
 Frage bei Promis nicht nur: „Wäre das bei einem Normalbürger relevant?“, sondern: „Wird es durch Bekanntheit, Imagebruch, Glamour, Peinlichkeit, private Nähe oder Neugier erzählenswert?“. Wenn ja, darfst du den Score entsprechend nach oben korrigieren.
 Aber: Prominenz allein reicht nicht. Ohne konkretes Detail, Gefühl, Bild im Kopf oder Mitredewert bleibt auch eine Promi-Story klein bis mittel.
 
-# 10. Innerer Check
+# 11. Innerer Check
 
 Prüfe innerlich: - Bleibst du hängen? - Fühlst du etwas? - Erzählst du das jemandem weiter? - Betrifft es dich wirklich? Ist die Chance groß, dass es deine Familie, Freunde, Kollegen oder deinen Alltag konkret betrifft? Oder klingt es nur allgemein wichtig? - Bei regionalen oder ausländischen Storys: Betrifft dich das wirklich, oder ist es eher für die Menschen dort wichtig? - Klickst du die Pushmitteilung an — oder scrollst du weiter?
+- Ist das Ereignis genau jetzt Teil eines großen nationalen Nachrichtenmoments, auch wenn es formal nur ein Bundesland betrifft? Gibt es eine erkennbare Machtverschiebung, Überraschung oder bundesweite politische Fallhöhe?
 
 Bewerte streng. Viele Storys sind wichtig, interessant oder nützlich und bleiben trotzdem klein bis mittel.
 
@@ -95,15 +114,21 @@ Bewerte streng. Viele Storys sind wichtig, interessant oder nützlich und bleibe
 
 Wenn du zwischen zwei Scores schwankst, nimm eher den niedrigeren.
 
-# 11. Reader-Score-Skala
+# 12. Reader-Score-Skala
 
 Bewerte, was du als Leser tust — nicht, wie gut der Text geschrieben ist. • 90-100 = Starke Story! Die packt mich, die lese ich sofort komplett. Sehr hoher Klickdruck durch massive Emotion, große Fallhöhe, Prominenz, Gefahr, Skandal, extreme Wendung oder starken Weitererzählwert. • 70-80 = Klarer BILD-Stoff. Ich klicke wahrscheinlich und lese den Großteil, weil Sog da ist: Gefühl, Konflikt, Wut, Sorge, Staunen, Unterhaltung, Promi-Neugier oder ein starkes Bild im Kopf. • 50-60 = Wahrgenommen, aber nicht zwingend. Es gibt einen Reiz, aber keinen starken Druck. Ich klicke und überfliege den Text, wenn mir langweilig ist oder mich Thema, Person oder Detail gerade interessiert. • 30-40 = Ich scrolle vermutlich weiter. Die Story ist recht abstrakt, bekannt, fern, routinehaft, lokal begrenzt oder ohne echten Impuls. • 10-20 = Komplett egal! Diese Story löst gar nichts bei mir aus.
 
-# 12. Beispiele:
+# 13. Beispiele:
 
 • Putin droht Europa offen, Bundesregierung beschließt konkrete Krisenmaßnahmen: reader_score=90 reasoning="Offene Drohungen gegen Europa, das rückt plötzlich ganz schön nah. Ich bleibe hängen, weil es um meine Sicherheit geht." • Milliarden-Erbin und Bundesliga-Profi zeigen sich verliebt: reader_score=70 reasoning="Milliarden-Erbin und Bundesliga-Profi, das hat Glamour, Liebe, Fußball und ein klares Bild im Kopf. Ich schaue rein, weil es leicht und prominent ist." • Tragischer Unfall ohne Namen, Gesichter oder besondere Wendung:  reader_score=50 reasoning="Das ist traurig, aber ohne Namen, Gesichter oder besondere Wendung bleibt es eine von vielen Unfallmeldungen. Ich lese höchstens kurz an." • Analyse zu Geldmarktzinsen ohne Mensch: reader_score=10 reasoning="Geldmarktzinsen ohne Mensch oder konkrete Folge lösen bei mir überhaupt nichts aus. Da fehlt mir jeder Haken zur Story."
 
 Antworte NUR mit einem JSON-Objekt: {"reader_score": <int 0-100>, "reasoning": "<1-2 Sätze>"}"""
+
+# Prompt generation marker for the persistent cache. Short on purpose: it only
+# has to separate one prompt wording from the next, never to be secure.
+READER_SCORE_PROMPT_FINGERPRINT = "p" + hashlib.sha256(
+    READER_SCORE_PROMPT.encode("utf-8")
+).hexdigest()[:8]
 
 # One in-flight guard per article so concurrent feed requests never double-bill.
 _INFLIGHT_LOCK = threading.Lock()
@@ -132,12 +157,21 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def reader_score_cache_key(push: dict[str, Any]) -> str:
-    """Stable per-article identity: canonical URL, falling back to the title."""
+    """Stable per-article identity, scoped to the prompt that produced the score.
+
+    The cache has no expiry, so without the prompt fingerprint an article rated
+    under an older prompt would keep that score forever and a prompt change
+    would only ever reach articles nobody has seen yet. The fingerprint moves
+    with the prompt text, so every edit starts a fresh generation on its own —
+    bounded by the existing per-hour/per-day call budget.
+    """
     url = str(push.get("url") or push.get("link") or "").strip()
     if url:
-        return canonical_article_url_identity(url)
-    title = str(push.get("title") or push.get("headline") or "").strip().lower()
-    return f"title:{title}"
+        identity = canonical_article_url_identity(url)
+    else:
+        title = str(push.get("title") or push.get("headline") or "").strip().lower()
+        identity = f"title:{title}"
+    return f"{READER_SCORE_PROMPT_FINGERPRINT}:{identity}"
 
 
 def _get_client(api_key: str):
