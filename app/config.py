@@ -208,15 +208,24 @@ OPENAI_READER_SCORE_MODEL: str = os.environ.get(
     "OPENAI_READER_SCORE_MODEL",
     "gpt-5.6-terra",
 )
+# "low" statt "none": die Bewertung ist Abwaegung (Fallhoehe, Deutschland-Naehe,
+# politische Signifikanz), nicht Formatarbeit. GPT-5.6 behandelt den Wert als
+# Obergrenze, nicht als Untergrenze — klare Faelle kosten weiterhin kein
+# Reasoning, nur die kniffligen bekommen Bedenkzeit.
 OPENAI_READER_SCORE_REASONING_EFFORT: str = os.environ.get(
     "OPENAI_READER_SCORE_REASONING_EFFORT",
-    "none",
+    "low",
 )
 OPENAI_READER_SCORE_TIMEOUT_S: float = float(
-    os.environ.get("OPENAI_READER_SCORE_TIMEOUT_S", "20.0")
+    os.environ.get("OPENAI_READER_SCORE_TIMEOUT_S", "30.0")
 )
+# Reasoning-Tokens zaehlen bei gpt-5 zu max_completion_tokens. Mit dem alten
+# 400er-Deckel wuerde die Bedenkzeit das Budget aufbrauchen, bevor das JSON
+# kommt — die Antwort waere unparsebar und JEDER Artikel fiele still auf die
+# Heuristik zurueck. Der Deckel ist ein Sicherheitsnetz, keine Zielgroesse:
+# die eigentliche Antwort bleibt bei ~100 Tokens.
 OPENAI_READER_SCORE_MAX_TOKENS: int = int(
-    os.environ.get("OPENAI_READER_SCORE_MAX_TOKENS", "400")
+    os.environ.get("OPENAI_READER_SCORE_MAX_TOKENS", "3000")
 )
 OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR: int = _env_int(
     "OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR",

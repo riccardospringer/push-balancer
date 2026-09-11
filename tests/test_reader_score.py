@@ -175,14 +175,18 @@ def test_cache_generation_separates_prompt_and_model_changes(monkeypatch):
     rs._reader_score_generation.cache_clear()
     terra_key = rs.reader_score_cache_key(article)
 
+    monkeypatch.setattr("app.config.OPENAI_READER_SCORE_REASONING_EFFORT", "medium")
+    rs._reader_score_generation.cache_clear()
+    assert rs.reader_score_cache_key(article) != terra_key
+
     assert luna_key != terra_key
     # Same article identity, different generation prefix.
     assert luna_key.split(":", 1)[1] == terra_key.split(":", 1)[1]
 
-    changed_prompt = rs._reader_score_generation("gpt-5.6-terra")
+    changed_prompt = rs._reader_score_generation("gpt-5.6-terra", "low")
     monkeypatch.setattr(rs, "READER_SCORE_PROMPT", rs.READER_SCORE_PROMPT + " Zusatzregel.")
     rs._reader_score_generation.cache_clear()
-    assert rs._reader_score_generation("gpt-5.6-terra") != changed_prompt
+    assert rs._reader_score_generation("gpt-5.6-terra", "low") != changed_prompt
 
 
 def test_reader_score_model_uses_gpt5_parameter_family():
@@ -193,3 +197,16 @@ def test_reader_score_model_uses_gpt5_parameter_family():
     assert rs._completion_token_argument(config.OPENAI_READER_SCORE_MODEL) == (
         "max_completion_tokens"
     )
+
+
+def test_reasoning_budget_leaves_room_for_the_json_answer():
+    """Reasoning tokens count toward max_completion_tokens on gpt-5 models.
+
+    With the old 400-token cap an active reasoning effort could consume the
+    whole budget before the JSON is emitted — the response would be unparsable
+    and every article would silently fall back to the heuristic.
+    """
+    from app import config
+
+    assert config.OPENAI_READER_SCORE_REASONING_EFFORT != "none"
+    assert config.OPENAI_READER_SCORE_MAX_TOKENS >= 2000

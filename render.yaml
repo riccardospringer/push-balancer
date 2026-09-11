@@ -253,11 +253,11 @@ services:
       - key: OPENAI_READER_SCORE_MODEL
         value: gpt-5.6-terra
       - key: OPENAI_READER_SCORE_REASONING_EFFORT
-        value: none
+        value: low
       - key: OPENAI_READER_SCORE_TIMEOUT_S
-        value: "20.0"
+        value: "30.0"
       - key: OPENAI_READER_SCORE_MAX_TOKENS
-        value: "400"
+        value: "3000"
       - key: OPENAI_READER_SCORE_MAX_CALLS_PER_HOUR
         value: "300"
       - key: OPENAI_READER_SCORE_MAX_CALLS_PER_DAY
