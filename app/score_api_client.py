@@ -215,7 +215,12 @@ def _validate_optional_score_details(payload: dict) -> None:
         raise ScoreApiUnavailable("Score API response contract is invalid")
     expected_keys = {"kind", *bounds}
     if kind == "editorial":
-        expected_keys |= {"bildReizSource", "readerScore"}
+        expected_keys |= {"bildReizSource", "readerScore", "readerScoreReasoning"}
+        reasoning = breakdown.get("readerScoreReasoning")
+        if reasoning is not None and (
+            not isinstance(reasoning, str) or not 0 < len(reasoning) <= 400
+        ):
+            raise ScoreApiUnavailable("Score API response contract is invalid")
         reader_score = breakdown.get("readerScore")
         if breakdown.get("bildReizSource") not in {
             "llm_reader_score",

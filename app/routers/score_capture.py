@@ -85,12 +85,33 @@ class SportScoreBreakdown(BaseModel):
     freshness: float = Field(ge=0, le=10)
 
 
+# Kurzbegruendung des LLM-Reader-Scores: eine gekappte, auf eine Zeile
+# normalisierte Fassung der 1-2 Saetze, die das Modell selbst geliefert hat.
+MAX_READER_SCORE_REASONING_LENGTH = 400
+_CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def normalized_reader_score_reasoning(value: object) -> str | None:
+    """Einzeilige, laengenbegrenzte Kurzbegruendung oder ``None``."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(_CONTROL_CHARACTERS_RE.sub(" ", value).split())
+    if not text:
+        return None
+    if len(text) <= MAX_READER_SCORE_REASONING_LENGTH:
+        return text
+    cut = text[: MAX_READER_SCORE_REASONING_LENGTH - 1]
+    head, _, tail = cut.rpartition(" ")
+    return f"{(head or cut).rstrip(' ,;:-')}\u2026"
+
+
 class EditorialScoreBreakdown(BaseModel):
     """Gewichtete Zusammensetzung des serverseitigen Redaktions-Scores.
 
     Jede Komponente wird mit ihrem Rohwert (0-100) und den daraus gewichteten
     Punkten ausgewiesen. ``bildReiz`` traegt mit 40 % das schwerste Gewicht und
-    kommt aus dem LLM-Reader-Score, sofern dieser vorliegt (``readerScore``).
+    kommt aus dem LLM-Reader-Score, sofern dieser vorliegt (``readerScore``,
+    Kurzbegruendung des Modells in ``readerScoreReasoning``).
     Es gilt: Summe aller ``*Points`` + ``otherAdjustments`` = ``baseScore`` und
     ``baseScore`` * ``freshnessMultiplier`` = ausgelieferter Score.
     """
@@ -102,6 +123,9 @@ class EditorialScoreBreakdown(BaseModel):
     bildReizPoints: float = Field(ge=0, le=40)
     bildReizSource: Literal["llm_reader_score", "heuristik_fallback"]
     readerScore: float | None = Field(default=None, ge=0, le=100)
+    readerScoreReasoning: str | None = Field(
+        default=None, min_length=1, max_length=MAX_READER_SCORE_REASONING_LENGTH
+    )
     openingRatePotential: float = Field(ge=0, le=100)
     openingRatePotentialPoints: float = Field(ge=0, le=20)
     freshness: float = Field(ge=0, le=100)
@@ -450,11 +474,13 @@ def _server_editorial_details(article: dict) -> tuple[dict, float] | None:
     if source not in {"llm_reader_score", "heuristik_fallback"}:
         return None
     reader_score = _finite_number(article.get("readerScore"))
+    reasoning = normalized_reader_score_reasoning(article.get("readerScoreReasoning"))
     if source == "llm_reader_score":
         if reader_score is None or not 0 <= reader_score <= 100:
             return None
     else:
         reader_score = None
+        reasoning = None
 
     other_adjustments = round(base_score - sum(points.values()), 2)
     if not -100 <= other_adjustments <= 100:
@@ -466,6 +492,7 @@ def _server_editorial_details(article: dict) -> tuple[dict, float] | None:
         "bildReizPoints": points["bildReiz"],
         "bildReizSource": source,
         "readerScore": reader_score,
+        "readerScoreReasoning": reasoning,
         "openingRatePotential": values["openingRatePotential"],
         "openingRatePotentialPoints": points["openingRatePotential"],
         "freshness": values["freshness"],

@@ -93,6 +93,7 @@ class EditorialScoreBreakdown:
     bild_reiz_points: float
     bild_reiz_source: str
     reader_score: float | None
+    reader_score_reasoning: str | None
     opening_rate_potential: float
     opening_rate_potential_points: float
     freshness: float
@@ -379,6 +380,7 @@ def _parse_score_breakdown(value: Any) -> ScoreBreakdown:
     raise RenderScoreUnavailable("Render score source returned an invalid response")
 
 
+_MAX_READER_SCORE_REASONING_LENGTH = 400
 _EDITORIAL_BREAKDOWN_BOUNDS: dict[str, tuple[float, float]] = {
     "bildReiz": (0.0, 100.0),
     "bildReizPoints": (0.0, 40.0),
@@ -412,6 +414,7 @@ def _parse_editorial_score_breakdown(value: dict[str, Any]) -> EditorialScoreBre
         "kind",
         "bildReizSource",
         "readerScore",
+        "readerScoreReasoning",
     }
     if set(value) != required_keys:
         raise RenderScoreUnavailable("Render score source returned an invalid response")
@@ -424,6 +427,7 @@ def _parse_editorial_score_breakdown(value: dict[str, Any]) -> EditorialScoreBre
         if reader_score_raw is None
         else _strict_number(reader_score_raw, minimum=0, maximum=100)
     )
+    reasoning = _strict_reader_score_reasoning(value["readerScoreReasoning"])
 
     fields = {
         _snake_case(key): _strict_number(value[key], minimum=bounds[0], maximum=bounds[1])
@@ -433,8 +437,24 @@ def _parse_editorial_score_breakdown(value: dict[str, Any]) -> EditorialScoreBre
         kind="editorial",
         bild_reiz_source=str(value["bildReizSource"]),
         reader_score=reader_score,
+        reader_score_reasoning=reasoning,
         **fields,
     )
+
+
+def _strict_reader_score_reasoning(value: Any) -> str | None:
+    """Kurzbegruendung des Modells: einzeilig, laengenbegrenzt oder ``None``."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RenderScoreUnavailable("Render score source returned an invalid response")
+    if (
+        not value
+        or len(value) > _MAX_READER_SCORE_REASONING_LENGTH
+        or value != " ".join(value.split())
+    ):
+        raise RenderScoreUnavailable("Render score source returned an invalid response")
+    return value
 
 
 def _self_hosted() -> bool:

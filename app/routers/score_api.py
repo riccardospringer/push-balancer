@@ -63,7 +63,8 @@ class EditorialScoreBreakdownResponse(BaseModel):
 
     Jede Komponente kommt mit Rohwert (0-100) und den daraus gewichteten
     Punkten. ``bildReizPoints`` ist der Anteil des LLM-Reader-Scores (40 %
-    Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``).
+    Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``,
+    Kurzbegruendung des Modells in ``readerScoreReasoning``).
     Summe aller ``*Points`` + ``otherAdjustments`` ergibt ``baseScore``,
     ``baseScore`` * ``freshnessMultiplier`` den ausgelieferten ``score``.
     """
@@ -75,6 +76,15 @@ class EditorialScoreBreakdownResponse(BaseModel):
     bildReizPoints: float = Field(ge=0, le=40)
     bildReizSource: Literal["llm_reader_score", "heuristik_fallback"]
     readerScore: float | None = Field(default=None, ge=0, le=100)
+    readerScoreReasoning: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=400,
+        description=(
+            "One-sentence reason the LLM reader gave for its score, or null when the "
+            "bounded heuristic produced bildReiz"
+        ),
+    )
     openingRatePotential: float = Field(ge=0, le=100)
     openingRatePotentialPoints: float = Field(ge=0, le=20)
     freshness: float = Field(ge=0, le=100)

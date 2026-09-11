@@ -642,6 +642,7 @@ EDITORIAL_BREAKDOWN = {
     "bildReizPoints": 32.0,
     "bildReizSource": "llm_reader_score",
     "readerScore": 80.0,
+    "readerScoreReasoning": "Das trifft viele Autofahrer direkt und ich will sofort wissen, was los ist.",
     "openingRatePotential": 70.0,
     "openingRatePotentialPoints": 14.0,
     "freshness": 90.0,
@@ -684,6 +685,7 @@ def test_returns_exact_editorial_breakdown_with_llm_share(monkeypatch):
         bild_reiz_points=32.0,
         bild_reiz_source="llm_reader_score",
         reader_score=80.0,
+        reader_score_reasoning="Das trifft viele Autofahrer direkt und ich will sofort wissen, was los ist.",
         opening_rate_potential=70.0,
         opening_rate_potential_points=14.0,
         freshness=90.0,
@@ -709,6 +711,7 @@ def test_editorial_breakdown_keeps_a_null_reader_score_for_the_heuristic(monkeyp
         **EDITORIAL_BREAKDOWN,
         "bildReizSource": "heuristik_fallback",
         "readerScore": None,
+        "readerScoreReasoning": None,
     }
     monkeypatch.setattr(
         capture,
@@ -745,6 +748,31 @@ def test_rejects_invalid_editorial_breakdown(monkeypatch, invalid_breakdown):
         lambda _cms_id: _payload(
             score=77.9,
             score_breakdown=invalid_breakdown,
+            or_factor=1.21,
+        ),
+    )
+
+    with pytest.raises(capture.RenderScoreUnavailable):
+        capture.get_captured_score(CMS_ID, now=NOW)
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "Zeile eins\nZeile zwei",
+        "Doppelte  Leerzeichen",
+        "",
+        "x" * 401,
+        42,
+    ],
+)
+def test_rejects_an_unnormalized_reader_score_reason(monkeypatch, reasoning):
+    monkeypatch.setattr(
+        capture,
+        "_read_capture",
+        lambda _cms_id: _payload(
+            score=77.9,
+            score_breakdown={**EDITORIAL_BREAKDOWN, "readerScoreReasoning": reasoning},
             or_factor=1.21,
         ),
     )
