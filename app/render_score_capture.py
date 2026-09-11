@@ -84,7 +84,35 @@ class SportScoreBreakdown:
     freshness: float
 
 
-ScoreBreakdown = EngagementScoreBreakdown | SportScoreBreakdown
+@dataclass(frozen=True)
+class EditorialScoreBreakdown:
+    """Gewichtete Zusammensetzung des serverseitigen Redaktions-Scores."""
+
+    kind: str
+    bild_reiz: float
+    bild_reiz_points: float
+    bild_reiz_source: str
+    reader_score: float | None
+    opening_rate_potential: float
+    opening_rate_potential_points: float
+    freshness: float
+    freshness_points: float
+    mix_balance: float
+    mix_balance_points: float
+    historical_timing: float
+    historical_timing_points: float
+    headline_strength: float
+    headline_strength_points: float
+    risk_and_fatigue: float
+    risk_and_fatigue_points: float
+    editorial_feedback: float
+    editorial_feedback_points: float
+    other_adjustments: float
+    base_score: float
+    freshness_multiplier: float
+
+
+ScoreBreakdown = EngagementScoreBreakdown | SportScoreBreakdown | EditorialScoreBreakdown
 
 
 @dataclass(frozen=True)
@@ -346,7 +374,67 @@ def _parse_score_breakdown(value: Any) -> ScoreBreakdown:
             drama=_strict_number(value["drama"], minimum=0, maximum=25),
             freshness=_strict_number(value["freshness"], minimum=0, maximum=10),
         )
+    if kind == "editorial":
+        return _parse_editorial_score_breakdown(value)
     raise RenderScoreUnavailable("Render score source returned an invalid response")
+
+
+_EDITORIAL_BREAKDOWN_BOUNDS: dict[str, tuple[float, float]] = {
+    "bildReiz": (0.0, 100.0),
+    "bildReizPoints": (0.0, 40.0),
+    "openingRatePotential": (0.0, 100.0),
+    "openingRatePotentialPoints": (0.0, 20.0),
+    "freshness": (0.0, 100.0),
+    "freshnessPoints": (0.0, 15.0),
+    "mixBalance": (0.0, 100.0),
+    "mixBalancePoints": (0.0, 10.0),
+    "historicalTiming": (0.0, 100.0),
+    "historicalTimingPoints": (0.0, 10.0),
+    "headlineStrength": (0.0, 100.0),
+    "headlineStrengthPoints": (0.0, 3.0),
+    "riskAndFatigue": (0.0, 100.0),
+    "riskAndFatiguePoints": (0.0, 2.0),
+    "editorialFeedback": (0.0, 100.0),
+    "editorialFeedbackPoints": (-10.8, 7.2),
+    "otherAdjustments": (-100.0, 100.0),
+    "baseScore": (0.0, 100.0),
+    "freshnessMultiplier": (0.0, 1.0),
+}
+
+
+def _snake_case(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _parse_editorial_score_breakdown(value: dict[str, Any]) -> EditorialScoreBreakdown:
+    """Streng validierte Zerlegung des serverseitigen Redaktions-Scores."""
+    required_keys = set(_EDITORIAL_BREAKDOWN_BOUNDS) | {
+        "kind",
+        "bildReizSource",
+        "readerScore",
+    }
+    if set(value) != required_keys:
+        raise RenderScoreUnavailable("Render score source returned an invalid response")
+    if value["bildReizSource"] not in {"llm_reader_score", "heuristik_fallback"}:
+        raise RenderScoreUnavailable("Render score source returned an invalid response")
+
+    reader_score_raw = value["readerScore"]
+    reader_score = (
+        None
+        if reader_score_raw is None
+        else _strict_number(reader_score_raw, minimum=0, maximum=100)
+    )
+
+    fields = {
+        _snake_case(key): _strict_number(value[key], minimum=bounds[0], maximum=bounds[1])
+        for key, bounds in _EDITORIAL_BREAKDOWN_BOUNDS.items()
+    }
+    return EditorialScoreBreakdown(
+        kind="editorial",
+        bild_reiz_source=str(value["bildReizSource"]),
+        reader_score=reader_score,
+        **fields,
+    )
 
 
 def _self_hosted() -> bool:

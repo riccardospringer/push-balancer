@@ -4901,15 +4901,20 @@ components:
           - oneOf:
             - $ref: '#/components/schemas/EngagementScoreBreakdownResponse'
             - $ref: '#/components/schemas/SportScoreBreakdownResponse'
+            - $ref: '#/components/schemas/EditorialScoreBreakdownResponse'
             discriminator:
               propertyName: kind
               mapping:
+                editorial: '#/components/schemas/EditorialScoreBreakdownResponse'
                 engagement: '#/components/schemas/EngagementScoreBreakdownResponse'
                 sport: '#/components/schemas/SportScoreBreakdownResponse'
           - type: 'null'
           title: Scorebreakdown
-          description: Allowlisted captured numeric explanation values; existing score caps, age multipliers,
-            and TV adjustments mean they are not guaranteed to sum to score. Null for a legacy snapshot
+          description: Explanation of the delivered score. 'editorial' is the weighted server composition and shows
+            the LLM reader score share (bildReizPoints, 40 % weight); its points plus otherAdjustments give baseScore,
+            and baseScore times freshnessMultiplier gives score. 'engagement' and 'sport' are allowlisted captured
+            UI values whose caps, age multipliers, and TV adjustments mean they are not guaranteed to sum to score.
+            Null for a legacy snapshot
         orFactor:
           anyOf:
           - type: number
@@ -4969,9 +4974,11 @@ components:
           - oneOf:
             - $ref: '#/components/schemas/EngagementScoreBreakdownResponse'
             - $ref: '#/components/schemas/SportScoreBreakdownResponse'
+            - $ref: '#/components/schemas/EditorialScoreBreakdownResponse'
             discriminator:
               propertyName: kind
               mapping:
+                editorial: '#/components/schemas/EditorialScoreBreakdownResponse'
                 engagement: '#/components/schemas/EngagementScoreBreakdownResponse'
                 sport: '#/components/schemas/SportScoreBreakdownResponse'
           - type: 'null'
@@ -5073,6 +5080,157 @@ components:
       - results
       title: BatchScoreResponse
       description: Ordered score results and position-based summary counts.
+    EditorialScoreBreakdownResponse:
+      properties:
+        kind:
+          type: string
+          const: editorial
+          title: Kind
+        bildReiz:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Bildreiz
+        bildReizPoints:
+          type: number
+          maximum: 40.0
+          minimum: 0.0
+          title: Bildreizpoints
+        bildReizSource:
+          type: string
+          enum:
+          - llm_reader_score
+          - heuristik_fallback
+          title: Bildreizsource
+        readerScore:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Readerscore
+        openingRatePotential:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Openingratepotential
+        openingRatePotentialPoints:
+          type: number
+          maximum: 20.0
+          minimum: 0.0
+          title: Openingratepotentialpoints
+        freshness:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Freshness
+        freshnessPoints:
+          type: number
+          maximum: 15.0
+          minimum: 0.0
+          title: Freshnesspoints
+        mixBalance:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Mixbalance
+        mixBalancePoints:
+          type: number
+          maximum: 10.0
+          minimum: 0.0
+          title: Mixbalancepoints
+        historicalTiming:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Historicaltiming
+        historicalTimingPoints:
+          type: number
+          maximum: 10.0
+          minimum: 0.0
+          title: Historicaltimingpoints
+        headlineStrength:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Headlinestrength
+        headlineStrengthPoints:
+          type: number
+          maximum: 3.0
+          minimum: 0.0
+          title: Headlinestrengthpoints
+        riskAndFatigue:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Riskandfatigue
+        riskAndFatiguePoints:
+          type: number
+          maximum: 2.0
+          minimum: 0.0
+          title: Riskandfatiguepoints
+        editorialFeedback:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Editorialfeedback
+        editorialFeedbackPoints:
+          type: number
+          maximum: 7.2
+          minimum: -10.8
+          title: Editorialfeedbackpoints
+        otherAdjustments:
+          type: number
+          maximum: 100.0
+          minimum: -100.0
+          title: Otheradjustments
+        baseScore:
+          type: number
+          maximum: 100.0
+          minimum: 0.0
+          title: Basescore
+        freshnessMultiplier:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Freshnessmultiplier
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - bildReiz
+      - bildReizPoints
+      - bildReizSource
+      - openingRatePotential
+      - openingRatePotentialPoints
+      - freshness
+      - freshnessPoints
+      - mixBalance
+      - mixBalancePoints
+      - historicalTiming
+      - historicalTimingPoints
+      - headlineStrength
+      - headlineStrengthPoints
+      - riskAndFatigue
+      - riskAndFatiguePoints
+      - editorialFeedback
+      - editorialFeedbackPoints
+      - otherAdjustments
+      - baseScore
+      - freshnessMultiplier
+      title: EditorialScoreBreakdownResponse
+      description: 'Gewichtete Zusammensetzung des serverseitigen Redaktions-Scores.
+
+
+        Jede Komponente kommt mit Rohwert (0-100) und den daraus gewichteten
+
+        Punkten. ``bildReizPoints`` ist der Anteil des LLM-Reader-Scores (40 %
+
+        Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``).
+
+        Summe aller ``*Points`` + ``otherAdjustments`` ergibt ``baseScore``,
+
+        ``baseScore`` * ``freshnessMultiplier`` den ausgelieferten ``score``.'
     EngagementScoreBreakdownResponse:
       properties:
         kind:

@@ -471,3 +471,84 @@ def test_article_score_age_is_timezone_safe():
     result = client.get_score(CMS_A)
 
     assert result.age_seconds(scored_at + timedelta(seconds=30)) == 30
+
+
+EDITORIAL_BREAKDOWN = {
+    "kind": "editorial",
+    "bildReiz": 80.0,
+    "bildReizPoints": 32.0,
+    "bildReizSource": "llm_reader_score",
+    "readerScore": 80.0,
+    "openingRatePotential": 70.0,
+    "openingRatePotentialPoints": 14.0,
+    "freshness": 90.0,
+    "freshnessPoints": 13.5,
+    "mixBalance": 55.0,
+    "mixBalancePoints": 5.5,
+    "historicalTiming": 60.0,
+    "historicalTimingPoints": 6.0,
+    "headlineStrength": 65.0,
+    "headlineStrengthPoints": 1.95,
+    "riskAndFatigue": 50.0,
+    "riskAndFatiguePoints": 1.0,
+    "editorialFeedback": 60.0,
+    "editorialFeedbackPoints": 0.0,
+    "otherAdjustments": 3.95,
+    "baseScore": 77.9,
+    "freshnessMultiplier": 1.0,
+}
+
+
+@pytest.mark.parametrize(
+    "breakdown",
+    [
+        EDITORIAL_BREAKDOWN,
+        {
+            **EDITORIAL_BREAKDOWN,
+            "bildReizSource": "heuristik_fallback",
+            "readerScore": None,
+        },
+    ],
+)
+def test_score_client_accepts_the_weighted_editorial_breakdown(breakdown):
+    payload = {
+        "cmsId": CMS_A,
+        "score": 77.9,
+        "scoredAt": "2026-07-20T06:12:00Z",
+        "scoreBreakdown": breakdown,
+        "orFactor": 1.21,
+    }
+    client = ScoreApiClient(
+        BASE_URL,
+        API_KEY,
+        transport=lambda *_args: (200, json.dumps(payload).encode("utf-8")),
+    )
+
+    assert client.get_score(CMS_A).score == 77.9
+
+
+@pytest.mark.parametrize(
+    "breakdown",
+    [
+        {**EDITORIAL_BREAKDOWN, "bildReizSource": "unbekannt"},
+        {**EDITORIAL_BREAKDOWN, "readerScore": "80"},
+        {**EDITORIAL_BREAKDOWN, "bildReizPoints": 41.0},
+        {key: value for key, value in EDITORIAL_BREAKDOWN.items() if key != "baseScore"},
+    ],
+)
+def test_score_client_rejects_a_malformed_editorial_breakdown(breakdown):
+    payload = {
+        "cmsId": CMS_A,
+        "score": 77.9,
+        "scoredAt": "2026-07-20T06:12:00Z",
+        "scoreBreakdown": breakdown,
+        "orFactor": 1.21,
+    }
+    client = ScoreApiClient(
+        BASE_URL,
+        API_KEY,
+        transport=lambda *_args: (200, json.dumps(payload).encode("utf-8")),
+    )
+
+    with pytest.raises(ScoreApiUnavailable):
+        client.get_score(CMS_A)

@@ -14,6 +14,45 @@ from collections import Counter
 from typing import Any
 
 
+# Gewichtung Score-Umbau 30.08.2026. Die Tabelle ist die einzige Quelle fuer
+# den gewichteten Score-Anteil je Komponente: ``score_push_candidate`` rechnet
+# damit, und die Score-API leitet daraus die ausgewiesenen Punkte ab.
+SCORE_COMPONENT_WEIGHTS: dict[str, float] = {
+    "bildReiz": 0.40,
+    "openingRatePotential": 0.20,
+    "freshness": 0.15,
+    "mixBalance": 0.10,
+    "historicalTiming": 0.10,
+    "headlineStrength": 0.03,
+    "riskAndFatigue": 0.02,
+    "editorialFeedback": 0.18,
+}
+# Das Redaktions-Feedback wirkt als Abweichung von einem neutralen Mittelwert,
+# nicht als absoluter Anteil.
+EDITORIAL_FEEDBACK_BASELINE = 60.0
+
+
+def score_component_points(breakdown: dict[str, Any]) -> dict[str, float]:
+    """Punkte je Score-Komponente aus einem ``scoreBreakdown``.
+
+    Die Rueckgabe erklaert, wie viele der 0-100 Punkte jede Komponente
+    beigesteuert hat — inklusive des LLM-Reader-Scores, der als ``bildReiz``
+    mit 40 % das schwerste Einzelgewicht traegt.
+    """
+    points: dict[str, float] = {}
+    for key, weight in SCORE_COMPONENT_WEIGHTS.items():
+        value = breakdown.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            continue
+        if key == "editorialFeedback":
+            numeric -= EDITORIAL_FEEDBACK_BASELINE
+        points[key] = round(numeric * weight, 2)
+    return points
+
+
 _STOP_WORDS = {
     "aber",
     "alle",
@@ -878,15 +917,17 @@ def score_push_candidate(
     # Potenzial 20 %, Aktualität 15 %, Mix 10 %, Historie 10 %, Headline 3 %,
     # Risiko 2 %. BILD-Fit ist gestrichen.
     raw_score = (
-        bild_reiz * 0.40
-        + opening_score * 0.20
-        + freshness_score * 0.15
-        + mix_score * 0.10
-        + hist_score * 0.10
-        + headline_strength * 0.03
-        + risk_score * 0.02
+        bild_reiz * SCORE_COMPONENT_WEIGHTS["bildReiz"]
+        + opening_score * SCORE_COMPONENT_WEIGHTS["openingRatePotential"]
+        + freshness_score * SCORE_COMPONENT_WEIGHTS["freshness"]
+        + mix_score * SCORE_COMPONENT_WEIGHTS["mixBalance"]
+        + hist_score * SCORE_COMPONENT_WEIGHTS["historicalTiming"]
+        + headline_strength * SCORE_COMPONENT_WEIGHTS["headlineStrength"]
+        + risk_score * SCORE_COMPONENT_WEIGHTS["riskAndFatigue"]
     )
-    raw_score += (feedback_score - 60.0) * 0.18
+    raw_score += (
+        feedback_score - EDITORIAL_FEEDBACK_BASELINE
+    ) * SCORE_COMPONENT_WEIGHTS["editorialFeedback"]
 
     # Keep truly urgent stories from being buried, but still let fatigue matter.
     if is_eil or (tone == "breaking" and opening_score >= 72):
@@ -969,6 +1010,25 @@ def score_push_candidate(
 
     recommendation = _recommend_text(title, cat, tone, is_eil, risks)
 
+    # Gleiche Definition wie der OR-Faktor der Kandidaten-UI: erwartete
+    # Oeffnungsrate im Verhaeltnis zum historischen Schnitt, hart begrenzt.
+    # Ohne ML-Prognose zaehlt derselbe Ressort-Schnitt, mit dem auch das
+    # Oeffnungs-Potenzial rechnet — sonst faellt der Faktor auf neutral 1.0.
+    expected_or = _predicted_percent(predicted_or)
+    if expected_or is None:
+        # ``catAvg`` steht wie ``global_avg`` bereits in Prozent.
+        cat_avg = hist_info.get("catAvg")
+        expected_or = (
+            float(cat_avg)
+            if isinstance(cat_avg, (int, float))
+            and not isinstance(cat_avg, bool)
+            and cat_avg > 0
+            else global_avg
+        )
+    or_factor = (
+        round(_clip(expected_or / global_avg, 0.6, 1.5), 2) if global_avg > 0 else None
+    )
+
     return {
         "score": score,
         "scoreReason": _reason(score, drivers, risks),
@@ -990,6 +1050,7 @@ def score_push_candidate(
             "eventModeAdjustment": round(event_mode_bonus, 1),
         },
         "readerScore": llm_reader_score,
+        "orFactor": or_factor,
         "isVideo": is_video,
         "isEndedLiveFormat": bool(features.get("is_live_ended", False)),
     }

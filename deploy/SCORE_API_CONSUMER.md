@@ -39,22 +39,74 @@ X-Score-Key: <injected-secret>
 }
 ```
 
+A score computed on the server returns the weighted `editorial` shape instead:
+
+```json
+{
+  "cmsId": "0123456789abcdef01234567",
+  "score": 68.7,
+  "scoredAt": "2026-09-11T12:37:06Z",
+  "scoreBreakdown": {
+    "kind": "editorial",
+    "bildReiz": 78.0,
+    "bildReizPoints": 31.2,
+    "bildReizSource": "llm_reader_score",
+    "readerScore": 78.0,
+    "openingRatePotential": 61.2,
+    "openingRatePotentialPoints": 12.24,
+    "freshness": 74.0,
+    "freshnessPoints": 11.1,
+    "mixBalance": 68.0,
+    "mixBalancePoints": 6.8,
+    "historicalTiming": 56.0,
+    "historicalTimingPoints": 5.6,
+    "headlineStrength": 77.0,
+    "headlineStrengthPoints": 2.31,
+    "riskAndFatigue": 82.0,
+    "riskAndFatiguePoints": 1.64,
+    "editorialFeedback": 60.0,
+    "editorialFeedbackPoints": 0.0,
+    "otherAdjustments": 0.01,
+    "baseScore": 70.9,
+    "freshnessMultiplier": 0.969
+  },
+  "orFactor": 1.0
+}
+```
+
 - `cms_id` accepts `A-Z`, `a-z`, `0-9`, `_`, and `-`, with a maximum length of
   128 characters.
 - `score` is the score already calculated and displayed by the legacy Render
   candidate UI as **Gesamt**, on a scale from 0 to 100.
 - `scoredAt` is the UTC timestamp of that browser-generated UI snapshot.
-- `scoreBreakdown` contains the allowlisted captured numeric explanation. For engagement
-  candidates, `relevance`, `urgency`, `curiosity`, `freshness`, `timing`, and
-  `titleBoost` map to Relevanz, Dringlichkeit, Neugier, Aktualitaet, Timing, and
-  Titel-Boost. `breaking`, `research`, `pushHistory`, and `topicSaturation` are
-  included when those existing adjustments apply. Sport candidates instead use
-  `kind: "sport"` with `sportRelevance`, `timing`, `drama`, and `freshness`.
-- `orFactor` is the captured OR-Faktor used for candidate sorting. It is not
-  added to `score`.
-- `score` is authoritative. Existing score caps, age multipliers, and TV
-  adjustments can prevent a naive sum of the explanation values from matching
-  the total. The API forwards values exactly and never sums or recalculates
+- `scoreBreakdown` explains the delivered score and comes in three shapes,
+  distinguished by `kind`.
+- `kind: "editorial"` is the weighted server composition and is what a score
+  computed on the server returns. Each component carries its raw value (0-100)
+  and the points it contributed: `bildReiz`/`bildReizPoints` (40 % weight),
+  `openingRatePotential` (20 %), `freshness` (15 %), `mixBalance` (10 %),
+  `historicalTiming` (10 %), `headlineStrength` (3 %), `riskAndFatigue` (2 %),
+  and `editorialFeedback` (18 % of its deviation from the neutral 60).
+  `bildReizSource` says whether the BILD-Reiz value is the LLM reader score
+  (`llm_reader_score`, raw value in `readerScore`) or the bounded heuristic
+  fallback (`heuristik_fallback`, `readerScore: null`). `otherAdjustments`
+  holds the remaining flat bonuses and penalties (breaking bonus, staleness and
+  fatigue penalties, mix rebalancing, event mode). This shape reconciles:
+  the sum of all `*Points` plus `otherAdjustments` equals `baseScore`, and
+  `baseScore` multiplied by `freshnessMultiplier` equals `score`.
+- `kind: "engagement"` and `kind: "sport"` are the allowlisted captured values
+  of the legacy candidate UI. For engagement candidates, `relevance`,
+  `urgency`, `curiosity`, `freshness`, `timing`, and `titleBoost` map to
+  Relevanz, Dringlichkeit, Neugier, Aktualitaet, Timing, and Titel-Boost.
+  `breaking`, `research`, `pushHistory`, and `topicSaturation` are included
+  when those existing adjustments apply. Sport candidates use `sportRelevance`,
+  `timing`, `drama`, and `freshness`.
+- `orFactor` is the OR-Faktor used for candidate sorting: the expected opening
+  rate relative to the historical average, bounded to 0.6-1.5. It is not added
+  to `score`.
+- `score` is authoritative. For the captured `engagement` and `sport` shapes,
+  existing score caps, age multipliers, and TV adjustments can prevent a naive
+  sum of the explanation values from matching the total. The API forwards values exactly and never sums or recalculates
   them. Legacy snapshots return `scoreBreakdown: null` and `orFactor: null`.
 - Article freshness is applied to the total score with a shared, monotonic
   curve (100% at 0–1h, 95% at 3h, 80% at 6h, 55% at 9h, and 30% at 12h).

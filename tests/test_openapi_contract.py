@@ -62,6 +62,7 @@ def test_score_contract_matches_runtime_openapi():
         "BatchNotFoundScoreResponse",
         "BatchScoreRequest",
         "BatchScoreResponse",
+        "EditorialScoreBreakdownResponse",
         "EngagementScoreBreakdownResponse",
         "ProblemResponse",
         "SportScoreBreakdownResponse",
