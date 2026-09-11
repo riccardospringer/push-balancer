@@ -288,6 +288,8 @@ Article candidates are ranked by an editorial push score in [`app/scoring/editor
 
 Politics and live tickers are not devalued as such (editorial decision of 2026-08-30): every section races on the same terms, and a running live ticker is an ordinary candidate. Only *ended* live formats are marked down, and section density is capped identically for all sections. Differences between sections therefore come from measured opening behaviour and the reader score, not from hard-coded section rules.
 
+A BILD video carries an ordinary editorial URL and ordinary keywords, so URL and headline heuristics cannot recognise it. The document type is therefore read once per article off the public page (`og:type` / `VideoObject`, the same type behind the editorial.one `/editor/bild/video/` link) by [`app/scoring/document_type.py`](app/scoring/document_type.py) and cached durably; the probe reads only the page head, is bounded per request, and fails open.
+
 Videos never score: anything the balancer marks as a video (flag, `/video/` URL, or a video marker in the headline) is forced to 0 and can never be recommended (editorial decision of 2026-08-30).
 
 All candidates pass the same hard freshness gate: older than 12 h scores 0; before that an age multiplier applies (≤90 min ×1.0 · 3 h ×0.95 · 6 h ×0.6 · 9 h ×0.4 · 12 h ×0.3). A re-published article cannot become fresh again: [`app/scoring/first_seen.py`](app/scoring/first_seen.py) durably records when each article was first seen, and the earliest known timestamp wins over the sitemap's current publication date.
