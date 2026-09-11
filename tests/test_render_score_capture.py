@@ -634,3 +634,120 @@ def test_health_probe_rejects_invalid_payload(monkeypatch, body):
 
     with pytest.raises(capture.RenderScoreUnavailable):
         capture.require_capture_source_ready()
+
+
+EDITORIAL_BREAKDOWN = {
+    "kind": "editorial",
+    "bildReiz": 80.0,
+    "bildReizPoints": 32.0,
+    "bildReizSource": "llm_reader_score",
+    "readerScore": 80.0,
+    "openingRatePotential": 70.0,
+    "openingRatePotentialPoints": 14.0,
+    "freshness": 90.0,
+    "freshnessPoints": 13.5,
+    "mixBalance": 55.0,
+    "mixBalancePoints": 5.5,
+    "historicalTiming": 60.0,
+    "historicalTimingPoints": 6.0,
+    "headlineStrength": 65.0,
+    "headlineStrengthPoints": 1.95,
+    "riskAndFatigue": 50.0,
+    "riskAndFatiguePoints": 1.0,
+    "editorialFeedback": 60.0,
+    "editorialFeedbackPoints": 0.0,
+    "otherAdjustments": 3.95,
+    "baseScore": 77.9,
+    "freshnessMultiplier": 1.0,
+}
+
+
+def test_returns_exact_editorial_breakdown_with_llm_share(monkeypatch):
+    monkeypatch.setattr(
+        capture,
+        "_read_capture",
+        lambda _cms_id: _payload(
+            score=77.9,
+            score_breakdown=EDITORIAL_BREAKDOWN,
+            or_factor=1.21,
+        ),
+    )
+
+    result = capture.get_captured_score(CMS_ID, now=NOW)
+
+    assert result is not None
+    assert result.score == 77.9
+    assert result.or_factor == 1.21
+    assert result.score_breakdown == capture.EditorialScoreBreakdown(
+        kind="editorial",
+        bild_reiz=80.0,
+        bild_reiz_points=32.0,
+        bild_reiz_source="llm_reader_score",
+        reader_score=80.0,
+        opening_rate_potential=70.0,
+        opening_rate_potential_points=14.0,
+        freshness=90.0,
+        freshness_points=13.5,
+        mix_balance=55.0,
+        mix_balance_points=5.5,
+        historical_timing=60.0,
+        historical_timing_points=6.0,
+        headline_strength=65.0,
+        headline_strength_points=1.95,
+        risk_and_fatigue=50.0,
+        risk_and_fatigue_points=1.0,
+        editorial_feedback=60.0,
+        editorial_feedback_points=0.0,
+        other_adjustments=3.95,
+        base_score=77.9,
+        freshness_multiplier=1.0,
+    )
+
+
+def test_editorial_breakdown_keeps_a_null_reader_score_for_the_heuristic(monkeypatch):
+    heuristic = {
+        **EDITORIAL_BREAKDOWN,
+        "bildReizSource": "heuristik_fallback",
+        "readerScore": None,
+    }
+    monkeypatch.setattr(
+        capture,
+        "_read_capture",
+        lambda _cms_id: _payload(
+            score=77.9,
+            score_breakdown=heuristic,
+            or_factor=1.21,
+        ),
+    )
+
+    result = capture.get_captured_score(CMS_ID, now=NOW)
+
+    assert result is not None
+    assert result.score_breakdown.reader_score is None
+    assert result.score_breakdown.bild_reiz_source == "heuristik_fallback"
+
+
+@pytest.mark.parametrize(
+    "invalid_breakdown",
+    [
+        {**EDITORIAL_BREAKDOWN, "bildReizSource": "unbekannt"},
+        {**EDITORIAL_BREAKDOWN, "bildReizPoints": 41.0},
+        {**EDITORIAL_BREAKDOWN, "readerScore": "80"},
+        {**EDITORIAL_BREAKDOWN, "freshnessMultiplier": 1.4},
+        {**EDITORIAL_BREAKDOWN, "extra": 1.0},
+        {key: value for key, value in EDITORIAL_BREAKDOWN.items() if key != "baseScore"},
+    ],
+)
+def test_rejects_invalid_editorial_breakdown(monkeypatch, invalid_breakdown):
+    monkeypatch.setattr(
+        capture,
+        "_read_capture",
+        lambda _cms_id: _payload(
+            score=77.9,
+            score_breakdown=invalid_breakdown,
+            or_factor=1.21,
+        ),
+    )
+
+    with pytest.raises(capture.RenderScoreUnavailable):
+        capture.get_captured_score(CMS_ID, now=NOW)

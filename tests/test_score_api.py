@@ -16,6 +16,7 @@ from app import main as main_module
 from app.main import app
 from app.render_score_capture import (
     CapturedScore,
+    EditorialScoreBreakdown,
     EngagementScoreBreakdown,
     RenderScoreUnavailable,
     SportScoreBreakdown,
@@ -660,3 +661,117 @@ def test_score_openapi_contract_is_minimal_and_key_protected():
         "scoreBreakdown",
         "orFactor",
     }
+
+
+EDITORIAL_BREAKDOWN = EditorialScoreBreakdown(
+    kind="editorial",
+    bild_reiz=80.0,
+    bild_reiz_points=32.0,
+    bild_reiz_source="llm_reader_score",
+    reader_score=80.0,
+    opening_rate_potential=70.0,
+    opening_rate_potential_points=14.0,
+    freshness=90.0,
+    freshness_points=13.5,
+    mix_balance=55.0,
+    mix_balance_points=5.5,
+    historical_timing=60.0,
+    historical_timing_points=6.0,
+    headline_strength=65.0,
+    headline_strength_points=1.95,
+    risk_and_fatigue=50.0,
+    risk_and_fatigue_points=1.0,
+    editorial_feedback=60.0,
+    editorial_feedback_points=0.0,
+    other_adjustments=3.95,
+    base_score=77.9,
+    freshness_multiplier=1.0,
+)
+EXPECTED_EDITORIAL_JSON = {
+    "kind": "editorial",
+    "bildReiz": 80.0,
+    "bildReizPoints": 32.0,
+    "bildReizSource": "llm_reader_score",
+    "readerScore": 80.0,
+    "openingRatePotential": 70.0,
+    "openingRatePotentialPoints": 14.0,
+    "freshness": 90.0,
+    "freshnessPoints": 13.5,
+    "mixBalance": 55.0,
+    "mixBalancePoints": 5.5,
+    "historicalTiming": 60.0,
+    "historicalTimingPoints": 6.0,
+    "headlineStrength": 65.0,
+    "headlineStrengthPoints": 1.95,
+    "riskAndFatigue": 50.0,
+    "riskAndFatiguePoints": 1.0,
+    "editorialFeedback": 60.0,
+    "editorialFeedbackPoints": 0.0,
+    "otherAdjustments": 3.95,
+    "baseScore": 77.9,
+    "freshnessMultiplier": 1.0,
+}
+
+
+def test_score_lookup_projects_the_weighted_editorial_breakdown(monkeypatch):
+    captured = CapturedScore(
+        score=77.9,
+        captured_at=SCORED_AT,
+        score_breakdown=EDITORIAL_BREAKDOWN,
+        or_factor=1.21,
+    )
+    monkeypatch.setattr(score_api, "get_captured_score", Mock(return_value=captured))
+
+    response = client.get(f"/api/v1/scores/{CMS_ID}", headers=SCORE_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cmsId": CMS_ID,
+        "score": 77.9,
+        "scoredAt": SCORED_AT,
+        "scoreBreakdown": EXPECTED_EDITORIAL_JSON,
+        "orFactor": 1.21,
+    }
+
+
+def test_batch_projects_the_weighted_editorial_breakdown(monkeypatch):
+    captured = CapturedScore(
+        score=77.9,
+        captured_at=SCORED_AT,
+        score_breakdown=EDITORIAL_BREAKDOWN,
+        or_factor=1.21,
+    )
+    monkeypatch.setattr(
+        score_api,
+        "get_captured_scores_batch",
+        Mock(return_value=([CMS_ID], [captured])),
+    )
+
+    response = client.post(
+        "/api/v1/scores/batch",
+        headers=SCORE_HEADERS,
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "status": "found",
+            "cmsId": CMS_ID,
+            "score": 77.9,
+            "scoredAt": SCORED_AT,
+            "scoreBreakdown": EXPECTED_EDITORIAL_JSON,
+            "orFactor": 1.21,
+        }
+    ]
+
+
+def test_editorial_breakdown_reconciles_with_the_delivered_score():
+    points = sum(
+        value
+        for key, value in EXPECTED_EDITORIAL_JSON.items()
+        if key.endswith("Points")
+    )
+    base = EXPECTED_EDITORIAL_JSON["baseScore"]
+    assert round(points + EXPECTED_EDITORIAL_JSON["otherAdjustments"], 2) == base
+    assert round(base * EXPECTED_EDITORIAL_JSON["freshnessMultiplier"], 1) == 77.9

@@ -339,3 +339,66 @@ def test_smoke_client_fails_closed_on_mismatched_response_id():
     assert stderr.getvalue() == "score API response violates the v1 contract\n"
     assert CMS_ID not in stderr.getvalue()
     assert API_KEY not in stderr.getvalue()
+
+
+EDITORIAL_BREAKDOWN = {
+    "kind": "editorial",
+    "bildReiz": 80.0,
+    "bildReizPoints": 32.0,
+    "bildReizSource": "llm_reader_score",
+    "readerScore": 80.0,
+    "openingRatePotential": 70.0,
+    "openingRatePotentialPoints": 14.0,
+    "freshness": 90.0,
+    "freshnessPoints": 13.5,
+    "mixBalance": 55.0,
+    "mixBalancePoints": 5.5,
+    "historicalTiming": 60.0,
+    "historicalTimingPoints": 6.0,
+    "headlineStrength": 65.0,
+    "headlineStrengthPoints": 1.95,
+    "riskAndFatigue": 50.0,
+    "riskAndFatiguePoints": 1.0,
+    "editorialFeedback": 60.0,
+    "editorialFeedbackPoints": 0.0,
+    "otherAdjustments": 3.95,
+    "baseScore": 77.9,
+    "freshnessMultiplier": 1.0,
+}
+
+
+def test_contract_publishes_the_weighted_editorial_breakdown():
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    runtime = app.openapi()
+
+    contract_schema = contract["components"]["schemas"]["EditorialScoreBreakdownResponse"]
+    runtime_schema = runtime["components"]["schemas"]["EditorialScoreBreakdownResponse"]
+
+    assert set(contract_schema["properties"]) == set(EDITORIAL_BREAKDOWN)
+    assert set(runtime_schema["properties"]) == set(EDITORIAL_BREAKDOWN)
+    assert contract_schema["properties"]["bildReizSource"]["enum"] == [
+        "llm_reader_score",
+        "heuristik_fallback",
+    ]
+    for document in (contract, runtime):
+        for schema_name in ("ArticleScoreResponse", "BatchFoundScoreResponse"):
+            mapping = document["components"]["schemas"][schema_name]["properties"][
+                "scoreBreakdown"
+            ]["anyOf"][0]["discriminator"]["mapping"]
+            assert mapping["editorial"] == (
+                "#/components/schemas/EditorialScoreBreakdownResponse"
+            )
+
+
+def test_score_details_one_of_accepts_the_editorial_pair():
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    runtime = app.openapi()
+
+    for response_schema in (
+        contract["components"]["schemas"]["ArticleScoreResponse"],
+        runtime["components"]["schemas"]["ArticleScoreResponse"],
+    ):
+        assert _matches_details_one_of(
+            {"scoreBreakdown": EDITORIAL_BREAKDOWN, "orFactor": 1.21},
+            response_schema,
+        )

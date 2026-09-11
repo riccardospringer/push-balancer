@@ -59,6 +59,27 @@ _ENGAGEMENT_BREAKDOWN_BOUNDS = {
     "pushHistory": (-4.0, 8.0),
     "topicSaturation": (-30.0, 0.0),
 }
+_EDITORIAL_BREAKDOWN_BOUNDS = {
+    "bildReiz": (0.0, 100.0),
+    "bildReizPoints": (0.0, 40.0),
+    "openingRatePotential": (0.0, 100.0),
+    "openingRatePotentialPoints": (0.0, 20.0),
+    "freshness": (0.0, 100.0),
+    "freshnessPoints": (0.0, 15.0),
+    "mixBalance": (0.0, 100.0),
+    "mixBalancePoints": (0.0, 10.0),
+    "historicalTiming": (0.0, 100.0),
+    "historicalTimingPoints": (0.0, 10.0),
+    "headlineStrength": (0.0, 100.0),
+    "headlineStrengthPoints": (0.0, 3.0),
+    "riskAndFatigue": (0.0, 100.0),
+    "riskAndFatiguePoints": (0.0, 2.0),
+    "editorialFeedback": (0.0, 100.0),
+    "editorialFeedbackPoints": (-10.8, 7.2),
+    "otherAdjustments": (-100.0, 100.0),
+    "baseScore": (0.0, 100.0),
+    "freshnessMultiplier": (0.0, 1.0),
+}
 _SPORT_BREAKDOWN_BOUNDS = {
     "sportRelevance": (0.0, 35.0),
     "timing": (0.0, 30.0),
@@ -186,9 +207,24 @@ def _validate_optional_score_details(payload: dict) -> None:
         if kind == "engagement"
         else _SPORT_BREAKDOWN_BOUNDS
         if kind == "sport"
+        else _EDITORIAL_BREAKDOWN_BOUNDS
+        if kind == "editorial"
         else None
     )
-    if bounds is None or set(breakdown) != {"kind", *bounds}:
+    if bounds is None:
+        raise ScoreApiUnavailable("Score API response contract is invalid")
+    expected_keys = {"kind", *bounds}
+    if kind == "editorial":
+        expected_keys |= {"bildReizSource", "readerScore"}
+        reader_score = breakdown.get("readerScore")
+        if breakdown.get("bildReizSource") not in {
+            "llm_reader_score",
+            "heuristik_fallback",
+        }:
+            raise ScoreApiUnavailable("Score API response contract is invalid")
+        if reader_score is not None and not _is_bounded_number(reader_score, 0.0, 100.0):
+            raise ScoreApiUnavailable("Score API response contract is invalid")
+    if set(breakdown) != expected_keys:
         raise ScoreApiUnavailable("Score API response contract is invalid")
     if any(
         not _is_bounded_number(breakdown.get(field), minimum, maximum)

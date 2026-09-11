@@ -314,11 +314,13 @@ components:
             - oneOf:
                 - $ref: "#/components/schemas/EngagementScoreBreakdownResponse"
                 - $ref: "#/components/schemas/SportScoreBreakdownResponse"
+                - $ref: "#/components/schemas/EditorialScoreBreakdownResponse"
               discriminator:
                 propertyName: kind
                 mapping:
                   engagement: "#/components/schemas/EngagementScoreBreakdownResponse"
                   sport: "#/components/schemas/SportScoreBreakdownResponse"
+                  editorial: "#/components/schemas/EditorialScoreBreakdownResponse"
             - type: "null"
         orFactor:
           anyOf:
@@ -378,19 +380,25 @@ components:
             UTC timestamp of the existing browser-generated score snapshot.
         scoreBreakdown:
           description: >-
-            Allowlisted captured numeric explanation values. Existing score
-            caps, age multipliers, and TV adjustments mean these values are not
-            guaranteed to sum to score. Null when the current snapshot was
+            Explanation of the delivered score. kind "editorial" is the
+            weighted server composition: every component carries its raw value
+            (0-100) and the points it contributed, bildReizPoints being the
+            share of the LLM reader score (40 percent weight). kind
+            "engagement" and kind "sport" are allowlisted captured UI values
+            whose score caps, age multipliers, and TV adjustments mean they are
+            not guaranteed to sum to score. Null when the current snapshot was
             produced by the legacy two-field source contract.
           anyOf:
             - oneOf:
                 - $ref: "#/components/schemas/EngagementScoreBreakdownResponse"
                 - $ref: "#/components/schemas/SportScoreBreakdownResponse"
+                - $ref: "#/components/schemas/EditorialScoreBreakdownResponse"
               discriminator:
                 propertyName: kind
                 mapping:
                   engagement: "#/components/schemas/EngagementScoreBreakdownResponse"
                   sport: "#/components/schemas/SportScoreBreakdownResponse"
+                  editorial: "#/components/schemas/EditorialScoreBreakdownResponse"
             - type: "null"
         orFactor:
           description: >-
@@ -401,6 +409,140 @@ components:
               minimum: 0.6
               maximum: 1.5
             - type: "null"
+    EditorialScoreBreakdownResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        Weighted composition of the server-side editorial score. The sum of all
+        *Points plus otherAdjustments equals baseScore, and baseScore multiplied
+        by freshnessMultiplier equals the delivered score.
+      required:
+        - kind
+        - bildReiz
+        - bildReizPoints
+        - bildReizSource
+        - readerScore
+        - openingRatePotential
+        - openingRatePotentialPoints
+        - freshness
+        - freshnessPoints
+        - mixBalance
+        - mixBalancePoints
+        - historicalTiming
+        - historicalTimingPoints
+        - headlineStrength
+        - headlineStrengthPoints
+        - riskAndFatigue
+        - riskAndFatiguePoints
+        - editorialFeedback
+        - editorialFeedbackPoints
+        - otherAdjustments
+        - baseScore
+        - freshnessMultiplier
+      properties:
+        kind:
+          type: string
+          const: editorial
+        bildReiz:
+          description: BILD-Reiz component, weighted at 40 percent.
+          type: number
+          minimum: 0
+          maximum: 100
+        bildReizPoints:
+          description: Points the BILD-Reiz component contributed to the score.
+          type: number
+          minimum: 0
+          maximum: 40
+        bildReizSource:
+          description: >-
+            Whether the BILD-Reiz value is the LLM reader score or the bounded
+            heuristic fallback.
+          type: string
+          enum: [llm_reader_score, heuristik_fallback]
+        readerScore:
+          description: >-
+            Raw LLM reader score, or null when the heuristic fallback was used.
+          anyOf:
+            - type: number
+              minimum: 0
+              maximum: 100
+            - type: "null"
+        openingRatePotential:
+          type: number
+          minimum: 0
+          maximum: 100
+        openingRatePotentialPoints:
+          type: number
+          minimum: 0
+          maximum: 20
+        freshness:
+          type: number
+          minimum: 0
+          maximum: 100
+        freshnessPoints:
+          type: number
+          minimum: 0
+          maximum: 15
+        mixBalance:
+          type: number
+          minimum: 0
+          maximum: 100
+        mixBalancePoints:
+          type: number
+          minimum: 0
+          maximum: 10
+        historicalTiming:
+          type: number
+          minimum: 0
+          maximum: 100
+        historicalTimingPoints:
+          type: number
+          minimum: 0
+          maximum: 10
+        headlineStrength:
+          type: number
+          minimum: 0
+          maximum: 100
+        headlineStrengthPoints:
+          type: number
+          minimum: 0
+          maximum: 3
+        riskAndFatigue:
+          type: number
+          minimum: 0
+          maximum: 100
+        riskAndFatiguePoints:
+          type: number
+          minimum: 0
+          maximum: 2
+        editorialFeedback:
+          description: Editorial feedback value; 60 is neutral.
+          type: number
+          minimum: 0
+          maximum: 100
+        editorialFeedbackPoints:
+          description: Weighted deviation of editorialFeedback from the neutral 60.
+          type: number
+          minimum: -10.8
+          maximum: 7.2
+        otherAdjustments:
+          description: >-
+            Remaining flat bonuses and penalties (breaking bonus, staleness and
+            fatigue penalties, mix rebalancing, event mode) that the weighted
+            components do not cover.
+          type: number
+          minimum: -100
+          maximum: 100
+        baseScore:
+          description: Editorial score before the article-age multiplier.
+          type: number
+          minimum: 0
+          maximum: 100
+        freshnessMultiplier:
+          description: Article-age multiplier applied to baseScore.
+          type: number
+          minimum: 0
+          maximum: 1
     EngagementScoreBreakdownResponse:
       type: object
       additionalProperties: false

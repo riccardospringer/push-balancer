@@ -85,8 +85,48 @@ class SportScoreBreakdown(BaseModel):
     freshness: float = Field(ge=0, le=10)
 
 
-ScoreBreakdown = Annotated[
+class EditorialScoreBreakdown(BaseModel):
+    """Gewichtete Zusammensetzung des serverseitigen Redaktions-Scores.
+
+    Jede Komponente wird mit ihrem Rohwert (0-100) und den daraus gewichteten
+    Punkten ausgewiesen. ``bildReiz`` traegt mit 40 % das schwerste Gewicht und
+    kommt aus dem LLM-Reader-Score, sofern dieser vorliegt (``readerScore``).
+    Es gilt: Summe aller ``*Points`` + ``otherAdjustments`` = ``baseScore`` und
+    ``baseScore`` * ``freshnessMultiplier`` = ausgelieferter Score.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["editorial"]
+    bildReiz: float = Field(ge=0, le=100)
+    bildReizPoints: float = Field(ge=0, le=40)
+    bildReizSource: Literal["llm_reader_score", "heuristik_fallback"]
+    readerScore: float | None = Field(default=None, ge=0, le=100)
+    openingRatePotential: float = Field(ge=0, le=100)
+    openingRatePotentialPoints: float = Field(ge=0, le=20)
+    freshness: float = Field(ge=0, le=100)
+    freshnessPoints: float = Field(ge=0, le=15)
+    mixBalance: float = Field(ge=0, le=100)
+    mixBalancePoints: float = Field(ge=0, le=10)
+    historicalTiming: float = Field(ge=0, le=100)
+    historicalTimingPoints: float = Field(ge=0, le=10)
+    headlineStrength: float = Field(ge=0, le=100)
+    headlineStrengthPoints: float = Field(ge=0, le=3)
+    riskAndFatigue: float = Field(ge=0, le=100)
+    riskAndFatiguePoints: float = Field(ge=0, le=2)
+    editorialFeedback: float = Field(ge=0, le=100)
+    editorialFeedbackPoints: float = Field(ge=-10.8, le=7.2)
+    otherAdjustments: float = Field(ge=-100, le=100)
+    baseScore: float = Field(ge=0, le=100)
+    freshnessMultiplier: float = Field(ge=0, le=1)
+
+
+CapturedUiScoreBreakdown = Annotated[
     EngagementScoreBreakdown | SportScoreBreakdown,
+    Field(discriminator="kind"),
+]
+ScoreBreakdown = Annotated[
+    EngagementScoreBreakdown | SportScoreBreakdown | EditorialScoreBreakdown,
     Field(discriminator="kind"),
 ]
 _SCORE_BREAKDOWN_ADAPTER = TypeAdapter(ScoreBreakdown)
@@ -365,6 +405,92 @@ def get_score_snapshots_for_cms_ids(
     return resolved
 
 
+def _finite_number(value: object) -> float | None:
+    """Numerischen Wert ohne Bool/NaN-Ueberraschungen lesen."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _server_editorial_details(article: dict) -> tuple[dict, float] | None:
+    """Gewichtete Score-Erklaerung eines Server-Kandidaten, sonst ``None``.
+
+    Nur fuer Artikel, deren ausgelieferter Score wirklich aus der
+    Redaktions-Bewertung stammt — bei einem uebernommenen Browser-Capture
+    wuerde die Zerlegung den gezeigten Score nicht erklaeren.
+    """
+    if str(article.get("scoreSource") or "") != "server_editorial_fallback":
+        return None
+    breakdown = article.get("scoreBreakdown")
+    if not isinstance(breakdown, dict):
+        return None
+
+    or_factor = _finite_number(article.get("orFactor"))
+    if or_factor is None or not 0.6 <= or_factor <= 1.5:
+        return None
+
+    base_score = _finite_number(article.get("serverEditorialScore"))
+    multiplier = _finite_number(article.get("freshnessScoreMultiplier"))
+    if base_score is None or multiplier is None:
+        return None
+    if not 0 <= base_score <= 100 or not 0 <= multiplier <= 1:
+        return None
+
+    from app.scoring.editorial import SCORE_COMPONENT_WEIGHTS, score_component_points
+
+    points = score_component_points(breakdown)
+    if set(points) != set(SCORE_COMPONENT_WEIGHTS):
+        return None
+    values = {key: _finite_number(breakdown.get(key)) for key in SCORE_COMPONENT_WEIGHTS}
+    if any(value is None or not 0 <= value <= 100 for value in values.values()):
+        return None
+
+    source = breakdown.get("bildReizSource")
+    if source not in {"llm_reader_score", "heuristik_fallback"}:
+        return None
+    reader_score = _finite_number(article.get("readerScore"))
+    if source == "llm_reader_score":
+        if reader_score is None or not 0 <= reader_score <= 100:
+            return None
+    else:
+        reader_score = None
+
+    other_adjustments = round(base_score - sum(points.values()), 2)
+    if not -100 <= other_adjustments <= 100:
+        return None
+
+    details = {
+        "kind": "editorial",
+        "bildReiz": values["bildReiz"],
+        "bildReizPoints": points["bildReiz"],
+        "bildReizSource": source,
+        "readerScore": reader_score,
+        "openingRatePotential": values["openingRatePotential"],
+        "openingRatePotentialPoints": points["openingRatePotential"],
+        "freshness": values["freshness"],
+        "freshnessPoints": points["freshness"],
+        "mixBalance": values["mixBalance"],
+        "mixBalancePoints": points["mixBalance"],
+        "historicalTiming": values["historicalTiming"],
+        "historicalTimingPoints": points["historicalTiming"],
+        "headlineStrength": values["headlineStrength"],
+        "headlineStrengthPoints": points["headlineStrength"],
+        "riskAndFatigue": values["riskAndFatigue"],
+        "riskAndFatiguePoints": points["riskAndFatigue"],
+        "editorialFeedback": values["editorialFeedback"],
+        "editorialFeedbackPoints": points["editorialFeedback"],
+        "otherAdjustments": other_adjustments,
+        "baseScore": base_score,
+        "freshnessMultiplier": multiplier,
+    }
+    try:
+        validated = EditorialScoreBreakdown.model_validate(details)
+    except ValueError:
+        return None
+    return validated.model_dump(), or_factor
+
+
 def _get_server_candidate_score_snapshots(
     cms_ids: list[str],
     *,
@@ -409,14 +535,18 @@ def _get_server_candidate_score_snapshots(
         if not math.isfinite(score) or not 0 < score <= 100:
             continue
         url = article.get("url") or article.get("link") or article.get("id")
-        for cms_id in _cms_ids_in_trusted_url(url).intersection(requested):
-            snapshots.setdefault(
-                cms_id,
-                {
-                    "score": round(score, 1),
-                    "capturedAt": captured_at,
-                },
-            )
+        matching_cms_ids = _cms_ids_in_trusted_url(url).intersection(requested)
+        if not matching_cms_ids:
+            continue
+        snapshot: dict[str, object] = {
+            "score": round(score, 1),
+            "capturedAt": captured_at,
+        }
+        details = _server_editorial_details(article)
+        if details is not None:
+            snapshot["scoreBreakdown"], snapshot["orFactor"] = details
+        for cms_id in matching_cms_ids:
+            snapshots.setdefault(cms_id, dict(snapshot))
     return snapshots
 
 
@@ -427,7 +557,9 @@ class ScoreCaptureItem(BaseModel):
     score: float = Field(gt=0, le=100)
     ts: int = Field(gt=0)
     article_published_at: int = Field(alias="articlePublishedAt", gt=0)
-    score_breakdown: ScoreBreakdown | None = Field(default=None, alias="scoreBreakdown")
+    score_breakdown: CapturedUiScoreBreakdown | None = Field(
+        default=None, alias="scoreBreakdown"
+    )
     or_factor: float | None = Field(default=None, alias="orFactor", ge=0.6, le=1.5)
 
     @field_validator("article_published_at", mode="before")

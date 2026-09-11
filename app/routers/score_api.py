@@ -58,8 +58,46 @@ class SportScoreBreakdownResponse(BaseModel):
     freshness: float = Field(ge=0, le=10)
 
 
+class EditorialScoreBreakdownResponse(BaseModel):
+    """Gewichtete Zusammensetzung des serverseitigen Redaktions-Scores.
+
+    Jede Komponente kommt mit Rohwert (0-100) und den daraus gewichteten
+    Punkten. ``bildReizPoints`` ist der Anteil des LLM-Reader-Scores (40 %
+    Gewicht, Quelle in ``bildReizSource``, LLM-Rohwert in ``readerScore``).
+    Summe aller ``*Points`` + ``otherAdjustments`` ergibt ``baseScore``,
+    ``baseScore`` * ``freshnessMultiplier`` den ausgelieferten ``score``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["editorial"]
+    bildReiz: float = Field(ge=0, le=100)
+    bildReizPoints: float = Field(ge=0, le=40)
+    bildReizSource: Literal["llm_reader_score", "heuristik_fallback"]
+    readerScore: float | None = Field(default=None, ge=0, le=100)
+    openingRatePotential: float = Field(ge=0, le=100)
+    openingRatePotentialPoints: float = Field(ge=0, le=20)
+    freshness: float = Field(ge=0, le=100)
+    freshnessPoints: float = Field(ge=0, le=15)
+    mixBalance: float = Field(ge=0, le=100)
+    mixBalancePoints: float = Field(ge=0, le=10)
+    historicalTiming: float = Field(ge=0, le=100)
+    historicalTimingPoints: float = Field(ge=0, le=10)
+    headlineStrength: float = Field(ge=0, le=100)
+    headlineStrengthPoints: float = Field(ge=0, le=3)
+    riskAndFatigue: float = Field(ge=0, le=100)
+    riskAndFatiguePoints: float = Field(ge=0, le=2)
+    editorialFeedback: float = Field(ge=0, le=100)
+    editorialFeedbackPoints: float = Field(ge=-10.8, le=7.2)
+    otherAdjustments: float = Field(ge=-100, le=100)
+    baseScore: float = Field(ge=0, le=100)
+    freshnessMultiplier: float = Field(ge=0, le=1)
+
+
 ScoreBreakdownResponse = Annotated[
-    EngagementScoreBreakdownResponse | SportScoreBreakdownResponse,
+    EngagementScoreBreakdownResponse
+    | SportScoreBreakdownResponse
+    | EditorialScoreBreakdownResponse,
     Field(discriminator="kind"),
 ]
 
@@ -113,9 +151,13 @@ class ArticleScoreResponse(BaseModel):
     scoreBreakdown: ScoreBreakdownResponse | None = Field(
         default=None,
         description=(
-            "Allowlisted captured numeric explanation values; existing score caps, age "
-            "multipliers, and TV adjustments mean they are not guaranteed to sum to score. "
-            "Null for a legacy snapshot"
+            "Explanation of the delivered score. 'editorial' is the weighted server "
+            "composition and shows the LLM reader score share (bildReizPoints, 40 % "
+            "weight); its points plus otherAdjustments give baseScore, and baseScore "
+            "times freshnessMultiplier gives score. 'engagement' and 'sport' are "
+            "allowlisted captured UI values whose caps, age multipliers, and TV "
+            "adjustments mean they are not guaranteed to sum to score. Null for a "
+            "legacy snapshot"
         ),
     )
     orFactor: float | None = Field(
@@ -414,12 +456,19 @@ def get_scores_by_cms_ids(
         _BATCH_SOURCE_SLOTS.release()
 
 
+def _camel_case(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.title() for part in rest)
+
+
 def _public_score_breakdown(score_breakdown: Any) -> dict[str, Any]:
     payload = asdict(score_breakdown)
     if payload["kind"] == "engagement":
         payload["titleBoost"] = payload.pop("title_boost")
         payload["pushHistory"] = payload.pop("push_history")
         payload["topicSaturation"] = payload.pop("topic_saturation")
-    else:
+    elif payload["kind"] == "sport":
         payload["sportRelevance"] = payload.pop("sport_relevance")
+    else:
+        payload = {_camel_case(key): value for key, value in payload.items()}
     return payload

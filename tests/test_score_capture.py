@@ -1280,3 +1280,172 @@ def test_frontend_capture_is_numeric_allowlist_matching_tooltip_fields():
         assert mapping in capture_projection
     for excluded in ["title:", "description:", "topicType", "timingDetail", "_cachedOR"]:
         assert excluded not in capture_projection
+
+
+SERVER_EDITORIAL_BREAKDOWN = {
+    "historicalTiming": 60.0,
+    "mixBalance": 55.0,
+    "openingRatePotential": 70.0,
+    "riskAndFatigue": 50.0,
+    "freshness": 90.0,
+    "bildReiz": 80.0,
+    "bildReizSource": "llm_reader_score",
+    "headlineStrength": 65.0,
+    "editorialFeedback": 60.0,
+    "feedback2026Adjustment": 0.0,
+    "eventModeAdjustment": 0.0,
+}
+
+
+def _server_candidate_article(**overrides) -> dict:
+    article = {
+        "url": ARTICLE_URL,
+        "pubDate": "2027-01-15T07:00:00Z",
+        "score": 77.9,
+        "scoreSource": "server_editorial_fallback",
+        "serverEditorialScore": 77.9,
+        "freshnessScoreMultiplier": 1.0,
+        "scoreBreakdown": dict(SERVER_EDITORIAL_BREAKDOWN),
+        "readerScore": 80.0,
+        "orFactor": 1.21,
+    }
+    article.update(overrides)
+    return article
+
+
+def _patch_candidate_feed(monkeypatch, article: dict) -> None:
+    """Kandidaten-Feed stellen und den echten Server-Fallback wieder aktivieren."""
+    from app.routers import feed
+
+    monkeypatch.setattr(
+        feed,
+        "build_articles_payload",
+        lambda **_kwargs: {"articles": [article]},
+    )
+    monkeypatch.setattr(
+        score_capture,
+        "_get_server_candidate_score_snapshots",
+        SERVER_CANDIDATE_FALLBACK,
+    )
+
+
+def test_server_candidate_fallback_explains_the_llm_share_of_the_score(monkeypatch):
+    _patch_candidate_feed(monkeypatch, _server_candidate_article())
+
+    snapshots = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)
+
+    assert snapshots == {
+        CMS_ID: {
+            "score": 77.9,
+            "capturedAt": NOW,
+            "orFactor": 1.21,
+            "scoreBreakdown": {
+                "kind": "editorial",
+                "bildReiz": 80.0,
+                "bildReizPoints": 32.0,
+                "bildReizSource": "llm_reader_score",
+                "readerScore": 80.0,
+                "openingRatePotential": 70.0,
+                "openingRatePotentialPoints": 14.0,
+                "freshness": 90.0,
+                "freshnessPoints": 13.5,
+                "mixBalance": 55.0,
+                "mixBalancePoints": 5.5,
+                "historicalTiming": 60.0,
+                "historicalTimingPoints": 6.0,
+                "headlineStrength": 65.0,
+                "headlineStrengthPoints": 1.95,
+                "riskAndFatigue": 50.0,
+                "riskAndFatiguePoints": 1.0,
+                "editorialFeedback": 60.0,
+                "editorialFeedbackPoints": 0.0,
+                "otherAdjustments": 3.95,
+                "baseScore": 77.9,
+                "freshnessMultiplier": 1.0,
+            },
+        }
+    }
+
+
+def test_server_candidate_points_and_adjustments_reconcile_with_the_score(monkeypatch):
+    article = _server_candidate_article(
+        score=62.3,
+        serverEditorialScore=77.9,
+        freshnessScoreMultiplier=0.8,
+    )
+    _patch_candidate_feed(monkeypatch, article)
+
+    breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
+
+    points = sum(
+        value for key, value in breakdown.items() if key.endswith("Points")
+    )
+    assert round(points + breakdown["otherAdjustments"], 1) == breakdown["baseScore"]
+    assert round(breakdown["baseScore"] * breakdown["freshnessMultiplier"], 1) == 62.3
+
+
+def test_server_candidate_marks_a_heuristic_bild_reiz_without_a_reader_score(monkeypatch):
+    article = _server_candidate_article(readerScore=None)
+    article["scoreBreakdown"]["bildReizSource"] = "heuristik_fallback"
+    _patch_candidate_feed(monkeypatch, article)
+
+    breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
+
+    assert breakdown["bildReizSource"] == "heuristik_fallback"
+    assert breakdown["readerScore"] is None
+    assert breakdown["bildReizPoints"] == 32.0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"scoreSource": "captured_push_balancer"},
+        {"orFactor": None},
+        {"orFactor": 2.4},
+        {"serverEditorialScore": None},
+        {"freshnessScoreMultiplier": None},
+        {"scoreBreakdown": {"bildReiz": 80.0}},
+        {"readerScore": None},
+    ],
+)
+def test_server_candidate_omits_details_it_cannot_stand_behind(monkeypatch, overrides):
+    _patch_candidate_feed(monkeypatch, _server_candidate_article(**overrides))
+
+    assert SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW) == {
+        CMS_ID: {"score": 77.9, "capturedAt": NOW}
+    }
+
+
+def test_opt_in_endpoint_forwards_the_server_editorial_breakdown(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _patch_candidate_feed(monkeypatch, _server_candidate_article())
+
+    response = client.get(
+        f"/api/score-capture/by-cms-id/{CMS_ID}",
+        params={"includeBreakdown": 1},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["orFactor"] == 1.21
+    assert payload["scoreBreakdown"]["kind"] == "editorial"
+    assert payload["scoreBreakdown"]["bildReizPoints"] == 32.0
+    assert payload["scoreBreakdown"]["readerScore"] == 80.0
+
+
+def test_batch_endpoint_forwards_the_server_editorial_breakdown(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _patch_candidate_feed(monkeypatch, _server_candidate_article())
+
+    response = client.post(
+        "/api/score-capture/by-cms-id/batch",
+        params={"includeBreakdown": 1},
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    assert response.status_code == 200
+    [result] = response.json()["results"]
+    assert result["status"] == "found"
+    assert result["scoreBreakdown"]["kind"] == "editorial"
+    assert result["scoreBreakdown"]["bildReizPoints"] == 32.0
+    assert result["orFactor"] == 1.21

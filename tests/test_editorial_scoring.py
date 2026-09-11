@@ -643,3 +643,90 @@ def test_reuters_overload_malus_is_removed():
 
 def scored_breakdown_value(result: dict, key: str) -> float:
     return float(result["scoreBreakdown"][key])
+
+
+def test_score_component_points_expose_the_llm_share():
+    from app.scoring.editorial import (
+        SCORE_COMPONENT_WEIGHTS,
+        score_component_points,
+    )
+
+    breakdown = {
+        "bildReiz": 80.0,
+        "openingRatePotential": 70.0,
+        "freshness": 90.0,
+        "mixBalance": 55.0,
+        "historicalTiming": 60.0,
+        "headlineStrength": 65.0,
+        "riskAndFatigue": 50.0,
+        "editorialFeedback": 70.0,
+        "bildReizSource": "llm_reader_score",
+    }
+
+    points = score_component_points(breakdown)
+
+    assert set(points) == set(SCORE_COMPONENT_WEIGHTS)
+    # Der LLM-Reader-Score traegt mit 40 % das schwerste Einzelgewicht.
+    assert points["bildReiz"] == 32.0
+    # Das Redaktions-Feedback wirkt als Abweichung vom neutralen Mittelwert.
+    assert points["editorialFeedback"] == 1.8
+
+
+def test_score_component_points_skip_missing_and_invalid_values():
+    from app.scoring.editorial import score_component_points
+
+    points = score_component_points({"bildReiz": "hoch", "freshness": 40.0})
+
+    assert points == {"freshness": 6.0}
+
+
+def test_weighted_points_and_breakdown_reconstruct_the_score():
+    from app.scoring.editorial import score_component_points
+
+    now = int(time.time())
+    result = score_push_candidate(
+        {
+            "title": "Schwerer Unfall auf der A2 - mehrere Verletzte",
+            "cat": "news",
+            "hour": 12,
+            "ts_num": now,
+            "pubDate": dt.datetime.fromtimestamp(now - 1800).isoformat(),
+            "link": "https://www.bild.de/news/synthetic-weighted-points",
+            "readerScore": 78.0,
+        },
+        history=_history(now),
+        state={},
+    )
+
+    points = score_component_points(result["scoreBreakdown"])
+
+    assert result["scoreBreakdown"]["bildReiz"] == 78.0
+    assert result["scoreBreakdown"]["bildReizSource"] == "llm_reader_score"
+    assert points["bildReiz"] == 31.2
+    # Die gewichteten Punkte erklaeren den Score bis auf die pauschalen
+    # Zu- und Abschlaege, die als Rest ausgewiesen werden.
+    assert abs(result["score"] - sum(points.values())) < 25
+
+
+def test_or_factor_stays_bounded_and_neutral_without_a_prediction():
+    now = int(time.time())
+    push = {
+        "title": "Neue Details im Prozess um den Millionenbetrug",
+        "cat": "news",
+        "hour": 12,
+        "ts_num": now,
+        "pubDate": dt.datetime.fromtimestamp(now - 1800).isoformat(),
+        "link": "https://www.bild.de/news/synthetic-or-factor",
+    }
+
+    without_prediction = score_push_candidate(push, history=[], state={})
+    strong_prediction = score_push_candidate(
+        push, history=[], state={}, predicted_or=0.12
+    )
+    weak_prediction = score_push_candidate(
+        push, history=[], state={}, predicted_or=0.005
+    )
+
+    assert without_prediction["orFactor"] == 1.0
+    assert strong_prediction["orFactor"] == 1.5
+    assert weak_prediction["orFactor"] == 0.6
