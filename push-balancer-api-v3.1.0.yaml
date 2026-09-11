@@ -1722,6 +1722,20 @@ paths:
           description: CMS document identifier
           title: Cms Id
         description: CMS document identifier
+      - name: includeEditorialBreakdown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1
+            minimum: 1
+          - type: 'null'
+          description: Set to 1 to also receive the weighted server-side composition (scoreBreakdown.kind 'editorial').
+            Omitted by default so consumers that validate the captured UI shapes strictly keep their exact contract.
+          title: Includeeditorialbreakdown
+        description: Set to 1 to also receive the weighted server-side composition (scoreBreakdown.kind 'editorial').
+          Omitted by default so consumers that validate the captured UI shapes strictly keep their exact contract.
       responses:
         '200':
           description: Existing score projection
@@ -1849,6 +1863,21 @@ paths:
         batch request to the Render score source. Duplicate CMS IDs remain duplicated in the public result.
         The adapter never fans out to single lookups and does not calculate a score itself.
       operationId: getScoresByCmsIds
+      parameters:
+      - name: includeEditorialBreakdown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1
+            minimum: 1
+          - type: 'null'
+          description: Set to 1 to also receive the weighted server-side composition (scoreBreakdown.kind 'editorial')
+            for every found result.
+          title: Includeeditorialbreakdown
+        description: Set to 1 to also receive the weighted server-side composition (scoreBreakdown.kind 'editorial')
+          for every found result.
       requestBody:
         content:
           application/json:

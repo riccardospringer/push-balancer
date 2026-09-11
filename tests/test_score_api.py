@@ -54,7 +54,7 @@ def test_score_lookup_projects_exact_captured_ui_score(monkeypatch):
     }
     assert response.headers["cache-control"] == "no-store"
     assert "X-Score-Key" in response.headers["vary"]
-    lookup.assert_called_once_with(CMS_ID)
+    lookup.assert_called_once_with(CMS_ID, include_editorial=False)
 
 
 def test_score_lookup_projects_exact_engagement_breakdown_and_factor(monkeypatch):
@@ -76,7 +76,7 @@ def test_score_lookup_projects_exact_engagement_breakdown_and_factor(monkeypatch
         ),
         or_factor=1.06,
     )
-    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id: captured)
+    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id, **_kwargs: captured)
 
     response = client.get(f"/api/v1/scores/{CMS_ID}", headers=SCORE_HEADERS)
 
@@ -115,7 +115,7 @@ def test_score_lookup_projects_exact_sport_breakdown(monkeypatch):
         ),
         or_factor=0.94,
     )
-    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id: captured)
+    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id, **_kwargs: captured)
 
     response = client.get(f"/api/v1/scores/{CMS_ID}", headers=SCORE_HEADERS)
 
@@ -215,7 +215,7 @@ def test_batch_projects_one_result_per_position_with_one_deduplicated_source_cal
     }
     assert response.headers["cache-control"] == "no-store"
     assert "X-Score-Key" in response.headers["vary"]
-    source.assert_called_once_with([CMS_ID, OTHER_CMS_ID])
+    source.assert_called_once_with([CMS_ID, OTHER_CMS_ID], include_editorial=False)
 
 
 def test_batch_projects_legacy_found_with_explicit_null_pair(monkeypatch):
@@ -339,7 +339,7 @@ def test_batch_rejects_inconsistent_source_mapping_as_bad_gateway(monkeypatch):
     monkeypatch.setattr(
         score_api,
         "get_captured_scores_batch",
-        lambda _cms_ids: ([OTHER_CMS_ID], [None]),
+        lambda _cms_ids, **_kwargs: ([OTHER_CMS_ID], [None]),
     )
 
     response = client.post(
@@ -375,7 +375,7 @@ def test_third_batch_is_rejected_immediately_without_source_call(monkeypatch):
 
 
 def test_score_lookup_without_fresh_ui_capture_returns_not_found(monkeypatch):
-    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id: None)
+    monkeypatch.setattr(score_api, "get_captured_score", lambda _cms_id, **_kwargs: None)
 
     response = client.get(f"/api/v1/scores/{CMS_ID}", headers=SCORE_HEADERS)
 
@@ -777,3 +777,47 @@ def test_editorial_breakdown_reconciles_with_the_delivered_score():
     base = EXPECTED_EDITORIAL_JSON["baseScore"]
     assert round(points + EXPECTED_EDITORIAL_JSON["otherAdjustments"], 2) == base
     assert round(base * EXPECTED_EDITORIAL_JSON["freshnessMultiplier"], 1) == 77.9
+
+
+def test_old_consumer_keeps_its_exact_contract_without_the_new_parameter(monkeypatch):
+    """Ohne includeEditorialBreakdown=1 wird die serverseitige Form nicht geliefert."""
+    captured = CapturedScore(
+        score=77.9,
+        captured_at=SCORED_AT,
+        score_breakdown=EDITORIAL_BREAKDOWN,
+        or_factor=1.21,
+    )
+    source = Mock(return_value=captured)
+    monkeypatch.setattr(score_api, "get_captured_score", source)
+
+    response = client.get(f"/api/v1/scores/{CMS_ID}", headers=SCORE_HEADERS)
+
+    assert response.status_code == 200
+    source.assert_called_once_with(CMS_ID, include_editorial=False)
+
+
+def test_opt_in_parameter_reaches_the_source(monkeypatch):
+    source = Mock(return_value=None)
+    monkeypatch.setattr(score_api, "get_captured_score", source)
+
+    client.get(
+        f"/api/v1/scores/{CMS_ID}",
+        params={"includeEditorialBreakdown": 1},
+        headers=SCORE_HEADERS,
+    )
+
+    source.assert_called_once_with(CMS_ID, include_editorial=True)
+
+
+def test_batch_opt_in_parameter_reaches_the_source(monkeypatch):
+    source = Mock(return_value=([CMS_ID], [None]))
+    monkeypatch.setattr(score_api, "get_captured_scores_batch", source)
+
+    client.post(
+        "/api/v1/scores/batch",
+        params={"includeEditorialBreakdown": 1},
+        headers=SCORE_HEADERS,
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    source.assert_called_once_with([CMS_ID], include_editorial=True)

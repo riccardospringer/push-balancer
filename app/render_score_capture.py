@@ -32,6 +32,10 @@ _CAPTURE_HOST = "push-balancer.onrender.com"
 _CAPTURE_PATH_PREFIX = "/api/score-capture/by-cms-id/"
 _CAPTURE_BATCH_PATH = "/api/score-capture/by-cms-id/batch"
 _CAPTURE_QUERY = "includeBreakdown=1"
+# Die serverseitige Zerlegung liefert die Quelle nur auf ausdrueckliche
+# Anforderung: aeltere Consumer verwerfen eine unbekannte Breakdown-Form
+# komplett. Wer sie will, fragt sie an.
+_EDITORIAL_CAPTURE_QUERY = "includeBreakdown=1&includeEditorialBreakdown=1"
 _CAPTURE_HEALTH_PATH = "/api/score-capture/health"
 _CMS_ID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
 _MAX_RESPONSE_BYTES = 4 * 1024
@@ -137,11 +141,16 @@ def _open_request(request: urllib.request.Request, *, timeout: float = _TIMEOUT_
     return opener.open(request, timeout=timeout)
 
 
-def _validated_capture_url(cms_id: str) -> str:
+def _capture_query(include_editorial: bool) -> str:
+    return _EDITORIAL_CAPTURE_QUERY if include_editorial else _CAPTURE_QUERY
+
+
+def _validated_capture_url(cms_id: str, *, include_editorial: bool = False) -> str:
     normalized_cms_id = cms_id.lower()
     if not _CMS_ID_RE.fullmatch(normalized_cms_id):
         raise RenderScoreUnavailable("Render score source is not configured safely")
-    url = f"{_CAPTURE_BASE_URL}/{normalized_cms_id}?{_CAPTURE_QUERY}"
+    query = _capture_query(include_editorial)
+    url = f"{_CAPTURE_BASE_URL}/{normalized_cms_id}?{query}"
     parsed = urllib.parse.urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -150,15 +159,16 @@ def _validated_capture_url(cms_id: str) -> str:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path != f"{_CAPTURE_PATH_PREFIX}{normalized_cms_id}"
-        or parsed.query != _CAPTURE_QUERY
+        or parsed.query != query
         or parsed.fragment
     ):
         raise RenderScoreUnavailable("Render score source is not configured safely")
     return url
 
 
-def _validated_batch_capture_url() -> str:
-    url = f"{_CAPTURE_BATCH_URL}?{_CAPTURE_QUERY}"
+def _validated_batch_capture_url(*, include_editorial: bool = False) -> str:
+    query = _capture_query(include_editorial)
+    url = f"{_CAPTURE_BATCH_URL}?{query}"
     parsed = urllib.parse.urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -167,7 +177,7 @@ def _validated_batch_capture_url() -> str:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path != _CAPTURE_BATCH_PATH
-        or parsed.query != _CAPTURE_QUERY
+        or parsed.query != query
         or parsed.fragment
     ):
         raise RenderScoreUnavailable("Render score source is not configured safely")
@@ -190,9 +200,9 @@ def _validated_health_url() -> str:
     return _CAPTURE_HEALTH_URL
 
 
-def _read_capture(cms_id: str) -> dict[str, Any] | None:
+def _read_capture(cms_id: str, *, include_editorial: bool = False) -> dict[str, Any] | None:
     request = urllib.request.Request(
-        _validated_capture_url(cms_id),
+        _validated_capture_url(cms_id, include_editorial=include_editorial),
         headers={
             "Accept": "application/json",
             "User-Agent": "NextPushBalancerScoreAdapter/1.0",
@@ -227,14 +237,18 @@ def _read_capture(cms_id: str) -> dict[str, Any] | None:
     return payload
 
 
-def _read_capture_batch(cms_ids: list[str]) -> dict[str, Any]:
+def _read_capture_batch(
+    cms_ids: list[str],
+    *,
+    include_editorial: bool = False,
+) -> dict[str, Any]:
     request_body = json.dumps(
         {"cmsIds": cms_ids},
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8")
     request = urllib.request.Request(
-        _validated_batch_capture_url(),
+        _validated_batch_capture_url(include_editorial=include_editorial),
         data=request_body,
         headers={
             "Accept": "application/json",
@@ -471,21 +485,35 @@ def _self_hosted() -> bool:
     return bool(config.PUSH_BALANCER_SCORE_API_SELF_CONSUME)
 
 
-def _self_hosted_payload(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Map an in-process snapshot onto the documented HTTP response payload."""
+def _self_hosted_payload(
+    snapshot: dict[str, Any] | None,
+    *,
+    include_editorial: bool = False,
+) -> dict[str, Any] | None:
+    """Map an in-process snapshot onto the documented HTTP response payload.
+
+    Der In-Process-Pfad haelt sich an denselben Vertrag wie der HTTP-Pfad: die
+    serverseitige Zerlegung gibt es nur auf Anforderung.
+    """
     if snapshot is None:
         return None
+    from app.routers.score_capture import requested_score_details
+
     payload: dict[str, Any] = {
         "score": snapshot.get("score"),
         "capturedAt": int(snapshot.get("capturedAt") or 0),
     }
-    if snapshot.get("scoreBreakdown") is not None and snapshot.get("orFactor") is not None:
-        payload["scoreBreakdown"] = snapshot["scoreBreakdown"]
-        payload["orFactor"] = snapshot["orFactor"]
+    details = requested_score_details(snapshot, include_editorial=include_editorial)
+    if details is not None:
+        payload["scoreBreakdown"], payload["orFactor"] = details
     return payload
 
 
-def _read_capture_self_hosted(cms_id: str) -> dict[str, Any] | None:
+def _read_capture_self_hosted(
+    cms_id: str,
+    *,
+    include_editorial: bool = False,
+) -> dict[str, Any] | None:
     from app.routers.score_capture import (
         ScoreCaptureReadError,
         get_score_snapshot_for_cms_id,
@@ -495,18 +523,23 @@ def _read_capture_self_hosted(cms_id: str) -> dict[str, Any] | None:
         snapshot = get_score_snapshot_for_cms_id(cms_id.lower())
     except ScoreCaptureReadError as exc:
         raise RenderScoreUnavailable("Render score source request failed") from exc
-    return _self_hosted_payload(snapshot)
+    return _self_hosted_payload(snapshot, include_editorial=include_editorial)
 
 
-def get_captured_score(cms_id: str, *, now: float | None = None) -> CapturedScore | None:
+def get_captured_score(
+    cms_id: str,
+    *,
+    now: float | None = None,
+    include_editorial: bool = False,
+) -> CapturedScore | None:
     """Return the latest workday UI snapshot for one CMS ID."""
     if not _CMS_ID_RE.fullmatch(cms_id):
         return None
 
     if _self_hosted():
-        payload = _read_capture_self_hosted(cms_id)
+        payload = _read_capture_self_hosted(cms_id, include_editorial=include_editorial)
     else:
-        payload = _read_capture(cms_id)
+        payload = _read_capture(cms_id, include_editorial=include_editorial)
     if payload is None:
         return None
     reference_time = time.time() if now is None else now
@@ -517,6 +550,7 @@ def get_captured_scores_batch(
     cms_ids: list[str],
     *,
     now: float | None = None,
+    include_editorial: bool = False,
 ) -> tuple[list[str], list[CapturedScore | None]]:
     """Return one strictly validated Render result per unique normalized CMS ID."""
     if not 1 <= len(cms_ids) <= _MAX_BATCH_SIZE:
@@ -546,13 +580,21 @@ def get_captured_scores_batch(
         return normalized_cms_ids, [
             (
                 _parse_capture(payload, reference_time)
-                if (payload := _self_hosted_payload(snapshots.get(cms_id))) is not None
+                if (
+                    payload := _self_hosted_payload(
+                        snapshots.get(cms_id),
+                        include_editorial=include_editorial,
+                    )
+                ) is not None
                 else None
             )
             for cms_id in normalized_cms_ids
         ]
 
-    payload = _read_capture_batch(normalized_cms_ids)
+    payload = _read_capture_batch(
+        normalized_cms_ids,
+        include_editorial=include_editorial,
+    )
     if set(payload) != {"results"} or not isinstance(payload["results"], list):
         raise RenderScoreUnavailable("Render score source returned an invalid response")
     source_results = payload["results"]

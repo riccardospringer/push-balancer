@@ -89,7 +89,7 @@ def test_score_only_route_keeps_identifier_out_of_errors(monkeypatch):
     monkeypatch.setattr(
         score_api,
         "get_captured_score",
-        lambda _cms_id: None,
+        lambda _cms_id, **_kwargs: None,
     )
     monkeypatch.setattr(config, "INTERNAL_ACCESS_ENABLED", False)
     client = TestClient(score_main.app)

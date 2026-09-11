@@ -25,7 +25,7 @@ config.INTERNAL_ACCESS_ENABLED = False
 config.ARTICLE_PREDICTION_ENRICHMENT_ENABLED = False
 
 
-def _captured_score(cms_id: str) -> CapturedScore | None:
+def _captured_score(cms_id: str, *, include_editorial: bool = False) -> CapturedScore | None:
     if cms_id != CMS_ID:
         return None
     return CapturedScore(
@@ -53,8 +53,12 @@ score_api.get_captured_score = _captured_score
 
 def _captured_scores_batch(
     cms_ids: list[str],
+    *,
+    include_editorial: bool = False,
 ) -> tuple[list[str], list[CapturedScore | None]]:
-    return cms_ids, [_captured_score(cms_id) for cms_id in cms_ids]
+    return cms_ids, [
+        _captured_score(cms_id, include_editorial=include_editorial) for cms_id in cms_ids
+    ]
 
 
 score_api.get_captured_scores_batch = _captured_scores_batch

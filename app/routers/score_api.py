@@ -7,7 +7,7 @@ import threading
 from dataclasses import asdict
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.auth import require_score_key
@@ -347,10 +347,24 @@ def get_score_by_cms_id(
         pattern=r"^[A-Za-z0-9_-]+$",
         description="CMS document identifier",
     ),
+    include_editorial_breakdown: int | None = Query(
+        default=None,
+        alias="includeEditorialBreakdown",
+        ge=1,
+        le=1,
+        description=(
+            "Set to 1 to also receive the weighted server-side composition "
+            "(scoreBreakdown.kind 'editorial'). Omitted by default so consumers that "
+            "validate the captured UI shapes strictly keep their exact contract."
+        ),
+    ),
 ) -> ArticleScoreResponse:
     """Project the latest workday score that the unchanged Render UI displayed."""
     try:
-        captured = get_captured_score(cms_id)
+        captured = get_captured_score(
+            cms_id,
+            include_editorial=include_editorial_breakdown == 1,
+        )
     except RenderScoreUnavailable as exc:
         raise HTTPException(status_code=502, detail="Render score source is unavailable.") from exc
     except Exception as exc:
@@ -395,6 +409,16 @@ def get_score_by_cms_id(
 def get_scores_by_cms_ids(
     response: Response,
     request: BatchScoreRequest,
+    include_editorial_breakdown: int | None = Query(
+        default=None,
+        alias="includeEditorialBreakdown",
+        ge=1,
+        le=1,
+        description=(
+            "Set to 1 to also receive the weighted server-side composition "
+            "(scoreBreakdown.kind 'editorial') for every found result."
+        ),
+    ),
 ) -> BatchScoreResponse:
     """Project a bounded batch through one true upstream batch request."""
     if not _BATCH_SOURCE_SLOTS.acquire(blocking=False):
@@ -409,7 +433,10 @@ def get_scores_by_cms_ids(
             dict.fromkeys(cms_id.lower() for cms_id in request.cmsIds)
         )
         try:
-            source_ids, captures = get_captured_scores_batch(unique_normalized_ids)
+            source_ids, captures = get_captured_scores_batch(
+                unique_normalized_ids,
+                include_editorial=include_editorial_breakdown == 1,
+            )
         except RenderScoreUnavailable as exc:
             raise HTTPException(
                 status_code=502,

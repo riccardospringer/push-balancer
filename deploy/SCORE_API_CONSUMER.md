@@ -39,7 +39,14 @@ X-Score-Key: <injected-secret>
 }
 ```
 
-A score computed on the server returns the weighted `editorial` shape instead:
+A score computed on the server can additionally explain itself. That shape is
+**opt-in**: append `includeEditorialBreakdown=1` (also valid on the batch
+endpoint). Without the parameter the response keeps exactly the shape described
+above, so an existing consumer is never confronted with an unknown `kind`:
+
+```http
+GET /api/v1/scores/0123456789abcdef01234567?includeEditorialBreakdown=1
+```
 
 ```json
 {
@@ -82,8 +89,8 @@ A score computed on the server returns the weighted `editorial` shape instead:
 - `scoredAt` is the UTC timestamp of that browser-generated UI snapshot.
 - `scoreBreakdown` explains the delivered score and comes in three shapes,
   distinguished by `kind`.
-- `kind: "editorial"` is the weighted server composition and is what a score
-  computed on the server returns. Each component carries its raw value (0-100)
+- `kind: "editorial"` is the weighted server composition, returned only when
+  `includeEditorialBreakdown=1` was requested. Each component carries its raw value (0-100)
   and the points it contributed: `bildReiz`/`bildReizPoints` (40 % weight),
   `openingRatePotential` (20 %), `freshness` (15 %), `mixBalance` (10 %),
   `historicalTiming` (10 %), `headlineStrength` (3 %), `riskAndFatigue` (2 %),

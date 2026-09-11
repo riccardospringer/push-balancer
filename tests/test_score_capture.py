@@ -1424,7 +1424,7 @@ def test_opt_in_endpoint_forwards_the_server_editorial_breakdown(monkeypatch):
 
     response = client.get(
         f"/api/score-capture/by-cms-id/{CMS_ID}",
-        params={"includeBreakdown": 1},
+        params={"includeBreakdown": 1, "includeEditorialBreakdown": 1},
     )
 
     assert response.status_code == 200
@@ -1441,7 +1441,7 @@ def test_batch_endpoint_forwards_the_server_editorial_breakdown(monkeypatch):
 
     response = client.post(
         "/api/score-capture/by-cms-id/batch",
-        params={"includeBreakdown": 1},
+        params={"includeBreakdown": 1, "includeEditorialBreakdown": 1},
         json={"cmsIds": [CMS_ID]},
     )
 
@@ -1516,3 +1516,58 @@ def test_heuristic_bild_reiz_never_carries_an_llm_reason(monkeypatch):
     breakdown = SERVER_CANDIDATE_FALLBACK([CMS_ID], now=NOW)[CMS_ID]["scoreBreakdown"]
 
     assert breakdown["readerScoreReasoning"] is None
+
+
+def test_old_consumer_never_receives_the_editorial_form(monkeypatch):
+    """Ein Consumer ohne den neuen Parameter bekommt exakt seinen Alt-Vertrag.
+
+    Aeltere Clients validieren die Breakdown-Form strikt und verwerfen eine
+    Antwort mit unbekanntem kind komplett — bei ihnen fielen dann alle Scores
+    auf 0. Die serverseitige Zerlegung gibt es deshalb nur auf Anforderung.
+    """
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _patch_candidate_feed(monkeypatch, _server_candidate_article())
+
+    response = client.get(
+        f"/api/score-capture/by-cms-id/{CMS_ID}",
+        params={"includeBreakdown": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"score": 77.9, "capturedAt": NOW}
+
+
+def test_old_batch_consumer_never_receives_the_editorial_form(monkeypatch):
+    monkeypatch.setattr(score_capture.time, "time", lambda: NOW)
+    _patch_candidate_feed(monkeypatch, _server_candidate_article())
+
+    response = client.post(
+        "/api/score-capture/by-cms-id/batch",
+        params={"includeBreakdown": 1},
+        json={"cmsIds": [CMS_ID]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {"cmsId": CMS_ID, "status": "found", "score": 77.9, "capturedAt": NOW}
+    ]
+
+
+def test_captured_ui_breakdown_stays_available_without_the_new_parameter(monkeypatch):
+    """Die Capture-Formen kennen alte Consumer — die bleiben unveraendert."""
+    _cache_score(
+        score=58.3,
+        ts=NOW - 60,
+        score_breakdown=ENGAGEMENT_BREAKDOWN,
+        or_factor=1.06,
+    )
+
+    response = client.get(
+        f"/api/score-capture/by-cms-id/{CMS_ID}",
+        params={"includeBreakdown": 1},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scoreBreakdown"] == ENGAGEMENT_BREAKDOWN
+    assert payload["orFactor"] == 1.06
