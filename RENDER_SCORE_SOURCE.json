@@ -64,6 +64,6 @@
   "app/scoring/events.py": "75a461a807c809e26f3dd320891b1e12d821ee184a8dd31295c096ff8a33ec34",
   "app/scoring/first_seen.py": "d49ff6f865d1252092b112baac8dc55d44eec41b78f8f188190c77a8274fc09f",
   "app/scoring/freshness.py": "c58841b2cedbed992899df2fa3ee568c2c12f0e7b6d6bcc4ceb838f2d367bad1",
-  "app/scoring/reader_score.py": "3141483cfb320b4715cbd39c7dd962333f7cbd704b075ba6c857969427e049ca"
+  "app/scoring/reader_score.py": "bf5e426c0c5626489d14e2d87a1d8c76a39fff4195364ce45ef68f5c844d5927"
  }
 }

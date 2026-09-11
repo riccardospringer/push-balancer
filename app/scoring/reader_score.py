@@ -130,18 +130,21 @@ Antworte NUR mit einem JSON-Objekt: {"reader_score": <int 0-100>, "reasoning": "
 # fresh generation instead of serving judgements the current setup would not
 # reproduce. Short on purpose — it separates generations, it is not a secret.
 @lru_cache(maxsize=8)
-def _reader_score_generation(model: str) -> str:
-    material = f"{READER_SCORE_PROMPT}\n@model={model}"
+def _reader_score_generation(model: str, reasoning_effort: str) -> str:
+    material = f"{READER_SCORE_PROMPT}\n@model={model}\n@effort={reasoning_effort}"
     return "p" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
 
 
 def reader_score_generation() -> str:
-    """Current cache generation for the active prompt and model."""
+    """Current cache generation for the active prompt, model and effort."""
     try:
-        from app.config import OPENAI_READER_SCORE_MODEL as model
+        from app import config
+
+        model = config.OPENAI_READER_SCORE_MODEL
+        effort = config.OPENAI_READER_SCORE_REASONING_EFFORT
     except Exception:  # pragma: no cover - config must never break a cache read
-        model = ""
-    return _reader_score_generation(model)
+        model = effort = ""
+    return _reader_score_generation(model, effort)
 
 # One in-flight guard per article so concurrent feed requests never double-bill.
 _INFLIGHT_LOCK = threading.Lock()
