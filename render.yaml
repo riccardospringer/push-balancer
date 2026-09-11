@@ -251,7 +251,7 @@ services:
       - key: OPENAI_READER_SCORE_ENABLED
         value: "true"
       - key: OPENAI_READER_SCORE_MODEL
-        value: gpt-5.6-luna
+        value: gpt-5.6-terra
       - key: OPENAI_READER_SCORE_REASONING_EFFORT
         value: none
       - key: OPENAI_READER_SCORE_TIMEOUT_S

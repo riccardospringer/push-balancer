@@ -17,6 +17,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from functools import lru_cache
 from typing import Any
 
 from app.article_identity import canonical_article_url_identity
@@ -124,11 +125,23 @@ Bewerte, was du als Leser tust — nicht, wie gut der Text geschrieben ist. • 
 
 Antworte NUR mit einem JSON-Objekt: {"reader_score": <int 0-100>, "reasoning": "<1-2 Sätze>"}"""
 
-# Prompt generation marker for the persistent cache. Short on purpose: it only
-# has to separate one prompt wording from the next, never to be secure.
-READER_SCORE_PROMPT_FINGERPRINT = "p" + hashlib.sha256(
-    READER_SCORE_PROMPT.encode("utf-8")
-).hexdigest()[:8]
+# Cache generation marker. Both the prompt wording and the model decide what a
+# score means, so both belong in the key: swapping either one has to start a
+# fresh generation instead of serving judgements the current setup would not
+# reproduce. Short on purpose — it separates generations, it is not a secret.
+@lru_cache(maxsize=8)
+def _reader_score_generation(model: str) -> str:
+    material = f"{READER_SCORE_PROMPT}\n@model={model}"
+    return "p" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
+def reader_score_generation() -> str:
+    """Current cache generation for the active prompt and model."""
+    try:
+        from app.config import OPENAI_READER_SCORE_MODEL as model
+    except Exception:  # pragma: no cover - config must never break a cache read
+        model = ""
+    return _reader_score_generation(model)
 
 # One in-flight guard per article so concurrent feed requests never double-bill.
 _INFLIGHT_LOCK = threading.Lock()
@@ -159,11 +172,11 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 def reader_score_cache_key(push: dict[str, Any]) -> str:
     """Stable per-article identity, scoped to the prompt that produced the score.
 
-    The cache has no expiry, so without the prompt fingerprint an article rated
-    under an older prompt would keep that score forever and a prompt change
-    would only ever reach articles nobody has seen yet. The fingerprint moves
-    with the prompt text, so every edit starts a fresh generation on its own —
-    bounded by the existing per-hour/per-day call budget.
+    The cache has no expiry, so without a generation marker an article rated
+    under an older prompt or a weaker model would keep that score forever and a
+    change would only ever reach articles nobody has seen yet. The marker moves
+    with both the prompt text and the model, so every edit starts a fresh
+    generation on its own — bounded by the existing per-hour/per-day budget.
     """
     url = str(push.get("url") or push.get("link") or "").strip()
     if url:
@@ -171,7 +184,7 @@ def reader_score_cache_key(push: dict[str, Any]) -> str:
     else:
         title = str(push.get("title") or push.get("headline") or "").strip().lower()
         identity = f"title:{title}"
-    return f"{READER_SCORE_PROMPT_FINGERPRINT}:{identity}"
+    return f"{reader_score_generation()}:{identity}"
 
 
 def _get_client(api_key: str):
