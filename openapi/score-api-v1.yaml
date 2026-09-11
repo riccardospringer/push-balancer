@@ -18,6 +18,20 @@ paths:
         never fans out to single lookups and does not calculate a score itself.
       security:
         - scoreApiKey: []
+      parameters:
+        - name: includeEditorialBreakdown
+          in: query
+          required: false
+          description: >-
+            Set to 1 to also receive the weighted server-side composition
+            (scoreBreakdown with kind "editorial"). Omitted by default, so a
+            consumer that validates the captured UI shapes strictly keeps its
+            exact existing contract.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1
+          example: 1
       requestBody:
         required: true
         content:
@@ -74,6 +88,19 @@ paths:
             maxLength: 128
             pattern: "^[A-Za-z0-9_-]+$"
           example: 0123456789abcdef01234567
+        - name: includeEditorialBreakdown
+          in: query
+          required: false
+          description: >-
+            Set to 1 to also receive the weighted server-side composition
+            (scoreBreakdown with kind "editorial"). Omitted by default, so a
+            consumer that validates the captured UI shapes strictly keeps its
+            exact existing contract.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1
+          example: 1
       responses:
         "200":
           description: Existing score projection
@@ -380,7 +407,8 @@ components:
             UTC timestamp of the existing browser-generated score snapshot.
         scoreBreakdown:
           description: >-
-            Explanation of the delivered score. kind "editorial" is the
+            Explanation of the delivered score. kind "editorial" is returned
+            only when includeEditorialBreakdown=1 was requested; it is the
             weighted server composition: every component carries its raw value
             (0-100) and the points it contributed, bildReizPoints being the
             share of the LLM reader score (40 percent weight). kind

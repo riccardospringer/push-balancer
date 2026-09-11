@@ -62,14 +62,14 @@ def test_returns_fresh_ui_capture(monkeypatch):
     assert result.captured_at == CAPTURED_AT
     assert result.score_breakdown is None
     assert result.or_factor is None
-    read_capture.assert_called_once_with(CMS_ID)
+    read_capture.assert_called_once_with(CMS_ID, include_editorial=False)
 
 
 def test_returns_exact_engagement_breakdown_without_recomputing_total(monkeypatch):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=58.3,
             score_breakdown=ENGAGEMENT_BREAKDOWN,
             or_factor=1.06,
@@ -100,7 +100,7 @@ def test_returns_exact_sport_breakdown(monkeypatch):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=70,
             score_breakdown=SPORT_BREAKDOWN,
             or_factor=0.94,
@@ -125,7 +125,7 @@ def test_capture_remains_available_after_previous_three_minute_cutoff(monkeypatc
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(captured_at=captured_at),
+        lambda _cms_id, **_kwargs: _payload(captured_at=captured_at),
     )
 
     result = capture.get_captured_score(CMS_ID, now=NOW)
@@ -176,7 +176,7 @@ def test_capture_remains_available_after_previous_three_minute_cutoff(monkeypatc
     ],
 )
 def test_rejects_invalid_capture_payload(monkeypatch, payload):
-    monkeypatch.setattr(capture, "_read_capture", lambda _cms_id: payload)
+    monkeypatch.setattr(capture, "_read_capture", lambda _cms_id, **_kwargs: payload)
 
     with pytest.raises(capture.RenderScoreUnavailable):
         capture.get_captured_score(CMS_ID, now=NOW)
@@ -206,7 +206,7 @@ def test_rejects_invalid_engagement_breakdown_number(monkeypatch, field, invalid
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score_breakdown=invalid_breakdown,
             or_factor=1.0,
         ),
@@ -236,7 +236,7 @@ def test_rejects_invalid_score_breakdown_shape(monkeypatch, invalid_breakdown):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score_breakdown=invalid_breakdown,
             or_factor=1.0,
         ),
@@ -250,7 +250,7 @@ def test_stale_capture_returns_none(monkeypatch):
     stale_payload = _payload(
         captured_at=int(NOW - capture._MAX_CAPTURE_AGE_SECONDS)
     )
-    monkeypatch.setattr(capture, "_read_capture", lambda _cms_id: stale_payload)
+    monkeypatch.setattr(capture, "_read_capture", lambda _cms_id, **_kwargs: stale_payload)
 
     assert capture.get_captured_score(CMS_ID, now=NOW) is None
 
@@ -375,7 +375,7 @@ def test_batch_accepts_exact_legacy_found_item(monkeypatch):
     monkeypatch.setattr(
         capture,
         "_read_capture_batch",
-        lambda _cms_ids: {
+        lambda _cms_ids, **_kwargs: {
             "results": [
                 {
                     "cmsId": CMS_ID,
@@ -447,7 +447,7 @@ def test_batch_accepts_exact_legacy_found_item(monkeypatch):
     ],
 )
 def test_batch_rejects_malformed_whole_source_response(monkeypatch, payload):
-    monkeypatch.setattr(capture, "_read_capture_batch", lambda _cms_ids: payload)
+    monkeypatch.setattr(capture, "_read_capture_batch", lambda _cms_ids, **_kwargs: payload)
 
     with pytest.raises(capture.RenderScoreUnavailable):
         capture.get_captured_scores_batch([CMS_ID], now=NOW)
@@ -667,14 +667,14 @@ def test_returns_exact_editorial_breakdown_with_llm_share(monkeypatch):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=77.9,
             score_breakdown=EDITORIAL_BREAKDOWN,
             or_factor=1.21,
         ),
     )
 
-    result = capture.get_captured_score(CMS_ID, now=NOW)
+    result = capture.get_captured_score(CMS_ID, now=NOW, include_editorial=True)
 
     assert result is not None
     assert result.score == 77.9
@@ -716,14 +716,14 @@ def test_editorial_breakdown_keeps_a_null_reader_score_for_the_heuristic(monkeyp
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=77.9,
             score_breakdown=heuristic,
             or_factor=1.21,
         ),
     )
 
-    result = capture.get_captured_score(CMS_ID, now=NOW)
+    result = capture.get_captured_score(CMS_ID, now=NOW, include_editorial=True)
 
     assert result is not None
     assert result.score_breakdown.reader_score is None
@@ -745,7 +745,7 @@ def test_rejects_invalid_editorial_breakdown(monkeypatch, invalid_breakdown):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=77.9,
             score_breakdown=invalid_breakdown,
             or_factor=1.21,
@@ -753,7 +753,7 @@ def test_rejects_invalid_editorial_breakdown(monkeypatch, invalid_breakdown):
     )
 
     with pytest.raises(capture.RenderScoreUnavailable):
-        capture.get_captured_score(CMS_ID, now=NOW)
+        capture.get_captured_score(CMS_ID, now=NOW, include_editorial=True)
 
 
 @pytest.mark.parametrize(
@@ -770,7 +770,7 @@ def test_rejects_an_unnormalized_reader_score_reason(monkeypatch, reasoning):
     monkeypatch.setattr(
         capture,
         "_read_capture",
-        lambda _cms_id: _payload(
+        lambda _cms_id, **_kwargs: _payload(
             score=77.9,
             score_breakdown={**EDITORIAL_BREAKDOWN, "readerScoreReasoning": reasoning},
             or_factor=1.21,
@@ -778,4 +778,4 @@ def test_rejects_an_unnormalized_reader_score_reason(monkeypatch, reasoning):
     )
 
     with pytest.raises(capture.RenderScoreUnavailable):
-        capture.get_captured_score(CMS_ID, now=NOW)
+        capture.get_captured_score(CMS_ID, now=NOW, include_editorial=True)

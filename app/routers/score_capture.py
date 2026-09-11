@@ -429,6 +429,32 @@ def get_score_snapshots_for_cms_ids(
     return resolved
 
 
+EDITORIAL_BREAKDOWN_QUERY_PARAM = "includeEditorialBreakdown"
+
+
+def requested_score_details(
+    snapshot: dict[str, object],
+    *,
+    include_editorial: bool,
+) -> tuple[object, object] | None:
+    """Das Erklaerungs-Paar, das dieser Consumer angefordert hat.
+
+    Die serverseitige Zerlegung (``kind`` "editorial") ist neuer als die
+    Capture-Formen und wird nur auf ausdrueckliche Anforderung ausgeliefert.
+    Aeltere Consumer validieren die Breakdown-Form strikt und verwerfen eine
+    ganze Antwort mit unbekanntem ``kind`` — fuer sie bleibt der Vertrag
+    dauerhaft so, wie sie ihn kennen.
+    """
+    breakdown = snapshot.get("scoreBreakdown")
+    or_factor = snapshot.get("orFactor")
+    if breakdown is None or or_factor is None:
+        return None
+    if not include_editorial and isinstance(breakdown, dict):
+        if breakdown.get("kind") == "editorial":
+            return None
+    return breakdown, or_factor
+
+
 def _finite_number(value: object) -> float | None:
     """Numerischen Wert ohne Bool/NaN-Ueberraschungen lesen."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -707,7 +733,8 @@ def debug_score_capture() -> JSONResponse:
     description=(
         "Returns the latest workday score and capture timestamp already produced by the "
         "unchanged candidate UI. Set includeBreakdown=1 to add its captured numeric score "
-        "fields and separate OR sorting factor. Access remains protected by the service's "
+        "fields and separate OR sorting factor; add includeEditorialBreakdown=1 to also "
+        "receive the weighted server-side composition. Access remains protected by the service's "
         "internal CIDR gate."
     ),
 )
@@ -717,6 +744,12 @@ def get_score_capture_by_cms_id(
     include_breakdown: int | None = Query(
         default=None,
         alias="includeBreakdown",
+        ge=1,
+        le=1,
+    ),
+    include_editorial_breakdown: int | None = Query(
+        default=None,
+        alias=EDITORIAL_BREAKDOWN_QUERY_PARAM,
         ge=1,
         le=1,
     ),
@@ -735,13 +768,16 @@ def get_score_capture_by_cms_id(
         "score": float(snapshot["score"]),
         "capturedAt": int(snapshot["capturedAt"]),
     }
-    if (
-        include_breakdown == 1
-        and snapshot.get("scoreBreakdown") is not None
-        and snapshot.get("orFactor") is not None
-    ):
-        response_data["scoreBreakdown"] = snapshot["scoreBreakdown"]
-        response_data["orFactor"] = snapshot["orFactor"]
+    details = (
+        requested_score_details(
+            snapshot,
+            include_editorial=include_editorial_breakdown == 1,
+        )
+        if include_breakdown == 1
+        else None
+    )
+    if details is not None:
+        response_data["scoreBreakdown"], response_data["orFactor"] = details
     return CmsScoreCaptureResponse.model_validate(response_data)
 
 
@@ -761,11 +797,24 @@ def post_score_capture_by_cms_id_batch(
     request: Request,
     response: Response,
     include_breakdown: int = Query(alias="includeBreakdown", ge=1, le=1),
+    include_editorial_breakdown: int | None = Query(
+        default=None,
+        alias=EDITORIAL_BREAKDOWN_QUERY_PARAM,
+        ge=1,
+        le=1,
+    ),
 ) -> BatchCmsScoreCaptureResponse:
-    if list(request.query_params.multi_items()) != [("includeBreakdown", "1")]:
+    allowed_queries = (
+        [("includeBreakdown", "1")],
+        [("includeBreakdown", "1"), (EDITORIAL_BREAKDOWN_QUERY_PARAM, "1")],
+    )
+    if list(request.query_params.multi_items()) not in allowed_queries:
         raise HTTPException(
             status_code=422,
-            detail="The exact includeBreakdown=1 query is required.",
+            detail=(
+                "The exact includeBreakdown=1 query is required, optionally followed by "
+                f"{EDITORIAL_BREAKDOWN_QUERY_PARAM}=1."
+            ),
         )
     try:
         snapshots = get_score_snapshots_for_cms_ids(body.cmsIds)
@@ -787,12 +836,12 @@ def post_score_capture_by_cms_id_batch(
             "score": float(snapshot["score"]),
             "capturedAt": int(snapshot["capturedAt"]),
         }
-        if (
-            snapshot.get("scoreBreakdown") is not None
-            and snapshot.get("orFactor") is not None
-        ):
-            item["scoreBreakdown"] = snapshot["scoreBreakdown"]
-            item["orFactor"] = snapshot["orFactor"]
+        details = requested_score_details(
+            snapshot,
+            include_editorial=include_editorial_breakdown == 1,
+        )
+        if details is not None:
+            item["scoreBreakdown"], item["orFactor"] = details
         results.append(item)
 
     response.headers["Cache-Control"] = "no-store"
