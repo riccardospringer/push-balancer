@@ -371,11 +371,11 @@ use:
 
 The Product/System Owner, Privacy Manager, DPO, and Legal/Group Legal approval for the exactly-five contract and `POWER_AUTOMATE_REQUIRE_LIVE_PUSH_HISTORY=false` cloud-only mode was recorded on 2026-08-09 in `PRIVACY.md`. This authorizes the scoped backend rollout. Production must edit only the existing canonical Exact-5 flow; do not create another scheduled flow. Legacy transports stay off, and the canonical flow may stay active only while the production readiness proof is green.
 
-`06:00`, `06:36`, `07:12`, `07:47`, `08:23`, `08:59`, `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, `22:45`.
+`07:48`, `08:24`, `09:00`, `10:15`, `11:00`, `12:30`, `14:00`, `15:45`, `17:30`, `18:50`, `20:05`, `21:25`.
 
-Saturday and Sunday move only the six morning slots two hours later:
+Saturday and Sunday use a separate 12-slot plan:
 
-`08:00`, `08:36`, `09:12`, `09:47`, `10:23`, `10:59`, `12:30`, `17:30`, `18:49`, `20:08`, `21:26`, `22:45`.
+`08:00`, `09:00`, `10:15`, `11:15`, `12:30`, `14:00`, `15:30`, `17:30`, `18:50`, `20:05`, `21:25`, `22:45`.
 
 These weekday/weekend times are the complete scheduled-flow plan. The Power Automate path ignores `PUSH_TEAMS_SLOT_DELAY_DATE`, `PUSH_TEAMS_SLOT_DELAY_FROM`, `PUSH_TEAMS_SLOT_DELAY_MINUTES`, the legacy golden-hour plan, catch-up logic, and daily Sport quotas. `POWER_AUTOMATE_RECOVERY_GRACE_SECONDS=600` extends the original five-minute primary interval to a hard maximum total of 15 minutes. Invalid, negative, or greater-than-600 values disable only recovery and cannot widen that bound. An initial claim is issued only while at least 30 seconds remain before the total window expires; a later request returns HTTP 200 with `ready=false` and `reason=slot_closed`. The Power Automate trigger condition must include minutes `+0` through `+14`; retaining the old five-minute condition prevents the backend recovery from being called.
 

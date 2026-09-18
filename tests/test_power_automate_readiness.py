@@ -69,19 +69,19 @@ def _full_readiness_fixture() -> dict[str, Any]:
             "plannedToday": 12,
             "labels": [
                 "08:00",
-                "08:36",
-                "09:12",
-                "09:47",
-                "10:23",
-                "10:59",
+                "09:00",
+                "10:15",
+                "11:15",
                 "12:30",
+                "14:00",
+                "15:30",
                 "17:30",
-                "18:49",
-                "20:08",
-                "21:26",
+                "18:50",
+                "20:05",
+                "21:25",
                 "22:45",
             ],
-            "nextSlot": {"label": "20:08", "requestId": "must-not-leak"},
+            "nextSlot": {"label": "20:05", "requestId": "must-not-leak"},
         },
         "runtime": {"lastSendTs": 1786300000, "accountEmail": "private@example.invalid"},
         "configurationProblems": [
@@ -151,7 +151,7 @@ def test_readiness_returns_only_the_allowlisted_shared_values(monkeypatch):
 
     full = _full_readiness_fixture()
     latest_slot = {
-        "label": "18:49",
+        "label": "18:50",
         "state": "sent",
         "receiptRecorded": True,
         "timingState": "terminal",
@@ -298,7 +298,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             None,
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "unclaimed",
                 "receiptRecorded": False,
                 "timingState": "primary_open",
@@ -308,7 +308,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             {"status": "sending", "receiptRecorded": False},
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "sending",
                 "receiptRecorded": False,
                 "timingState": "awaiting_receipt",
@@ -318,7 +318,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             {"status": "sent", "receiptRecorded": True},
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "sent",
                 "receiptRecorded": True,
                 "timingState": "terminal",
@@ -328,7 +328,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             {"status": "delivery_uncertain", "receiptRecorded": True},
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "delivery_uncertain",
                 "receiptRecorded": True,
                 "timingState": "terminal",
@@ -338,7 +338,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             {"status": "failed", "receiptRecorded": False},
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "failed",
                 "receiptRecorded": False,
                 "timingState": "primary_open",
@@ -348,7 +348,7 @@ def test_full_readiness_reports_the_transport_owner_conflict(monkeypatch):
         (
             {"status": "unexpected", "receiptRecorded": True},
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "other",
                 "timingState": "blocked",
                 "recoveryEligible": False,
@@ -409,7 +409,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
     import app.routers.power_automate as power_automate
     import app.teams_slot_claims as slot_claims
 
-    slot_ts = int(dt.datetime(2026, 8, 9, 18, 49, tzinfo=BERLIN).timestamp())
+    slot_ts = int(dt.datetime(2026, 8, 9, 18, 50, tzinfo=BERLIN).timestamp())
     monkeypatch.setattr(
         slot_claims,
         "teams_recommendation_slot_delivery_state_read_only",
@@ -431,7 +431,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
     )
 
     assert result is not None
-    assert result["label"] == "18:49"
+    assert result["label"] == "18:50"
     assert result["state"] == ("unclaimed" if delivery is None else "sending")
     assert result["timingState"] == timing_state
     assert result["recoveryEligible"] is recovery_eligible
@@ -443,7 +443,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
     [
         (
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "unclaimed",
                 "receiptRecorded": False,
                 "timingState": "missed",
@@ -454,7 +454,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
         ),
         (
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "sending",
                 "receiptRecorded": False,
                 "timingState": "overdue_unresolved",
@@ -465,7 +465,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
         ),
         (
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "delivery_uncertain",
                 "receiptRecorded": True,
                 "timingState": "terminal",
@@ -476,7 +476,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
         ),
         (
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "sent",
                 "receiptRecorded": True,
                 "timingState": "terminal",
@@ -487,7 +487,7 @@ def test_latest_slot_timing_boundaries_are_half_open(
         ),
         (
             {
-                "label": "18:49",
+                "label": "18:50",
                 "state": "unclaimed",
                 "receiptRecorded": False,
                 "timingState": "recovery_open",

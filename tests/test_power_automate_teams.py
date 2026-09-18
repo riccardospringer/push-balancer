@@ -67,29 +67,26 @@ def test_bounded_recovery_env_fails_closed_for_invalid_bounds(
     ) == (0, False)
 
 
-def test_weekend_morning_slots_start_two_hours_later():
+@pytest.mark.parametrize("day", range(7))
+@pytest.mark.parametrize("monday", [dt.date(2026, 1, 12), dt.date(2026, 7, 13)])
+def test_requested_twelve_slot_schedule_in_both_dst_seasons(day, monday):
     import app.routers.power_automate as power_automate
+    from app.power_automate_schedule import is_power_automate_binding_slot
 
-    saturday = dt.date(2026, 8, 8)
-    sunday = dt.date(2026, 8, 9)
+    date = monday + dt.timedelta(days=day)
     expected = (
-        "08:00",
-        "08:36",
-        "09:12",
-        "09:47",
-        "10:23",
-        "10:59",
-        "12:30",
-        "17:30",
-        "18:49",
-        "20:08",
-        "21:26",
-        "22:45",
+        ("08:00", "09:00", "10:15", "11:15", "12:30", "14:00",
+         "15:30", "17:30", "18:50", "20:05", "21:25", "22:45")
+        if day >= 5 else
+        ("07:48", "08:24", "09:00", "10:15", "11:00", "12:30",
+         "14:00", "15:45", "17:30", "18:50", "20:05", "21:25")
     )
-
-    assert power_automate.power_automate_slot_labels_for_date(saturday) == expected
-    assert power_automate.power_automate_slot_labels_for_date(sunday) == expected
-    assert power_automate.power_automate_slot_labels_for_date(dt.date(2026, 8, 10))[0] == "06:00"
+    assert power_automate.power_automate_slot_labels_for_date(date) == expected
+    for label in expected:
+        hour, minute = map(int, label.split(":"))
+        slot_ts = int(dt.datetime.combine(date, dt.time(hour, minute), BERLIN).timestamp())
+        assert is_power_automate_binding_slot(slot_ts, label)
+        assert power_automate._power_automate_binding_slot(slot_ts)["label"] == label
 
 
 @pytest.mark.parametrize("schedule_name", ["weekday", "weekend"])
@@ -118,7 +115,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
 ):
     import app.notifications.teams as teams
 
-    now_ts = int(dt.datetime(2026, 8, 9, 10, 59, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
+    now_ts = int(dt.datetime(2026, 8, 9, 11, 15, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     candidate = {
         "id": "000000000000000000000021",
         "url": "https://www.bild.de/news/synthetic-weekend-override",
@@ -126,7 +123,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
         "category": "news",
         "score": 90.0,
         "scoreSource": "internal_score_api",
-        "pubDate": "2026-08-09T10:50:00+02:00",
+        "pubDate": "2026-08-09T11:05:00+02:00",
     }
     config = replace(
         teams.TeamsAlertConfig(),
@@ -159,7 +156,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
         **base_context,
         "_mandatorySlotOverride": {
             "ts": now_ts - 30,
-            "label": "10:59",
+            "label": "11:15",
             "slotRole": "power_automate_fixed",
         },
     }
@@ -180,7 +177,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
         **base_context,
         "_mandatorySlotOverride": {
             "ts": now_ts - 301,
-            "label": "10:54",
+            "label": "11:10",
             "slotRole": "power_automate_fixed",
         },
     }
@@ -201,7 +198,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
             "nowTs": recovery_slot_ts + 600,
             "_mandatorySlotOverride": {
                 "ts": recovery_slot_ts,
-                "label": "10:59",
+                "label": "11:15",
                 "slotRole": "power_automate_fixed",
                 "dispatchWindowSeconds": 900,
             },
@@ -215,7 +212,7 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
             "nowTs": recovery_slot_ts + 901,
             "_mandatorySlotOverride": {
                 "ts": recovery_slot_ts,
-                "label": "10:59",
+                "label": "11:15",
                 "slotRole": "power_automate_fixed",
                 "dispatchWindowSeconds": 900,
             },
@@ -229,9 +226,9 @@ def test_power_automate_slot_override_applies_only_inside_its_live_window(
 
     future_ts = int(dt.datetime(2026, 8, 9, 12, 30, tzinfo=ZoneInfo("Europe/Berlin")).timestamp())
     invalid_overrides = (
-        {"ts": "not-a-timestamp", "label": "10:59", "slotRole": "power_automate_fixed"},
-        {"ts": 10**100, "label": "10:59", "slotRole": "power_automate_fixed"},
-        {"ts": now_ts - 30, "label": "10:59", "slotRole": "unexpected_role"},
+        {"ts": "not-a-timestamp", "label": "11:15", "slotRole": "power_automate_fixed"},
+        {"ts": 10**100, "label": "11:15", "slotRole": "power_automate_fixed"},
+        {"ts": now_ts - 30, "label": "11:15", "slotRole": "unexpected_role"},
         {"ts": now_ts - 30, "label": "10:23", "slotRole": "power_automate_fixed"},
         {"ts": future_ts, "label": "12:30", "slotRole": "power_automate_fixed"},
     )
@@ -265,21 +262,21 @@ def test_shared_power_automate_slot_validator_rejects_schedule_mismatches():
     from app.power_automate_schedule import is_power_automate_binding_slot
 
     sunday_valid = int(
-        dt.datetime(2026, 8, 9, 10, 59, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 8, 9, 11, 15, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     sunday_weekday_only = int(
-        dt.datetime(2026, 8, 9, 6, 0, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
+        dt.datetime(2026, 8, 9, 7, 48, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
     sunday_unscheduled = int(
         dt.datetime(2026, 8, 9, 11, 1, tzinfo=ZoneInfo("Europe/Berlin")).timestamp()
     )
 
-    assert is_power_automate_binding_slot(sunday_valid, "10:59") is True
+    assert is_power_automate_binding_slot(sunday_valid, "11:15") is True
     assert is_power_automate_binding_slot(sunday_valid, "10:23") is False
-    assert is_power_automate_binding_slot(sunday_weekday_only, "06:00") is False
+    assert is_power_automate_binding_slot(sunday_weekday_only, "07:48") is False
     assert is_power_automate_binding_slot(sunday_unscheduled, "11:01") is False
-    assert is_power_automate_binding_slot("1786258740", "10:59") is False
-    assert is_power_automate_binding_slot(10**100, "10:59") is False
+    assert is_power_automate_binding_slot("1786258740", "11:15") is False
+    assert is_power_automate_binding_slot(10**100, "11:15") is False
 
 
 def test_power_automate_recovery_window_is_bounded_and_preserves_slot_identity(
